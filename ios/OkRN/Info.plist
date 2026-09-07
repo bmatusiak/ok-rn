@@ -34,6 +34,14 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>OnlyKey RN advertises a FIDO2 security key over Bluetooth so nearby computers can use this phone to sign in.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Face ID approves each sign-in request before the Secure Enclave signs it.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-peripheral</string>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
 	<key>UILaunchStoryboardName</key>
