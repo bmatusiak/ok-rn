@@ -131,8 +131,34 @@ be 64.
 
 ## Verified on hardware
 
-Run on a Galaxy A13 (SM-S136DL, Android 13, **armeabi-v7a**) with a real
-OnlyKey attached over USB OTG:
+### Soft key — the firmware running on the phone
+
+Galaxy A13 (SM-S136DL, Android 13, **armeabi-v7a** — a 32-bit-only build):
+
+```
+okemu        : firmware started, storage=/data/user/0/com.okrn/files/okemu
+ReactNativeJS: [softkey] OKCONNECT ok: "UNINITIALIZEDv3.0.4-testc"
+```
+
+- `flash.bin` (262144 B) and `eeprom.bin` (2048 B) created at the device's own
+  sizes in app-private storage
+- the NeoPixel reports `#00af00`, so the firmware's main loop is running rather
+  than having answered once and stopped
+- `UNINITIALIZED` is correct for a factory-fresh device with no PIN set
+
+**Why OKCONNECT is the pass condition and "it booted" is not.** Android pins
+`vm.mmap_min_addr` at `0x8000` and an unprivileged app cannot lower it, while
+the firmware reaches `certified_hw` at `0x5BB0`. A bad mapping produces a device
+that boots, answers HID, and then faults the first time it encrypts anything.
+OKCONNECT performs the NaCl key exchange, so completing it exercises that
+mapping. It completed.
+
+Not yet proven: PIN persistence across a restart, which needs the firmware's
+DEBUG button harness over SEREMU.
+
+### USB HID — a physical OnlyKey over OTG
+
+Same handset, with a real OnlyKey attached over USB OTG:
 
 - device enumeration finds it as `ONLYKEY - vid 0x1d50 pid 0x60fc`
 - the Android USB permission dialog fires and the grant is delivered back

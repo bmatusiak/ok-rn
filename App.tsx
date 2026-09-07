@@ -6,16 +6,20 @@ import {theme} from './src/ui/theme';
 import {useLog} from './src/hooks/useLog';
 import {UsbScreen} from './src/screens/UsbScreen';
 import {FidoScreen} from './src/screens/FidoScreen';
+import {SoftKeyScreen} from './src/screens/SoftKeyScreen';
 
-const TABS = ['USB HID', 'FIDO2 BLE'] as const;
+// Soft key first: the phone being the OnlyKey is the point, and a physical
+// key over USB is the optional extra rather than the other way round.
+const TABS = ['Soft key', 'USB HID', 'FIDO2 BLE'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('USB HID');
+  const [tab, setTab] = useState<Tab>('Soft key');
 
   // One log buffer per screen so switching tabs does not interleave traffic.
   const usbLog = useLog();
   const fidoLog = useLog();
+  const emuLog = useLog();
 
   return (
     <SafeAreaProvider>
@@ -31,7 +35,9 @@ export default function App() {
         </View>
 
         <View style={styles.body}>
-          {tab === 'USB HID' ? (
+          {tab === 'Soft key' ? (
+            <SoftKeyScreen entries={emuLog.entries} log={emuLog.log} clear={emuLog.clear} />
+          ) : tab === 'USB HID' ? (
             <UsbScreen entries={usbLog.entries} log={usbLog.log} clear={usbLog.clear} />
           ) : (
             <FidoScreen entries={fidoLog.entries} log={fidoLog.log} clear={fidoLog.clear} />
