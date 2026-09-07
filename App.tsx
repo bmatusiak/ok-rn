@@ -19,7 +19,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle="light-content" backgroundColor={theme.bg} />
+      <StatusBar barStyle="light-content" />
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
         <View style={styles.header}>
           <Text style={styles.title}>OnlyKey RN</Text>

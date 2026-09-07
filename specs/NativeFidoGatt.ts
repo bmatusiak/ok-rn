@@ -1,6 +1,6 @@
 import type {TurboModule} from 'react-native';
 import {TurboModuleRegistry} from 'react-native';
-import type {EventEmitter} from 'react-native/Libraries/Types/CodegenTypes';
+import type {CodegenTypes} from 'react-native';
 
 /**
  * CTAP2-over-BLE peripheral: turns the phone into a roaming FIDO2 authenticator
@@ -77,8 +77,8 @@ export interface Spec extends TurboModule {
   /** Sign with a hardware key, gated on BiometricPrompt. Returns DER signature hex. */
   signWithCredential(credentialIdHex: string, payloadHex: string): Promise<string>;
 
-  readonly onGattStatus: EventEmitter<GattStatusEvent>;
-  readonly onCtapRequest: EventEmitter<CtapRequestEvent>;
+  readonly onGattStatus: CodegenTypes.EventEmitter<GattStatusEvent>;
+  readonly onCtapRequest: CodegenTypes.EventEmitter<CtapRequestEvent>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('NativeFidoGatt');

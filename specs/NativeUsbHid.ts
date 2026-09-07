@@ -1,6 +1,6 @@
 import type {TurboModule} from 'react-native';
 import {TurboModuleRegistry} from 'react-native';
-import type {EventEmitter} from 'react-native/Libraries/Types/CodegenTypes';
+import type {CodegenTypes} from 'react-native';
 
 /**
  * Transport selection.
@@ -68,8 +68,8 @@ export interface Spec extends TurboModule {
   /** Write one raw report. `hex` must be an even-length hex string. */
   write(hex: string): Promise<number>;
 
-  readonly onStatus: EventEmitter<StatusEvent>;
-  readonly onData: EventEmitter<DataEvent>;
+  readonly onStatus: CodegenTypes.EventEmitter<StatusEvent>;
+  readonly onData: CodegenTypes.EventEmitter<DataEvent>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('NativeUsbHid');
