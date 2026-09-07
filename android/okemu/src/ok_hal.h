@@ -25,7 +25,23 @@ extern "C" {
 
 /* ---------------------------------------------------------------- layout */
 
+/*
+ * Where the emulated flash array is mapped.
+ *
+ * Upstream this is 0, so the firmware's own absolute addresses resolve
+ * unchanged. Android forbids that: vm.mmap_min_addr is 0x8000 and an
+ * unprivileged app cannot lower it, while certified_hw sits at 0x5BB0 - so the
+ * mapping lands at 0x10000, the whole bottom of the array is unmapped, and the
+ * device faults the first time it encrypts anything (storing a PIN included).
+ *
+ * The Android build therefore REBASES instead: the firmware's four address
+ * literals in okcore.h get this base added (see scripts/stage.js), so the
+ * layout is unchanged and only its origin moves. Overridden from CMakeLists,
+ * which is also what okcore.h's patched constants see.
+ */
+#ifndef OKEMU_FLASH_BASE
 #define OKEMU_FLASH_BASE   0x00000000UL
+#endif
 #define OKEMU_FLASH_SIZE   0x00040000UL   /* 256 KB - MK20DX256 */
 #define OKEMU_EEPROM_SIZE  2048           /* Teensy 3.1 emulated EEPROM     */
 

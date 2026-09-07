@@ -107,6 +107,18 @@ target_compile_definitions(okemu_firmware PUBLIC
   # are 32-bit here, differing only in signedness, which matters no earlier
   # than 2038.
   __time_t_defined
+
+  # Where the emulated flash array lives. Not 0, which is what upstream uses
+  # and what Android forbids - see the okcore.h entry in scripts/stage.js.
+  #
+  # 0x44000000 sits immediately above the bit-band alias, so the three emulated
+  # windows (peripherals 0x40000000, bit-band 0x42000000, flash here) form one
+  # contiguous reserved block. Measured free on the target: /proc/PID/maps
+  # shows a 320 MB gap there, and the two windows below it already map.
+  #
+  # Both the HAL and the firmware's own constants read this, so they cannot
+  # disagree about where the array is.
+  OKEMU_FLASH_BASE=0x44000000UL
 )
 
 # Constructs GCC's -fpermissive waved through. Listed individually so that a

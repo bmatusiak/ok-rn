@@ -59,7 +59,17 @@ extern "C" void loop(void);
 
 namespace {
 
-const uintptr_t kAIRCR     = 0xE000ED0CUL;
+/*
+ * AIRCR, at the address the firmware actually writes.
+ *
+ * On the device this is the literal 0xE000ED0C. Here it is wherever the
+ * Cortex-M system block was rebased to - scripts/stage.js rewrites every
+ * register in that window to index okemu_scs_base[], because 0xE0000000 is
+ * unmappable on 32-bit ARM. Left as the literal, this trap would guard an
+ * address nothing writes and CPU_RESTART() would be a silent no-op.
+ */
+extern "C" unsigned char okemu_scs_base[];
+const uintptr_t kAIRCR     = (uintptr_t)okemu_scs_base + 0xED0CUL;
 const size_t    kPageSize  = 4096;
 const uintptr_t kSCBPage   = kAIRCR & ~(uintptr_t)(kPageSize - 1);
 

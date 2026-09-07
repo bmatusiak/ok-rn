@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import OkEmu, {DIR, IFACE, type Iface} from '../transport/OkEmu';
+import {provisionPin} from '../transport/provision';
 import {bytesToHex, formatHex} from '../transport/hex';
 import type {LogLevel} from './useLog';
 
@@ -176,6 +177,43 @@ export function useOkEmu({log, autoStart = false}: Options) {
     }
   }, [log]);
 
+  /**
+   * Set a PIN, then restart and confirm it stuck.
+   *
+   * This is the test that a protocol-only port cannot pass. Storing a PIN
+   * encrypts, encrypting dereferences certified_hw, and certified_hw is at the
+   * bottom of the flash array - the exact region Android's mmap_min_addr floor
+   * puts out of reach unless the array is rebased. It is also the real setup
+   * flow for a new soft key, not a diagnostic.
+   */
+  const provision = useCallback(
+    async (pin: string) => {
+      setBusy(true);
+      try {
+        log('info', `provisioning with a ${pin.length}-digit PIN`);
+        await provisionPin({pin, log: step => log('info', `  ${step}`)});
+
+        /*
+         * No restart here. `initialized` is only recomputed from flash in
+         * setup(), so the PIN is not in effect until the firmware boots
+         * again - but the firmware thread only exits through the AIRCR trap,
+         * so an in-process restart would start a second one alongside it.
+         * Restart the app instead; flash.bin is file-backed and survives.
+         */
+        log('info', 'PIN committed - restart the app to load it');
+        console.log('[softkey] PIN COMMITTED - restart the app to verify it persisted');
+        return true;
+      } catch (error) {
+        log('error', `provision: ${String(error)}`);
+        console.log(`[softkey] provision failed: ${String(error)}`);
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [log, connect],
+  );
+
   const send = useCallback(
     async (iface: Iface, msg: number) => {
       try {
@@ -214,7 +252,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
         return;
       }
       // setup() runs on its own thread; let it reach the main loop.
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      await new Promise<void>(resolve => { setTimeout(resolve, 1500); });
       const bytes = await connect();
       console.log(
         bytes
@@ -224,5 +262,5 @@ export function useOkEmu({log, autoStart = false}: Options) {
     })();
   }, [autoStart, start, connect]);
 
-  return {state, storageDir, led, busy, start, stop, restart, connect, send};
+  return {state, storageDir, led, busy, start, stop, restart, connect, provision, send};
 }

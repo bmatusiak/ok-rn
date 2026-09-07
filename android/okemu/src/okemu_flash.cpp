@@ -26,10 +26,13 @@ namespace {
 
 /* The MK20DX256's first sector holds the reset vectors and flash config
  * field; the library refuses to touch it unless explicitly overridden. */
-const unsigned long kFirstSectorEnd = FLASH_SECTOR_SIZE;
+const uintptr_t kFirstSectorEnd = (uintptr_t)OKEMU_FLASH_BASE + FLASH_SECTOR_SIZE;
 
 inline bool in_flash(uintptr_t a) {
-  return a < (uintptr_t)OKEMU_FLASH_SIZE;
+  /* A range, not a ceiling: the array does not start at 0 on every host - see
+   * OKEMU_FLASH_BASE in ok_hal.h. */
+  return a >= (uintptr_t)OKEMU_FLASH_BASE &&
+         a < (uintptr_t)OKEMU_FLASH_BASE + (uintptr_t)OKEMU_FLASH_SIZE;
 }
 
 volatile uint8_t *ftfl_fsec() { return (volatile uint8_t *)0x40020002UL; }  /* kinetis.h:2350 */
@@ -82,7 +85,8 @@ void flashSetFlexRAM(void) {
 }
 
 unsigned long flashFirstEmptySector(void) {
-  for (uintptr_t a = kFirstSectorEnd; a < (uintptr_t)OKEMU_FLASH_SIZE;
+  for (uintptr_t a = kFirstSectorEnd;
+       a < (uintptr_t)OKEMU_FLASH_BASE + (uintptr_t)OKEMU_FLASH_SIZE;
        a += FLASH_SECTOR_SIZE) {
     if (flashCheckSectorErased((unsigned long *)a) == 0) return (unsigned long)a;
   }

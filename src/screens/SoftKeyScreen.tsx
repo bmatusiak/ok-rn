@@ -12,6 +12,9 @@ import type {LogEntry, LogLevel} from '../hooks/useLog';
  * EEPROM backed by files in the app sandbox - so this is a device, not a
  * simulation of one.
  */
+/** Digits are button numbers, so each must be 1-6, and the firmware wants 7-10. */
+const TEST_PIN = '1234561';
+
 export function SoftKeyScreen({
   entries,
   log,
@@ -73,7 +76,20 @@ export function SoftKeyScreen({
           <View style={styles.cell}>
             <Btn title="OKCONNECT" tone="primary" disabled={!running || emu.busy} onPress={emu.connect} />
           </View>
+          <View style={styles.cell}>
+            <Btn
+              title="Set PIN"
+              disabled={!running || emu.busy}
+              onPress={() => emu.provision(TEST_PIN)}
+            />
+          </View>
         </View>
+        <Text style={styles.hint}>
+          Set PIN provisions the device with {TEST_PIN}, restarts the firmware,
+          and reports whether it stuck. Storing a PIN encrypts, and encrypting
+          reaches the bottom of the flash array — so this is the step a
+          protocol-only port cannot pass.
+        </Text>
       </Section>
 
       <Section title="Firmware log" right={<Btn title="Clear" onPress={clear} />} style={styles.logSection}>

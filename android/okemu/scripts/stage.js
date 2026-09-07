@@ -112,9 +112,47 @@ const PATCHES = [
   },
   {
     /*
-     * THE ONLY PATCH HERE TO OnlyKey's OWN SOURCE. Everything else in this
-     * list is the vendored Teensy core, which the emulator already patches on
-     * the grounds that it is not OnlyKey code.
+     * REBASE THE FLASH ARRAY. This is the patch that makes the soft key a
+     * usable device rather than a protocol toy.
+     *
+     * The firmware addresses its own storage through absolute pointers, and
+     * ok_hal.cpp maps the flash file at those addresses so they resolve. On
+     * Linux with vm.mmap_min_addr lowered to 4096 that works as written.
+     *
+     * Android will not allow it. mmap_min_addr is 0x8000 and an unprivileged
+     * app cannot change it, so the mapping falls back to 0x10000 - above
+     * certified_hw at 0x5BB0. The device then boots, answers HID, and faults
+     * the moment it encrypts anything, which includes storing a PIN.
+     * ok_hal.cpp papers over this by setting FSEC to already-provisioned so
+     * the crypto path is never entered, which is why an unmodified port looks
+     * healthy right up until it is asked to do something.
+     *
+     * So move the origin instead of fighting the floor. Only four literals
+     * exist; everything else in okcore.h derives from them, and every offset
+     * and difference between them is unchanged. OKEMU_FLASH_BASE comes from
+     * CMakeLists, so the firmware's view and the HAL's mapping cannot drift.
+     *
+     * Upstream this belongs in the OnlyKey sources under #ifdef OK_EMULATOR -
+     * unlike the uintptr_t fixes, this one genuinely is emulator-specific and
+     * must NOT change the device build.
+     */
+    file: 'libraries/onlykey/okcore.h',
+    edits: [
+      ['#define factorysectoradr 0x5800 //22528 - 23551',
+       '#define factorysectoradr (OKEMU_FLASH_BASE + 0x5800) //22528 - 23551'],
+      ['#define fwstartadr 0x6060',
+       '#define fwstartadr (OKEMU_FLASH_BASE + 0x6060)'],
+      ['#define flashstorestart 0x3A800',
+       '#define flashstorestart (OKEMU_FLASH_BASE + 0x3A800)'],
+      ['#define flashend 0x3FFFF',
+       '#define flashend (OKEMU_FLASH_BASE + 0x3FFFF)'],
+    ],
+  },
+  {
+    /*
+     * OnlyKey source, like the okcore.h rebase above. Most of the rest of
+     * this list is the vendored Teensy core, which the emulator already
+     * patches on the grounds that it is not OnlyKey code.
      *
      * rsa_encrypt() and rsa_decrypt() print the address of a stack local as a
      * stack-depth diagnostic, under #ifdef DEBUG - which this build sets, since

@@ -101,17 +101,30 @@ class NativeOkEmuModule(
    * power cycle.
    */
   override fun restart(promise: Promise) {
-    executor.execute {
-      try {
-        if (OkEmuNative.isLoaded()) {
-          OkEmuNative.nativeStop()
-          OkEmuNative.nativeClearRestart()
-        }
-        promise.resolve(startLocked())
-      } catch (e: Exception) {
-        promise.reject(ERR_START, e.message ?: "restart failed", e)
-      }
-    }
+    /*
+     * Not supported in-process, and failing loudly is the honest answer.
+     *
+     * okemu_firmware_run() never returns: SoftTimerClass::run() is an infinite
+     * scheduler loop, exactly as it is on the device. The only exit is the
+     * AIRCR trap in okemu_restart.cpp, which parks the thread via siglongjmp
+     * when the firmware itself calls CPU_RESTART().
+     *
+     * So stop-then-start does not restart the firmware, it starts a SECOND
+     * one while the first is still looping - and since okemu_hal_shutdown()
+     * now unmaps the flash, that first thread would fault on its next access.
+     * Upstream never meets this because a restart there is a process restart:
+     * pm2 respawns the daemon and the address space goes with it.
+     *
+     * Restarting the app process has the same semantics and is safe today,
+     * because flash.bin and eeprom.bin are file-backed - device state survives
+     * exactly as it does across a power cycle on real hardware.
+     */
+    promise.reject(
+      ERR_RESTART_UNSUPPORTED,
+      "in-process firmware restart is not implemented: the firmware thread " +
+        "only exits through the AIRCR trap. Restart the app process instead - " +
+        "flash.bin and eeprom.bin persist, so device state is preserved.",
+    )
   }
 
   override fun factoryReset(promise: Promise) {
@@ -230,6 +243,7 @@ class NativeOkEmuModule(
     private const val ERR_RESET = "ERR_EMU_RESET"
     private const val ERR_WRITE = "ERR_EMU_WRITE"
     private const val ERR_NOT_RUNNING = "ERR_EMU_NOT_RUNNING"
+    private const val ERR_RESTART_UNSUPPORTED = "ERR_EMU_RESTART_UNSUPPORTED"
   }
 }
 

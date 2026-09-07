@@ -387,6 +387,19 @@ void okemu_hal_shutdown(void) {
   if (g.flash) {
     msync((void *)(OKEMU_FLASH_BASE + g.flash_mapped_off),
           OKEMU_FLASH_SIZE - g.flash_mapped_off, MS_SYNC);
+    /*
+     * Unmap, do not just sync.
+     *
+     * Upstream leaves the mapping in place because a restart there is a
+     * PROCESS restart - pm2 respawns the daemon and the address space goes
+     * with it. Hosted in an app the process outlives the firmware, so a
+     * mapping left behind makes the next okemu_hal_init() fail with EEXIST
+     * from MAP_FIXED_NOREPLACE, reported as "cannot map flash: File exists".
+     */
+    munmap((void *)(OKEMU_FLASH_BASE + g.flash_mapped_off),
+           OKEMU_FLASH_SIZE - g.flash_mapped_off);
+    g.flash = nullptr;
+    g.flash_mapped_off = 0;
   }
   if (g.flash_fd >= 0) { ::close(g.flash_fd); g.flash_fd = -1; }
 }
