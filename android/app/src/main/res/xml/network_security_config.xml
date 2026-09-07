@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Release posture: no cleartext anywhere. The debug variant at
+  src/debug/res/xml/network_security_config.xml overrides this file to allow
+  the Metro bundler and the TCP hardware emulator on the host loopback.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

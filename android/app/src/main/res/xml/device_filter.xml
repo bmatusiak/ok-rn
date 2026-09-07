@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Devices that should bring this app forward when plugged in via OTG.
+  Vendor and product ids are DECIMAL here, unlike everywhere else.
+-->
+<resources>
+    <!-- OnlyKey (OpenMoko-allocated): vid 0x1d50, pid 0x60fc -->
+    <usb-device vendor-id="7504" product-id="24828" />
+    <!-- OnlyKey on Teensy bootloader/HID: vid 0x16c0, pid 0x0486 -->
+    <usb-device vendor-id="5824" product-id="1158" />
+</resources>
