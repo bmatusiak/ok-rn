@@ -121,7 +121,7 @@ class NativeFidoGattModule(
       promise.resolve(true)
       return
     }
-    val activity = getCurrentActivity() as? PermissionAwareActivity
+    val activity = reactApplicationContext.currentActivity as? PermissionAwareActivity
     if (activity == null) {
       promise.reject(ERR_PERMISSION, "No activity available to request permissions")
       return
