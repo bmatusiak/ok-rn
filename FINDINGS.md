@@ -17,8 +17,18 @@ toolchain defects — with one exception, `#2`, which is a live hazard for the
 | 2 | [`uECC.c` implicit declaration](FINDING-uecc-implicit-declaration.md) | **blocking on GCC 14+ / clang 16+, device build included** | vendored | no |
 | 3 | [`Print::printf` fd round-trip](FINDING-print-printf-fd-roundtrip.md) | low — unreachable in the compiled set | Teensy core | no |
 | 4 | [Arduino `Time` is host-hostile](FINDING-arduino-time-host-hostile.md) | blocking off glibc / on case-insensitive filesystems | Arduino | no |
+| 5 | [`okemu_hal_shutdown()` leaks the flash mapping](FINDING-emu-shutdown-leaks-mapping.md) | blocking for in-process restart; error message misdirects | emulator | no |
+| 6 | [a bad flash mapping looks healthy](FINDING-emu-degraded-mode-is-silent.md) | silent loss of all crypto capability | emulator | no |
 
-## Read #2 first
+## Read #6 first, then #2
+
+**#6 is the one that cost real time**, and it cost it by passing. A flash
+mapping that lands too high leaves a device that boots, answers HID, drives its
+LED and returns its real version string — while silently unable to perform any
+crypto. The warning goes to stderr, which Android discards, and `FSEC` is then
+set to already-provisioned so the crash it warns about never happens. This
+project believed it, wrote it up as a success, and had to retract that. The
+write-up says how it presented and what would have caught it.
 
 It is the only one that does not depend on hosting, on 64-bit, or on Android.
 `uECC.c` calls a function eleven lines before defining it, relying on C's
