@@ -1,0 +1,123 @@
+/*
+ * :okemu - the OnlyKey firmware as an Android library.
+ *
+ * A separate Gradle module rather than part of :app because the React Native
+ * gradle plugin already owns :app's externalNativeBuild (it generates the
+ * CMakeLists that produces libappmodules.so for the New Architecture), and a
+ * module can only have one.
+ *
+ * Produces libokemu.so, which :app packages and loads via
+ * com.okrn.okemu.OkEmuNative.
+ */
+apply plugin: "com.android.library"
+// gradle.properties sets android.builtInKotlin=false, so the Kotlin plugin
+// has to be applied explicitly or OkEmuNative.kt is silently not compiled.
+apply plugin: "org.jetbrains.kotlin.android"
+
+android {
+    namespace "com.okrn.okemu"
+    compileSdk rootProject.ext.compileSdkVersion
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+
+        externalNativeBuild {
+            cmake {
+                /*
+                 * The firmware is C++ written against gnu++11 and C against
+                 * gnu11; CMakeLists sets both per-language. Nothing is passed
+                 * here so there is one place to look.
+                 */
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+
+        /*
+         * armeabi-v7a is not an oversight.
+         *
+         * The Galaxy A13 (SM-S136DL) and other Samsung handsets ship a
+         * 32-bit-only Android build - `getprop ro.product.cpu.abilist64` comes
+         * back empty - so an arm64-only APK fails to install on them with
+         * INSTALL_FAILED_NO_MATCHING_ABIS. Both are built.
+         *
+         * x86_64 is included so the firmware can be exercised on an emulator,
+         * where USB OTG is unavailable anyway.
+         */
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86_64"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    packagingOptions {
+        // Keep the debug symbols out of the APK; they are ~10x the code size.
+        jniLibs {
+            keepDebugSymbols += []
+        }
+    }
+}
+
+/*
+ * Stage the firmware sources before CMake is configured.
+ *
+ * scripts/stage.js copies OnlyKey-Firmware, libraries/ and the Teensy core out
+ * of the sibling checkouts and patches the copies; gen-sources.js then lists
+ * what to compile. CMakeLists refuses to configure without sources.cmake, so
+ * this has to happen at Gradle *configuration* time, not execution time -
+ * externalNativeBuild resolves its CMake project while the build is being
+ * configured.
+ *
+ * Cheap enough to run unconditionally (a few hundred file copies), and running
+ * it every time is what keeps a stale .stage from silently outliving an edit
+ * to the firmware checkout.
+ */
+def okemuStage = {
+    /*
+     * Plain "node": CreateProcess already searches PATH and appends .exe on
+     * Windows, so naming node.cmd finds nothing (that shim only exists for
+     * npm-installed packages, not for node itself).
+     */
+    ["scripts/stage.js", "scripts/gen-sources.js"].each { script ->
+        def proc
+        try {
+            proc = new ProcessBuilder(["node", script])
+                    .directory(projectDir)
+                    .redirectErrorStream(true)
+                    .start()
+        } catch (IOException e) {
+            throw new GradleException(
+                "okemu: node is not on PATH. The firmware sources are staged by " +
+                "a Node script before CMake runs; install Node 22+ or run " +
+                "`node scripts/stage.js && node scripts/gen-sources.js` in " +
+                "android/okemu by hand.", e)
+        }
+        def output = proc.inputStream.text
+        if (proc.waitFor() != 0) {
+            throw new GradleException("okemu: ${script} failed\n${output}")
+        }
+        output.readLines().findAll { !it.trim().isEmpty() }.each {
+            logger.lifecycle("okemu: ${it}")
+        }
+    }
+}
+okemuStage()
+
+// Explicit re-stage, for when a sibling checkout changes under a warm build dir.
+tasks.register("stageOkEmu") {
+    description = "Re-copy and re-patch the firmware sources from the sibling checkouts."
+    doLast { okemuStage() }
+}

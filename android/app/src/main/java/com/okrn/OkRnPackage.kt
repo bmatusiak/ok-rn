@@ -6,7 +6,9 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.model.ReactModuleInfo
 import com.facebook.react.module.model.ReactModuleInfoProvider
 import com.okrn.specs.NativeFidoGattSpec
+import com.okrn.specs.NativeOkEmuSpec
 import com.okrn.specs.NativeUsbHidSpec
+import com.okrn.emu.NativeOkEmuModule
 import com.okrn.fido.NativeFidoGattModule
 import com.okrn.usb.NativeUsbHidModule
 
@@ -23,6 +25,7 @@ class OkRnPackage : BaseReactPackage() {
     when (name) {
       NativeUsbHidSpec.NAME -> NativeUsbHidModule(reactContext)
       NativeFidoGattSpec.NAME -> NativeFidoGattModule(reactContext)
+      NativeOkEmuSpec.NAME -> NativeOkEmuModule(reactContext)
       else -> null
     }
 
@@ -30,6 +33,7 @@ class OkRnPackage : BaseReactPackage() {
     mapOf(
       NativeUsbHidSpec.NAME to moduleInfo(NativeUsbHidSpec.NAME),
       NativeFidoGattSpec.NAME to moduleInfo(NativeFidoGattSpec.NAME),
+      NativeOkEmuSpec.NAME to moduleInfo(NativeOkEmuSpec.NAME),
     )
   }
 

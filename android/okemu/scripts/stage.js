@@ -112,6 +112,119 @@ const PATCHES = [
   },
   {
     /*
+     * THE ONLY PATCH HERE TO OnlyKey's OWN SOURCE. Everything else in this
+     * list is the vendored Teensy core, which the emulator already patches on
+     * the grounds that it is not OnlyKey code.
+     *
+     * rsa_encrypt() and rsa_decrypt() print the address of a stack local as a
+     * stack-depth diagnostic, under #ifdef DEBUG - which this build sets, since
+     * DEBUG is what gives the device its fourth (SEREMU) interface. uint32_t
+     * truncates that address on any 64-bit target.
+     *
+     * Upstream this belongs in the OnlyKey sources as an #ifdef OK_EMULATOR,
+     * or better, as an unconditional correction: uintptr_t is right on the
+     * MK20DX256 too, where it is a 32-bit type and nothing changes. It is here
+     * only because OnlyKey-Firmware and libraries/ are outside this project's
+     * write scope. If that changes, move it and delete this entry.
+     *
+     * Both call sites are the same line, so one edit covers them.
+     */
+    file: 'libraries/onlykey/okcrypto.cpp',
+    edits: [
+      ['Serial.println ((uint32_t)&ret);', 'Serial.println ((uintptr_t)&ret);'],
+    ],
+  },
+  {
+    /*
+     * Same class as okcrypto.cpp above, and the same note applies: this belongs
+     * upstream, unconditionally, because uintptr_t is correct on the MK20DX256
+     * too.
+     *
+     * ctap_parse.cpp measures a CBOR span by casting both ends to uint32_t and
+     * subtracting. The subtraction is fine; narrowing the pointers first is
+     * not, and on a 64-bit target it can silently produce a bogus length for a
+     * buffer that is then bounds-checked against it.
+     */
+    file: 'libraries/fido2/ctap_parse.cpp',
+    edits: [
+      ['uint32_t length = (uint32_t)end_byte - (uint32_t)start_byte;',
+       'uint32_t length = (uint32_t)((uintptr_t)end_byte - (uintptr_t)start_byte);'],
+    ],
+  },
+  {
+    /*
+     * Arduino's ADC library, same bit-band macro shape as the Teensy core's
+     * GPIO ones - a peripheral address narrowed to uint32_t. Not OnlyKey code.
+     */
+    file: 'libraries/ADC/ADC_Module.h',
+    edits: [
+      ['#define ADC_BITBAND_ADDR(reg, bit) (((uint32_t)(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)',
+       '#define ADC_BITBAND_ADDR(reg, bit) (((uintptr_t)(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)'],
+    ],
+  },
+  {
+    /*
+     * The Teensy core assumes a 32-bit pointer in two places. Both are fatal
+     * on arm64 and x86_64, where clang rejects a narrowing pointer cast
+     * outright; GCC demotes it to a warning, and the Node emulator additionally
+     * builds with -w, so neither shows up there.
+     *
+     * These three macros account for 190 of the 194 diagnostics on their own -
+     * they expand once per GPIO register. Taking the address of a peripheral
+     * register through uintptr_t rather than uint32_t is correct on every
+     * architecture; the arithmetic is unchanged, because the peripheral window
+     * really is mapped at 0x40000000 whatever the pointer width.
+     */
+    file: 'core/avr_emulation.h',
+    edits: [
+      ['#define GPIO_BITBAND_ADDR(reg, bit) (((uint32_t)&(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)',
+       '#define GPIO_BITBAND_ADDR(reg, bit) (((uintptr_t)&(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)'],
+      ['#define GPIO_SETBIT_ATOMIC(reg, bit) (*(uint32_t *)(((uint32_t)&(reg) - 0xF8000000) | 0x480FF000) = 1 << (bit))',
+       '#define GPIO_SETBIT_ATOMIC(reg, bit) (*(uint32_t *)(((uintptr_t)&(reg) - 0xF8000000) | 0x480FF000) = 1 << (bit))'],
+      ['#define GPIO_CLRBIT_ATOMIC(reg, bit) (*(uint32_t *)(((uint32_t)&(reg) - 0xF8000000) | 0x440FF000) = ~(1 << (bit)))',
+       '#define GPIO_CLRBIT_ATOMIC(reg, bit) (*(uint32_t *)(((uintptr_t)&(reg) - 0xF8000000) | 0x440FF000) = ~(1 << (bit)))'],
+    ],
+  },
+  {
+    /*
+     * Print::printf() passes `this` to vdprintf() as a file descriptor, and
+     * newlib's _write() - defined a few lines above it in this same file -
+     * casts that integer back to a Print*. A pointer round-tripped through an
+     * int, which truncates on any 64-bit target.
+     *
+     * Widening the cast would not be enough: bionic's vdprintf takes a real
+     * descriptor and never calls the core's _write(), so the round trip cannot
+     * work here at all. Formatting into a buffer and calling write() directly
+     * is what the function was always trying to do.
+     *
+     * Nothing in the compiled set calls Print::printf - only examples/, which
+     * gen-sources excludes - so this is about not leaving a latent trap.
+     */
+    file: 'core/Print.cpp',
+    edits: [
+      ['//#include <stdio.h>', '#include <stdio.h>   /* vsnprintf, for printf() below */'],
+      ['\treturn vdprintf((int)this, format, ap);',
+       '\treturn okemu_vprint(this, format, ap);'],
+      ['\treturn vdprintf((int)this, (const char *)format, ap);',
+       '\treturn okemu_vprint(this, (const char *)format, ap);'],
+      ['int Print::printf(const char *format, ...)',
+       'static int okemu_vprint(Print *out, const char *format, va_list ap)\n' +
+       '{\n' +
+       '\tchar buf[256];\n' +
+       '\tint n = vsnprintf(buf, sizeof buf, format, ap);\n' +
+       '\tva_end(ap);\n' +
+       '\tif (n > 0) {\n' +
+       '\t\tsize_t len = (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1;\n' +
+       '\t\tout->write((const uint8_t *)buf, len);\n' +
+       '\t}\n' +
+       '\treturn n;\n' +
+       '}\n' +
+       '\n' +
+       'int Print::printf(const char *format, ...)'],
+    ],
+  },
+  {
+    /*
      * uECC.c calls uECC_point_mult() ~11 lines before defining it, and the
      * only prototype lives in uECC_vli.h behind #if uECC_ENABLE_VLI_API, which
      * this build does not set. That leaves an implicit int() declaration that
@@ -345,8 +458,15 @@ function main() {
   copyDir(LIB_SRC, STAGE_LIB);
   copyDir(path.join(FW, 'OnlyKey'), STAGE_SKETCH);
 
-  // 5a. Arduino's Time library, staged rather than referenced in place
-  copyDir(path.join(TLIB, 'Time'), path.join(STAGE_LIB, 'Time'));
+  /*
+   * 5a. The stock Arduino libraries the firmware uses, staged rather than
+   * referenced in place. Staging all three means every include path points
+   * inside .stage, so nothing outside this project is ever compiled against
+   * directly - and any of them can be patched, which ADC needs.
+   */
+  for (const lib of ['Time', 'ADC', 'EEPROM']) {
+    copyDir(path.join(TLIB, lib), path.join(STAGE_LIB, lib));
+  }
   const renamed = defuseTimeHeader();
 
   // 6. documented source-level fixups

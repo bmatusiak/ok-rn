@@ -73,10 +73,11 @@ target_include_directories(okemu_firmware PUBLIC
   ${OKEMU_DIR}/.stage/sketch
   ${OKEMU_DIR}/.stage/core
 
-  ${TLIB}/EEPROM
-  ${TLIB}/ADC
-  # Time is staged rather than referenced in place, with its one-line Time.h
-  # shim removed - see defuseTimeHeader() in scripts/stage.js.
+  # The stock Arduino libraries are staged too, so every include path points
+  # inside .stage and any of them can be patched. Time additionally has its
+  # one-line Time.h shim removed - see defuseTimeHeader() in scripts/stage.js.
+  ${OKEMU_DIR}/.stage/libraries/EEPROM
+  ${OKEMU_DIR}/.stage/libraries/ADC
   ${OKEMU_DIR}/.stage/libraries/Time
 )
 
