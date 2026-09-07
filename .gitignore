@@ -53,3 +53,9 @@ Thumbs.db
 # Local hardware-emulator captures & scratch logs
 tools/*.log
 *.pcap
+
+# ---- okemu (firmware-on-Android) ----
+# Regenerated from the sibling checkouts by scripts/stage.js on every build.
+android/okemu/.stage/
+android/okemu/.cxx-probe/
+android/okemu/sources.cmake
