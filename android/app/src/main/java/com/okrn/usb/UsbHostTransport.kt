@@ -57,10 +57,7 @@ class UsbHostTransport(
 
     // Prefer a real HID interface (class 3); fall back to interface 0 for
     // vendor-specific devices that expose HID-shaped endpoints without the class.
-    val iface = (0 until device.interfaceCount)
-      .map { device.getInterface(it) }
-      .firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_HID }
-      ?: device.getInterface(0)
+    val iface = selectInterface(device)
 
     val conn = usbManager.openDevice(device)
       ?: throw IllegalStateException("openDevice returned null for ${device.deviceName}")
@@ -88,10 +85,53 @@ class UsbHostTransport(
 
     onStatus?.invoke(
       "connected",
-      "vid=0x%04x pid=0x%04x packet=%d".format(device.vendorId, device.productId, packetSize),
+      "vid=0x%04x pid=0x%04x iface=%d packet=%d".format(
+        device.vendorId, device.productId, iface.id, packetSize,
+      ),
     )
     startReadLoop()
   }
+
+  /**
+   * Picks the interface that actually carries the application protocol.
+   *
+   * A device like the OnlyKey exposes several HID interfaces at once - a boot
+   * keyboard, and a raw/vendor HID interface. Taking the first one with class
+   * HID lands on the keyboard, whose endpoints are 8 bytes wide, and CTAPHID
+   * traffic then silently never works. Score the candidates instead:
+   *
+   *   - a 64-byte (or wider) IN endpoint is the strongest signal, since CTAPHID
+   *     and FIDO raw HID are defined around 64-byte reports
+   *   - a non-boot HID interface (subclass 0, protocol 0) beats a boot keyboard
+   *     or boot mouse, which the OS also wants to claim
+   *   - having both an IN and an OUT endpoint beats input-only
+   */
+  private fun selectInterface(device: UsbDevice): UsbInterface {
+    val interfaces = (0 until device.interfaceCount).map { device.getInterface(it) }
+
+    return interfaces.maxByOrNull { iface ->
+      var score = 0
+      if (iface.interfaceClass == UsbConstants.USB_CLASS_HID) score += 100
+
+      // Boot-protocol interfaces (subclass 1) are the keyboard/mouse ones.
+      if (iface.interfaceSubclass == 0 && iface.interfaceProtocol == 0) score += 50
+
+      val endpoints = (0 until iface.endpointCount).map { iface.getEndpoint(it) }
+      val maxIn = endpoints
+        .filter { it.direction == UsbConstants.USB_DIR_IN }
+        .maxOfOrNull { it.maxPacketSize } ?: 0
+      val hasOut = endpoints.any { it.direction == UsbConstants.USB_DIR_OUT }
+
+      if (maxIn >= PREFERRED_REPORT_SIZE) score += 200
+      if (hasOut) score += 25
+      score += maxIn
+
+      score
+    } ?: device.getInterface(0)
+  }
+
+  /** Report width CTAPHID and FIDO raw HID are defined around. */
+  private val PREFERRED_REPORT_SIZE = 64
 
   private fun startReadLoop() {
     val endpoint = inEndpoint ?: return

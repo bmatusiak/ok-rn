@@ -129,6 +129,24 @@ The BLE path uses CTAP's own 3-byte BLE fragmentation
 Report width is read from the endpoint's `maxPacketSize` rather than assumed to
 be 64.
 
+## Verified on hardware
+
+Run on a Galaxy A13 (SM-S136DL, Android 13, **armeabi-v7a**) with a real
+OnlyKey attached over USB OTG:
+
+- device enumeration finds it as `ONLYKEY - vid 0x1d50 pid 0x60fc`
+- the Android USB permission dialog fires and the grant is delivered back
+  through `UsbPermissionBroker`
+- the transport claims **interface 1** and negotiates a **64-byte** report size
+- `CTAPHID_INIT` writes succeed
+
+**No response comes back to `CTAPHID_INIT`.** Interface 1 is the OnlyKey's own
+raw-HID protocol, not CTAPHID - the FIDO/U2F interface is a different one.
+Talking to it needs the OnlyKey protocol definitions, not more transport work.
+
+Note the ABI: this phone is 32-bit ARM. An APK built without `armeabi-v7a`
+fails to install with `INSTALL_FAILED_NO_MATCHING_ABIS`.
+
 ## Known gaps
 
 - **CTAP2 command handlers are not implemented.** Reassembled commands are

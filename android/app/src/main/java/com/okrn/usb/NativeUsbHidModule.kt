@@ -1,6 +1,7 @@
 package com.okrn.usb
 
 import android.content.Context
+import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbManager
 import android.os.Build
 import com.okrn.specs.NativeUsbHidSpec
@@ -124,6 +125,20 @@ class NativeUsbHidModule(
             map.putString("manufacturerName", device.manufacturerName ?: "")
             map.putInt("interfaceCount", device.interfaceCount)
             map.putBoolean("hasPermission", usbManager.hasPermission(device))
+            // Widest IN endpoint across all interfaces. A multi-interface HID
+            // device exposes an 8-byte boot keyboard alongside the 64-byte raw
+            // interface, and only the latter carries CTAPHID.
+            var widest = 0
+            for (i in 0 until device.interfaceCount) {
+              val iface = device.getInterface(i)
+              for (e in 0 until iface.endpointCount) {
+                val ep = iface.getEndpoint(e)
+                if (ep.direction == UsbConstants.USB_DIR_IN && ep.maxPacketSize > widest) {
+                  widest = ep.maxPacketSize
+                }
+              }
+            }
+            map.putInt("maxReportSize", widest)
             devices.pushMap(map)
           }
         }

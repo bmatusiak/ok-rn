@@ -18,6 +18,8 @@ export type UsbDeviceInfo = {
   manufacturerName: string;
   interfaceCount: number;
   hasPermission: boolean;
+  /** Widest IN endpoint across all interfaces; 64 means a raw-HID interface exists. */
+  maxReportSize: number;
 };
 
 export type StatusEvent = {

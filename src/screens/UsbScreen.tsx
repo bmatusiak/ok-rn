@@ -59,6 +59,7 @@ export function UsbScreen({
           <Text key={device.deviceName} style={styles.device}>
             {device.productName || device.deviceName} — vid 0x
             {device.vendorId.toString(16)} pid 0x{device.productId.toString(16)}
+            {' '}· {device.interfaceCount} iface · max {device.maxReportSize}B
             {device.hasPermission ? '' : ' (no permission)'}
           </Text>
         ))}
