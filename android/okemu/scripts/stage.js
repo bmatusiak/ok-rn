@@ -226,39 +226,29 @@ const PATCHES = [
   {
     /*
      * Print::printf() passes `this` to vdprintf() as a file descriptor, and
-     * newlib's _write() - defined a few lines above it in this same file -
-     * casts that integer back to a Print*. A pointer round-tripped through an
-     * int, which truncates on any 64-bit target.
+     * newlib's _write() - a few lines above in this same file - casts that
+     * integer back to a Print*. A pointer round-tripped through an int, which
+     * is correct on the MK20DX256 where both are 32 bits, and a narrowing cast
+     * that clang REJECTS on any 64-bit target.
      *
-     * Widening the cast would not be enough: bionic's vdprintf takes a real
-     * descriptor and never calls the core's _write(), so the round trip cannot
-     * work here at all. Formatting into a buffer and calling write() directly
-     * is what the function was always trying to do.
+     * So it has to be addressed to compile. It is addressed as narrowly as
+     * possible: an explicit two-step cast, which is what the original already
+     * means. Nothing here changes what the function does.
      *
-     * Nothing in the compiled set calls Print::printf - only examples/, which
-     * gen-sources excludes - so this is about not leaving a latent trap.
+     * An earlier version of this patch replaced the body with vsnprintf+write,
+     * on the grounds that bionic's vdprintf takes a real descriptor and the
+     * round trip cannot work hosted. That is true and it does not matter -
+     * NOTHING in the compiled set calls Print::printf (every call site in
+     * libraries/ is commented out, and examples/ is excluded by gen-sources).
+     * Rewriting it was fixing the firmware rather than building it, which is
+     * not what staging is for. Reverted to the minimum.
      */
     file: 'core/Print.cpp',
     edits: [
-      ['//#include <stdio.h>', '#include <stdio.h>   /* vsnprintf, for printf() below */'],
-      ['\treturn vdprintf((int)this, format, ap);',
-       '\treturn okemu_vprint(this, format, ap);'],
-      ['\treturn vdprintf((int)this, (const char *)format, ap);',
-       '\treturn okemu_vprint(this, (const char *)format, ap);'],
-      ['int Print::printf(const char *format, ...)',
-       'static int okemu_vprint(Print *out, const char *format, va_list ap)\n' +
-       '{\n' +
-       '\tchar buf[256];\n' +
-       '\tint n = vsnprintf(buf, sizeof buf, format, ap);\n' +
-       '\tva_end(ap);\n' +
-       '\tif (n > 0) {\n' +
-       '\t\tsize_t len = (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1;\n' +
-       '\t\tout->write((const uint8_t *)buf, len);\n' +
-       '\t}\n' +
-       '\treturn n;\n' +
-       '}\n' +
-       '\n' +
-       'int Print::printf(const char *format, ...)'],
+      ['	return vdprintf((int)this, format, ap);',
+       '	return vdprintf((int)(intptr_t)this, format, ap);'],
+      ['	return vdprintf((int)this, (const char *)format, ap);',
+       '	return vdprintf((int)(intptr_t)this, (const char *)format, ap);'],
     ],
   },
   {
