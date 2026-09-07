@@ -30,7 +30,8 @@ set to already-provisioned so the crash it warns about never happens. This
 project believed it, wrote it up as a success, and had to retract that. The
 write-up says how it presented and what would have caught it.
 
-It is the only one that does not depend on hosting, on 64-bit, or on Android.
+**#2 is the one that reaches furthest.** It is the only finding here that does
+not depend on hosting, on 64-bit, or on Android.
 `uECC.c` calls a function eleven lines before defining it, relying on C's
 implicit-declaration rule — which GCC 14 and clang 16 both turned into an
 error. Nothing in the source has to change for that build to start failing;
@@ -79,13 +80,18 @@ All of them are in `android/okemu/scripts/stage.js`, applied to *staged copies*.
 `OnlyKey-Firmware` and `libraries/` are read and never written, matching
 `node-onlykey-emulator`'s rule.
 
-Two entries patch OnlyKey's own source — `okcrypto.cpp` and `ctap_parse.cpp`,
-both from finding #1. The emulator's convention is that anything the firmware
-needs in order to build hosted belongs upstream under `#ifdef OK_EMULATOR`,
-never as a textual patch, precisely because patches stop applying silently when
-upstream whitespace moves. That rule cannot be followed from here. Both sites
-are marked in `stage.js` as belonging upstream, and both want an *unconditional*
-correction rather than an `#ifdef`: `uintptr_t` is a 32-bit type on the
-MK20DX256, so the device build would be byte-identical.
+Three entries patch OnlyKey's own source. The emulator's convention is that
+anything the firmware needs in order to build hosted belongs upstream under
+`#ifdef OK_EMULATOR`, never as a textual patch, precisely because patches stop
+applying silently when upstream whitespace moves. That rule cannot be followed
+from here, so each site says in `stage.js` what it should have been:
+
+- `okcrypto.cpp` and `ctap_parse.cpp`, both from finding #1, want an
+  **unconditional** correction rather than an `#ifdef` — `uintptr_t` is a
+  32-bit type on the MK20DX256, so the device build would be byte-identical.
+- `okcore.h`'s flash rebase is the opposite case, and the only genuinely
+  emulator-specific patch here: it moves the origin of the flash array so the
+  whole thing is mappable on Android, and it must **not** change the device
+  build. That one really does want `#ifdef OK_EMULATOR`.
 
 If a patch stops matching, `stage.js` fails the build rather than skipping it.
