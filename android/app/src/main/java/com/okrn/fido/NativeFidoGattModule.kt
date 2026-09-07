@@ -21,7 +21,7 @@ import android.os.ParcelUuid
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import androidx.core.content.ContextCompat
-import com.facebook.fbreact.specs.NativeFidoGattSpec
+import com.okrn.specs.NativeFidoGattSpec
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -121,7 +121,7 @@ class NativeFidoGattModule(
       promise.resolve(true)
       return
     }
-    val activity = currentActivity as? PermissionAwareActivity
+    val activity = getCurrentActivity() as? PermissionAwareActivity
     if (activity == null) {
       promise.reject(ERR_PERMISSION, "No activity available to request permissions")
       return

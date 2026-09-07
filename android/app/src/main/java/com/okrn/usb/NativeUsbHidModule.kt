@@ -3,7 +3,7 @@ package com.okrn.usb
 import android.content.Context
 import android.hardware.usb.UsbManager
 import android.os.Build
-import com.facebook.fbreact.specs.NativeUsbHidSpec
+import com.okrn.specs.NativeUsbHidSpec
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext

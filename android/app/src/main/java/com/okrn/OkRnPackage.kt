@@ -5,8 +5,8 @@ import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.model.ReactModuleInfo
 import com.facebook.react.module.model.ReactModuleInfoProvider
-import com.facebook.fbreact.specs.NativeFidoGattSpec
-import com.facebook.fbreact.specs.NativeUsbHidSpec
+import com.okrn.specs.NativeFidoGattSpec
+import com.okrn.specs.NativeUsbHidSpec
 import com.okrn.fido.NativeFidoGattModule
 import com.okrn.usb.NativeUsbHidModule
 
