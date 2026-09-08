@@ -18,6 +18,7 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import android.os.ParcelUuid
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -454,6 +455,14 @@ class NativeFidoGattModule(
       offset: Int,
       characteristic: BluetoothGattCharacteristic,
     ) {
+      /*
+       * Logged because a host that rejects a value RETRIES rather than
+       * complaining, and a silent retry loop is indistinguishable from a host
+       * that has lost interest. Knowing which characteristic it keeps asking
+       * for is the whole diagnosis.
+       */
+      Log.d(TAG, "read request: ${characteristic.uuid}")
+
       val value = when (characteristic.uuid) {
         // Max Control Point write, big-endian, capped to the negotiated MTU.
         FIDO_CONTROL_POINT_LENGTH_UUID -> {
@@ -572,7 +581,20 @@ class NativeFidoGattModule(
     }
   }
 
-  private fun maxFragmentSize(): Int = (mtu - ATT_HEADER_BYTES).coerceAtLeast(MIN_FRAGMENT)
+  /**
+   * The most this authenticator will accept in one Control Point write.
+   *
+   * CLAMPED TO 512, WHICH IS THE SPEC'S CEILING. CTAP 2.1 11.2.5.2 says
+   * fidoControlPointLength "shall be between 20 and 512" - and an MTU of 517,
+   * which is what a modern host negotiates, gives 514 without the clamp.
+   *
+   * Windows reads this characteristic, finds the value out of range, and
+   * REREADS IT rather than failing: a read every 600ms, forever, with no write
+   * ever following. From the phone it looks like a host that connected and
+   * then did nothing; from the browser it looks like the key never responded.
+   */
+  private fun maxFragmentSize(): Int =
+    (mtu - ATT_HEADER_BYTES).coerceIn(MIN_FRAGMENT, MAX_FRAGMENT)
 
   // ------------------------------------------------------------------ respond
 
@@ -866,7 +888,11 @@ class NativeFidoGattModule(
     private const val DEFAULT_MTU = 23
     private const val ATT_HEADER_BYTES = 3
     private const val MIN_FRAGMENT = 20
+
+    /** CTAP 2.1 11.2.5.2: fidoControlPointLength shall be 20..512. */
+    private const val MAX_FRAGMENT = 512
     private const val USER_AUTH_VALIDITY_SECONDS = 30
+    private const val TAG = "FidoGatt"
     private const val SERVICE_ADD_TIMEOUT_MS = 2000
     private const val SERVICE_ADD_POLL_MS = 10
     private const val PERMISSION_REQUEST_CODE = 0xF1D0
