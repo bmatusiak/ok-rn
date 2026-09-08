@@ -85,6 +85,37 @@ module.exports = function presence({describe, it}) {
        * ceremony: too early and touch_sense_loop() has already returned, too
        * late and the window has closed.
        */
+      /*
+       * WHAT THIS ASSERTS DEPENDS ON WHETHER THE KEY HAS A CLIENT PIN.
+       *
+       * CTAP2 requires pinUvAuthParam on makeCredential once one is set, and
+       * refuses without it - so a bare ceremony is CORRECT to fail on a
+       * PIN-protected key and correct to succeed on a bare one. A test that
+       * only passes in one of those states is testing the bench, not the code.
+       *
+       * A client PIN appears the moment a real host registers a credential:
+       * Windows sets one during its first WebAuthn registration.
+       */
+      const info = await ctap.getInfo({timeoutMs: 10000});
+      const hasPin = info.get(4)?.get('clientPin') === true;
+      log(`clientPin: ${hasPin}`);
+
+      if (hasPin) {
+        let refused = null;
+        try {
+          await ctap.makeCredential(makeCredentialParams(), {timeoutMs: 10000});
+        } catch (e) {
+          refused = e;
+        }
+        log(`refused with: ${refused && refused.message}`);
+        assert.ok(refused, 'a PIN-protected key made a credential without one');
+        assert.ok(
+          /PIN_AUTH_INVALID|PIN_REQUIRED/i.test(String(refused.message)),
+          `expected a PIN error, got: ${refused.message}`,
+        );
+        return;
+      }
+
       const prompts = [];
       let pressed = 0;
 

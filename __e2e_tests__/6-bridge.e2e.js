@@ -128,6 +128,28 @@ module.exports = function bridgeFlow({describe, it}) {
        */
       const {bridge} = await bridged(log);
 
+      /*
+       * Same split as the presence suite: with a client PIN set, CTAP2 refuses
+       * a makeCredential that carries no pinUvAuthParam, and the bridge's job
+       * is to carry that refusal back rather than to hide it.
+       */
+      const infoResp = await bridge.handle(message(CTAP2_CMD.GET_INFO));
+      const hasPin = cbor.decode(infoResp.subarray(1)).get(4)?.get('clientPin') === true;
+      log(`clientPin: ${hasPin}`);
+
+      if (hasPin) {
+        const refused = await bridge.handle(
+          message(CTAP2_CMD.MAKE_CREDENTIAL, makeCredentialParams()),
+        );
+        log(`status 0x${refused[0].toString(16)} (0x36 = PIN_AUTH_INVALID)`);
+        assert.equal(refused.length, 1, 'a refusal carries no body');
+        assert.equal(
+          refused[0], 0x36,
+          'expected CTAP2_ERR_PIN_AUTH_INVALID from a PIN-protected key',
+        );
+        return;
+      }
+
       const relayed = [];
       const response = await bridge.handle(message(CTAP2_CMD.MAKE_CREDENTIAL, makeCredentialParams()), {
         onKeepAlive: async status => {
