@@ -91,6 +91,16 @@ class NativeFidoGattModule(
   private var pendingRespond: Promise? = null
   private val notifyLock = Any()
 
+  /*
+   * What the central last wrote to the Status CCCD. Read back by
+   * onDescriptorReadRequest - a host that subscribes and then reads is
+   * entitled to see what it wrote, and some check.
+   */
+  @Volatile private var notificationsEnabled = false
+
+  /** Latched by onServiceAdded; advertising waits for it. */
+  @Volatile private var serviceAdded = false
+
   @Volatile private var state: String = STATE_IDLE
   @Volatile private var mtu: Int = DEFAULT_MTU
   @Volatile private var config = AuthenticatorConfig()
@@ -199,11 +209,38 @@ class NativeFidoGattModule(
       val server = manager.openGattServer(reactContext, gattCallback)
         ?: throw IllegalStateException("openGattServer returned null")
       gattServer = server
+
+      /*
+       * addService() is ASYNCHRONOUS - it completes at onServiceAdded() - and
+       * advertising below can put us on the air before it lands. A central
+       * that connects in that window enumerates a GATT table holding only the
+       * mandatory 0x1800/0x1801, and hosts CACHE what they discover: Windows
+       * materialises it as PnP device nodes and keeps serving that table on
+       * every later connection, so one badly-timed connect poisons the pairing
+       * until the device record is removed by hand.
+       *
+       * Measured at 29ms between the two on this handset - small, and not
+       * zero. serviceAdded is latched by the callback below.
+       */
+      serviceAdded = false
       server.addService(buildFidoService())
 
       val leAdvertiser = adapter.bluetoothLeAdvertiser
         ?: throw IllegalStateException("This device cannot act as a BLE peripheral")
       advertiser = leAdvertiser
+
+      // Registration takes a handful of milliseconds; the ceiling is generous
+      // because being late here is invisible and being early poisons a cache.
+      var waited = 0
+      while (!serviceAdded && waited < SERVICE_ADD_TIMEOUT_MS) {
+        Thread.sleep(SERVICE_ADD_POLL_MS.toLong())
+        waited += SERVICE_ADD_POLL_MS
+      }
+      if (!serviceAdded) {
+        throw IllegalStateException(
+          "the FIDO service did not register within ${SERVICE_ADD_TIMEOUT_MS}ms",
+        )
+      }
 
       if (!beginAdvertising()) {
         throw IllegalStateException("startAdvertising was refused by the adapter")
@@ -332,11 +369,18 @@ class NativeFidoGattModule(
     )
     service.addCharacteristic(cpLength)
 
-    // Service Revision Bitfield: 0x20 advertises FIDO2 / CTAP2 support.
+    /*
+     * Service Revision Bitfield: 0x20 advertises FIDO2 / CTAP2 support.
+     *
+     * Read AND write. CTAP 2.1 11.2.5.4 has the client write back the one
+     * version bit it selected, so a read-only characteristic answers that with
+     * WRITE_NOT_PERMITTED - which a strict host treats as a broken service
+     * rather than as a version it can still use.
+     */
     val revision = BluetoothGattCharacteristic(
       FIDO_SERVICE_REVISION_UUID,
-      BluetoothGattCharacteristic.PROPERTY_READ,
-      BluetoothGattCharacteristic.PERMISSION_READ,
+      BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
+      BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE,
     )
     service.addCharacteristic(revision)
 
@@ -352,12 +396,20 @@ class NativeFidoGattModule(
   @SuppressLint("MissingPermission")
   private val gattCallback = object : BluetoothGattServerCallback() {
 
+    override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+      serviceAdded = status == BluetoothGatt.GATT_SUCCESS
+      if (!serviceAdded) {
+        setState(STATE_ERROR, "the FIDO service was rejected with status $status")
+      }
+    }
+
     override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
       if (newState == BluetoothGatt.STATE_CONNECTED) {
         connectedDevice = device
         setState(STATE_CONNECTED, "central connected")
       } else {
         connectedDevice = null
+        notificationsEnabled = false
         assembler.reset()
         clearNotifications("The central disconnected")
         /*
@@ -415,6 +467,40 @@ class NativeFidoGattModule(
       gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
     }
 
+    /**
+     * Answer a descriptor read. Without this, discovery hangs forever.
+     *
+     * BluetoothGattServerCallback's default implementation of this method does
+     * NOTHING - it does not respond - and ATT permits exactly one outstanding
+     * request per connection. So a central that reads the Status CCCD while
+     * enumerating the service (Windows does, as the third request after the
+     * MTU exchange) waits for a response that is never sent, and every request
+     * behind it queues behind that one.
+     *
+     * From the outside this is indistinguishable from a device that connected
+     * and died: the link is up, the MTU is negotiated, and service discovery
+     * simply never returns. Measured against Windows - MTU 517 agreed, two
+     * characteristic reads answered, then req_type=2 and thirty seconds of
+     * silence to the disconnect.
+     */
+    override fun onDescriptorReadRequest(
+      device: BluetoothDevice,
+      requestId: Int,
+      offset: Int,
+      descriptor: BluetoothGattDescriptor,
+    ) {
+      val value = if (descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
+        if (notificationsEnabled) {
+          BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+        } else {
+          BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+        }
+      } else {
+        ByteArray(0)
+      }
+      gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+    }
+
     override fun onDescriptorWriteRequest(
       device: BluetoothDevice,
       requestId: Int,
@@ -424,6 +510,10 @@ class NativeFidoGattModule(
       offset: Int,
       value: ByteArray,
     ) {
+      if (descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
+        notificationsEnabled =
+          value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+      }
       if (responseNeeded) {
         gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
       }
@@ -441,6 +531,18 @@ class NativeFidoGattModule(
       if (responseNeeded) {
         gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
       }
+
+      /*
+       * The Service Revision Bitfield is writable, and the write is how the
+       * client SELECTS a version (CTAP 2.1 11.2.5.4) - it writes back the
+       * single bit it chose. There is nothing to act on with one version on
+       * offer, but it must be accepted: answering an attempt with
+       * WRITE_NOT_PERMITTED is grounds for a host to abandon the service.
+       */
+      if (characteristic.uuid == FIDO_SERVICE_REVISION_UUID) {
+        return
+      }
+
       if (characteristic.uuid != FIDO_CONTROL_POINT_UUID) {
         return
       }
@@ -765,6 +867,8 @@ class NativeFidoGattModule(
     private const val ATT_HEADER_BYTES = 3
     private const val MIN_FRAGMENT = 20
     private const val USER_AUTH_VALIDITY_SECONDS = 30
+    private const val SERVICE_ADD_TIMEOUT_MS = 2000
+    private const val SERVICE_ADD_POLL_MS = 10
     private const val PERMISSION_REQUEST_CODE = 0xF1D0
 
     private const val ERR_UNSUPPORTED = "ERR_BLE_UNSUPPORTED"
