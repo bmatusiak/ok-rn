@@ -1,9 +1,8 @@
 import React from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
-import {Btn, KeyValue, LogList, Section, StatusPill} from '../ui/components';
+import {Btn, KeyValue, Section, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
 import type {FidoSession} from '../hooks/useFidoGatt';
-import type {LogEntry} from '../hooks/useLog';
 
 /*
  * The BLE session is passed IN, not created here.
@@ -17,12 +16,8 @@ import type {LogEntry} from '../hooks/useLog';
  */
 export function FidoScreen({
   fido,
-  entries,
-  clear,
 }: {
   fido: FidoSession;
-  entries: LogEntry[];
-  clear: () => void;
 }) {
   const running = fido.state === 'advertising' || fido.state === 'connected';
 
@@ -100,9 +95,6 @@ export function FidoScreen({
         )}
       </Section>
 
-      <Section title="CTAP traffic" right={<Btn title="Clear" onPress={clear} />}>
-        <LogList entries={entries} />
-      </Section>
     </ScrollView>
   );
 }

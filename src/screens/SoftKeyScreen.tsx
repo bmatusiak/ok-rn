@@ -1,9 +1,8 @@
 import React from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
-import {Btn, KeyValue, LogList, Section, StatusPill} from '../ui/components';
+import {Btn, KeyValue, Section, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
 import type {EmuSession} from '../hooks/useOkEmu';
-import type {LogEntry} from '../hooks/useLog';
 
 /**
  * The phone as the OnlyKey.
@@ -23,12 +22,8 @@ const TEST_PIN = '1234561';
  */
 export function SoftKeyScreen({
   emu,
-  entries,
-  clear,
 }: {
   emu: EmuSession;
-  entries: LogEntry[];
-  clear: () => void;
 }) {
   const running = emu.state === 'running';
 
@@ -145,9 +140,6 @@ export function SoftKeyScreen({
         </Text>
       </Section>
 
-      <Section title="Firmware log" right={<Btn title="Clear" onPress={clear} />}>
-        <LogList entries={entries} />
-      </Section>
     </ScrollView>
   );
 }

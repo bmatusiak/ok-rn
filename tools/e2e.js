@@ -118,7 +118,17 @@ async function main() {
    * on mount, so this doubles as letting that settle before the suite's own
    * stop/start races it.
    */
-  await tapText('E2E', {timeoutMs: 120000});
+  /*
+   * The suite lives behind the drawer now, not on a tab bar.
+   *
+   * "Menu" is the accessibility label on the logo in the top bar, which is
+   * what opens the drawer; "Testing" is the item inside it. That item exists
+   * only in testing mode - which defaults ON in a debug build precisely so
+   * this runner does not stall at a PIN pad it cannot type on.
+   */
+  await tapText('Menu', {timeoutMs: 120000});
+  await sleep(600);
+  await tapText('Testing', {timeoutMs: 15000});
   await sleep(1500);
 
   /*

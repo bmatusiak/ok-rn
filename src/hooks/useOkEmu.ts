@@ -26,6 +26,15 @@ type Options = {
   autoStart?: boolean;
 };
 
+/**
+ * What the DEVICE is doing, as opposed to what the firmware PROCESS is doing.
+ *
+ * Two different questions, and the screen needs both: the firmware can be
+ * running perfectly while the device is locked and refuses everything, which is
+ * exactly the state that used to produce "nothing works and nothing says why".
+ */
+export type DeviceState = 'unknown' | 'uninitialized' | 'locked' | 'unlocked';
+
 export type EmuState =
   | 'unavailable'
   | 'stopped'
@@ -48,6 +57,8 @@ export function useOkEmu({log, autoStart = false}: Options) {
   const [storageDir, setStorageDir] = useState('');
   const [led, setLed] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
+  const [device, setDevice] = useState<DeviceState>('unknown');
+  const [version, setVersion] = useState('');
   const started = useRef(false);
 
   useEffect(() => {
@@ -61,6 +72,35 @@ export function useOkEmu({log, autoStart = false}: Options) {
         }
         return;
       }
+      /*
+       * The device says what it is, once a second, without being asked.
+       *
+       * A locked device broadcasts INITIALIZED on the vendor interface every
+       * second (the taskInitialized SoftTimer), an unprovisioned one broadcasts
+       * UNINITIALIZED, and unlocking announces UNLOCKED once and then STOPS the
+       * timer. So lock state needs no polling - it is already on the wire, and
+       * reading it here is the whole difference between a screen that knows and
+       * a screen that shows a log and hopes.
+       */
+      if (event.iface === IFACE.VENDOR && event.dir === DIR.OUT) {
+        const parsed = protocol.okmsg.parseState(okbytes.toPrintable(event.bytes));
+        if (parsed.state === 'unlocked') {
+          setDevice('unlocked');
+          // "UNLOCKEDv3.0.4-testc" - everything after the word is the version.
+          setVersion(String(parsed.raw).replace(/^UNLOCKED/, '').trim());
+        } else if (parsed.state === 'uninitialized') {
+          setDevice('uninitialized');
+        } else if (parsed.state === 'locked') {
+          /*
+           * INITIALIZED means provisioned AND locked, and it must never
+           * overwrite 'unlocked': the announcement is a one-off and the
+           * broadcast stops, but a report already in flight can land just
+           * after it and would put the screen back behind a PIN prompt.
+           */
+          setDevice(prev => (prev === 'unlocked' ? prev : 'locked'));
+        }
+      }
+
       const arrow = event.dir === DIR.OUT ? 'rx' : 'tx';
       log(
         arrow,
@@ -340,6 +380,8 @@ export function useOkEmu({log, autoStart = false}: Options) {
 
   return {
     state,
+    device,
+    version,
     storageDir,
     led,
     busy,
