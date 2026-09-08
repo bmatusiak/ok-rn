@@ -91,6 +91,8 @@ jest.mock('./specs/NativeOkEmu', () => ({
     ),
     stop: jest.fn(() => Promise.resolve()),
     factoryReset: jest.fn(() => Promise.resolve()),
+    // Never resolves in the app either - the process is gone.
+    restartApp: jest.fn(() => new Promise(() => {})),
     writeHid: jest.fn(() => Promise.resolve(64)),
     setButton: jest.fn(() => Promise.resolve()),
     kbdSetReport: jest.fn(() => Promise.resolve()),

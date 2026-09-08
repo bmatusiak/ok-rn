@@ -1,5 +1,6 @@
 package com.okrn.emu
 
+import android.content.Intent
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -268,6 +269,47 @@ class NativeOkEmuModule(
       putString("storageDir", dir.absolutePath)
     }
 
+  /**
+   * Relaunch the app, which is the only way back from a dead firmware.
+   *
+   * makeRestartActivityTask is Android's own idiom for this: it builds the
+   * same task the launcher would, so the new process starts clean rather than
+   * resuming whatever the old one had on screen. The kill has to follow the
+   * start, or the system simply resumes the existing task.
+   *
+   * exitProcess rather than finishing the activity, because the point is a NEW
+   * PROCESS: the firmware's globals live in this one and nothing short of
+   * replacing it resets them.
+   */
+  override fun restartApp(promise: Promise) {
+    try {
+      /*
+       * Hand the relaunch to a process that will still be alive to do it.
+       *
+       * Two simpler routes were tried and measured: startActivity() then
+       * exit(), and an AlarmManager PendingIntent then exit(). Both die the
+       * same way - the process goes and nothing comes back - because Android
+       * refuses activity starts from a background process, and once we have
+       * exited that is what we are. RestartActivity runs in :restart, stays
+       * visible while this process is killed, and starts the app from there.
+       */
+      val restart = Intent(reactContext, com.okrn.RestartActivity::class.java)
+      restart.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      reactContext.startActivity(restart)
+
+      Thread {
+        // Long enough for :restart to be up, short enough to feel immediate.
+        Thread.sleep(RESTART_DELAY_MS)
+        Runtime.getRuntime().exit(0)
+      }.start()
+
+      // Not resolved: the process is about to go, and a resolution racing that
+      // would only ever be seen if the restart had failed.
+    } catch (e: Exception) {
+      promise.reject("E_RESTART", e.message ?: "restartApp failed", e)
+    }
+  }
+
   companion object {
     private const val ERR_START = "ERR_EMU_START"
     private const val ERR_STOP = "ERR_EMU_STOP"
@@ -275,6 +317,7 @@ class NativeOkEmuModule(
     private const val ERR_WRITE = "ERR_EMU_WRITE"
     private const val ERR_NOT_RUNNING = "ERR_EMU_NOT_RUNNING"
     private const val ERR_RESTART_UNSUPPORTED = "ERR_EMU_RESTART_UNSUPPORTED"
+    private const val RESTART_DELAY_MS = 250L
   }
 }
 

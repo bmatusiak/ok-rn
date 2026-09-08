@@ -4,6 +4,8 @@ import {Btn, KeyValue, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
 import {getOnlyKey} from '../onlykey';
+import OkEmu from '../transport/OkEmu';
+import {PinScreen} from './PinScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 /**
@@ -21,12 +23,14 @@ export function KeyScreen({emu}: {emu: EmuSession}) {
       <Message
         title="The key has stopped"
         body={
-          'The firmware called CPU_RESTART() and its thread has exited. It ' +
-          'cannot be started again in this process — close and reopen the ' +
-          'app. Nothing is lost: flash and EEPROM are files, so the device ' +
-          'comes back exactly as it was.'
+          'The firmware thread cannot be replaced in this process — it is ' +
+          'linked into the same library as the bridge, so nothing short of a ' +
+          'new process resets it. Restarting the app is the way back, and ' +
+          'nothing is lost: flash and EEPROM are files, so the key comes back ' +
+          'exactly as it was.'
         }
         tone="error"
+        action={{title: 'Restart the app', onPress: () => OkEmu.restartApp()}}
       />
     );
   }
@@ -44,18 +48,26 @@ export function KeyScreen({emu}: {emu: EmuSession}) {
     );
   }
 
-  if (emu.device !== 'unlocked') {
+  if (emu.device === 'uninitialized') {
     return (
       <Message
-        title={emu.device === 'uninitialized' ? 'Not set up' : 'Locked'}
-        body={
-          emu.device === 'uninitialized'
-            ? 'This key has no PIN yet. Set one up to start using it.'
-            : 'The key is locked, so it will not answer. Unlock it to see what ' +
-              'it holds.'
-        }
+        title="Not set up"
+        body="This key has no PIN yet. Set one up to start using it."
       />
     );
+  }
+
+  /*
+   * A locked key shows the KEYPAD, not a sign saying it is locked.
+   *
+   * Telling someone the door is shut while offering no handle is not a screen,
+   * it is a dead end - and it is reachable: testing mode skips the login flow
+   * entirely, so a locked device landed here with nothing to press. The same
+   * pad the door uses works just as well inside, and it means there is exactly
+   * one place a PIN is ever typed.
+   */
+  if (emu.device !== 'unlocked') {
+    return <PinScreen onPress={emu.press} />;
   }
 
   return <Unlocked emu={emu} />;
@@ -149,10 +161,12 @@ function Message({
   title,
   body,
   tone = 'dim',
+  action,
 }: {
   title: string;
   body: string;
   tone?: 'dim' | 'error';
+  action?: {title: string; onPress: () => void};
 }) {
   return (
     <View style={styles.message}>
@@ -160,6 +174,11 @@ function Message({
         {title}
       </Text>
       <Text style={styles.messageBody}>{body}</Text>
+      {action ? (
+        <View style={styles.messageAction}>
+          <Btn title={action.title} tone="primary" onPress={action.onPress} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -222,4 +241,5 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 10,
   },
+  messageAction: {marginTop: 22, alignSelf: 'stretch', paddingHorizontal: 24},
 });

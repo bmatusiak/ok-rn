@@ -124,6 +124,11 @@ class OkEmuClient {
   }
 
   /** Stop and boot again against the same storage - the firmware's CPU_RESTART(). */
+  /** Relaunch the app process. Never returns on success. */
+  restartApp(): Promise<void> {
+    return NativeOkEmu.restartApp();
+  }
+
   restart(): Promise<StartResult> {
     this.ensureSubscribed();
     return NativeOkEmu.restart();

@@ -52,6 +52,28 @@ const IFACE_NAME: Record<number, string> = {
 
 export type EmuSession = ReturnType<typeof useOkEmu>;
 
+/**
+ * "It cannot start" and "it will never start again" are different states, and
+ * they want different words and different buttons.
+ *
+ * nativeStart refuses once a firmware thread has been created in this process:
+ * the thread only exits through the AIRCR trap and cannot be replaced, because
+ * the firmware is linked statically into the same .so as the JNI and there is
+ * no way to reset its globals short of a new process. So a Start button left
+ * enabled here fails identically every time.
+ */
+function terminalState(message: string): EmuState {
+  return /cannot be restarted|already been created|only exits/i.test(message)
+    ? 'halted'
+    : 'error';
+}
+
+function describeStart(message: string): string {
+  return terminalState(message) === 'halted'
+    ? 'the firmware thread is gone and cannot be replaced - restart the app'
+    : `start: ${message}`;
+}
+
 export function useOkEmu({log, autoStart = false}: Options) {
   const [state, setState] = useState<EmuState>('stopped');
   const [storageDir, setStorageDir] = useState('');
@@ -163,23 +185,19 @@ export function useOkEmu({log, autoStart = false}: Options) {
       } else if (result.message === 'already running') {
         setState('running');
       } else {
-        setState('error');
-        log('error', `start: ${result.message}`);
+        /*
+         * The refusal ARRIVES AS A RESOLVED RESULT, not a rejection.
+         * nativeStart returns its reason as a string and the module reports it
+         * with started=false, so checking only the catch below missed it
+         * entirely and a permanently dead firmware showed as a generic error
+         * with a Start button that would fail identically forever.
+         */
+        setState(terminalState(result.message));
+        log('error', describeStart(result.message));
       }
     } catch (error) {
-      /*
-       * "It cannot start" and "it will never start again" are different states
-       * and want different words. nativeStart refuses once a firmware thread
-       * has been created in this process - the thread only exits through the
-       * AIRCR trap and cannot be replaced - so a Start button that stays
-       * enabled here just fails again, every time, with the same message.
-       */
-      const message = String(error);
-      const terminal = /cannot be restarted|already been created|only exits/i.test(message);
-      setState(terminal ? 'halted' : 'error');
-      log('error', terminal
-        ? 'the firmware thread is gone and cannot be replaced - restart the app'
-        : `start: ${message}`);
+      setState(terminalState(String(error)));
+      log('error', describeStart(String(error)));
     } finally {
       setBusy(false);
     }

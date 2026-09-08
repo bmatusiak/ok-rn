@@ -65,7 +65,16 @@ export function E2EScreen() {
 }
 
 const styles = StyleSheet.create({
-  wrap: {flex: 1, backgroundColor: theme.bg},
+  /*
+   * A minHeight, not flex: 1.
+   *
+   * This screen is rendered inside the Testing tab's ScrollView, and a flex
+   * child of a scrolling container has no height to take a share of - it
+   * collapsed to a white sliver under the banner. MonikerView draws its own
+   * light background, which is what made the collapse visible rather than
+   * merely empty.
+   */
+  wrap: {minHeight: 520, backgroundColor: theme.bg},
   hint: {color: theme.textDim, fontSize: 11, lineHeight: 16},
   warn: {color: theme.warn, fontSize: 11, lineHeight: 16, marginTop: 10},
   row: {marginTop: 14},

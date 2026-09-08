@@ -81,6 +81,19 @@ export interface Spec extends TurboModule {
    */
   factoryReset(): Promise<void>;
 
+  /**
+   * Relaunch the app process.
+   *
+   * The only way back from a firmware that has ended itself. Its thread exits
+   * through the AIRCR trap and cannot be replaced in this process - the
+   * firmware is linked statically into the same .so as this module, so there is
+   * no way to reset its globals short of a new process, and resetting them by
+   * hand would mean changing firmware that is meant to stay original.
+   *
+   * Never resolves on success, because the process is gone.
+   */
+  restartApp(): Promise<void>;
+
   /** Stop, then boot again against the same storage - the firmware's CPU_RESTART(). */
   restart(): Promise<StartResult>;
 
