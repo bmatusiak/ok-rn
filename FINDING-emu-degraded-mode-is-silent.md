@@ -96,3 +96,19 @@ That is worth noting on its own: `capabilities.js` calls attestation
 permanently unavailable in emulated mode because it needs
 `vm.mmap_min_addr=0`, "a configuration nobody should run". Rebasing gets it
 without lowering anything, and would work on Linux too.
+
+## Resolved structurally (not fixed)
+
+There is no degraded mode left to be silent about. The flash array is no
+longer mapped at a fixed address with fallbacks that skip the bottom pages -
+the kernel chooses the address and the whole 256 KB maps or nothing does, so
+certified_hw at +0x5BB0 is always present.
+
+The dangerous half was FSEC. It was set to 0x44, meaning ALREADY PROVISIONED,
+whenever the low pages were unmapped - which stopped the firmware walking into
+them and, in doing so, stopped the crash that would have revealed the problem.
+It is unconditionally 0xFF now.
+
+See the commit "let the kernel say where the flash array lives". The trigger
+was a Pixel 6a on Android 16, where ART maps its JIT zygote cache over the old
+fixed base and the firmware could not start at all.

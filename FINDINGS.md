@@ -22,7 +22,7 @@ wrong version of the table looks exactly like the right one.
 | 3 | [`Print::printf` fd round-trip](FINDING-print-printf-fd-roundtrip.md) | low — unreachable in the compiled set | Teensy core | no |
 | 4 | [Arduino `Time` is host-hostile](FINDING-arduino-time-host-hostile.md) | blocking off glibc / on case-insensitive filesystems | Arduino | no |
 | 5 | [`okemu_hal_shutdown()` leaks the flash mapping](FINDING-emu-shutdown-leaks-mapping.md) | blocking for in-process restart; error message misdirects | emulator | no |
-| 6 | [a bad flash mapping looks healthy](FINDING-emu-degraded-mode-is-silent.md) | silent loss of all crypto capability | emulator | no |
+| 6 | [a bad flash mapping looks healthy](FINDING-emu-degraded-mode-is-silent.md) | silent loss of all crypto capability — **now structurally impossible** | emulator | no |
 | 7 | [the touchpin order is not the button order](FINDING-touchpin-order-is-not-button-order.md) | high for anything that presses buttons | **ours** | n/a |
 | 8 | [holding button 3 ends the soft key](FINDING-lock-gesture-ends-the-soft-key.md) | high for the soft-key goal; a deliberate user gesture disables the device | **ours** | n/a |
 | 9 | [every BLE fragment after the first was dropped](FINDING-ble-notifications-dropped-after-the-first.md) | blocking — no CTAP2 response could reach a host intact | **ours** | n/a |
