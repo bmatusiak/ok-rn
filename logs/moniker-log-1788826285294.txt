@@ -1,0 +1,29 @@
+2026-09-08T00:11:56.618Z 
+Moniker Doctor Results:
+2026-09-08T00:11:56.621Z - globals: {"CI_MODE":false,"FORCE":false,"DRY_RUN":false,"VERBOSE":false}
+2026-09-08T00:11:56.621Z - workspace: C:\Users\bmatu\Desktop\software\onlykey\onlykey-RN\ok-rn
+2026-09-08T00:11:56.621Z - adb: missing: bash: line 1: adb: command not found
+
+2026-09-08T00:11:56.622Z - java: ok
+2026-09-08T00:11:56.622Z - android_sdk: C:/Users/bmatu/AppData/Local/Android/Sdk
+2026-09-08T00:11:56.623Z - avds: []
+2026-09-08T00:11:56.623Z - metro_port_8081: free
+2026-09-08T00:11:56.623Z - expo_port_19000: free
+2026-09-08T00:11:56.624Z - adb_devices: []
+2026-09-08T00:11:56.624Z - adb_device_props: []
+2026-09-08T00:11:56.624Z - adb_app_installed: []
+2026-09-08T00:11:56.625Z - emulator_pids: []
+2026-09-08T00:11:56.625Z - expo_cli: 57.0.22
+2026-09-08T00:11:56.625Z - installed_expo_version: null
+2026-09-08T00:11:56.626Z - installed_react_native_version: null
+2026-09-08T00:11:56.626Z - installed_react_version: null
+2026-09-08T00:11:56.626Z - workspace_gradlew: true
+2026-09-08T00:11:56.627Z - node_version: v24.18.0
+2026-09-08T00:11:56.627Z - platform: win32
+2026-09-08T00:11:56.627Z - arch: x64
+2026-09-08T00:11:56.627Z - cpus: 16
+2026-09-08T00:11:56.628Z - total_mem: 33617924096
+2026-09-08T00:11:56.628Z - free_mem: 2037379072
+2026-09-08T00:11:56.628Z - workspace_has_package_json: true
+2026-09-08T00:11:56.628Z - workspace_has_app_json: true
+2026-09-08T00:11:56.629Z - app_package: null

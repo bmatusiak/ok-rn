@@ -7,10 +7,11 @@ import {useLog} from './src/hooks/useLog';
 import {UsbScreen} from './src/screens/UsbScreen';
 import {FidoScreen} from './src/screens/FidoScreen';
 import {SoftKeyScreen} from './src/screens/SoftKeyScreen';
+import {E2EScreen} from './src/screens/E2EScreen';
 
 // Soft key first: the phone being the OnlyKey is the point, and a physical
 // key over USB is the optional extra rather than the other way round.
-const TABS = ['Soft key', 'USB HID', 'FIDO2 BLE'] as const;
+const TABS = ['Soft key', 'USB HID', 'FIDO2 BLE', 'E2E'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function App() {
@@ -39,8 +40,10 @@ export default function App() {
             <SoftKeyScreen entries={emuLog.entries} log={emuLog.log} clear={emuLog.clear} />
           ) : tab === 'USB HID' ? (
             <UsbScreen entries={usbLog.entries} log={usbLog.log} clear={usbLog.clear} />
-          ) : (
+          ) : tab === 'FIDO2 BLE' ? (
             <FidoScreen entries={fidoLog.entries} log={fidoLog.log} clear={fidoLog.clear} />
+          ) : (
+            <E2EScreen />
           )}
         </View>
       </SafeAreaView>

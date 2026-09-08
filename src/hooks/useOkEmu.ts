@@ -156,7 +156,18 @@ export function useOkEmu({log, autoStart = false}: Options) {
       log('info', `OKCONNECT -> "${String(result.status ?? '').trim()}"`);
       return result;
     } catch (error) {
+      /*
+       * Mirrored to the console for the same reason the success path is: this
+       * runs at launch, before anyone has necessarily looked at the screen, and
+       * an in-app log line is invisible to logcat. Without it a failure here
+       * reads only as "no reply", which cannot distinguish a device that stayed
+       * silent from an exception thrown before anything was ever written.
+       */
       log('error', `OKCONNECT: ${String(error)}`);
+      console.log(`[softkey] OKCONNECT failed: ${String(error)}`);
+      if (error instanceof Error && error.stack) {
+        console.log(`[softkey] ${error.stack.replace(/\s*\n\s*/g, ' | ').slice(0, 400)}`);
+      }
       return null;
     } finally {
       setBusy(false);
