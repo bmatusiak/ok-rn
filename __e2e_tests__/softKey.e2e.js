@@ -107,32 +107,70 @@ module.exports = function softKey({describe, it}) {
       );
 
       assert.ok(bytes.length > 0, 'empty reply to OKCONNECT');
-      // The firmware answers with its lock state and version string. Either
-      // wording is a pass; what matters is that it got far enough to derive
-      // the transit key, which touches certified_hw at 0x5BB0.
+      /*
+       * The firmware answers with its lock state.
+       *
+       * This comment used to say the reply proved the transit key had been
+       * derived. It does not: over the VENDOR interface okcore.cpp dispatches
+       * OKCONNECT to set_time(), which answers hidprint(HW_MODEL(...)) - a
+       * plaintext status, no key exchange. The exchange is the CTAP path's.
+       *
+       * What the reply does prove is still the thing that matters. Reporting
+       * INITIALIZED means the firmware read the PIN hash back out of flash
+       * ("Read Pin hash / Pin hash has been set" in the boot log), and that
+       * read is what Android's mmap_min_addr floor breaks when the flash array
+       * is not rebased.
+       */
       assert.ok(
         /UNLOCKED|INITIALIZED|OnlyKey/i.test(text),
         `unrecognised OKCONNECT reply: "${text}"`,
       );
     });
 
-    it('survives a restart with its storage intact', async ({log, assert}) => {
+    it('cannot restart in place, and says so rather than pretending', async ({log, assert}) => {
+      /*
+       * This test used to call OkEmu.restart() and assert the firmware came
+       * back. It could never pass: the firmware thread only exits through the
+       * AIRCR trap, so NativeOkEmuModule rejects unconditionally, and the
+       * rejection happened before any assertion ran.
+       *
+       * The honest version asserts the constraint. A silent no-op here would
+       * be worse than the failure - it would look like a restart happened.
+       */
       assert.ok(OkEmu.isRunning(), 'firmware is not running');
 
-      const before = await OkEmu.restart();
-      log(`restart -> ${JSON.stringify(before)}`);
-      assert.ok(before.started, `firmware did not come back: ${before.message}`);
+      let rejected = null;
+      try {
+        await OkEmu.restart();
+      } catch (error) {
+        rejected = error;
+      }
 
-      await delay(1500);
+      log(`restart rejected: ${rejected && rejected.message}`);
+      assert.ok(rejected, 'restart resolved, but there is no in-process restart');
+      assert.ok(
+        /not implemented|AIRCR/i.test(String(rejected.message)),
+        `unexpected restart error: ${rejected.message}`,
+      );
+    });
 
+    it('kept its state from a previous PROCESS, which is the restart that works', async ({log, assert}) => {
+      /*
+       * The persistence claim, tested the only way it can be from inside the
+       * app: flash.bin and eeprom.bin are file-backed, so state set in an
+       * earlier run of the process is still there in this one.
+       *
+       * A device reporting INITIALIZED has read a PIN hash back out of flash
+       * that some earlier process wrote. Nothing in this run set it.
+       */
       const reply = OkEmu.nextReport(IFACE.VENDOR, 5000);
       await OkEmu.write(IFACE.VENDOR, buildMessage(OKCONNECT, setTimePayload()));
-      const text = ascii(await reply);
-      log(`post-restart reply: ${text}`);
+      const text = ascii(await reply).trim();
+      log(`status: ${text}`);
 
       assert.ok(
-        /UNLOCKED|INITIALIZED|OnlyKey/i.test(text),
-        `firmware did not answer after restart: "${text}"`,
+        /INITIALIZED|UNLOCKED/i.test(text),
+        `device reports "${text}" - if this says UNINITIALIZED, provision a PIN first`,
       );
     });
   });
