@@ -27,8 +27,22 @@ import OkEmu from './transport/OkEmu';
 import {bytesToHex, hexToBytes} from './transport/hex';
 import type {LogLevel} from './hooks/useLog';
 
-/** CTAP BLE command bytes (CTAP 2.1, section 11.2.9). */
-const CMD_MSG = 0x83;
+/**
+ * CTAP BLE command bytes (CTAP 2.1, section 11.2.9), WITHOUT the fragment flag.
+ *
+ * On the wire an initialisation fragment carries CMD | 0x80, so MSG appears as
+ * 0x83 - and that is what this constant used to be. But the Kotlin assembler
+ * strips the flag before handing the message up (CtapBleFramer.kt:98,
+ * `command = head and 0x7f`), so what actually arrives here is 0x03.
+ *
+ * The mismatch discarded every request one line before it reached the
+ * firmware: a real getInfo came in as 83 00 01 04, reassembled correctly, and
+ * was then dropped as "not a CTAP2 message" while the host retried and gave
+ * up. Comparisons below mask the flag off both sides so neither convention can
+ * break it again.
+ */
+const CMD_MSG = 0x03;
+const CMD_MASK = 0x7f;
 
 /**
  * CTAP2_ERR_OPERATION_DENIED, for a request that cannot even be attempted.
@@ -87,7 +101,7 @@ export function startFidoBridge({log, onPending, onPresence}: Options): () => vo
      * CANCEL has no response at all - passing either to the firmware as though
      * it were CBOR would have it decode a command byte out of ping data.
      */
-    if (event.command !== CMD_MSG) {
+    if ((event.command & CMD_MASK) !== CMD_MSG) {
       log('info', `ignoring CTAP BLE command ${label} - not a CTAP2 message`);
       return;
     }
