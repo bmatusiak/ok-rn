@@ -205,6 +205,29 @@ class NativeFidoGattModule(
     }
 
     try {
+      /*
+       * DO NOT REBUILD A SERVER THAT IS ALREADY GOOD.
+       *
+       * This used to call stopEverything() unconditionally, so every press of
+       * Start closed the GATT server and opened a new one - and a host watches
+       * the service disappear and come back each time. Windows keeps a PnP
+       * device node per service and stops trusting one that keeps vanishing:
+       * the node for 0xFFFD goes to status Unknown, and once it does the
+       * WebAuthn stack no longer enumerates the phone as a security key at
+       * all. Measured - the service was still there over the air, all three
+       * UUIDs answered on connect, and the node stayed dead regardless.
+       *
+       * So if the service is registered, only the advertisement is restarted.
+       */
+      if (gattServer != null && serviceAdded) {
+        if (!beginAdvertising()) {
+          throw IllegalStateException("startAdvertising was refused by the adapter")
+        }
+        setState(STATE_ADVERTISING, "service 0xFFFD")
+        promise.resolve(null)
+        return
+      }
+
       stopEverything()
 
       val server = manager.openGattServer(reactContext, gattCallback)
@@ -537,6 +560,19 @@ class NativeFidoGattModule(
       offset: Int,
       value: ByteArray,
     ) {
+      /*
+       * Logged before anything else decides what to do with it. A write that
+       * is quietly filtered out looks exactly like a write that never arrived,
+       * and the host retries either way.
+       */
+      Log.d(
+        TAG,
+        "write: ${characteristic.uuid} len=${value.size} offset=$offset " +
+          "prepared=$preparedWrite bytes=${value.take(12).joinToString("") {
+            "%02x".format(it)
+          }}",
+      )
+
       if (responseNeeded) {
         gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
       }
@@ -556,7 +592,13 @@ class NativeFidoGattModule(
         return
       }
 
-      val message = assembler.push(value) ?: return
+      val message = assembler.push(value)
+      if (message == null) {
+        Log.d(TAG, "control point: fragment held, message incomplete")
+        return
+      }
+      Log.d(TAG, "control point: message cmd=0x${"%02x".format(message.command)} " +
+        "len=${message.payload.size}")
       val id = "req-" + requestCounter.incrementAndGet()
       pendingRequests[id] = message.command
 
