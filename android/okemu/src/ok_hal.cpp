@@ -450,12 +450,27 @@ int okemu_get_button(int n) {
 }
 
 /*
- * setup() assigns TOUCHPIN1..6 = pins 1, 22, 23, 17, 15, 16. The firmware
- * baselines each pad at rest and treats a large positive excursion as a touch,
- * so we report a low idle value and a high one while the button is held.
+ * The firmware baselines each pad at rest and treats a large positive excursion
+ * as a touch, so we report a low idle value and a high one while held.
+ *
+ * THE PIN ORDER IS NOT THE BUTTON ORDER. setup() assigns TOUCHPIN1..6 = pins
+ * 1, 22, 23, 17, 15, 16 (OnlyKey.ino:268-273), but okcore.cpp:2574-2628 then
+ * labels those pads in a DIFFERENT order - touchread1 is button 5 and
+ * touchread3 is button 1:
+ *
+ *     touchread1 (pin  1) -> button 5      touchread4 (pin 17) -> button 3
+ *     touchread2 (pin 22) -> button 2      touchread5 (pin 15) -> button 4
+ *     touchread3 (pin 23) -> button 1      touchread6 (pin 16) -> button 6
+ *
+ * This table is indexed by BUTTON, which is what a caller means: the digits of
+ * a PIN are button numbers, and so is a Confirm control. Seeding it with the
+ * TOUCHPIN order instead - the obvious mistake, since the two lists hold the
+ * same six pins - makes okemu_set_button(1) arrive as a press of button 5.
+ * Measured, not reasoned about: the firmware answered a tap on 1 with
+ * "password appended with 5".
  */
 int okemu_touch_for_pin(uint8_t pin) {
-  static const uint8_t kPinForButton[OKEMU_NUM_BUTTONS] = { 1, 22, 23, 17, 15, 16 };
+  static const uint8_t kPinForButton[OKEMU_NUM_BUTTONS] = { 23, 22, 17, 15, 1, 16 };
   for (int i = 0; i < OKEMU_NUM_BUTTONS; i++) {
     if (kPinForButton[i] == pin)
       return okemu_get_button(i + 1) ? 6000 : 1000;

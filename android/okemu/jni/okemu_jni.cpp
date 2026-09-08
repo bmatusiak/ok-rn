@@ -277,6 +277,27 @@ Java_com_okrn_okemu_OkEmuNative_nativeWriteHid(JNIEnv *env, jclass,
   return rc;
 }
 
+/*
+ * A button, as the firmware understands one.
+ *
+ * okemu_touch_for_pin() reports a high capacitance while a button is held and a
+ * low one otherwise, and the firmware baselines each pad at rest and treats the
+ * excursion as a touch - so holding and releasing is a real press, timed by the
+ * caller, and reaches every path a physical button does.
+ *
+ * This existed in the HAL from the beginning and was never wired up: nothing
+ * called okemu_set_button(). Without it the only way to press anything on a
+ * phone was the DEBUG serial console, which is #ifdef DEBUG and would vanish in
+ * a release build - and user presence is not optional, since every FIDO2
+ * signing operation waits on one.
+ */
+JNIEXPORT void JNICALL
+Java_com_okrn_okemu_OkEmuNative_nativeSetButton(JNIEnv *, jclass,
+                                                jint button, jboolean down) {
+  if (!g_running) return;
+  okemu_set_button((int)button, down ? 1 : 0);
+}
+
 /* The Yubikey OTP / HMAC-SHA1 channel rides keyboard control transfers. */
 JNIEXPORT void JNICALL
 Java_com_okrn_okemu_OkEmuNative_nativeKbdSetReport(JNIEnv *env, jclass,

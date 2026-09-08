@@ -139,6 +139,29 @@ class OkEmuClient {
   }
 
   /** Yubikey OTP / HMAC-SHA1, which rides keyboard control transfers. */
+  /** Hold or release a touch button. Timing is the caller's. */
+  setButton(button: number, down: boolean): Promise<void> {
+    this.ensureSubscribed();
+    return NativeOkEmu.setButton(button, down);
+  }
+
+  /**
+   * A complete press: hold, wait, release.
+   *
+   * The DURATION is the meaning. The firmware bands on how long a button was
+   * held - a tap under 20 ticks, a hold past 72, a long hold past 180, and 360
+   * for factory default - so the same button says different things depending
+   * only on this number. The default is a plain tap, which is what confirming a
+   * FIDO2 ceremony wants.
+   */
+  async pressButton(button: number, holdMs = 120): Promise<void> {
+    await this.setButton(button, true);
+    await new Promise<void>(resolve => {
+      setTimeout(resolve, holdMs);
+    });
+    await this.setButton(button, false);
+  }
+
   kbdSetReport(bytes: Uint8Array): Promise<void> {
     return NativeOkEmu.kbdSetReport(bytesToHex(bytes));
   }

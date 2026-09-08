@@ -92,6 +92,7 @@ jest.mock('./specs/NativeOkEmu', () => ({
     stop: jest.fn(() => Promise.resolve()),
     factoryReset: jest.fn(() => Promise.resolve()),
     writeHid: jest.fn(() => Promise.resolve(64)),
+    setButton: jest.fn(() => Promise.resolve()),
     kbdSetReport: jest.fn(() => Promise.resolve()),
     kbdGetReport: jest.fn(() => Promise.resolve('')),
     /*

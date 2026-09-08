@@ -62,6 +62,16 @@ export interface Spec extends TurboModule {
   writeHid(iface: number, hex: string): Promise<number>;
 
   /** Yubikey OTP / HMAC-SHA1, which rides keyboard control transfers. */
+  /**
+   * Hold (`down: true`) or release one of the six touch buttons.
+   *
+   * A press is a hold then a release, and the time between them is what the
+   * firmware bands on - a tap, a hold, a long hold - so the caller owns the
+   * timing. This is how a ceremony gets confirmed on a phone that has no
+   * buttons; every FIDO2 signing operation waits on one.
+   */
+  setButton(button: number, down: boolean): Promise<void>;
+
   kbdSetReport(hex: string): Promise<void>;
   kbdGetReport(): Promise<string>;
 

@@ -76,6 +76,15 @@ object OkEmuNative {
     /** host to device. `iface` must be FIDO, VENDOR or SEREMU. */
     external fun nativeWriteHid(iface: Int, data: ByteArray): Int
 
+    /**
+     * Hold or release one of the six touch buttons.
+     *
+     * The firmware baselines each pad at rest and reads the excursion as a
+     * touch, so a press is a hold followed by a release and its DURATION is
+     * what the firmware bands on - a tap, a hold, a long hold.
+     */
+    external fun nativeSetButton(button: Int, down: Boolean)
+
     /** The Yubikey OTP / HMAC-SHA1 channel rides keyboard control transfers. */
     external fun nativeKbdSetReport(data: ByteArray)
 

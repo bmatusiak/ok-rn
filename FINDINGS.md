@@ -11,6 +11,10 @@ None of these are exploitable on a physical OnlyKey. They are hosting and
 toolchain defects — with one exception, `#2`, which is a live hazard for the
 *device* build the moment its toolchain is updated.
 
+`#7` is the odd one out: not a defect in anyone else's code but a bug of ours,
+recorded because the firmware behaviour that caused it is undocumented and the
+wrong version of the table looks exactly like the right one.
+
 | # | finding | severity | ours? | reported |
 |---|---|---|---|---|
 | 1 | [64-bit pointer narrowing](FINDING-64bit-pointer-narrowing.md) | blocking on 64-bit; one site feeds a truncated length into a bounds check | 2 of 6 sites | no |
@@ -19,6 +23,7 @@ toolchain defects — with one exception, `#2`, which is a live hazard for the
 | 4 | [Arduino `Time` is host-hostile](FINDING-arduino-time-host-hostile.md) | blocking off glibc / on case-insensitive filesystems | Arduino | no |
 | 5 | [`okemu_hal_shutdown()` leaks the flash mapping](FINDING-emu-shutdown-leaks-mapping.md) | blocking for in-process restart; error message misdirects | emulator | no |
 | 6 | [a bad flash mapping looks healthy](FINDING-emu-degraded-mode-is-silent.md) | silent loss of all crypto capability | emulator | no |
+| 7 | [the touchpin order is not the button order](FINDING-touchpin-order-is-not-button-order.md) | high for anything that presses buttons | **ours** | n/a |
 
 ## Read #6 first, then #2
 

@@ -163,6 +163,37 @@ class NativeOkEmuModule(
     }
   }
 
+  /**
+   * Hold or release a touch button.
+   *
+   * A press is a hold then a release, and the DURATION between them is what the
+   * firmware bands on: a tap, a hold past 72 ticks, a long hold past 180. The
+   * caller owns that timing, because the bands are what distinguish confirming
+   * from cancelling from entering config mode.
+   *
+   * Serialised onto the same executor as every other call into the firmware, so
+   * a press cannot interleave with a HID write.
+   */
+  override fun setButton(button: Double, down: Boolean, promise: Promise) {
+    executor.execute {
+      try {
+        if (!isRunning()) {
+          promise.reject(ERR_NOT_RUNNING, "firmware is not running")
+          return@execute
+        }
+        val n = button.toInt()
+        if (n < 1 || n > 6) {
+          promise.reject(ERR_WRITE, "button must be 1-6, got $n")
+          return@execute
+        }
+        OkEmuNative.nativeSetButton(n, down)
+        promise.resolve(null)
+      } catch (e: Exception) {
+        promise.reject(ERR_WRITE, e.message ?: "setButton failed", e)
+      }
+    }
+  }
+
   override fun kbdSetReport(hex: String, promise: Promise) {
     executor.execute {
       try {
