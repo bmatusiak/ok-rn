@@ -6,6 +6,7 @@ import {theme} from '../ui/theme';
 import {getOnlyKey} from '../onlykey';
 import OkEmu from '../transport/OkEmu';
 import {PinScreen} from './PinScreen';
+import {SetupScreen} from './SetupScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 /**
@@ -48,13 +49,13 @@ export function KeyScreen({emu}: {emu: EmuSession}) {
     );
   }
 
+  /*
+   * A blank key offers SETUP, for the same reason a locked one offers the
+   * keypad: a screen that only names the problem is a dead end, and testing
+   * mode can land here without ever passing the login flow.
+   */
   if (emu.device === 'uninitialized') {
-    return (
-      <Message
-        title="Not set up"
-        body="This key has no PIN yet. Set one up to start using it."
-      />
-    );
+    return <SetupScreen />;
   }
 
   /*

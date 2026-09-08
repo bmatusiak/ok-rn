@@ -16,6 +16,7 @@ import {useTestingMode} from './src/hooks/useTestingMode';
 import {SplashScreen} from './src/screens/SplashScreen';
 import {LoginScreen} from './src/screens/LoginScreen';
 import {PinScreen} from './src/screens/PinScreen';
+import {SetupScreen} from './src/screens/SetupScreen';
 import {KeyScreen} from './src/screens/KeyScreen';
 import {FidoScreen} from './src/screens/FidoScreen';
 import {LogScreen} from './src/screens/LogScreen';
@@ -26,7 +27,7 @@ const TESTING_TAB = 'Testing' as const;
 type Tab = (typeof TABS)[number] | typeof TESTING_TAB;
 
 /** Splash until the device can answer, then a door, then the app. */
-type Phase = 'splash' | 'login' | 'pin' | 'main';
+type Phase = 'splash' | 'login' | 'pin' | 'setup' | 'main';
 
 /*
  * The provider has to sit ABOVE whatever reads insets, so the shell is its own
@@ -163,7 +164,15 @@ function Shell() {
           {phase === 'splash' ? (
             <SplashScreen />
           ) : phase === 'login' ? (
-            <LoginScreen device={emu.device} onContinue={() => setPhase('pin')} />
+            <LoginScreen
+              device={emu.device}
+              onContinue={() =>
+                // A blank key has no PIN to enter; it needs one chosen.
+                setPhase(emu.device === 'uninitialized' ? 'setup' : 'pin')
+              }
+            />
+          ) : phase === 'setup' ? (
+            <SetupScreen onDone={() => setPhase('login')} />
           ) : phase === 'pin' ? (
             <PinScreen onPress={emu.press} onBack={() => setPhase('login')} />
           ) : tab === 'Key' ? (

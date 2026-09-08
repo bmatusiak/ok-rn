@@ -1,6 +1,7 @@
-import React from 'react';
+import React, {useState} from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
+import OkEmu from '../transport/OkEmu';
 import {theme} from '../ui/theme';
 import {E2EScreen} from './E2EScreen';
 import {UsbScreen} from './UsbScreen';
@@ -29,6 +30,8 @@ export function TestingScreen({
   usbEntries: LogEntry[];
   clearUsb: () => void;
 }) {
+  const [armed, setArmed] = useState(false);
+
   return (
     <ScrollView
       style={styles.root}
@@ -73,6 +76,41 @@ export function TestingScreen({
           restarted in place — so reopen the app to see whether it stuck. The
           real setup flow lives behind the login screen.
         </Text>
+      </Section>
+
+      <Section title="Wipe">
+        <Text style={styles.note}>
+          Fills flash and EEPROM with 0xFF and asks the firmware to reboot,
+          which leaves an unprovisioned key — the state a brand new one is in.
+          It is the only way to reach the setup flow on a key that already has
+          a PIN, and it is exactly as final as it sounds.
+        </Text>
+        <View style={styles.row}>
+          <View style={styles.cell}>
+            <Btn
+              title={armed ? 'Really wipe it' : 'Factory reset'}
+              tone={armed ? 'danger' : 'default'}
+              disabled={emu.state !== 'running'}
+              onPress={() => {
+                /*
+                 * Two taps, because there is no undo and this button sits on a
+                 * screen people scroll through looking for something else.
+                 */
+                if (!armed) {
+                  setArmed(true);
+                  return;
+                }
+                setArmed(false);
+                void OkEmu.factoryReset();
+              }}
+            />
+          </View>
+          {armed ? (
+            <View style={styles.cell}>
+              <Btn title="Cancel" onPress={() => setArmed(false)} />
+            </View>
+          ) : null}
+        </View>
       </Section>
 
       <E2EScreen />

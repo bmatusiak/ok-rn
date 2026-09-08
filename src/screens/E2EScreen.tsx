@@ -35,7 +35,7 @@ export function E2EScreen() {
 
   if (armed) {
     return (
-      <View style={styles.wrap}>
+      <View style={[styles.wrap, styles.armed]}>
         <MonikerView tests={require('../../__e2e_tests__')} />
       </View>
     );
@@ -65,16 +65,18 @@ export function E2EScreen() {
 }
 
 const styles = StyleSheet.create({
+  wrap: {backgroundColor: theme.bg},
   /*
-   * A minHeight, not flex: 1.
+   * A minHeight, not flex: 1, and only once the suite is mounted.
    *
-   * This screen is rendered inside the Testing tab's ScrollView, and a flex
-   * child of a scrolling container has no height to take a share of - it
-   * collapsed to a white sliver under the banner. MonikerView draws its own
-   * light background, which is what made the collapse visible rather than
-   * merely empty.
+   * This screen sits inside the Testing tab's ScrollView, and a flex child of
+   * a scrolling container has no height to take a share of - MonikerView
+   * collapsed to a white sliver under the banner, visible only because it
+   * draws its own light background. Applying the height unconditionally was
+   * the other half of the same mistake: it left 520px of nothing above the USB
+   * section whenever the suite was NOT running.
    */
-  wrap: {minHeight: 520, backgroundColor: theme.bg},
+  armed: {minHeight: 520},
   hint: {color: theme.textDim, fontSize: 11, lineHeight: 16},
   warn: {color: theme.warn, fontSize: 11, lineHeight: 16, marginTop: 10},
   row: {marginTop: 14},

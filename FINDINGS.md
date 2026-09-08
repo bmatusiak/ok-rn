@@ -27,6 +27,7 @@ wrong version of the table looks exactly like the right one.
 | 8 | [holding button 3 ends the soft key](FINDING-lock-gesture-ends-the-soft-key.md) | high for the soft-key goal; a deliberate user gesture disables the device | **ours** | n/a |
 | 9 | [every BLE fragment after the first was dropped](FINDING-ble-notifications-dropped-after-the-first.md) | blocking — no CTAP2 response could reach a host intact | **ours** | n/a |
 | 10 | [an unanswered descriptor read stalls every connection](FINDING-descriptor-read-stalls-every-connection.md) | blocking — discovery never completed, and it poisons the host cache | **ours** | n/a |
+| 11 | [setting a PIN only works on a DEBUG build](FINDING-provisioning-needs-a-debug-build.md) | blocking for first-time setup on a release build | OnlyKey firmware | no |
 
 ## Read #6 first, then #2
 
