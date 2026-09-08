@@ -11,8 +11,26 @@ type Options = {
   log: (level: LogLevel, text: string) => void;
 };
 
+export type FidoSession = ReturnType<typeof useFidoGatt>;
+
+/**
+ * The BLE authenticator session. Call this ONCE, at app scope - it owns the
+ * GATT server's lifetime and the bridge that answers requests.
+ */
 export function useFidoGatt({log}: Options) {
-  const [state, setState] = useState<GattState>('idle');
+  /*
+   * Seeded from the native side rather than assumed idle. The GATT server
+   * outlives any particular mount, so starting at 'idle' would show a stopped
+   * authenticator that was in fact advertising - and offer a Start button for
+   * something already running.
+   */
+  const [state, setState] = useState<GattState>(() => {
+    try {
+      return FidoGatt.getState();
+    } catch {
+      return 'idle';
+    }
+  });
   const [mtu, setMtu] = useState(0);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [pending, setPending] = useState<CtapRequestEvent | null>(null);

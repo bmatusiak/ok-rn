@@ -8,6 +8,10 @@ import {
 import {Segmented} from './src/ui/components';
 import {theme} from './src/ui/theme';
 import {useLog} from './src/hooks/useLog';
+import {useFidoGatt} from './src/hooks/useFidoGatt';
+import {useOkEmu} from './src/hooks/useOkEmu';
+import {useUsbHid} from './src/hooks/useUsbHid';
+import {Btn} from './src/ui/components';
 import {UsbScreen} from './src/screens/UsbScreen';
 import {FidoScreen} from './src/screens/FidoScreen';
 import {SoftKeyScreen} from './src/screens/SoftKeyScreen';
@@ -41,6 +45,16 @@ function Shell() {
   const fidoLog = useLog();
   const emuLog = useLog();
 
+  /*
+   * The BLE session is app-scoped on purpose. It holds the GATT server and the
+   * bridge that answers CTAP requests from the firmware, and both have to
+   * outlive whichever tab happens to be showing - a host does not know or care
+   * which screen is in front.
+   */
+  const fido = useFidoGatt({log: fidoLog.log});
+  const emu = useOkEmu({log: emuLog.log, autoStart: true});
+  const hid = useUsbHid({log: usbLog.log});
+
   return (
     <>
       <StatusBar barStyle="light-content" />
@@ -55,6 +69,27 @@ function Shell() {
         </View>
 
         {/*
+          Above the tabs, and on every one of them.
+
+          The only affordance for this used to be a button inside the FIDO
+          screen's "Pending request" section - which meant scrolling to find it,
+          on the right tab, during the nineteen seconds the firmware waits. A
+          browser says "press the button on your security key"; the key has to
+          say WHERE, wherever you happen to be looking.
+        */}
+        {fido.presenceNeeded ? (
+          <View style={styles.prompt}>
+            <View style={styles.promptText}>
+              <Text style={styles.promptTitle}>Confirm on your key</Text>
+              <Text style={styles.promptBody}>
+                A site is asking for a security key. This is the press it wants.
+              </Text>
+            </View>
+            <Btn title="Confirm" tone="primary" onPress={fido.confirm} />
+          </View>
+        ) : null}
+
+        {/*
           A floor under the bottom inset, not just the inset.
 
           This handset reports zero: its navigation bar sits OUTSIDE the app
@@ -67,11 +102,11 @@ function Shell() {
         */}
         <View style={[styles.body, {paddingBottom: Math.max(insets.bottom, 12)}]}>
           {tab === 'Soft key' ? (
-            <SoftKeyScreen entries={emuLog.entries} log={emuLog.log} clear={emuLog.clear} />
+            <SoftKeyScreen emu={emu} entries={emuLog.entries} clear={emuLog.clear} />
           ) : tab === 'USB HID' ? (
-            <UsbScreen entries={usbLog.entries} log={usbLog.log} clear={usbLog.clear} />
+            <UsbScreen hid={hid} entries={usbLog.entries} clear={usbLog.clear} />
           ) : tab === 'FIDO2 BLE' ? (
-            <FidoScreen entries={fidoLog.entries} log={fidoLog.log} clear={fidoLog.clear} />
+            <FidoScreen fido={fido} entries={fidoLog.entries} clear={fidoLog.clear} />
           ) : (
             <E2EScreen />
           )}
@@ -88,4 +123,19 @@ const styles = StyleSheet.create({
   subtitle: {color: theme.textDim, fontSize: 12, marginTop: 2},
   tabs: {paddingHorizontal: 16, paddingBottom: 12},
   body: {flex: 1, paddingHorizontal: 16},
+  prompt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.warn,
+    backgroundColor: '#2a2410',
+  },
+  promptText: {flex: 1},
+  promptTitle: {color: theme.text, fontSize: 14, fontWeight: '700'},
+  promptBody: {color: theme.textDim, fontSize: 11, marginTop: 2, lineHeight: 15},
 });

@@ -2,8 +2,8 @@ import React from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, LogList, Section, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
-import {useOkEmu} from '../hooks/useOkEmu';
-import type {LogEntry, LogLevel} from '../hooks/useLog';
+import type {EmuSession} from '../hooks/useOkEmu';
+import type {LogEntry} from '../hooks/useLog';
 
 /**
  * The phone as the OnlyKey.
@@ -15,16 +15,21 @@ import type {LogEntry, LogLevel} from '../hooks/useLog';
 /** Digits are button numbers, so each must be 1-6, and the firmware wants 7-10. */
 const TEST_PIN = '1234561';
 
+/*
+ * The firmware session is passed IN. Creating it here tied it to this screen
+ * being mounted, so switching tabs tore down every listener and reset the
+ * state - the firmware itself kept running, being native, but the screen came
+ * back claiming it was stopped. Sessions live in App now.
+ */
 export function SoftKeyScreen({
+  emu,
   entries,
-  log,
   clear,
 }: {
+  emu: EmuSession;
   entries: LogEntry[];
-  log: (level: LogLevel, text: string) => void;
   clear: () => void;
 }) {
-  const emu = useOkEmu({log, autoStart: true});
   const running = emu.state === 'running';
 
   return (

@@ -14,6 +14,8 @@ type Options = {
   log: (level: LogLevel, text: string) => void;
 };
 
+export type UsbSession = ReturnType<typeof useUsbHid>;
+
 export function useUsbHid({log}: Options) {
   const [state, setState] = useState<ConnectionState>('idle');
   const [transport, setTransportState] = useState<Transport>('auto');

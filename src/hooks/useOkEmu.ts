@@ -41,6 +41,8 @@ const IFACE_NAME: Record<number, string> = {
   [IFACE.SEREMU]: 'debug',
 };
 
+export type EmuSession = ReturnType<typeof useOkEmu>;
+
 export function useOkEmu({log, autoStart = false}: Options) {
   const [state, setState] = useState<EmuState>('stopped');
   const [storageDir, setStorageDir] = useState('');
@@ -125,8 +127,19 @@ export function useOkEmu({log, autoStart = false}: Options) {
         log('error', `start: ${result.message}`);
       }
     } catch (error) {
-      setState('error');
-      log('error', `start: ${String(error)}`);
+      /*
+       * "It cannot start" and "it will never start again" are different states
+       * and want different words. nativeStart refuses once a firmware thread
+       * has been created in this process - the thread only exits through the
+       * AIRCR trap and cannot be replaced - so a Start button that stays
+       * enabled here just fails again, every time, with the same message.
+       */
+      const message = String(error);
+      const terminal = /cannot be restarted|already been created|only exits/i.test(message);
+      setState(terminal ? 'halted' : 'error');
+      log('error', terminal
+        ? 'the firmware thread is gone and cannot be replaced - restart the app'
+        : `start: ${message}`);
     } finally {
       setBusy(false);
     }

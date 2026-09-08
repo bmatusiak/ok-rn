@@ -2,22 +2,21 @@ import React, {useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, KeyValue, LogList, Section, Segmented, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
-import {useUsbHid} from '../hooks/useUsbHid';
-import type {LogEntry, LogLevel} from '../hooks/useLog';
+import type {UsbSession} from '../hooks/useUsbHid';
+import type {LogEntry} from '../hooks/useLog';
 import type {Transport} from '../transport/UsbHid';
 
 const TRANSPORTS: readonly Transport[] = ['auto', 'usb', 'tcp'] as const;
 
 export function UsbScreen({
+  hid,
   entries,
-  log,
   clear,
 }: {
+  hid: UsbSession;
   entries: LogEntry[];
-  log: (level: LogLevel, text: string) => void;
   clear: () => void;
 }) {
-  const hid = useUsbHid({log});
   const [raw, setRaw] = useState('00ff0001');
 
   const connected = hid.state === 'connected';

@@ -2,19 +2,28 @@ import React from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, LogList, Section, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
-import {useFidoGatt} from '../hooks/useFidoGatt';
-import type {LogEntry, LogLevel} from '../hooks/useLog';
+import type {FidoSession} from '../hooks/useFidoGatt';
+import type {LogEntry} from '../hooks/useLog';
 
+/*
+ * The BLE session is passed IN, not created here.
+ *
+ * It used to call useFidoGatt() itself, which tied the whole session to this
+ * screen being mounted: switching tabs unmounted it, the state went back to
+ * 'idle' while the GATT server was still advertising, and - worse - the bridge
+ * unsubscribed, so a request arriving while the user was on another tab went
+ * unanswered. A security key that stops answering when you look away is not
+ * one. The session lives in App now, for as long as the app does.
+ */
 export function FidoScreen({
+  fido,
   entries,
-  log,
   clear,
 }: {
+  fido: FidoSession;
   entries: LogEntry[];
-  log: (level: LogLevel, text: string) => void;
   clear: () => void;
 }) {
-  const fido = useFidoGatt({log});
   const running = fido.state === 'advertising' || fido.state === 'connected';
 
   return (
