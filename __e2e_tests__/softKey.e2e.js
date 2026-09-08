@@ -54,10 +54,19 @@ module.exports = function softKey({describe, it}) {
     });
 
     it('firmware boots and backs itself with files', async ({log, assert}) => {
+      /*
+       * NOT stopped first, and that is a correctness point rather than a
+       * tidy-up. nativeStop() cannot stop the firmware thread -
+       * okemu_firmware_run() is the Arduino loop and never returns - so a
+       * following start() used to spawn a SECOND one, and both then drained the
+       * same hid_in queue. It presented as an unlock that failed twice and then
+       * worked, which reads like a flaky device rather than a leak.
+       *
+       * Starting again is refused outright now. Each e2e run gets a fresh
+       * firmware anyway, because the runner force-stops the app first.
+       */
       if (OkEmu.isRunning()) {
-        log('already running from a previous test; stopping first');
-        await OkEmu.stop();
-        await delay(200);
+        log('firmware already running in this app process - reusing it');
       }
 
       const banner = [];
@@ -69,11 +78,21 @@ module.exports = function softKey({describe, it}) {
 
       const result = await OkEmu.start();
       log(`start -> ${JSON.stringify(result)}`);
-      assert.ok(result.started, `firmware did not start: ${result.message}`);
-      assert.ok(
-        result.storageDir && result.storageDir.length > 0,
-        'no storage directory reported; flash.bin has nowhere to live',
-      );
+
+      /*
+       * "already running" is a pass. The soft-key screen auto-starts the
+       * firmware when the app mounts, so by the time this suite runs it is
+       * usually up already - and since the thread cannot be restarted, that is
+       * the only correct answer to a second start().
+       */
+      const up = result.started || result.message === 'already running';
+      assert.ok(up, `firmware did not start: ${result.message}`);
+      if (result.started) {
+        assert.ok(
+          result.storageDir && result.storageDir.length > 0,
+          'no storage directory reported; flash.bin has nowhere to live',
+        );
+      }
 
       // setup() runs on its own thread; give it a moment to reach the loop.
       await delay(1500);

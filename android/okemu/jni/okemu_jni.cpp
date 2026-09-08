@@ -46,6 +46,17 @@ jmethodID g_onLed = nullptr;       /* (int[] packedRgb) -> void */
 jmethodID g_onRestart = nullptr;   /* () -> void */
 
 pthread_t g_fw_thread = 0;
+
+/*
+ * Whether a firmware thread has EVER been created in this process.
+ *
+ * Distinct from g_running, which only says whether stop() has been called. The
+ * thread cannot be stopped: okemu_firmware_run() is the Arduino loop and never
+ * returns, so nativeStop() shuts the HAL down and leaves it running. Starting
+ * again would pthread_create a SECOND one, and both would then race the same
+ * global input queues - the same reason restart() is unsupported.
+ */
+bool g_fw_thread_created = false;
 bool g_running = false;
 
 /* ------------------------------------------------------- thread attachment */
@@ -164,6 +175,21 @@ Java_com_okrn_okemu_OkEmuNative_nativeStart(JNIEnv *env, jclass,
   const std::string dir = jstr(env, storageDir);
   if (dir.empty()) return env->NewStringUTF("storage directory is empty");
 
+  /*
+   * Refused rather than quietly spawning a second firmware.
+   *
+   * This used to succeed, and the consequence was invisible: two firmware
+   * threads draining one hid_in queue, so PIN digits and HID reports went to
+   * whichever woke first. It presented as an unlock that failed twice and then
+   * worked, which reads like a flaky device rather than a leak.
+   */
+  if (g_fw_thread_created) {
+    return env->NewStringUTF(
+        "the firmware thread cannot be restarted in this process - it only exits "
+        "through the AIRCR trap, so starting again would run a second one "
+        "alongside it. Restart the app; flash.bin and eeprom.bin persist.");
+  }
+
   /* Resolve the callback methods once, up front: a wrong signature should
    * fail at start() rather than silently drop every packet later. */
   if (g_listener) env->DeleteGlobalRef(g_listener);
@@ -203,6 +229,7 @@ Java_com_okrn_okemu_OkEmuNative_nativeStart(JNIEnv *env, jclass,
   }
 
   g_running = true;
+  g_fw_thread_created = true;
   LOGI("firmware started, storage=%s", dir.c_str());
   return env->NewStringUTF("");
 }

@@ -89,23 +89,14 @@ module.exports = function deviceFlow({describe, it}) {
 
     it('unlocks with the PIN', async ({log, assert}) => {
       /*
-       * The firmware is REBOOTED first rather than cleared with the gesture.
+       * No reboot, and no clear gesture either.
        *
-       * A previous failed attempt leaves its digits in the password buffer and
-       * the next attempt appends to them, so an earlier run can make the
-       * correct PIN fail here. device.clearPinEntry() is supposed to be the way
-       * out and is measurably not: the clear branch is guarded on !isfade while
-       * the append is unconditional, so on a device pulsing its LED the gesture
-       * adds an eighth digit instead of emptying seven. Measured exactly that -
-       * see FINDING-pin-buffer-cannot-be-cleared.md.
-       *
-       * The buffer is RAM, so a boot is unambiguous.
+       * The firmware cannot be restarted in this process - its thread never
+       * returns - so a stop/start used to leave two of them racing one input
+       * queue. And clearPinEntry() appends before it resets. Each e2e run gets
+       * a fresh firmware because the tool force-stops the app, so the password
+       * buffer is empty here by construction.
        */
-      await OkEmu.stop();
-      await delay(300);
-      await OkEmu.start();
-      await delay(2000);
-
       const {device} = await getOnlyKey();
       const status = await device.unlock(PIN, {timeoutMs: 20000});
       log(`unlocked: ${status}`);
