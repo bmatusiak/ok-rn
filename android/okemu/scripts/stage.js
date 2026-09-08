@@ -441,6 +441,76 @@ function defuseTimeHeader() {
   return rewritten;
 }
 
+/**
+ * A digest of everything that actually gets compiled.
+ *
+ * Taken over the STAGED tree, after the patches, because that is the source
+ * the .so is built from - hashing OnlyKey-Firmware instead would describe the
+ * inputs and miss every fixup applied on the way in.
+ *
+ * Path is hashed alongside content so that moving a file changes the digest,
+ * and the walk is sorted so the answer does not depend on readdir order.
+ */
+function digestStage() {
+  const crypto = require('crypto');
+  const hash = crypto.createHash('sha256');
+  const files = [];
+
+  (function walk(dir, rel) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      const here = rel ? rel + '/' + entry.name : entry.name;
+      if (entry.isDirectory()) walk(full, here);
+      else files.push([here, full]);
+    }
+  })(STAGE, '');
+
+  for (const [rel, full] of files) {
+    hash.update(rel);
+    hash.update(fs.readFileSync(full));
+  }
+  return { digest: hash.digest('hex').slice(0, 12), files: files.length };
+}
+
+/** Short HEAD of a checkout, or null when it is not a repo. */
+function gitShort(dir) {
+  try {
+    return require('child_process')
+      .execFileSync('git', ['-C', dir, 'rev-parse', '--short', 'HEAD'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      .trim();
+  } catch (_) {
+    return null;
+  }
+}
+
+/*
+ * Written where the app can import it, because the login screen leads with
+ * "which firmware is this actually running" and a version that is guessed is
+ * worse than none. Generated rather than committed: a checkout that has never
+ * staged reports 'unknown' instead of somebody else's hash.
+ */
+function writeBuildInfo(stats) {
+  const out = path.join(OKEMU, '..', '..', 'src', 'generated');
+  fs.mkdirSync(out, { recursive: true });
+  const info = {
+    digest: stats.digest,
+    files: stats.files,
+    firmware: gitShort(FW),
+    libraries: gitShort(LIB_SRC),
+    stagedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(
+    path.join(out, 'firmware.json'),
+    JSON.stringify(info, null, 2) + '\n',
+  );
+  return info;
+}
+
 function main() {
   for (const p of [CORE_SRC, FW, LIB_SRC]) {
     if (!fs.existsSync(p)) {
@@ -501,15 +571,19 @@ function main() {
   const patched = applyPatches();
   const scs = rewriteSystemBlock();
 
+  const stats = digestStage();
+  const info = writeBuildInfo(stats);
+
   console.log(
     `stage: ${path.relative(OKEMU, STAGE)}\n` +
     `  core files overlaid from OnlyKey-Firmware: ${overlaid}\n` +
     `  emulator overrides applied:                ${overrides}\n` +
     `  bare-metal files dropped:                  ${dropped}\n` +
     `  literal patches applied:                   ${patched}\n` +
-    `  system-block registers rebased:            ${scs}
-` +
-    `  Time.h consumers repointed at TimeLib.h:   ${renamed}`
+    `  system-block registers rebased:            ${scs}\n` +
+    `  Time.h consumers repointed at TimeLib.h:   ${renamed}\n` +
+    `  staged sources digested:                   ${stats.files} files, ${stats.digest}\n` +
+    `  OnlyKey-Firmware / libraries:              ${info.firmware || '?'} / ${info.libraries || '?'}`
   );
 }
 

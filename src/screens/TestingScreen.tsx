@@ -8,6 +8,9 @@ import type {EmuSession} from '../hooks/useOkEmu';
 import type {UsbSession} from '../hooks/useUsbHid';
 import type {LogEntry} from '../hooks/useLog';
 
+/** Digits are button numbers, so each must be 1-6, and the firmware wants 7-10. */
+const TEST_PIN = '1234561';
+
 /**
  * Everything that is useful while building this and dangerous while using it.
  *
@@ -41,12 +44,35 @@ export function TestingScreen({
         </View>
         <View style={styles.row}>
           <View style={styles.cell}>
+            <Btn
+              title="Start"
+              disabled={emu.state === 'running' || emu.busy || emu.state === 'halted'}
+              onPress={emu.start}
+            />
+          </View>
+          <View style={styles.cell}>
             <Btn title="OKCONNECT" onPress={emu.connect} disabled={emu.busy} />
           </View>
           <View style={styles.cell}>
             <Btn title="Stop" tone="danger" onPress={emu.stop} />
           </View>
         </View>
+
+        <View style={styles.row}>
+          <View style={styles.cell}>
+            <Btn
+              title={'Set PIN ' + TEST_PIN}
+              disabled={emu.busy || emu.state !== 'running'}
+              onPress={() => emu.provision(TEST_PIN)}
+            />
+          </View>
+        </View>
+        <Text style={styles.note}>
+          Set PIN provisions a fixed PIN and only works on a key that has none.
+          It takes effect on the next boot, and the firmware thread cannot be
+          restarted in place — so reopen the app to see whether it stuck. The
+          real setup flow lives behind the login screen.
+        </Text>
       </Section>
 
       <E2EScreen />

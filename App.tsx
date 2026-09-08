@@ -16,7 +16,7 @@ import {useTestingMode} from './src/hooks/useTestingMode';
 import {SplashScreen} from './src/screens/SplashScreen';
 import {LoginScreen} from './src/screens/LoginScreen';
 import {PinScreen} from './src/screens/PinScreen';
-import {SoftKeyScreen} from './src/screens/SoftKeyScreen';
+import {KeyScreen} from './src/screens/KeyScreen';
 import {FidoScreen} from './src/screens/FidoScreen';
 import {LogScreen} from './src/screens/LogScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
@@ -119,7 +119,12 @@ function Shell() {
               accessibilityRole="button"
               accessibilityLabel="Menu"
               style={({pressed}) => [styles.barLeft, pressed && styles.pressed]}>
-              <Logo variant="mark" height={26} />
+              {/*
+                The wordmark, not the square mark: that asset is not
+                transparent, so tinting it white fills the whole square.
+              */}
+              <Logo height={17} />
+              <Text style={styles.barSep}>|</Text>
               <Text style={styles.barTitle}>{tab}</Text>
             </Pressable>
             <StatusPill
@@ -162,7 +167,7 @@ function Shell() {
           ) : phase === 'pin' ? (
             <PinScreen onPress={emu.press} onBack={() => setPhase('login')} />
           ) : tab === 'Key' ? (
-            <SoftKeyScreen emu={emu} />
+            <KeyScreen emu={emu} />
           ) : tab === 'Security' ? (
             <FidoScreen fido={fido} />
           ) : tab === 'Log' ? (
@@ -224,7 +229,8 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   barLeft: {flexDirection: 'row', alignItems: 'center', gap: 10},
-  barTitle: {color: theme.text, fontSize: 17, fontWeight: '700'},
+  barTitle: {color: theme.text, fontSize: 16, fontWeight: '700'},
+  barSep: {color: theme.border, fontSize: 15},
   pressed: {opacity: 0.6},
 
   testing: {

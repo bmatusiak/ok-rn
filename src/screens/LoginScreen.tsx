@@ -29,6 +29,7 @@ export function LoginScreen({
 
       <View style={styles.versions}>
         <Row label="firmware" value={buildInfo.firmware} />
+        {buildInfo.sources ? <Row label="sources" value={buildInfo.sources} /> : null}
         <Row label="library" value={buildInfo.library} />
         <Row label="app" value={buildInfo.app} />
       </View>

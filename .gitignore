@@ -59,3 +59,6 @@ tools/*.log
 android/okemu/.stage/
 android/okemu/.cxx-probe/
 android/okemu/sources.cmake
+
+# Written by android/okemu/scripts/stage.js - describes the staged firmware.
+src/generated/
