@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  FlatList,
   Pressable,
   StyleSheet,
   Text,
@@ -107,21 +106,51 @@ export function KeyValue({label, value}: {label: string; value: string}) {
   );
 }
 
-export function LogList({entries}: {entries: LogEntry[]}) {
+/**
+ * The log, rendered inline rather than in a list of its own.
+ *
+ * It was a FlatList, which meant it had to own its scrolling and therefore had
+ * to be pinned outside the page's ScrollView - a VirtualizedList inside a
+ * ScrollView of the same orientation breaks both. Pinned, it sat across the
+ * bottom of every screen taking space the controls needed.
+ *
+ * Nothing was gained by virtualising it: useLog keeps 200 entries at most and
+ * drops the oldest, so the worst case is bounded and small. Plain Views scroll
+ * with the rest of the page, which is where a log belongs.
+ */
+export function LogList({entries, limit = 40}: {entries: LogEntry[]; limit?: number}) {
+  /*
+   * Newest first, and only the newest few.
+   *
+   * useLog holds 200, and rendering all of them makes the log longer than
+   * everything else on the page put together - the controls become a thing you
+   * scroll past to reach the part you were not looking for. Forty is about two
+   * screens, which is as far back as anyone reads without wanting to search.
+   */
+  const shown = entries.slice(0, limit);
+  const hidden = entries.length - shown.length;
+
   return (
-    <FlatList
-      data={entries}
-      style={styles.log}
-      contentContainerStyle={styles.logContent}
-      keyExtractor={item => String(item.id)}
-      ListEmptyComponent={<Text style={styles.logEmpty}>No traffic yet.</Text>}
-      renderItem={({item}) => (
-        <Text style={styles.logLine} numberOfLines={3}>
-          <Text style={styles.logTime}>{item.at} </Text>
-          <Text style={{color: levelColor[item.level]}}>{item.text}</Text>
-        </Text>
+    <View style={styles.log}>
+      {entries.length === 0 ? (
+        <Text style={styles.logEmpty}>No traffic yet.</Text>
+      ) : (
+        <>
+          {shown.map(item => (
+            <Text key={item.id} style={styles.logLine} numberOfLines={3}>
+              <Text style={styles.logTime}>{item.at} </Text>
+              {item.count > 1 ? (
+                <Text style={styles.logCount}>{'×' + item.count + ' '}</Text>
+              ) : null}
+              <Text style={{color: levelColor[item.level]}}>{item.text}</Text>
+            </Text>
+          ))}
+          {hidden > 0 ? (
+            <Text style={styles.logEmpty}>{hidden} older lines not shown</Text>
+          ) : null}
+        </>
       )}
-    />
+    </View>
   );
 }
 
@@ -178,14 +207,17 @@ const styles = StyleSheet.create({
   kvValue: {color: theme.text, fontSize: 12, fontFamily: theme.mono},
 
   log: {
-    flex: 1,
+    // No flex. It sizes to its content and the page scrolls; claiming a share
+    // of the screen is what made it crowd the controls out.
+    padding: 10,
     backgroundColor: '#080a0c',
     borderRadius: 10,
     borderWidth: 1,
     borderColor: theme.border,
   },
-  logContent: {padding: 10},
   logEmpty: {color: theme.textDim, fontSize: 12, fontStyle: 'italic'},
   logLine: {fontFamily: theme.mono, fontSize: 11, marginBottom: 3},
   logTime: {color: '#4a5560'},
+  // A repeat count, not a value - dim enough to read past when scanning.
+  logCount: {color: theme.textDim, fontWeight: '700'},
 });

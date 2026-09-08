@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {StyleSheet, Text, TextInput, View} from 'react-native';
+import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, KeyValue, LogList, Section, Segmented, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useUsbHid} from '../hooks/useUsbHid';
@@ -23,7 +23,11 @@ export function UsbScreen({
   const connected = hid.state === 'connected';
 
   return (
-    <View style={styles.root}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+    >
       <Section
         title="Transport"
         right={<StatusPill state={hid.state} />}>
@@ -89,10 +93,10 @@ export function UsbScreen({
         />
       </Section>
 
-      <Section title="Traffic" right={<Btn title="Clear" onPress={clear} />} style={styles.logSection}>
+      <Section title="Traffic" right={<Btn title="Clear" onPress={clear} />}>
         <LogList entries={entries} />
       </Section>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -115,5 +119,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
-  logSection: {flex: 1},
+  content: {paddingBottom: 4},
 });

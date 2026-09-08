@@ -1,6 +1,10 @@
 import React, {useState} from 'react';
 import {Platform, StatusBar, StyleSheet, Text, View} from 'react-native';
-import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import {Segmented} from './src/ui/components';
 import {theme} from './src/ui/theme';
 import {useLog} from './src/hooks/useLog';
@@ -14,8 +18,23 @@ import {E2EScreen} from './src/screens/E2EScreen';
 const TABS = ['Soft key', 'USB HID', 'FIDO2 BLE', 'E2E'] as const;
 type Tab = (typeof TABS)[number];
 
+/*
+ * The provider has to be ABOVE whatever reads the insets, so the shell is a
+ * separate component rather than one function with a hook in it -
+ * useSafeAreaInsets() inside App would be reading a provider that is its own
+ * child, and gets zeros.
+ */
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <Shell />
+    </SafeAreaProvider>
+  );
+}
+
+function Shell() {
   const [tab, setTab] = useState<Tab>('Soft key');
+  const insets = useSafeAreaInsets();
 
   // One log buffer per screen so switching tabs does not interleave traffic.
   const usbLog = useLog();
@@ -23,7 +42,7 @@ export default function App() {
   const emuLog = useLog();
 
   return (
-    <SafeAreaProvider>
+    <>
       <StatusBar barStyle="light-content" />
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
         <View style={styles.header}>
@@ -35,7 +54,18 @@ export default function App() {
           <Segmented options={TABS} value={tab} onChange={setTab} />
         </View>
 
-        <View style={styles.body}>
+        {/*
+          A floor under the bottom inset, not just the inset.
+
+          This handset reports zero: its navigation bar sits OUTSIDE the app
+          window (the window is 1465 of 1600 pixels), so there is nothing to
+          inset past - and the last section then ends on the final pixel of the
+          window, hard against the buttons, with its own bottom border clipped.
+          A phone using gesture navigation reports a real inset instead and
+          needs it honoured. Taking the larger of the two covers both without
+          asking which kind of phone this is.
+        */}
+        <View style={[styles.body, {paddingBottom: Math.max(insets.bottom, 12)}]}>
           {tab === 'Soft key' ? (
             <SoftKeyScreen entries={emuLog.entries} log={emuLog.log} clear={emuLog.clear} />
           ) : tab === 'USB HID' ? (
@@ -47,7 +77,7 @@ export default function App() {
           )}
         </View>
       </SafeAreaView>
-    </SafeAreaProvider>
+    </>
   );
 }
 

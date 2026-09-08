@@ -1,5 +1,5 @@
 import React from 'react';
-import {StyleSheet, Text, View} from 'react-native';
+import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, LogList, Section, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useOkEmu} from '../hooks/useOkEmu';
@@ -28,7 +28,11 @@ export function SoftKeyScreen({
   const running = emu.state === 'running';
 
   return (
-    <View style={styles.root}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+    >
       <Section title="Firmware" right={<StatusPill state={pillState(emu.state)} label={emu.state} />}>
         {emu.state === 'halted' ? (
           <Text style={styles.warn}>
@@ -136,10 +140,10 @@ export function SoftKeyScreen({
         </Text>
       </Section>
 
-      <Section title="Firmware log" right={<Btn title="Clear" onPress={clear} />} style={styles.logSection}>
+      <Section title="Firmware log" right={<Btn title="Clear" onPress={clear} />}>
         <LogList entries={entries} />
       </Section>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -175,5 +179,5 @@ const styles = StyleSheet.create({
   hint: {color: theme.textDim, fontSize: 11, lineHeight: 16},
   warn: {color: theme.warn, fontSize: 11, lineHeight: 16},
   kvBlock: {marginTop: 10},
-  logSection: {flex: 1},
+  content: {paddingBottom: 4},
 });

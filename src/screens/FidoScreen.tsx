@@ -1,5 +1,5 @@
 import React from 'react';
-import {StyleSheet, Text, View} from 'react-native';
+import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, LogList, Section, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useFidoGatt} from '../hooks/useFidoGatt';
@@ -18,7 +18,11 @@ export function FidoScreen({
   const running = fido.state === 'advertising' || fido.state === 'connected';
 
   return (
-    <View style={styles.root}>
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+    >
       <Section title="Authenticator" right={<StatusPill state={fido.state} />}>
         <Text style={styles.hint}>
           Advertises the FIDO BLE service 0xFFFD so a desktop browser can use this phone as a
@@ -87,10 +91,10 @@ export function FidoScreen({
         )}
       </Section>
 
-      <Section title="CTAP traffic" right={<Btn title="Clear" onPress={clear} />} style={styles.logSection}>
+      <Section title="CTAP traffic" right={<Btn title="Clear" onPress={clear} />}>
         <LogList entries={entries} />
       </Section>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -101,5 +105,5 @@ const styles = StyleSheet.create({
   cell: {flex: 1},
   hint: {color: theme.textDim, fontSize: 11, lineHeight: 16},
   kvBlock: {marginTop: 10},
-  logSection: {flex: 1},
+  content: {paddingBottom: 4},
 });
