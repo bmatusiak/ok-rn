@@ -18,7 +18,8 @@
     "react-native": "0.87.1",
     "@react-native/new-app-screen": "0.87.1",
     "react-native-safe-area-context": "^5.5.2",
-    "node-onlykey-lib": "file:../node-onlykey-lib"
+    "node-onlykey-lib": "file:../node-onlykey-lib",
+    "@bmatusiak/rectify": "github:bmatusiak/rectify"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

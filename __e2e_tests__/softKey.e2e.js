@@ -22,41 +22,22 @@ const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 const {IFACE} = OkEmuModule;
 
-/** okmsg framing: FF FF FF FF | msg | payload, zero-padded to 64. */
-const HEADER = [0xff, 0xff, 0xff, 0xff];
-const OKCONNECT = 0xe4;
-const REPORT_SIZE = 64;
-
-function buildMessage(msg, payload = []) {
-  const frame = new Uint8Array(REPORT_SIZE);
-  frame.set(HEADER, 0);
-  frame[4] = msg;
-  frame.set(payload, 5);
-  return frame;
-}
-
-/**
- * OKCONNECT's payload: epoch seconds as hex digit PAIRS, one byte each. This
- * is python-onlykey's set_time() encoding and the firmware parses it as such -
- * not as a plain integer.
+/*
+ * The protocol comes from the library now.
+ *
+ * This file used to carry its own HEADER/OKCONNECT/buildMessage/setTimePayload
+ * - a THIRD copy, after the app's and the library's. That is exactly the drift
+ * this suite exists to catch: an e2e test built on its own copy of the framing
+ * proves the copy works, not the app.
  */
-function setTimePayload(when = Date.now()) {
-  let hex = Math.floor(when / 1000).toString(16);
-  if (hex.length % 2) hex = `0${hex}`;
-  const out = [];
-  for (let i = 0; i < hex.length; i += 2) {
-    out.push(parseInt(hex.slice(i, i + 2), 16));
-  }
-  return out;
-}
+const {bytes: okbytes, protocol} = require('node-onlykey-lib');
 
-function ascii(bytes) {
-  let out = '';
-  for (const b of bytes) {
-    if (b >= 0x20 && b <= 0x7e) out += String.fromCharCode(b);
-  }
-  return out;
-}
+const {MSG, okmsg} = protocol;
+const OKCONNECT = MSG.OKCONNECT;
+
+const buildMessage = (msg, payload) => okmsg.build({msg, payload});
+const setTimePayload = when => okmsg.setTimePayload(when);
+const ascii = bytes => okbytes.toPrintable(bytes);
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 

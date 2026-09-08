@@ -1,8 +1,24 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
+import {bytes as okbytes, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, type Iface} from '../transport/OkEmu';
-import {provisionPin} from '../transport/provision';
-import {bytesToHex, formatHex} from '../transport/hex';
+import {getOnlyKey} from '../onlykey';
+import {bytesToHex} from '../transport/hex';
 import type {LogLevel} from './useLog';
+
+/*
+ * No protocol lives in this file any more.
+ *
+ * It used to carry its own okmsg framing (HEADER, REPORT_SIZE, MSG,
+ * buildMessage, setTimePayload) and import a PIN state machine from
+ * ../transport/provision. All of it was a third copy - the app had one, the
+ * e2e suite had another, and the library has the real one - and the app's copy
+ * was the worst of the three: buildMessage did
+ * `payload.slice(0, REPORT_SIZE - 5)`, silently truncating an over-long
+ * payload, where okmsg.build() refuses it and says how long it was.
+ *
+ * What is left here is React: state, logging, and the shape the screen binds
+ * to.
+ */
 
 type Options = {
   log: (level: LogLevel, text: string) => void;
@@ -11,51 +27,6 @@ type Options = {
 };
 
 export type EmuState = 'unavailable' | 'stopped' | 'starting' | 'running' | 'error';
-
-/** okmsg framing: FF FF FF FF | msg | payload, zero-padded to one 64-byte report. */
-const HEADER = [0xff, 0xff, 0xff, 0xff];
-const REPORT_SIZE = 64;
-
-export const MSG = {
-  OKCONNECT: 0xe4,
-  OKGETLABELS: 0xe5,
-  OKPING: 0xf3,
-} as const;
-
-export function buildMessage(msg: number, payload: number[] = []): Uint8Array {
-  const frame = new Uint8Array(REPORT_SIZE);
-  frame.set(HEADER, 0);
-  frame[4] = msg;
-  frame.set(payload.slice(0, REPORT_SIZE - 5), 5);
-  return frame;
-}
-
-/**
- * OKCONNECT's payload is the epoch seconds as hex digit PAIRS, one byte each -
- * python-onlykey's set_time() encoding, which the firmware parses as such
- * rather than as a plain integer.
- */
-export function setTimePayload(when: number = Date.now()): number[] {
-  let hex = Math.floor(when / 1000).toString(16);
-  if (hex.length % 2) {
-    hex = `0${hex}`;
-  }
-  const out: number[] = [];
-  for (let i = 0; i < hex.length; i += 2) {
-    out.push(parseInt(hex.slice(i, i + 2), 16));
-  }
-  return out;
-}
-
-function ascii(bytes: Uint8Array): string {
-  let out = '';
-  for (const b of bytes) {
-    if (b >= 0x20 && b <= 0x7e) {
-      out += String.fromCharCode(b);
-    }
-  }
-  return out;
-}
 
 const IFACE_NAME: Record<number, string> = {
   [IFACE.KEYBOARD]: 'kbd',
@@ -76,14 +47,19 @@ export function useOkEmu({log, autoStart = false}: Options) {
       // The debug interface carries the firmware's own printf output, which is
       // text; everything else is binary reports.
       if (event.iface === IFACE.SEREMU) {
-        const text = ascii(event.bytes).trim();
+        const text = okbytes.toPrintable(event.bytes).trim();
         if (text) {
           log('info', `[fw] ${text}`);
         }
         return;
       }
       const arrow = event.dir === DIR.OUT ? 'rx' : 'tx';
-      log(arrow, `${IFACE_NAME[event.iface] ?? event.iface} ${formatHex(bytesToHex(event.bytes)).slice(0, 71)}`);
+      log(
+        arrow,
+        `${IFACE_NAME[event.iface] ?? event.iface} ${okbytes
+          .formatHex(bytesToHex(event.bytes))
+          .slice(0, 71)}`,
+      );
     });
 
     const offLed = OkEmu.on('led', pixels => setLed(pixels));
@@ -139,6 +115,14 @@ export function useOkEmu({log, autoStart = false}: Options) {
     }
   }, [log]);
 
+  /**
+   * There is no in-process restart, and there cannot be.
+   *
+   * The firmware thread only exits through the AIRCR trap, so
+   * NativeOkEmuModule rejects this unconditionally. It is kept because the
+   * screen offers the button and the honest answer is the rejection, not a
+   * silent no-op that looks like it worked.
+   */
   const restart = useCallback(async () => {
     setBusy(true);
     try {
@@ -146,8 +130,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
       setState(result.started ? 'running' : 'error');
       log('info', result.started ? 'firmware restarted' : `restart: ${result.message}`);
     } catch (error) {
-      setState('error');
-      log('error', `restart: ${String(error)}`);
+      log('error', `restart: ${String(error)} - restart the app instead; flash.bin persists`);
     } finally {
       setBusy(false);
     }
@@ -160,15 +143,18 @@ export function useOkEmu({log, autoStart = false}: Options) {
    * emulated flash - the one thing Android's mmap_min_addr floor can quietly
    * break. A firmware that boots and answers nothing here has the mapping
    * problem; a firmware that answers has not.
+   *
+   * Now goes through the library, so the key derivation is the one pinned
+   * against the published NaCl vectors rather than a second implementation
+   * that happens to live in this app.
    */
   const connect = useCallback(async () => {
     setBusy(true);
     try {
-      const reply = OkEmu.nextReport(IFACE.VENDOR, 5000);
-      await OkEmu.write(IFACE.VENDOR, buildMessage(MSG.OKCONNECT, setTimePayload()));
-      const bytes = await reply;
-      log('info', `OKCONNECT -> "${ascii(bytes).trim()}"`);
-      return bytes;
+      const {device} = await getOnlyKey();
+      const result = await device.connect();
+      log('info', `OKCONNECT -> "${String(result.status ?? '').trim()}"`);
+      return result;
     } catch (error) {
       log('error', `OKCONNECT: ${String(error)}`);
       return null;
@@ -178,20 +164,25 @@ export function useOkEmu({log, autoStart = false}: Options) {
   }, [log]);
 
   /**
-   * Set a PIN, then restart and confirm it stuck.
+   * Set a PIN.
    *
-   * This is the test that a protocol-only port cannot pass. Storing a PIN
-   * encrypts, encrypting dereferences certified_hw, and certified_hw is at the
-   * bottom of the flash array - the exact region Android's mmap_min_addr floor
-   * puts out of reach unless the array is rebased. It is also the real setup
-   * flow for a new soft key, not a diagnostic.
+   * The six-step bracket, the one-line digit burst and the per-digit
+   * acknowledgement counting all live in the library now. This reports its
+   * progress: the library emits one event per transition, which is the only
+   * way to tell a device waiting for a button press from a wedged one.
    */
   const provision = useCallback(
     async (pin: string) => {
       setBusy(true);
+      let offProgress: (() => void) | undefined;
       try {
         log('info', `provisioning with a ${pin.length}-digit PIN`);
-        await provisionPin({pin, log: step => log('info', `  ${step}`)});
+        const {device} = await getOnlyKey();
+
+        offProgress = device.on('progress', (e: {step: string}) =>
+          log('info', `  ${e.step}`),
+        );
+        await device.setPin(pin);
 
         /*
          * No restart here. `initialized` is only recomputed from flash in
@@ -208,16 +199,17 @@ export function useOkEmu({log, autoStart = false}: Options) {
         console.log(`[softkey] provision failed: ${String(error)}`);
         return false;
       } finally {
+        offProgress?.();
         setBusy(false);
       }
     },
-    [log, connect],
+    [log],
   );
 
   const send = useCallback(
     async (iface: Iface, msg: number) => {
       try {
-        await OkEmu.write(iface, buildMessage(msg));
+        await OkEmu.write(iface, protocol.okmsg.build({msg}));
       } catch (error) {
         log('error', `write: ${String(error)}`);
       }
@@ -252,11 +244,13 @@ export function useOkEmu({log, autoStart = false}: Options) {
         return;
       }
       // setup() runs on its own thread; let it reach the main loop.
-      await new Promise<void>(resolve => { setTimeout(resolve, 1500); });
-      const bytes = await connect();
+      await new Promise<void>(resolve => {
+        setTimeout(resolve, 1500);
+      });
+      const result = await connect();
       console.log(
-        bytes
-          ? `[softkey] OKCONNECT ok: "${ascii(bytes).trim()}"`
+        result
+          ? `[softkey] OKCONNECT ok: "${String(result.status ?? '').trim()}"`
           : '[softkey] OKCONNECT got no reply - the flash mapping is suspect',
       );
     })();

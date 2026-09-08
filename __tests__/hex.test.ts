@@ -2,7 +2,8 @@
  * @format
  */
 
-import {bytesToHex, formatHex, hexToBytes, padReport} from '../src/transport/hex';
+import {bytesToHex, formatHex, hexToBytes} from '../src/transport/hex';
+import {transport as contract} from 'node-onlykey-lib';
 
 describe('hex', () => {
   test('round-trips arbitrary bytes', () => {
@@ -31,13 +32,22 @@ describe('hex', () => {
     expect(formatHex('01ff00aa')).toBe('01 ff 00 aa');
   });
 
-  test('padReport zero-fills a short payload to the report width', () => {
-    const padded = padReport(Uint8Array.from([1, 2, 3]), 8);
-    expect(Array.from(padded)).toEqual([1, 2, 3, 0, 0, 0, 0, 0]);
+  /*
+   * padReport is gone; the library's toReport replaces it. These two tests are
+   * kept rather than deleted because the SECOND one records a real behaviour
+   * change, and a silently different rule is worth a test that says so.
+   */
+  test('toReport zero-fills a short payload to the report width', () => {
+    expect(Array.from(contract.toReport(Uint8Array.from([1, 2, 3]), 8))).toEqual([
+      1, 2, 3, 0, 0, 0, 0, 0,
+    ]);
   });
 
-  test('padReport truncates a payload that overflows the report', () => {
-    const padded = padReport(Uint8Array.from([1, 2, 3, 4, 5]), 3);
-    expect(Array.from(padded)).toEqual([1, 2, 3]);
+  test('toReport REFUSES an overflow where padReport silently truncated it', () => {
+    // padReport returned the first N bytes, so an over-long frame went to the
+    // device as a valid-looking short message. A caller could not tell.
+    expect(() => contract.toReport(Uint8Array.from([1, 2, 3, 4, 5]), 3)).toThrow(
+      /frame is 5 bytes/,
+    );
   });
 });

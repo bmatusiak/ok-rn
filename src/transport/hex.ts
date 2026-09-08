@@ -34,10 +34,3 @@ export function hexToBytes(hex: string): Uint8Array {
 export function formatHex(hex: string): string {
   return (hex.match(/.{1,2}/g) ?? []).join(' ');
 }
-
-/** Right-pad (or truncate) to exactly `size` bytes; HID reports are fixed-width. */
-export function padReport(bytes: Uint8Array, size: number): Uint8Array {
-  const out = new Uint8Array(size);
-  out.set(bytes.subarray(0, size));
-  return out;
-}

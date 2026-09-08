@@ -85,10 +85,12 @@ export function SoftKeyScreen({
           </View>
         </View>
         <Text style={styles.hint}>
-          Set PIN provisions the device with {TEST_PIN}, restarts the firmware,
-          and reports whether it stuck. Storing a PIN encrypts, and encrypting
-          reaches the bottom of the flash array — so this is the step a
-          protocol-only port cannot pass.
+          Set PIN provisions the device with {TEST_PIN}. Storing a PIN
+          encrypts, and encrypting reaches the bottom of the flash array — so
+          this is the step a protocol-only port cannot pass. It does not
+          restart: the PIN only takes effect on the next boot, and the firmware
+          thread cannot be restarted in place, so restart the app to check it
+          stuck.
         </Text>
       </Section>
 
