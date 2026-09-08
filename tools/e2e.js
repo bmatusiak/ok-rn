@@ -122,12 +122,20 @@ async function main() {
   await sleep(1500);
 
   /*
-   * MonikerView auto-runs once on mount, so on a fresh launch the tab press is
-   * enough. Pressing RUN TESTS as well makes the run deterministic - and on a
-   * revisit, where the harness has already run, it is the only thing that
-   * starts one.
+   * MonikerView auto-runs once on mount, so on a fresh launch the tab press has
+   * already started a run and the button reads "RUNNING..." rather than
+   * "RUN TESTS". Insisting on the press there fails against a suite that is
+   * working correctly - which is exactly what it did the first time.
+   *
+   * So: press it only if it is actually offered. On a revisit, where the
+   * harness has already finished, it is the only thing that starts a run.
    */
-  await tapText('RUN TESTS');
+  const idle = findByText(dumpUi(), 'RUN TESTS');
+  if (idle) {
+    adb(['shell', 'input', 'tap', String(idle.x), String(idle.y)]);
+  } else {
+    process.stdout.write('a run was already under way' + '\\n');
+  }
 
   process.stdout.write('running');
   const deadline = Date.now() + 180000;
