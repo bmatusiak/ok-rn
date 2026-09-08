@@ -26,7 +26,13 @@ type Options = {
   autoStart?: boolean;
 };
 
-export type EmuState = 'unavailable' | 'stopped' | 'starting' | 'running' | 'error';
+export type EmuState =
+  | 'unavailable'
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'halted'
+  | 'error';
 
 const IFACE_NAME: Record<number, string> = {
   [IFACE.KEYBOARD]: 'kbd',
@@ -64,8 +70,29 @@ export function useOkEmu({log, autoStart = false}: Options) {
 
     const offLed = OkEmu.on('led', pixels => setLed(pixels));
 
+    /*
+   * CPU_RESTART() ENDS THE FIRMWARE, and there is no coming back in this
+   * process. okemu_firmware_run() longjmps out of the AIRCR trap, runs
+   * okemu_hal_shutdown() and RETURNS - the thread exits - and nativeStart
+   * refuses to spawn a second one (that guard exists because two threads
+   * sharing one input queue is worse than none).
+   *
+   * The firmware reaches it by design and by GESTURE: holding button 3 for
+   * about two seconds is "lock the device", which on hardware is a reboot and
+   * here is the end of the soft key (OnlyKey.ino:906-913). Integrity failures
+   * and wipes take the same road.
+   *
+   * This used to log 'info' and leave the state at 'running', so a dead
+   * device read as a healthy one and every later call simply timed out.
+   */
     const offRestart = OkEmu.on('restartRequested', () => {
-      log('info', 'firmware requested CPU_RESTART()');
+      setState('halted');
+      log(
+        'error',
+        'firmware called CPU_RESTART() - the thread has exited and cannot be ' +
+          'restarted in this process. Restart the app; flash and EEPROM persist.',
+      );
+      console.log('[softkey] CPU_RESTART() - firmware thread gone, restart the app');
     });
 
     if (!OkEmu.isAvailable()) {
@@ -217,6 +244,37 @@ export function useOkEmu({log, autoStart = false}: Options) {
     [log],
   );
 
+  /**
+   * Press a button, the way a finger does.
+   *
+   * This is the device's ENTIRE input surface: six buttons. A PIN is a
+   * sequence of them, and user presence for a FIDO2 ceremony is three of them
+   * chosen by the request (protocol.challenge.challengeDigits).
+   *
+   * Taps only, deliberately. Duration is measured in MAIN-LOOP ITERATIONS, not
+   * milliseconds (touch_sense_loop() counts passes), so the millisecond
+   * boundaries differ between this build and hardware and nothing here has
+   * measured them. That would be a nicety, except that the long-press bands
+   * are where the destructive gestures live: >=72 iterations on button 1 runs
+   * backup(), on button 3 locks and calls CPU_RESTART(), on button 6 enters
+   * config mode. A control that might land in one of those by accident is not
+   * one to ship on a guess.
+   *
+   * Presence does not need it either - the challenge is checked before any
+   * duration band is consulted (OnlyKey.ino:807).
+   */
+  const press = useCallback(
+    async (button: number) => {
+      try {
+        await OkEmu.pressButton(button, 120);
+        log('info', `button ${button}`);
+      } catch (error) {
+        log('error', `button ${button}: ${String(error)}`);
+      }
+    },
+    [log],
+  );
+
   const send = useCallback(
     async (iface: Iface, msg: number) => {
       try {
@@ -267,5 +325,17 @@ export function useOkEmu({log, autoStart = false}: Options) {
     })();
   }, [autoStart, start, connect]);
 
-  return {state, storageDir, led, busy, start, stop, restart, connect, provision, send};
+  return {
+    state,
+    storageDir,
+    led,
+    busy,
+    start,
+    stop,
+    restart,
+    connect,
+    provision,
+    press,
+    send,
+  };
 }

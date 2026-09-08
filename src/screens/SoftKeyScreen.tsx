@@ -30,7 +30,14 @@ export function SoftKeyScreen({
   return (
     <View style={styles.root}>
       <Section title="Firmware" right={<StatusPill state={pillState(emu.state)} label={emu.state} />}>
-        {emu.state === 'unavailable' ? (
+        {emu.state === 'halted' ? (
+          <Text style={styles.warn}>
+            The firmware called CPU_RESTART() and its thread has exited. It
+            cannot be started again in this process — restart the app. Nothing
+            is lost: flash and EEPROM are files, so the device comes back
+            exactly as it was.
+          </Text>
+        ) : emu.state === 'unavailable' ? (
           <Text style={styles.warn}>
             libokemu.so was not built for this device's ABI. Check that the APK
             carries it — a 32-bit-only handset needs armeabi-v7a.
@@ -53,7 +60,12 @@ export function SoftKeyScreen({
             <Btn
               title="Start"
               tone="primary"
-              disabled={running || emu.busy || emu.state === 'unavailable'}
+              disabled={
+                running ||
+                emu.busy ||
+                emu.state === 'unavailable' ||
+                emu.state === 'halted'
+              }
               onPress={emu.start}
             />
           </View>
@@ -94,6 +106,36 @@ export function SoftKeyScreen({
         </Text>
       </Section>
 
+      <Section title="Buttons">
+        <Text style={styles.hint}>
+          The device's entire input surface. A PIN is a sequence of these, and
+          user presence for a FIDO2 ceremony is three of them — chosen by the
+          request being approved, so the press approves that request rather
+          than merely proving somebody was here.
+        </Text>
+        <View style={[styles.row, styles.rowTop]}>
+          {[1, 2, 3].map(n => (
+            <View key={n} style={styles.cell}>
+              <Btn title={String(n)} disabled={!running} onPress={() => emu.press(n)} />
+            </View>
+          ))}
+        </View>
+        <View style={[styles.row, styles.rowTop]}>
+          {[4, 5, 6].map(n => (
+            <View key={n} style={styles.cell}>
+              <Btn title={String(n)} disabled={!running} onPress={() => emu.press(n)} />
+            </View>
+          ))}
+        </View>
+        <Text style={styles.hint}>
+          Taps only. The firmware bands press length in main-loop iterations
+          rather than milliseconds, and the long bands are where the
+          destructive gestures live — a two-second hold on 3 locks the device
+          by calling CPU_RESTART(), which on this build ends the firmware
+          thread for good.
+        </Text>
+      </Section>
+
       <Section title="Firmware log" right={<Btn title="Clear" onPress={clear} />} style={styles.logSection}>
         <LogList entries={entries} />
       </Section>
@@ -104,7 +146,10 @@ export function SoftKeyScreen({
 function pillState(state: string): string {
   if (state === 'running') return 'connected';
   if (state === 'starting') return 'connecting';
-  if (state === 'error' || state === 'unavailable') return 'error';
+  // 'halted' is the firmware having ended itself. It is not 'stopped': nothing
+  // here can start it again, so showing it as idle would invite a Start press
+  // that is refused.
+  if (state === 'error' || state === 'unavailable' || state === 'halted') return 'error';
   return 'idle';
 }
 
