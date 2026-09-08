@@ -97,10 +97,23 @@ is debugging, which is the expensive kind of wrong.
   CTAP BLE command at all. The Kotlin has always had `0xbe`, per CTAP 2.1
   §11.2.9, and is right.
 
-## Still unverified
+## Verified against a real host
 
-The Kotlin half cannot be exercised without a central, so the pacing itself is
-proven only by construction. What is proven on device is everything up to it:
-the bridge carries a whole CTAP2 message to the firmware and brings back a real
-127- and 1031-byte response (`__e2e_tests__/6-bridge.e2e.js`). The remaining
-test is a desktop browser doing a WebAuthn registration against the phone.
+The pacing is no longer proven only by construction. A full WebAuthn
+registration completed from Windows against webauthn.io: getInfo, a rejected
+makeCredential, the clientPIN handshake (getKeyAgreement, setPIN, getPINToken),
+and then a 305-byte makeCredential carrying pinUvAuthParam - 23 Control Point
+writes in all.
+
+That sequence is the proof. A host only walks setPIN -> getPINToken ->
+makeCredential if every response arrives WHOLE; one truncated reply and it
+stops. At the negotiated 517-byte MTU the makeCredential response spans several
+fragments, so the queue was exercised end to end by the only client permitted
+to do it - Windows reserves GATT 0xFFFD for its own WebAuthn stack and refuses
+every script (see FINDING-windows-reserves-the-fido-service.md).
+
+One more bug stood between the fix and that result, and it was not in this
+layer: CtapBleFramer strips the fragment flag before handing a message up, so
+MSG arrives as 0x03, and the JS bridge was comparing against the on-the-wire
+0x83. Every request was discarded one line before it reached the firmware.
+
