@@ -118,8 +118,15 @@ target_compile_definitions(okemu_firmware PUBLIC
   #
   # Both the HAL and the firmware's own constants read this, so they cannot
   # disagree about where the array is.
-  OKEMU_FLASH_BASE=0x44000000UL
+  # Not an address any more - the NAME of a variable the HAL sets once the
+  # kernel has told it where the mapping landed. A fixed address is a bet
+  # against every runtime's allocator on every device, and 0x44000000 lost:
+  # ART's JIT zygote cache occupies exactly that range on a Pixel 6a running
+  # Android 16, so MAP_FIXED_NOREPLACE returned EEXIST and the firmware could
+  # not start. See src/okemu_flash_base.h.
+  OKEMU_FLASH_BASE=okemu_flash_base
 )
+
 
 # Constructs GCC's -fpermissive waved through. Listed individually so that a
 # genuinely new error is not hidden by a blanket -w, which is what the Node

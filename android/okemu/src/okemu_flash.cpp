@@ -24,9 +24,18 @@
 
 namespace {
 
-/* The MK20DX256's first sector holds the reset vectors and flash config
- * field; the library refuses to touch it unless explicitly overridden. */
-const uintptr_t kFirstSectorEnd = (uintptr_t)OKEMU_FLASH_BASE + FLASH_SECTOR_SIZE;
+/*
+ * The MK20DX256's first sector holds the reset vectors and flash config
+ * field; the library refuses to touch it unless explicitly overridden.
+ *
+ * A FUNCTION, NOT A CONSTANT. The base is chosen at runtime by
+ * okemu_hal_init(), so a namespace-scope const would be initialised before
+ * that ran and would capture zero - and every write would then be judged
+ * against a boundary in the wrong place.
+ */
+inline uintptr_t first_sector_end() {
+  return (uintptr_t)OKEMU_FLASH_BASE + FLASH_SECTOR_SIZE;
+}
 
 inline bool in_flash(uintptr_t a) {
   /* A range, not a ceiling: the array does not start at 0 on every host - see
@@ -55,7 +64,7 @@ int flashCheckSectorErased(unsigned long *address) {
 int flashEraseSector(unsigned long *address, bool allowFirstSector) {
   uintptr_t a = (uintptr_t)address & ~(uintptr_t)(FLASH_SECTOR_SIZE - 1);
   if (!in_flash(a)) return 1;
-  if (a < kFirstSectorEnd && !allowFirstSector) return 1;
+  if (a < first_sector_end() && !allowFirstSector) return 1;
   memset((void *)a, 0xFF, FLASH_SECTOR_SIZE);
   return 0;
 }
@@ -64,7 +73,7 @@ int flashProgramWord(unsigned long *address, unsigned long *data,
                      bool allowFirstSector, bool overrideSafetyForConfig) {
   uintptr_t a = (uintptr_t)address;
   if (!in_flash(a) || (a & 3u)) return 1;
-  if (a < kFirstSectorEnd && !allowFirstSector && !overrideSafetyForConfig)
+  if (a < first_sector_end() && !allowFirstSector && !overrideSafetyForConfig)
     return 1;
 
   volatile uint32_t *dst = (volatile uint32_t *)a;
@@ -85,7 +94,7 @@ void flashSetFlexRAM(void) {
 }
 
 unsigned long flashFirstEmptySector(void) {
-  for (uintptr_t a = kFirstSectorEnd;
+  for (uintptr_t a = first_sector_end();
        a < (uintptr_t)OKEMU_FLASH_BASE + (uintptr_t)OKEMU_FLASH_SIZE;
        a += FLASH_SECTOR_SIZE) {
     if (flashCheckSectorErased((unsigned long *)a) == 0) return (unsigned long)a;

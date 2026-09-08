@@ -49,4 +49,27 @@
 #define __disable_irq() __asm__ volatile("" ::: "memory")
 #define __enable_irq()  __asm__ volatile("" ::: "memory")
 
+/*
+ * Where the emulated flash array lives.
+ *
+ * OKEMU_FLASH_BASE is the NAME of this variable, not an address - the kernel
+ * chooses where the 256 KB lands and okemu_hal_init() records it here. The
+ * firmware's own constants in okcore.h are written as OKEMU_FLASH_BASE +
+ * offset, and okcore.h includes nothing of ours, so the declaration has to
+ * arrive through this prelude.
+ *
+ * It is a variable because no fixed address is safe: 0x44000000 was measured
+ * free on one handset and is ART's JIT zygote cache on a Pixel 6a running
+ * Android 16, where MAP_FIXED_NOREPLACE returned EEXIST and the firmware
+ * could not start at all.
+ */
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern uintptr_t okemu_flash_base;
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* OKEMU_PRELUDE_H */

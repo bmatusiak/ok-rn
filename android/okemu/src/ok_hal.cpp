@@ -69,7 +69,7 @@ struct Hal {
 
   /* storage */
   std::string dir;
-  uint8_t *flash = nullptr;     /* mapped at OKEMU_FLASH_BASE */
+  uint8_t *flash = nullptr;     /* mapped at okemu_flash_base */
   int flash_fd = -1;
   size_t flash_mapped_off = 0;  /* first byte actually mapped (see init) */
   uint8_t eeprom[OKEMU_EEPROM_SIZE];
@@ -261,61 +261,42 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
    * address we asked for, and anything else is unmapped and treated as a
    * failure.
    */
-  bool low_mapped = true;
-  size_t off = 0;
-  void *fp = mmap((void *)OKEMU_FLASH_BASE, OKEMU_FLASH_SIZE,
-                  PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE,
-                  g.flash_fd, 0);
-  if (fp != MAP_FAILED && (uintptr_t)fp != OKEMU_FLASH_BASE) {
-    munmap(fp, OKEMU_FLASH_SIZE);
-    fp = MAP_FAILED;
-  }
+  /*
+   * THE KERNEL PICKS THE ADDRESS. We only have to tell the firmware which.
+   *
+   * This used to ask for a fixed base with MAP_FIXED_NOREPLACE and walk a
+   * couple of fallback offsets when that failed. Every one of those is a bet
+   * that some particular address is free, and the bet is against whatever the
+   * host runtime feels like mapping - which changes per device and per OS.
+   * 0x44000000 was measured free on one handset and is ART's JIT zygote
+   * cache on a Pixel 6a running Android 16:
+   *
+   *     44000000-46000000 r-xs  /memfd:jit-zygote-cache (deleted)
+   *
+   * so the firmware could not start at all, and the fallbacks could not help
+   * because they are offsets INSIDE the array and land in the same range.
+   *
+   * Asking for NULL removes the bet. The firmware never sees the difference:
+   * its address constants are all OKEMU_FLASH_BASE + offset, so the layout is
+   * identical and only the origin moves - which is what the rebase in
+   * scripts/stage.js was always for.
+   *
+   * It also retires the degraded mode this file used to warn about. The whole
+   * 256 KB maps or nothing does, so certified_hw at +0x5BB0 is always present
+   * and crypto can no longer half-work.
+   */
+  void *fp = mmap(nullptr, OKEMU_FLASH_SIZE, PROT_READ | PROT_WRITE,
+                  MAP_SHARED, g.flash_fd, 0);
   if (fp == MAP_FAILED) {
-    /*
-     * vm.mmap_min_addr blocks the bottom of the address space, so walk up
-     * until something sticks. How far we get decides what works:
-     *
-     *   0x0000  everything, including fw_hash()'s walk from fwstartadr.
-     *   0x1000  enough for real use. The firmware's own key material lives
-     *           here - certified_hw is enckeysectoradr+432 = 0x5BB0 - and
-     *           okcrypto_split_sundae() dereferences it on EVERY AES-GCM
-     *           operation, so without this the device segfaults the moment it
-     *           encrypts anything (e.g. storing a PIN). 4096 is the useful
-     *           setting: it still leaves page 0 unmapped, so genuine NULL
-     *           dereferences fault exactly as they should.
-     *   0x10000 the unprivileged default. Storage at 0x3A800 is reachable and
-     *           the device boots, but any crypto that touches certified_hw
-     *           will crash. Usable only for HID/protocol work.
-     */
-    static const size_t kFallbacks[] = { 0x1000, 0x10000 };
-    for (size_t i = 0; i < sizeof kFallbacks / sizeof *kFallbacks; i++) {
-      off = kFallbacks[i];
-      fp = mmap((void *)(OKEMU_FLASH_BASE + off), OKEMU_FLASH_SIZE - off,
-                PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE,
-                g.flash_fd, (off_t)off);
-      if (fp != MAP_FAILED && (uintptr_t)fp == OKEMU_FLASH_BASE + off) break;
-      if (fp != MAP_FAILED) { munmap(fp, OKEMU_FLASH_SIZE - off); fp = MAP_FAILED; }
-    }
-    if (fp == MAP_FAILED) {
-      snprintf(err, errlen,
-               "cannot map flash: %s - lower vm.mmap_min_addr "
-               "(sudo sysctl -w vm.mmap_min_addr=4096)", strerror(errno));
-      return -1;
-    }
-    low_mapped = false;
-
-    if (off > 0x5BB0UL) {
-      fprintf(stderr,
-              "[okemu] WARNING: flash mapped from %#lx; the firmware's key "
-              "material at 0x5BB0 (certified_hw) is NOT mapped.\n"
-              "[okemu]          Crypto operations will crash. Run "
-              "scripts/setup-permissions.sh, or:\n"
-              "[okemu]          sudo sysctl -w vm.mmap_min_addr=4096\n",
-              (unsigned long)off);
-    }
+    snprintf(err, errlen, "cannot map flash: %s", strerror(errno));
+    return -1;
   }
-  g.flash = (uint8_t *)OKEMU_FLASH_BASE;
-  g.flash_mapped_off = off;
+  okemu_flash_base = (uintptr_t)fp;
+  g.flash = (uint8_t *)okemu_flash_base;
+  /* Nothing is ever skipped now, but the field stays: msync/munmap below
+   * are written in terms of it, and a zero says plainly that the whole
+   * array is mapped. */
+  g.flash_mapped_off = 0;
 
   /* 3. EEPROM --------------------------------------------------------- */
   g.eeprom_fd = open_backing(g.dir, "eeprom.bin", OKEMU_EEPROM_SIZE, 0xFF, e2, sizeof e2);
@@ -326,9 +307,17 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
   /*
    * FSEC != 0x44 sends the firmware through its one-time provisioning path
    * (device-key derivation + fw_hash + lock). That path is only safe when the
-   * whole flash array including fwstartadr (0x6060) is mapped.
+   * whole flash array including fwstartadr (0x6060) is mapped - and now it
+   * always is, because the kernel places the mapping and nothing is skipped.
+   *
+   * This used to read `low_mapped ? 0xFF : 0x44`, and the 0x44 was the
+   * dangerous half: it told the firmware it was ALREADY provisioned so that
+   * it would not walk into unmapped memory. The device then booted, answered
+   * HID and reported its real version while being unable to do any crypto -
+   * the silent degraded mode of FINDING-emu-degraded-mode-is-silent.md. With
+   * a full mapping guaranteed there is no such state to hide.
    */
-  *(volatile uint8_t *)kFTFL_FSEC = low_mapped ? 0xFF : 0x44;
+  *(volatile uint8_t *)kFTFL_FSEC = 0xFF;
 
   okemu_time_start();
   okemu_systick_start();   /* millis() must advance without the firmware asking */
@@ -434,6 +423,13 @@ void okemu_delay_ms(uint32_t ms) {
   nanosleep(&ts, nullptr);
   okemu_sync_systick();
 }
+
+/*
+ * Where the flash array landed. Declared in okemu_flash_base.h, which is
+ * force-included everywhere so the firmware's own constants can be written
+ * in terms of it. Zero until okemu_hal_init() has mapped the file.
+ */
+extern "C" uintptr_t okemu_flash_base = 0;
 
 /* ----------------------------------------------------------- buttons */
 
