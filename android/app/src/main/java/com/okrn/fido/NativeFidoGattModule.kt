@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothGattServer
 import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -69,6 +70,26 @@ class NativeFidoGattModule(
   private val assembler = CtapBleAssembler()
   private val pendingRequests = ConcurrentHashMap<String, Int>()
   private val requestCounter = AtomicInteger(0)
+
+  /*
+   * ANDROID ALLOWS ONE OUTSTANDING NOTIFICATION PER CONNECTION.
+   *
+   * notifyCharacteristicChanged() hands the fragment to the stack and returns
+   * immediately; the next one may only go out after onNotificationSent() says
+   * the last was delivered. Firing them in a loop - which is what this did -
+   * means everything after the first is dropped, silently, with a success
+   * return value on every call.
+   *
+   * Nothing longer than one fragment had ever worked, and that is nearly
+   * everything: authenticatorGetInfo alone is a few hundred bytes against a
+   * default 20-byte payload, so the very first thing any browser asks was
+   * arriving as its first twenty bytes and then nothing. It presents as the
+   * host timing out, which reads like the authenticator never answered.
+   */
+  private val notifyQueue = ArrayDeque<ByteArray>()
+  private var notifyInFlight = false
+  private var pendingRespond: Promise? = null
+  private val notifyLock = Any()
 
   @Volatile private var state: String = STATE_IDLE
   @Volatile private var mtu: Int = DEFAULT_MTU
@@ -184,6 +205,34 @@ class NativeFidoGattModule(
         ?: throw IllegalStateException("This device cannot act as a BLE peripheral")
       advertiser = leAdvertiser
 
+      if (!beginAdvertising()) {
+        throw IllegalStateException("startAdvertising was refused by the adapter")
+      }
+      setState(STATE_ADVERTISING, "service 0xFFFD")
+      promise.resolve(null)
+    } catch (e: Exception) {
+      stopEverything()
+      setState(STATE_ERROR, e.message ?: "startAdvertising failed")
+      promise.reject(ERR_ADVERTISE, e.message ?: "startAdvertising failed", e)
+    }
+  }
+
+  /**
+   * Start (or restart) the advertisement. Separate from startAdvertising()
+   * because it has to run again after every disconnect, without tearing down
+   * the GATT server and its registered service.
+   */
+  @SuppressLint("MissingPermission")
+  private fun beginAdvertising(): Boolean {
+    val leAdvertiser = advertiser ?: return false
+    return try {
+      // Stopping first is harmless when nothing is running, and avoids
+      // ALREADY_STARTED on the paths where something is.
+      try {
+        leAdvertiser.stopAdvertising(advertiseCallback)
+      } catch (_: Exception) {
+      }
+
       val settings = AdvertiseSettings.Builder()
         .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
         .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
@@ -197,12 +246,9 @@ class NativeFidoGattModule(
         .build()
 
       leAdvertiser.startAdvertising(settings, data, advertiseCallback)
-      setState(STATE_ADVERTISING, "service 0xFFFD")
-      promise.resolve(null)
+      true
     } catch (e: Exception) {
-      stopEverything()
-      setState(STATE_ERROR, e.message ?: "startAdvertising failed")
-      promise.reject(ERR_ADVERTISE, e.message ?: "startAdvertising failed", e)
+      false
     }
   }
 
@@ -234,18 +280,32 @@ class NativeFidoGattModule(
     connectedDevice = null
     assembler.reset()
     pendingRequests.clear()
+    clearNotifications("GATT server stopped")
     mtu = DEFAULT_MTU
   }
 
   private fun buildFidoService(): BluetoothGattService {
     val service = BluetoothGattService(FIDO_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
 
-    // Control Point: the host writes CTAP commands here.
+    /*
+     * Control Point: the host writes CTAP commands here.
+     *
+     * PERMISSION_WRITE_ENCRYPTED, not PERMISSION_WRITE. CTAP 2.1 section
+     * 11.2.7 requires the FIDO service to be reachable only over an encrypted
+     * link, and real hosts enforce it - a Windows or macOS browser pairs
+     * before it will send a command, and a control point that accepts plain
+     * writes is either refused or, worse, carries a credential ceremony over
+     * an unencrypted link that anything nearby can read.
+     *
+     * Declaring it here is what makes Android demand pairing at the moment of
+     * the first write, rather than leaving the app to ask for a bond it has no
+     * good moment to ask for.
+     */
     service.addCharacteristic(
       BluetoothGattCharacteristic(
         FIDO_CONTROL_POINT_UUID,
         BluetoothGattCharacteristic.PROPERTY_WRITE,
-        BluetoothGattCharacteristic.PERMISSION_WRITE,
+        BluetoothGattCharacteristic.PERMISSION_WRITE_ENCRYPTED,
       ),
     )
 
@@ -299,10 +359,36 @@ class NativeFidoGattModule(
       } else {
         connectedDevice = null
         assembler.reset()
-        // Advertising stops on connect; go back to advertising so the next
-        // desktop can find us after the current one drops.
-        setState(if (gattServer != null) STATE_ADVERTISING else STATE_STOPPED, "central disconnected")
+        clearNotifications("The central disconnected")
+        /*
+         * Android STOPS ADVERTISING when a central connects, and does not
+         * resume on disconnect. This used to set the state back to
+         * 'advertising' and stop there - so the phone reported itself
+         * discoverable while being invisible, and the only way back was to
+         * toggle the screen's switch off and on.
+         */
+        if (gattServer != null && beginAdvertising()) {
+          setState(STATE_ADVERTISING, "central disconnected - advertising again")
+        } else {
+          setState(if (gattServer != null) STATE_ERROR else STATE_STOPPED, "central disconnected")
+        }
       }
+    }
+
+    /**
+     * The stack has delivered the previous fragment; send the next.
+     *
+     * This override is the whole fix. Without it nothing paces the queue, and
+     * Android's one-outstanding-notification rule silently discards every
+     * fragment after the first.
+     */
+    override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+      synchronized(notifyLock) { notifyInFlight = false }
+      if (status != BluetoothGatt.GATT_SUCCESS) {
+        clearNotifications("Notification failed with status $status")
+        return
+      }
+      pumpNotifications()
     }
 
     override fun onMtuChanged(device: BluetoothDevice, newMtu: Int) {
@@ -403,20 +489,144 @@ class NativeFidoGattModule(
       val payload = hex.hexToByteArray()
       val fragments = CtapBle.fragment(command, payload, maxFragmentSize())
 
-      for (fragment in fragments) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-          server.notifyCharacteristicChanged(device, status, false, fragment)
-        } else {
-          @Suppress("DEPRECATION")
-          status.value = fragment
-          @Suppress("DEPRECATION")
-          server.notifyCharacteristicChanged(device, status, false)
-        }
-      }
-      promise.resolve(null)
+      // Queued, not looped. The promise resolves when the LAST fragment has
+      // been acknowledged, so JS learns the response actually went out rather
+      // than that it was handed to a queue.
+      enqueueNotifications(fragments, promise)
     } catch (e: Exception) {
       promise.reject(ERR_RESPOND, e.message ?: "respondToRequest failed", e)
     }
+  }
+
+  /**
+   * Relay a KEEPALIVE to the host while the authenticator waits.
+   *
+   * Not the same thing as a response: the request stays pending, because the
+   * real answer is still to come. The firmware sends one keepalive when its
+   * status changes and then goes quiet for up to nineteen seconds waiting for
+   * a finger (device.cpp:172, ctap.h:173) - a host hearing nothing for that
+   * long abandons a ceremony the user is midway through confirming.
+   */
+  @SuppressLint("MissingPermission")
+  override fun sendKeepAlive(requestId: String, status: Double, promise: Promise) {
+    try {
+      if (!pendingRequests.containsKey(requestId)) {
+        throw IllegalStateException("Unknown or already-answered requestId: $requestId")
+      }
+      connectedDevice ?: throw IllegalStateException("No connected central to notify")
+      statusCharacteristic ?: throw IllegalStateException("Status characteristic is not registered")
+      gattServer ?: throw IllegalStateException("GATT server is not running")
+
+      val fragments = CtapBle.fragment(
+        CtapBle.CMD_KEEPALIVE,
+        byteArrayOf(status.toInt().toByte()),
+        maxFragmentSize(),
+      )
+      enqueueNotifications(fragments, promise)
+    } catch (e: Exception) {
+      promise.reject(ERR_RESPOND, e.message ?: "sendKeepAlive failed", e)
+    }
+  }
+
+  // ------------------------------------------------------- notification queue
+
+  private fun enqueueNotifications(fragments: List<ByteArray>, promise: Promise) {
+    synchronized(notifyLock) {
+      /*
+       * One outstanding response at a time. Two overlapping ones would
+       * interleave their fragments on the wire, and the host reassembles by
+       * position - so it would decode a message made of halves of two.
+       */
+      if (pendingRespond != null) {
+        promise.reject(ERR_RESPOND, "A response is still being sent")
+        return
+      }
+      pendingRespond = promise
+      notifyQueue.addAll(fragments)
+    }
+    pumpNotifications()
+  }
+
+  /** Send the next fragment, if the stack is ready for one. */
+  @SuppressLint("MissingPermission")
+  private fun pumpNotifications() {
+    val fragment: ByteArray
+    val device: BluetoothDevice
+    val characteristic: BluetoothGattCharacteristic
+    val server: BluetoothGattServer
+
+    synchronized(notifyLock) {
+      if (notifyInFlight) return
+      if (notifyQueue.isEmpty()) {
+        // Drained: the whole response is on the wire.
+        pendingRespond?.resolve(null)
+        pendingRespond = null
+        return
+      }
+      device = connectedDevice ?: run {
+        clearNotifications("The central disconnected mid-response")
+        return
+      }
+      characteristic = statusCharacteristic ?: run {
+        clearNotifications("Status characteristic is not registered")
+        return
+      }
+      server = gattServer ?: run {
+        clearNotifications("GATT server is not running")
+        return
+      }
+      fragment = notifyQueue.removeFirst()
+      notifyInFlight = true
+    }
+
+    /*
+     * Outside the lock: this call reaches into the Bluetooth stack, and on
+     * some builds it can complete - and call onNotificationSent - before it
+     * returns. Holding the lock across it would deadlock against the very
+     * callback that is supposed to release it.
+     */
+    val ok = try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        server.notifyCharacteristicChanged(device, characteristic, false, fragment) ==
+          BluetoothStatusCodes.SUCCESS
+      } else {
+        @Suppress("DEPRECATION")
+        characteristic.value = fragment
+        @Suppress("DEPRECATION")
+        server.notifyCharacteristicChanged(device, characteristic, false)
+      }
+    } catch (e: Exception) {
+      false
+    }
+
+    if (!ok) {
+      /*
+       * The stack refused it outright - a full queue, or a link that has just
+       * dropped. onNotificationSent will not fire, so nothing would ever
+       * resolve the promise if this were ignored.
+       */
+      synchronized(notifyLock) { notifyInFlight = false }
+      clearNotifications("The Bluetooth stack rejected a notification")
+    }
+  }
+
+  /**
+   * Abandon whatever is queued and tell JS why.
+   *
+   * Rejecting matters as much as clearing: respondToRequest() resolves only
+   * when the last fragment is acknowledged, so a queue dropped without a
+   * rejection leaves that promise pending forever and the JS bridge waits on a
+   * response it will never finish sending.
+   */
+  private fun clearNotifications(reason: String) {
+    val promise: Promise?
+    synchronized(notifyLock) {
+      notifyQueue.clear()
+      notifyInFlight = false
+      promise = pendingRespond
+      pendingRespond = null
+    }
+    promise?.reject(ERR_RESPOND, reason)
   }
 
   // ------------------------------------------------------------- key material

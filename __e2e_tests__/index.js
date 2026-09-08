@@ -4,5 +4,6 @@ module.exports = [
     require('./2-buttonProbe.e2e.js'),
     require('./3-deviceFlow.e2e.js'),
     require('./4-ctapFlow.e2e.js'),
-    require('./5-presence.e2e.js')
+    require('./5-presence.e2e.js'),
+    require('./6-bridge.e2e.js')
 ];

@@ -25,6 +25,7 @@ wrong version of the table looks exactly like the right one.
 | 6 | [a bad flash mapping looks healthy](FINDING-emu-degraded-mode-is-silent.md) | silent loss of all crypto capability | emulator | no |
 | 7 | [the touchpin order is not the button order](FINDING-touchpin-order-is-not-button-order.md) | high for anything that presses buttons | **ours** | n/a |
 | 8 | [holding button 3 ends the soft key](FINDING-lock-gesture-ends-the-soft-key.md) | high for the soft-key goal; a deliberate user gesture disables the device | **ours** | n/a |
+| 9 | [every BLE fragment after the first was dropped](FINDING-ble-notifications-dropped-after-the-first.md) | blocking — no CTAP2 response could reach a host intact | **ours** | n/a |
 
 ## Read #6 first, then #2
 

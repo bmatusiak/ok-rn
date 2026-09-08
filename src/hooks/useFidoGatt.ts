@@ -1,9 +1,10 @@
 import {useCallback, useEffect, useState} from 'react';
 import FidoGatt, {
-  CTAP2_STATUS,
   type CtapRequestEvent,
   type GattState,
 } from '../transport/FidoGatt';
+import OkEmu from '../transport/OkEmu';
+import {startFidoBridge} from '../fidoBridge';
 import type {LogLevel} from './useLog';
 
 type Options = {
@@ -15,6 +16,7 @@ export function useFidoGatt({log}: Options) {
   const [mtu, setMtu] = useState(0);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [pending, setPending] = useState<CtapRequestEvent | null>(null);
+  const [presenceNeeded, setPresenceNeeded] = useState(false);
 
   useEffect(() => {
     const offStatus = FidoGatt.on('status', event => {
@@ -24,11 +26,19 @@ export function useFidoGatt({log}: Options) {
       log(event.state === 'error' ? 'error' : 'info', '[ble] ' + event.state + detail);
     });
 
-    const offRequest = FidoGatt.on('request', event => {
-      setPending(event);
-      const name = event.commandName || '0x' + event.command.toString(16);
-      const rp = event.rpId ? ' rp=' + event.rpId : '';
-      log('rx', 'CTAP ' + name + rp + ' (' + event.hex.length / 2 + ' bytes)');
+    /*
+     * The bridge answers requests; nothing here does.
+     *
+     * This used to only log the request and wait for someone to tap Approve,
+     * which replied with a hard-coded '00a0' - status OK and an empty CBOR map
+     * - to every command including getInfo. A browser reading that learns the
+     * authenticator supports nothing and gives up, so the flow appeared to
+     * work while being incapable of registering a credential.
+     */
+    const offBridge = startFidoBridge({
+      log,
+      onPending: setPending,
+      onPresence: setPresenceNeeded,
     });
 
     FidoGatt.isSupported()
@@ -42,7 +52,7 @@ export function useFidoGatt({log}: Options) {
 
     return () => {
       offStatus();
-      offRequest();
+      offBridge();
     };
   }, [log]);
 
@@ -69,35 +79,29 @@ export function useFidoGatt({log}: Options) {
     }
   }, [log]);
 
-  const approve = useCallback(async () => {
-    if (!pending) {
-      return;
-    }
+  /**
+   * Confirm the ceremony - which means pressing a button on the device.
+   *
+   * User presence is not an app-level decision here. The firmware blocks in
+   * ctap_user_presence_test() until touch_sense_loop() reports a press
+   * (device.cpp:345-395), and it will not produce a credential without one, so
+   * "approve" and "press a button" are the same act. Any button will do: for a
+   * pending OKWEBAUTHN the challenge completes on any press
+   * (OnlyKey.ino:821), unlike the three-digit challenge that guards signing.
+   *
+   * There is deliberately no Deny. Letting the ceremony time out IS the
+   * refusal, and it is the refusal the host understands; a bridge that
+   * synthesised its own denial would be answering for a device that had not
+   * been asked.
+   */
+  const confirm = useCallback(async () => {
     try {
-      // The CTAP2 response body is not built yet - see specs/NativeFidoGatt.ts.
-      // Approving currently acks with status OK and an empty CBOR map (0xa0).
-      await FidoGatt.respondToRequest(pending.requestId, '00a0');
-      log('tx', 'approved ' + (pending.commandName || pending.requestId));
+      await OkEmu.pressButton(1, 150);
+      log('tx', 'button pressed');
     } catch (error) {
-      log('error', 'respond: ' + String(error));
-    } finally {
-      setPending(null);
+      log('error', 'confirm: ' + String(error));
     }
-  }, [log, pending]);
+  }, [log]);
 
-  const deny = useCallback(async () => {
-    if (!pending) {
-      return;
-    }
-    try {
-      await FidoGatt.rejectRequest(pending.requestId, CTAP2_STATUS.OPERATION_DENIED);
-      log('tx', 'denied ' + (pending.commandName || pending.requestId));
-    } catch (error) {
-      log('error', 'reject: ' + String(error));
-    } finally {
-      setPending(null);
-    }
-  }, [log, pending]);
-
-  return {state, mtu, supported, pending, start, stop, approve, deny};
+  return {state, mtu, supported, pending, presenceNeeded, start, stop, confirm};
 }

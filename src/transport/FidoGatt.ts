@@ -128,6 +128,15 @@ class FidoGattClient {
     return NativeFidoGatt.respondToRequest(requestId, hex);
   }
 
+  /**
+   * Tell the host the authenticator is still working, without answering yet.
+   *
+   * CTAP keepalive status: 0x01 PROCESSING, 0x02 UP_NEEDED.
+   */
+  sendKeepAlive(requestId: string, status: number): Promise<void> {
+    return NativeFidoGatt.sendKeepAlive(requestId, status);
+  }
+
   /** Reject a request with a CTAP2 status byte and no CBOR body. */
   rejectRequest(requestId: string, status: number = CTAP2_STATUS.NOT_ALLOWED): Promise<void> {
     return NativeFidoGatt.respondToRequest(requestId, status.toString(16).padStart(2, '0'));

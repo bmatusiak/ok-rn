@@ -56,19 +56,33 @@ export function FidoScreen({
             />
             <KeyValue label="relying party" value={fido.pending.rpId || '-'} />
             <KeyValue label="payload" value={fido.pending.hex.length / 2 + ' bytes'} />
-            <View style={[styles.row, styles.rowTop]}>
-              <View style={styles.cell}>
-                <Btn title="Approve" tone="primary" onPress={fido.approve} />
+            {fido.presenceNeeded ? (
+              <View>
+                <Text style={styles.hint}>
+                  The key is waiting for a button. It will not produce a
+                  credential without one — this is the device asking, not the
+                  app.
+                </Text>
+                <View style={[styles.row, styles.rowTop]}>
+                  <View style={styles.cell}>
+                    <Btn title="Confirm" tone="primary" onPress={fido.confirm} />
+                  </View>
+                </View>
               </View>
-              <View style={styles.cell}>
-                <Btn title="Deny" tone="danger" onPress={fido.deny} />
-              </View>
-            </View>
+            ) : (
+              <Text style={styles.hint}>
+                Forwarding to the firmware. Nothing to do unless it asks for a
+                button.
+              </Text>
+            )}
           </View>
         ) : (
           <Text style={styles.hint}>
-            Nothing pending. CTAP2 command handlers and the KeyStore signing path are still
-            stubs — approving acks with an empty CBOR map rather than a real assertion.
+            Nothing pending. Requests are answered by the OnlyKey firmware
+            running in this app, not by this screen — so the device must be
+            unlocked first, on the Soft key tab. There is no Deny: letting the
+            ceremony time out is the refusal, and it is the one the host
+            understands.
           </Text>
         )}
       </Section>
