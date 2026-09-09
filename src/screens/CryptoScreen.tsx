@@ -138,8 +138,15 @@ export function CryptoScreen({
       /*
        * .secret, not .publicKey. The response carries BOTH - the public key and
        * then the 32-byte secret - and the public one is not the password.
+       *
+       * Rendered as BASE64URL, not hex. The password the other clients show is
+       * a JWK `k` member (build_AESGCM, onlykey-3rd-party.js:95), and RFC 7517
+       * says that is unpadded base64url of the raw key. Showing hex gave a
+       * different password for the same site with nothing to indicate it - both
+       * strings look like a perfectly good password, and only one of them logs
+       * you in. Cross-checked against WebCrypto's own JWK export.
        */
-      setSecret(hex(shared.secret));
+      setSecret(okbytes.toBase64Url(shared.secret));
       setDerivedFor(site);
       setStatus(`Derived from "${site}". The key will give the same answer next time.`);
     } catch (e) {

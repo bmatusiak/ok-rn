@@ -38,6 +38,7 @@
 
 const {getOnlyKey} = require('../src/onlykey');
 const {pressDigits} = require('./helpers/pressDigits');
+const {setTouchFreeDerive} = require('./helpers/touchFreeDerive');
 const {protocol} = require('node-onlykey-lib');
 
 const OkEmuModule = require('../src/transport/OkEmu');
@@ -220,6 +221,22 @@ module.exports = function cryptoSign({describe, it}) {
 
         await device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
         log('unlocked again, now in config mode');
+
+        /*
+         * While we are in config mode anyway, turn on the preference the VAULT
+         * needs (10-derive). Field 21 is gated on config mode
+         * (okcore.cpp:2013), and reaching config mode costs a gesture that
+         * also locks the device - so doing it twice in one run is two gestures
+         * for one setting that persists in EEPROM.
+         *
+         * The vault derives its public key without a touch and its secret with
+         * one, because the pairing decides the key - the press flag is an
+         * INPUT to the derivation
+         * (FINDING-the-press-flag-changes-the-derived-key.md). Without bit 3
+         * the touch-free half is refused as CTAP2_ERR_EXTENSION_NOT_SUPPORTED,
+         * and retrying with a touch would derive a DIFFERENT key.
+         */
+        await setTouchFreeDerive(device, log);
 
         tap.take();
         await device.loadKey(SLOT, {type: KEY_TYPE, key: KEY});

@@ -7,6 +7,41 @@ import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 
 /**
+ * The suites to hand MonikerView, narrowed by __e2e_tests__/only.js.
+ *
+ * Iterating on one suite meant sitting through all thirteen, which is minutes
+ * per attempt against a device that has to be pressed and unlocked. The filter
+ * makes that one suite; the full run is what happens by default and before a
+ * commit, because only.js is restored to empty after every filtered run.
+ *
+ * A name matching nothing THROWS rather than running zero suites. An empty run
+ * reports a pass, and a pass from a typo is the worst outcome available here.
+ */
+function selected() {
+  /*
+   * Deliberately NOT annotated. MonikerView is plain CommonJS with no types, so
+   * its `tests` prop infers as never[]; giving this an explicit array type makes
+   * the assignment an error where the untyped require was simply accepted.
+   */
+  const all = require('../../__e2e_tests__');
+  const only: string[] = require('../../__e2e_tests__/only.js');
+  if (!only.length) {
+    return all;
+  }
+
+  const picked = all.filter((suite: {name: string}) => only.includes(suite.name));
+  if (picked.length !== only.length) {
+    const found = picked.map((s: {name: string}) => s.name);
+    throw new Error(
+      `__e2e_tests__/only.js names suites that do not exist: ` +
+        `${only.filter(n => !found.includes(n)).join(', ')}. ` +
+        `Known: ${all.map((s: {name: string}) => s.name).join(', ')}`,
+    );
+  }
+  return picked;
+}
+
+/**
  * The on-device end-to-end suite.
  *
  * test-moniker runs tests INSIDE the app on the phone, which is the only place
@@ -36,7 +71,7 @@ export function E2EScreen() {
   if (armed) {
     return (
       <View style={[styles.wrap, styles.armed]}>
-        <MonikerView tests={require('../../__e2e_tests__')} />
+        <MonikerView tests={selected()} />
       </View>
     );
   }

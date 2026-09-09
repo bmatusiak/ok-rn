@@ -20,6 +20,7 @@
 'use strict';
 
 const {execFileSync} = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
@@ -98,6 +99,46 @@ async function tapText(label, {timeoutMs = 15000} = {}) {
     }
     await sleep(500);
   }
+}
+
+/**
+ * `--only derive,deriveParity` runs just those suites.
+ *
+ * Iterating on one suite otherwise means sitting through all thirteen, against
+ * a device that has to be unlocked and pressed. The names are the suite
+ * functions' own names, which is what each file passes to describe().
+ */
+const ONLY_FILE = path.join(__dirname, '..', '__e2e_tests__', 'only.js');
+
+function readOnlyArg() {
+  const at = process.argv.indexOf('--only');
+  if (at === -1) return [];
+  const value = process.argv[at + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error('--only needs a comma-separated list of suite names');
+  }
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Point the app at a subset, and hand back a function that undoes it.
+ *
+ * The restore runs in a `finally`, including on failure and on a thrown
+ * deadline, because a filter left behind would make the NEXT full run skip
+ * most of the suite while still reporting a pass. A stale filter that says
+ * "PASS" is worse than no filter at all.
+ */
+function applyOnly(names) {
+  const original = fs.readFileSync(ONLY_FILE, 'utf8');
+  if (!names.length) return () => {};
+
+  const body = original.replace(
+    /module\.exports = \[[^\]]*\];/,
+    `module.exports = ${JSON.stringify(names)};`,
+  );
+  fs.writeFileSync(ONLY_FILE, body);
+  console.log(`e2e: running only ${names.join(', ')}`);
+  return () => fs.writeFileSync(ONLY_FILE, original);
 }
 
 async function main() {
@@ -193,7 +234,22 @@ async function main() {
   process.exit(failed === 0 ? 0 : 1);
 }
 
-main().catch(err => {
-  console.error(`\ne2e: ${err.message}`);
-  process.exit(2);
-});
+const restore = applyOnly(readOnlyArg());
+
+/*
+ * process.exit() skips a pending finally, and this script exits that way on
+ * both paths - so the restore is hooked to 'exit' as well. Running it twice is
+ * harmless: it writes the same bytes back either way.
+ *
+ * A filter left behind would make the next FULL run quietly skip most of the
+ * suite and still report a pass, which is the one outcome worth engineering
+ * against here.
+ */
+process.on('exit', restore);
+
+main()
+  .catch(err => {
+    console.error(`\ne2e: ${err.message}`);
+    process.exit(2);
+  })
+  .finally(restore);

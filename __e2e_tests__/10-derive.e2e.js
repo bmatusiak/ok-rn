@@ -41,6 +41,11 @@
 'use strict';
 
 const {getOnlyKey} = require('../src/onlykey');
+const {pressDigits} = require('./helpers/pressDigits');
+const {enableTouchFreeDerive} = require('./helpers/touchFreeDerive');
+
+/** The same PIN every suite provisions and uses. */
+const PIN = '1234561';
 
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
@@ -97,7 +102,29 @@ async function connected(log) {
   await new Promise(r => setTimeout(r, 22000));
 
   const {device, okcrypto} = await getOnlyKey();
-  const state = await device.connect();
+  let state = await device.connect();
+
+  /*
+   * UNLOCK IF IT IS NOT ALREADY, rather than assuming an earlier suite did.
+   *
+   * Every derive is on the CTAP path, and U2Finit() only runs once the PIN is
+   * accepted (OnlyKey.ino:716) - on a locked key there is no FIDO interface to
+   * reach at all. This suite used to inherit an unlocked device from
+   * 3-deviceFlow, which is fine in a full run and useless when running this
+   * file on its own with `--only derive`. A suite that only works in position
+   * is a suite nobody iterates on.
+   *
+   * Conditional because the firmware announces UNLOCKED on the TRANSITION
+   * (OnlyKey.ino:702-709), so entering a PIN at an already-unlocked device
+   * produces no announcement and unlock() waits out its deadline against a
+   * device that is perfectly fine.
+   */
+  if (!/UNLOCKED/i.test(String(state.status))) {
+    log('locked - entering the PIN first');
+    await device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
+    state = await device.connect();
+  }
+
   log(`device: ${String(state.status).trim()}`);
   shared = {device, okcrypto, status: String(state.status)};
   return shared;
@@ -267,15 +294,52 @@ module.exports = function derive({describe, it}) {
        * cache and the cipher wiring and nothing about the device. On hardware
        * it failed, and a tag failure is the only thing AES-GCM will say - so
        * the round trip has to run here too.
+       *
+       * THE PREFERENCE HAS TO BE ON, and 9-cryptoSign turns it on while it is
+       * already in config mode - reaching config mode costs a gesture that
+       * also locks the device, so paying that twice in one run for one EEPROM
+       * byte is waste.
+       *
+       * The vault derives its public key without a touch and its shared secret
+       * with one, because the web app does and the pairing decides the key -
+       * the press flag is an INPUT to the derivation, not a permission check
+       * (FINDING-the-press-flag-changes-the-derived-key.md). The touch-free
+       * half is refused unless derived_key_challenge_mode bit 3 is set, and
+       * retrying it with a touch would derive a DIFFERENT key, so there is no
+       * shortcut past it. If this fails saying so, run the full suite once:
+       * the byte persists.
        */
-      const {okcrypto} = await connected(log);
+      const {device, okcrypto} = await connected(log);
+
       const opts = {
         requirePress: true,
         timeoutMs: 30000,
         onKeepAlive: pressing(log).onKeepAlive,
       };
 
-      const blob = await okcrypto.deviceVault.seal('vault.example', 'hunter2-the-secret', opts);
+      /*
+       * Enable the preference ON DEMAND, then retry THE SAME derive.
+       *
+       * This is not the forbidden fallback. The forbidden one is retrying with
+       * a different press flag, which derives a different key; this changes a
+       * device setting and then asks the identical question again, so the
+       * answer is the one the web app would get.
+       *
+       * On demand because the byte persists in EEPROM: it is set once per
+       * device, and the config-mode gesture it costs is slow enough that
+       * paying it on every run would be waste.
+       */
+      let blob;
+      try {
+        blob = await okcrypto.deviceVault.seal('vault.example', 'hunter2-the-secret', opts);
+      } catch (e) {
+        if (!/derived keys per site without touch/.test(String(e && e.message))) {
+          throw e;
+        }
+        log('the preference is off; entering config mode to set it');
+        await enableTouchFreeDerive(device, PIN, log);
+        blob = await okcrypto.deviceVault.seal('vault.example', 'hunter2-the-secret', opts);
+      }
       log(`blob: ${blob}`);
       log(`cached after seal: ${okcrypto.deviceVault.isUnlocked('vault.example')}`);
 
