@@ -2,6 +2,7 @@ import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
+import {device as okdevice} from 'node-onlykey-lib';
 import {getOnlyKey} from '../onlykey';
 import {PinScreen} from './PinScreen';
 import {useConfigMode} from '../hooks/useConfigMode';
@@ -37,12 +38,58 @@ const ECC_SLOTS = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
 const MODES = ['PGP', 'Raw hex'] as const;
 type Mode = (typeof MODES)[number];
 
+/**
+ * The key types OKSETPRIV accepts, from the library rather than retyped here.
+ *
+ * A raw scalar carries no indication of its curve - 32 bytes is Ed25519,
+ * Curve25519, P-256 and secp256k1 alike - so the device is told, and getting it
+ * wrong produces a key it accepts and that then verifies nowhere.
+ */
+const RAW_TYPES = okdevice.keys.RAW_KEY_TYPES;
+
+/**
+ * The global Yubico credential's three fields.
+ *
+ * All three are hex here. The per-slot form takes MODHEX for the public id and
+ * hex for the other two, which is the trap the desktop app falls into: three
+ * adjacent fields where only the first has a different alphabet.
+ */
+const YUBI_FIELDS = [
+  {name: 'publicId' as const, label: 'Public Identity (6 bytes hex)', placeholder: '0123456789ab'},
+  {name: 'privateId' as const, label: 'Private Identity (6 bytes hex)', placeholder: '0123456789ab'},
+  {
+    name: 'secretKey' as const,
+    label: 'Secret Key (16 bytes hex)',
+    placeholder: '00112233445566778899aabbccddeeff',
+  },
+];
+
+/** What picking each type actually means, in a line. */
+function describeType(name: string): string {
+  const spec = RAW_TYPES.find(t => t.name === name);
+  if (!spec) {
+    return '';
+  }
+  if (spec.hmacOnly) {
+    return (
+      `${spec.bytes} bytes, and only slots ` +
+      `${okdevice.slots.HMAC_SLOTS.join(' and ')} take one. Writing it also ` +
+      'clears that slot’s button-press requirement — the firmware ' +
+      'does that silently.'
+    );
+  }
+  return `${spec.bytes} bytes. The device is told the type; it cannot tell from the bytes.`;
+}
+
 export function KeysScreen({emu}: {emu: EmuSession}) {
   const [mode, setMode] = useState<Mode>('PGP');
   const [slot, setSlot] = useState<number>(101);
   const [passphrase, setPassphrase] = useState('');
   const [armored, setArmored] = useState('');
   const [hex, setHex] = useState('');
+  const [keyType, setKeyType] = useState<string>(RAW_TYPES[0].name);
+  const [yubi, setYubi] = useState({publicId: '', privateId: '', secretKey: ''});
+  const [yubiErrors, setYubiErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -114,21 +161,85 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
 
       const {device} = await getOnlyKey();
       /*
-       * Type 1 is Ed25519 for an ECC slot; for RSA the type is the key size in
-       * 64-byte units, which prepareKey derives from the material. Raw entry is
-       * the escape hatch, so the type follows the slot rather than being asked
-       * for - anyone with a reason to want another type has a PEM.
+       * The type is ASKED FOR on an ECC or HMAC slot, not inferred.
+       *
+       * It cannot be inferred: 32 bytes is an Ed25519 scalar, a Curve25519
+       * scalar, a P-256 scalar and a secp256k1 scalar, and the device is simply
+       * told which. Guessing Ed25519 - which this did - writes a key that the
+       * device accepts and that then signs nothing anyone can verify.
+       *
+       * RSA is the exception and stays inferred, because there the type IS the
+       * size: the key length in 64-byte units.
        */
-      const type = slot >= 101 ? 1 : bytes.length / 128;
-      await device.loadKey(slot, {type, key: bytes});
+      const chosen = RAW_TYPES.find(t => t.name === keyType) ?? RAW_TYPES[0];
+      const isRsaSlot = slot < 100;
+      const type = isRsaSlot ? bytes.length / 128 : chosen.type;
+
+      if (!isRsaSlot && bytes.length !== chosen.bytes) {
+        setError(
+          `${chosen.name} wants ${chosen.bytes} bytes and this is ${bytes.length}. ` +
+            'The device takes whatever it is given, so the wrong length is ' +
+            'written and fails later rather than now.',
+        );
+        return;
+      }
+
+      const result = await device.loadKey(slot, {type, key: bytes});
       setLoaded(true);
-      setStatus(`Wrote ${bytes.length} bytes to slot ${slot}.`);
+
+      /*
+       * The device does NOT report this, and it matters: after an HMAC key
+       * write, anything that can reach the keyboard interface gets HMAC-SHA1
+       * responses from that slot with no button press at all.
+       */
+      setStatus(
+        result.clearedPressRequirement
+          ? `Wrote ${bytes.length} bytes to slot ${slot}. This ALSO cleared the ` +
+            'button-press requirement on that slot — the firmware does it ' +
+            'silently on every HMAC key write.'
+          : `Wrote ${bytes.length} bytes to slot ${slot}.`,
+      );
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
       setBusy(null);
     }
   }, [hex, slot]);
+
+  /*
+   * Validated BEFORE anything is sent, and every problem is reported at once.
+   *
+   * The desktop app converts the public id inline, throws on a hex digit where
+   * modhex was wanted, and lets the throw escape - so the button does nothing,
+   * says nothing, and leaves the rejected values in place. See
+   * onlykey-testing/FINDING-app-yubico-silent-discard.md.
+   */
+  const writeYubi = useCallback(async () => {
+    setBusy('yubi');
+    setError(null);
+    setStatus(null);
+    setYubiErrors({});
+    try {
+      const {device} = await getOnlyKey();
+      const check = device.validateYubiCredential(yubi, {global: true});
+      if (!check.ok) {
+        const marked: Record<string, string> = {};
+        for (const problem of check.errors) {
+          marked[problem.field] = problem.message;
+        }
+        setYubiErrors(marked);
+        setError('The credential was not sent — see the fields above.');
+        return;
+      }
+
+      const result = await device.setYubiAuth(yubi);
+      setStatus(`Yubico credential written. The device said: ${result.response}`);
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [yubi]);
 
   const wipe = useCallback(async () => {
     setBusy('wipe');
@@ -259,6 +370,19 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
               pick. No parsing, no checking beyond the length.
             </Text>
             <SlotPicker slot={slot} onChange={setSlot} />
+            {slot >= 100 ? (
+              <>
+                <Text style={styles.label}>Key type</Text>
+                <Segmented
+                  value={keyType}
+                  options={RAW_TYPES.map(t => t.name)}
+                  onChange={setKeyType}
+                />
+                <Text style={styles.note}>
+                  {describeType(keyType)}
+                </Text>
+              </>
+            ) : null}
             <Text style={styles.label}>Key bytes</Text>
             <TextInput
               value={hex}
@@ -278,6 +402,44 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
             />
           </>
         )}
+      </Section>
+
+      <Section title="Yubico OTP (legacy)">
+        <Text style={styles.note}>
+          The device-global Yubico credential — the desktop app&apos;s Advanced
+          tab. All three fields are HEX here; the per-slot form is the one that
+          takes modhex.
+        </Text>
+
+        {YUBI_FIELDS.map(field => (
+          <View key={field.name}>
+            <Text style={styles.label}>{field.label}</Text>
+            <TextInput
+              value={yubi[field.name]}
+              onChangeText={next => setYubi(prev => ({...prev, [field.name]: next}))}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder={field.placeholder}
+              placeholderTextColor={theme.textDim}
+              style={[styles.input, styles.mono]}
+            />
+            {/*
+              Per FIELD, because that is the whole point. The desktop throws
+              inside its click handler on the first bad value, the throw escapes
+              into event dispatch, and the button appears to do nothing at all.
+            */}
+            {yubiErrors[field.name] ? (
+              <Text style={styles.fieldError}>{yubiErrors[field.name]}</Text>
+            ) : null}
+          </View>
+        ))}
+
+        <Btn
+          title={busy === 'yubi' ? 'Writing…' : 'Write Yubico credential'}
+          tone="primary"
+          disabled={busy !== null || !config.ready}
+          onPress={writeYubi}
+        />
       </Section>
 
       <Section title="Wipe a slot">
@@ -329,6 +491,8 @@ function SlotPicker({slot, onChange}: {slot: number; onChange: (n: number) => vo
 }
 
 const styles = StyleSheet.create({
+  /* Under the field it belongs to, not in the page-wide error line. */
+  fieldError: {color: theme.error, fontSize: 11, lineHeight: 16, marginTop: 4},
   root: {flex: 1},
   content: {padding: 16, gap: 16, paddingBottom: 48},
 
