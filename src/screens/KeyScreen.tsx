@@ -17,6 +17,32 @@ import type {EmuSession} from '../hooks/useOkEmu';
  * conflating them is what produced a screen that said "running" over a device
  * that would not answer.
  */
+/** "OnlyKey DUO (24 slots)", or a dash when the device has not said. */
+function describeModel(identity: EmuSession['identity']): string {
+  if (!identity || identity.model === 'unknown') {
+    return '-';
+  }
+  const names: Record<string, string> = {
+    classic: 'OnlyKey Classic',
+    duo: 'OnlyKey DUO',
+    original: 'OnlyKey Original',
+  };
+  const name = names[identity.model] ?? identity.model;
+  // A DUO is the one model that says whether a PIN has been set.
+  if (identity.pinSet === false) {
+    return `${name} (no PIN set)`;
+  }
+  return name;
+}
+
+/** Which firmware build, and what that means for the console. */
+function describeBuild(caps: EmuSession['capabilities']): string {
+  if (!caps || caps.debugConsole === null) {
+    return 'unknown';
+  }
+  return caps.debugConsole ? 'debug (console)' : 'production (no console)';
+}
+
 export function KeyScreen({emu}: {emu: EmuSession}) {
   if (emu.state === 'halted') {
     return (
@@ -83,6 +109,17 @@ function Unlocked({emu}: {emu: EmuSession}) {
         <View style={styles.kv}>
           <KeyValue label="state" value="unlocked" />
           <KeyValue label="firmware" value={emu.version || '-'} />
+          {/*
+            Model and build, not just a version string.
+
+            The build matters to someone reading this screen: a production
+            build has no serial console, so the provisioning steps that wait
+            on console prompts cannot work against it. Saying "unknown" for
+            firmware too old to report a build is deliberate - it is not the
+            same claim as "no console".
+          */}
+          <KeyValue label="model" value={describeModel(emu.identity)} />
+          <KeyValue label="build" value={describeBuild(emu.capabilities)} />
           <KeyValue label="LED" value={describeLed(emu.led)} />
         </View>
       </Section>

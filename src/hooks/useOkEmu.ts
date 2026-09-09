@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {bytes as okbytes, protocol} from 'node-onlykey-lib';
+import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
 import type {LogLevel} from './useLog';
@@ -98,6 +98,22 @@ export function useOkEmu({log, autoStart = false}: Options) {
    */
   const unlockedAt = useRef(0);
   const [version, setVersion] = useState('');
+
+  /*
+   * What the device said it is, and what that means it can do.
+   *
+   * This used to be a version string and nothing else, produced here by a regex
+   * - the only firmware-version parse in the whole project, in a React hook,
+   * for display. The parse now lives in the library so it can be branched on;
+   * what is kept here is the RESULT, so a screen can say "OnlyKey DUO,
+   * production build" instead of showing a string and hoping.
+   */
+  const [identity, setIdentity] = useState<ReturnType<
+    typeof device_.version.parseStatus
+  > | null>(null);
+  const [capabilities, setCapabilities] = useState<ReturnType<
+    typeof device_.version.capabilities
+  > | null>(null);
   const started = useRef(false);
 
   useEffect(() => {
@@ -126,8 +142,10 @@ export function useOkEmu({log, autoStart = false}: Options) {
         if (parsed.state === 'unlocked') {
           unlockedAt.current = Date.now();
           setDevice('unlocked');
-          // "UNLOCKEDv3.0.4-testc" - everything after the word is the version.
-          setVersion(String(parsed.raw).replace(/^UNLOCKED/, '').trim());
+          const info = device_.version.parseStatus(String(parsed.raw));
+          setIdentity(info);
+          setCapabilities(device_.version.capabilities(info));
+          setVersion(info.version ?? '');
         } else if (parsed.state === 'uninitialized') {
           setDevice('uninitialized');
         } else if (parsed.state === 'locked') {
@@ -519,6 +537,8 @@ export function useOkEmu({log, autoStart = false}: Options) {
     state,
     device,
     version,
+    identity,
+    capabilities,
     storageDir,
     led,
     busy,
