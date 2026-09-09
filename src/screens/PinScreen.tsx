@@ -1,8 +1,9 @@
-import React, {useCallback, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
 import {Keypad, PinDots} from '../ui/Keypad';
 import {Logo} from '../ui/Logo';
 import {Btn} from '../ui/components';
+import * as biometrics from '../biometrics';
 import {theme} from '../ui/theme';
 
 /** The firmware accepts 7-10 digits, each of them a button number. */
@@ -51,6 +52,30 @@ export function PinScreen({
    * discarding anything.
    */
   const queue = useRef<Promise<void>>(Promise.resolve());
+
+  /*
+   * Whether a PIN is saved behind a biometric. Asked WITHOUT prompting, so the
+   * button appears or does not without anyone being made to touch a sensor to
+   * find out.
+   */
+  const [hasStoredPin, setHasStoredPin] = useState(false);
+  const [bioBusy, setBioBusy] = useState(false);
+  const [bioError, setBioError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    biometrics
+      .has(biometrics.ALIAS.devicePin)
+      .then(stored => {
+        if (alive) setHasStoredPin(stored);
+      })
+      .catch(() => {
+        /* No module, no biometrics, no button. Not worth reporting. */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   /**
    * Presses ACCEPTED, including ones still waiting their turn.
@@ -125,12 +150,69 @@ export function PinScreen({
     });
   }, [press]);
 
+  /*
+   * Unlock with a fingerprint, by REPLAYING the stored PIN through press().
+   *
+   * Not a shortcut past the firmware - there is none. The device is unlocked by
+   * button presses and nothing else, so this presses the same buttons a finger
+   * would, through the same queue, at the same pace. Everything the queue
+   * exists for still applies: presses that merge without an idle gap sum their
+   * durations, and a lost digit costs the entry twice because the buffer cannot
+   * be cleared.
+   *
+   * The PIN is read back from the Android Keystore under a key that cannot be
+   * used without a biometric, so the prompt is the gate rather than this code.
+   */
+  const unlockWithBiometric = useCallback(async () => {
+    setBioError(null);
+    setBioBusy(true);
+    try {
+      const pin = await biometrics.load(
+        biometrics.ALIAS.devicePin,
+        'Unlock your OnlyKey',
+        'Your PIN is stored on this phone behind your biometric.',
+      );
+      for (const ch of pin) {
+        const button = Number(ch);
+        if (Number.isInteger(button) && button >= 1 && button <= 6) {
+          press(button);
+        }
+      }
+    } catch (e) {
+      /*
+       * The enrolment case is not a retry. The key is destroyed on purpose
+       * when the phone's biometrics change, so the PIN has to be stored again
+       * - and saying "try again" would be advice that cannot work.
+       */
+      setBioError(
+        biometrics.wasInvalidated(e)
+          ? 'Your saved PIN was cleared because this phone’s biometrics changed. Enter it once and save it again.'
+          : String((e as Error)?.message ?? e),
+      );
+      setHasStoredPin(false);
+    } finally {
+      setBioBusy(false);
+    }
+  }, [press]);
+
   return (
     <View style={styles.root}>
       <Logo height={30} />
 
       <Text style={styles.title}>Locked</Text>
       <Text style={styles.hint}>Enter your PIN on the keypad.</Text>
+
+      {hasStoredPin ? (
+        <>
+          <Btn
+            title={bioBusy ? 'Waiting…' : 'Unlock with biometrics'}
+            tone="primary"
+            disabled={bioBusy || busy}
+            onPress={unlockWithBiometric}
+          />
+          {bioError ? <Text style={styles.bioError}>{bioError}</Text> : null}
+        </>
+      ) : null}
 
       <View style={styles.dots}>
         <PinDots count={count} max={MAX_PIN} />
@@ -158,6 +240,7 @@ export function PinScreen({
 }
 
 const styles = StyleSheet.create({
+  bioError: {color: theme.error, fontSize: 12, lineHeight: 18, marginTop: 8, textAlign: 'center'},
   root: {flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24},
   title: {color: theme.text, fontSize: 22, fontWeight: '700', marginTop: 28},
   hint: {color: theme.textDim, fontSize: 13, marginTop: 4},

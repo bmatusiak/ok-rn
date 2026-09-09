@@ -57,6 +57,48 @@ export interface Spec extends TurboModule {
 
   /** Whether FLAG_SECURE is currently set on the activity window. */
   screenshotsBlocked(): Promise<boolean>;
+
+  /* ---- biometric-gated storage ---------------------------------------- */
+
+  /**
+   * Whether a biometric can be used at all, and if not, why.
+   *
+   *   'available'      a fingerprint or face is enrolled and usable
+   *   'none-enrolled'  the hardware is there and nothing is registered
+   *   'no-hardware'    this device has none
+   *   'unavailable'    hardware present but temporarily unusable
+   *
+   * The REASON matters, not just the yes or no. "None enrolled" is fixable by
+   * the person holding the phone and "no hardware" is not, and a screen that
+   * says only "unavailable" sends someone to Settings for nothing.
+   */
+  biometricStatus(): Promise<string>;
+
+  /**
+   * Encrypt a secret under a key that only a biometric can use, and store it.
+   *
+   * The key lives in the Android Keystore with setUserAuthenticationRequired,
+   * so the ciphertext is useless without the prompt - including to anything
+   * that can read the app's files. The plaintext never touches AsyncStorage.
+   *
+   * Prompts, because using the key at all requires authentication. That is not
+   * a formality: it confirms the person storing it is present.
+   */
+  biometricStore(
+    alias: string,
+    secret: string,
+    title: string,
+    subtitle: string,
+  ): Promise<boolean>;
+
+  /** Prompt, then decrypt. Rejects if the prompt is cancelled or fails. */
+  biometricLoad(alias: string, title: string, subtitle: string): Promise<string>;
+
+  /** Whether something is stored under this alias, WITHOUT prompting. */
+  biometricHas(alias: string): Promise<boolean>;
+
+  /** Forget it, and destroy the key that opened it. */
+  biometricForget(alias: string): Promise<boolean>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('NativeSecrets');

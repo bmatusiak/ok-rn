@@ -11,6 +11,7 @@ import android.os.PersistableBundle
 import android.view.WindowManager
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
+import androidx.fragment.app.FragmentActivity
 import com.okrn.specs.NativeSecretsSpec
 
 /**
@@ -162,6 +163,90 @@ class NativeSecretsModule(reactContext: ReactApplicationContext) :
     }
     val flags = activity.window.attributes.flags
     promise.resolve((flags and WindowManager.LayoutParams.FLAG_SECURE) != 0)
+  }
+
+  /* ---- biometric-gated storage ---------------------------------------- */
+
+  private val vault by lazy { BiometricVault(reactApplicationContext) }
+
+  /**
+   * The FragmentActivity BiometricPrompt needs.
+   *
+   * ReactActivity extends AppCompatActivity, which is a FragmentActivity, so
+   * this succeeds whenever there is a foreground activity at all. There is not
+   * always one - a headless task, or the app in the background - and a prompt
+   * without an activity to host it is a crash rather than a refusal.
+   */
+  private fun hostActivity(): FragmentActivity? =
+    reactApplicationContext.currentActivity as? FragmentActivity
+
+  override fun biometricStatus(promise: Promise) {
+    try {
+      promise.resolve(vault.status())
+    } catch (e: Exception) {
+      promise.reject(ERR, e.message, e)
+    }
+  }
+
+  override fun biometricHas(alias: String, promise: Promise) {
+    try {
+      promise.resolve(vault.has(alias))
+    } catch (e: Exception) {
+      promise.reject(ERR, e.message, e)
+    }
+  }
+
+  override fun biometricForget(alias: String, promise: Promise) {
+    try {
+      promise.resolve(vault.forget(alias))
+    } catch (e: Exception) {
+      promise.reject(ERR, e.message, e)
+    }
+  }
+
+  override fun biometricStore(
+    alias: String,
+    secret: String,
+    title: String,
+    subtitle: String,
+    promise: Promise,
+  ) {
+    val activity = hostActivity()
+    if (activity == null) {
+      promise.reject(ERR, "no foreground activity to show the prompt on")
+      return
+    }
+    /*
+     * On the MAIN thread. BiometricPrompt attaches a fragment, and attaching
+     * one from a background thread throws rather than being dispatched.
+     */
+    main.post {
+      vault.store(
+        activity, alias, secret, title, subtitle,
+        onError = { promise.reject(ERR, it) },
+        onSuccess = { promise.resolve(true) },
+      )
+    }
+  }
+
+  override fun biometricLoad(
+    alias: String,
+    title: String,
+    subtitle: String,
+    promise: Promise,
+  ) {
+    val activity = hostActivity()
+    if (activity == null) {
+      promise.reject(ERR, "no foreground activity to show the prompt on")
+      return
+    }
+    main.post {
+      vault.load(
+        activity, alias, title, subtitle,
+        onError = { promise.reject(ERR, it) },
+        onSuccess = { promise.resolve(it) },
+      )
+    }
   }
 
   override fun invalidate() {

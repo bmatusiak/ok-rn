@@ -114,6 +114,18 @@ dependencies {
     // The OnlyKey firmware, compiled for Android - see android/okemu.
     implementation project(':okemu')
 
+    /*
+     * BiometricPrompt, and the Keystore integration that makes it mean
+     * something. Without androidx.biometric the prompt is API-29-only and its
+     * CryptoObject handling differs across versions; with it, one call covers
+     * fingerprint, face and the device credential fallback.
+     *
+     * The point is NOT the prompt. It is that the Keystore key is created with
+     * setUserAuthenticationRequired, so a stored secret cannot be decrypted at
+     * all without one - including by anything that can read the app's files.
+     */
+    implementation("androidx.biometric:biometric:1.1.0")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

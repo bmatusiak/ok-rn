@@ -128,6 +128,15 @@ jest.mock('./specs/NativeSecrets', () => ({
     clearClipboard: jest.fn(() => Promise.resolve(true)),
     setScreenshotsBlocked: jest.fn(() => Promise.resolve()),
     screenshotsBlocked: jest.fn(() => Promise.resolve(false)),
+    /*
+     * 'no-hardware' rather than 'available', so a component test never renders
+     * a path that would prompt on a real phone.
+     */
+    biometricStatus: jest.fn(() => Promise.resolve('no-hardware')),
+    biometricHas: jest.fn(() => Promise.resolve(false)),
+    biometricStore: jest.fn(() => Promise.resolve(true)),
+    biometricLoad: jest.fn(() => Promise.reject(new Error('nothing is stored'))),
+    biometricForget: jest.fn(() => Promise.resolve(true)),
   },
 }));
 

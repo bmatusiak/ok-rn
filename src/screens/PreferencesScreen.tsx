@@ -4,6 +4,7 @@ import {device as okdevice} from 'node-onlykey-lib';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {getOnlyKey} from '../onlykey';
+import * as biometrics from '../biometrics';
 import {useConfigMode} from '../hooks/useConfigMode';
 import {PinScreen} from './PinScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -34,6 +35,65 @@ function layoutOptions() {
 }
 
 export function PreferencesScreen({emu}: {emu: EmuSession}) {
+  const [bioStatus, setBioStatus] = useState<biometrics.BiometricStatus>('unavailable');
+  const [bioStored, setBioStored] = useState(false);
+  const [bioBusy, setBioBusy] = useState(false);
+  const [bioError, setBioError] = useState<string | null>(null);
+  const [pinToSave, setPinToSave] = useState('');
+
+  /* Both asked WITHOUT prompting, so the section can render itself honestly. */
+  const refreshBiometrics = useCallback(async () => {
+    setBioStatus(await biometrics.status());
+    try {
+      setBioStored(await biometrics.has(biometrics.ALIAS.devicePin));
+    } catch {
+      setBioStored(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshBiometrics();
+  }, [refreshBiometrics]);
+
+  const savePin = useCallback(async () => {
+    setBioBusy(true);
+    setBioError(null);
+    try {
+      /*
+       * NOT checked against the device. The app cannot ask whether a PIN is
+       * correct without entering it, and entering a wrong one poisons a buffer
+       * that cannot be cleared except by running it to its rollover. So this
+       * saves what it is given, and a wrong PIN shows up as an unlock that does
+       * not unlock - the same as typing it wrong.
+       */
+      await biometrics.store(
+        biometrics.ALIAS.devicePin,
+        pinToSave,
+        'Save your PIN',
+        'It is encrypted under a key only your biometric can use.',
+      );
+      setPinToSave('');
+      await refreshBiometrics();
+    } catch (e) {
+      setBioError(String((e as Error)?.message ?? e));
+    } finally {
+      setBioBusy(false);
+    }
+  }, [pinToSave, refreshBiometrics]);
+
+  const forgetPin = useCallback(async () => {
+    setBioBusy(true);
+    setBioError(null);
+    try {
+      await biometrics.forget(biometrics.ALIAS.devicePin);
+      await refreshBiometrics();
+    } catch (e) {
+      setBioError(String((e as Error)?.message ?? e));
+    } finally {
+      setBioBusy(false);
+    }
+  }, [refreshBiometrics]);
+
   const [table, setTable] = useState<
     {
       name: string;
@@ -140,6 +200,66 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
           without being able to show what they are now. A field left blank is
           not written.
         </Text>
+      </Section>
+
+      <Section title="Unlock with biometrics">
+        <Text style={styles.body}>
+          Save your PIN on this phone so unlocking is a fingerprint instead of
+          seven taps. It is encrypted under a key in Android&apos;s Keystore
+          that cannot be used without your biometric, so the saved value is
+          unreadable to anything that can read this app&apos;s files.
+        </Text>
+
+        {/*
+          The trade-off is STATED, not buried. This is not a preference like
+          typing speed, and someone turning it on should be able to see what
+          they are choosing.
+        */}
+        <Text style={styles.warn}>{biometrics.PIN_WARNING}</Text>
+
+        {bioStatus !== 'available' ? (
+          <Text style={styles.note}>
+            {biometrics.STATUS_TEXT[bioStatus]}
+          </Text>
+        ) : bioStored ? (
+          <>
+            <Text style={styles.note}>
+              A PIN is saved. Adding or removing a fingerprint on this phone
+              clears it — deliberately, so a finger enrolled later cannot open
+              what was saved before it.
+            </Text>
+            <Btn
+              title={bioBusy ? 'Working…' : 'Forget the saved PIN'}
+              tone="danger"
+              disabled={bioBusy}
+              onPress={forgetPin}
+            />
+          </>
+        ) : (
+          <>
+            <Text style={styles.label}>PIN</Text>
+            <TextInput
+              value={pinToSave}
+              onChangeText={setPinToSave}
+              secureTextEntry
+              keyboardType="number-pad"
+              autoCapitalize="none"
+              placeholder="the digits you press to unlock"
+              placeholderTextColor={theme.textDim}
+              style={styles.input}
+            />
+            <Btn
+              title={bioBusy ? 'Waiting…' : 'Save the PIN behind my biometric'}
+              tone="primary"
+              disabled={bioBusy || pinToSave.length < 7}
+              onPress={savePin}
+            />
+            <Text style={styles.note}>
+              {pinToSave.length}/7 digits minimum
+            </Text>
+          </>
+        )}
+        {bioError ? <Text style={styles.error}>{bioError}</Text> : null}
       </Section>
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
@@ -295,6 +415,8 @@ function PrefRow({
 }
 
 const styles = StyleSheet.create({
+  /* A trade-off worth reading, not a passing note. */
+  warn: {color: theme.warn, fontSize: 12, lineHeight: 18, marginTop: 10},
   root: {flex: 1},
   content: {padding: 16, gap: 16, paddingBottom: 48},
 
