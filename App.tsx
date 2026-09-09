@@ -12,6 +12,7 @@ import {useOkEmu} from './src/hooks/useOkEmu';
 import {useUsbHid} from './src/hooks/useUsbHid';
 import {useFidoGatt} from './src/hooks/useFidoGatt';
 import {useTestingMode} from './src/hooks/useTestingMode';
+import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 
 import {SplashScreen} from './src/screens/SplashScreen';
 import {LoginScreen} from './src/screens/LoginScreen';
@@ -24,6 +25,7 @@ import {KeysScreen} from './src/screens/KeysScreen';
 import {BackupScreen} from './src/screens/BackupScreen';
 import {BtKeyboardScreen} from './src/screens/BtKeyboardScreen';
 import {CryptoScreen} from './src/screens/CryptoScreen';
+import {ToolsScreen} from './src/screens/ToolsScreen';
 import {PreferencesScreen} from './src/screens/PreferencesScreen';
 import {FidoScreen} from './src/screens/FidoScreen';
 import {LogScreen} from './src/screens/LogScreen';
@@ -44,6 +46,7 @@ const TABS = [
   'Keyboard',
   'Backup',
   'Crypto',
+  'Tools',
   'Settings',
   'Security',
   'Log',
@@ -130,6 +133,13 @@ function Shell() {
   const ready = phase === 'main';
 
   /*
+   * Locking forgets everything learned while unlocked. The epoch is a remount
+   * key for the screens; the hook also drops the library's cached vault keys,
+   * which are not React state and would survive a remount.
+   */
+  const sessionEpoch = useWipeOnLock(ready);
+
+  /*
    * The drawer does not survive the door.
    *
    * Its open flag is independent of the phase, so a drawer left open when the
@@ -194,7 +204,7 @@ function Shell() {
           </View>
         ) : null}
 
-        <View style={styles.body}>
+        <View style={styles.body} key={sessionEpoch}>
           {phase === 'splash' ? (
             <SplashScreen />
           ) : phase === 'login' ? (
@@ -234,6 +244,8 @@ function Shell() {
             <BackupScreen emu={emu} blockScreenshots={!testing.enabled} />
           ) : tab === 'Crypto' ? (
             <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} />
+          ) : tab === 'Tools' ? (
+            <ToolsScreen onOpenTab={next => setTab(next as Tab)} />
           ) : tab === 'Settings' ? (
             <PreferencesScreen emu={emu} />
           ) : tab === 'Security' ? (

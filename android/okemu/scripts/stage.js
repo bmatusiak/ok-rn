@@ -146,6 +146,29 @@ const PATCHES = [
        '#define flashstorestart (OKEMU_FLASH_BASE + 0x3A800)'],
       ['#define flashend 0x3FFFF',
        '#define flashend (OKEMU_FLASH_BASE + 0x3FFFF)'],
+
+      /*
+       * AIRCR, the one system register okcore.h names ITSELF.
+       *
+       * rewriteSystemBlock() rebases the 0xE0000000 window, but it only walks
+       * core/kinetis.h and only matches the `(*(volatile T *)0x...)` shape.
+       * This is a bare pointer literal in an OnlyKey header, so it matched
+       * neither test and stayed at the raw address - while kinetis.h's own name
+       * for the SAME register, SCB_AIRCR, was rebased correctly. Two names, one
+       * register, one of them left behind.
+       *
+       * The consequence is not a silent no-op, it is a CRASH. Nothing maps
+       * 0xE000ED0C, so every CPU_RESTART() - the idle lockout, the lock
+       * gesture, a failed integrity check, the end of a wipe - writes to
+       * unmapped memory and takes the whole app down with SIGSEGV. Measured:
+       * fault addr 0xe000ed0c on a write, in okemu_firmware_run, with
+       * x8 = 0x05fa0004, which is CPU_RESTART_VAL.
+       *
+       * Rebased, the store lands on the page okemu_restart.cpp guards, and its
+       * handler turns it into the restart EVENT it was always meant to be.
+       */
+      ['#define CPU_RESTART_ADDR (uint32_t *)0xE000ED0C',
+       '#define CPU_RESTART_ADDR ((uint32_t *)OKEMU_SCS(0xE000ED0C))'],
     ],
   },
   {

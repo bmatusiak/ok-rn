@@ -185,6 +185,24 @@ export function useOkEmu({log, autoStart = false}: Options) {
    */
     const offRestart = OkEmu.on('restartRequested', () => {
       setState('halted');
+
+      /*
+       * And the DEVICE is no longer unlocked, which is a separate fact from the
+       * firmware being halted and has to be said separately.
+       *
+       * CPU_RESTART() is what the idle lockout, the lock gesture and a failed
+       * integrity check all end in - the key rebooting, which on hardware means
+       * it comes back LOCKED. Leaving `device` at 'unlocked' left the app
+       * sitting on an unlocked-looking session over a firmware that no longer
+       * exists: the door stayed open, and whatever was on screen - a slot's
+       * password, a derived secret, an opened vault note - stayed with it.
+       *
+       * 'unknown' rather than 'locked' because that is the truth. The firmware
+       * is gone and nothing has told us what it will say when it comes back;
+       * what IS certain is that it is not unlocked.
+       */
+      setDevice('unknown');
+
       log(
         'error',
         'firmware called CPU_RESTART() - the thread has exited and cannot be ' +
