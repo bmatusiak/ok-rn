@@ -10,19 +10,47 @@ import {theme} from './theme';
  * okemu_set_button() into the firmware's touch_sense_loop(), and the firmware
  * cannot tell the difference.
  *
- * Taps only, deliberately. Press length is banded in MAIN-LOOP ITERATIONS
- * rather than milliseconds, so the millisecond boundaries are not the
- * hardware's and nothing here has measured them - and the long bands are where
- * the irreversible gestures live: >=72 iterations on button 1 runs backup(), on
- * button 3 locks the device with CPU_RESTART(), on button 6 enters config mode.
+ * Press length is banded in MAIN-LOOP ITERATIONS, not milliseconds:
+ *
+ *     <= 20      types the slot
+ *     21 .. 71   types the b profile
+ *     >= 72      backup (button 1), restart (3), config mode (6)
+ *
+ * This used to be taps only, because a hold timed in milliseconds is a bet
+ * against the handset's loop speed with an irreversible action on the losing
+ * side. Holds are safe now for a structural reason rather than a careful one:
+ * `onHoldStart` arms a COUNTED hold one tick below the gesture band, so the
+ * emulator releases the pad at 71 whatever the thumb does. Holding longer
+ * simply does nothing.
+ *
+ * `ticks` is that counter, shown live. On hardware the LED tells you which
+ * band you are in while you are still in it; on a phone the pad and the LED
+ * are the same screen, so the number goes on the key itself.
  */
 export function Keypad({
   onPress,
+  onHoldStart,
+  onHoldEnd,
+  ticks = null,
   disabled = false,
 }: {
   onPress: (button: number) => void;
+  /** Arms a counted hold. Omit both to keep the pad taps-only. */
+  onHoldStart?: (button: number) => void;
+  onHoldEnd?: (button: number) => void;
+  /** The counted hold in progress, if any. */
+  ticks?: {button: number; ticks: number} | null;
   disabled?: boolean;
 }) {
+  const holdable = Boolean(onHoldStart && onHoldEnd);
+
+  /*
+   * A tap must not also fire the hold path. Pressable calls onPressIn for
+   * every touch, so the hold is armed on every tap too - and releasing it
+   * before the counter has moved is exactly a tap, which is what the firmware
+   * then sees. So there is only one path here, and `onPress` is used only
+   * when the pad is not holdable at all.
+   */
   return (
     <View style={styles.pad}>
       {[
@@ -34,7 +62,9 @@ export function Keypad({
             <Pressable
               key={n}
               disabled={disabled}
-              onPress={() => onPress(n)}
+              onPress={holdable ? undefined : () => onPress(n)}
+              onPressIn={holdable ? () => onHoldStart!(n) : undefined}
+              onPressOut={holdable ? () => onHoldEnd!(n) : undefined}
               accessibilityRole="button"
               accessibilityLabel={`Button ${n}`}
               style={({pressed}) => [
@@ -43,6 +73,15 @@ export function Keypad({
                 disabled && styles.keyDisabled,
               ]}>
               <Text style={styles.keyText}>{n}</Text>
+              {ticks?.button === n ? (
+                <Text
+                  style={[
+                    styles.ticks,
+                    ticks.ticks > 20 && styles.ticksHold,
+                  ]}>
+                  {ticks.ticks} · {ticks.ticks <= 20 ? 'tap' : 'hold'}
+                </Text>
+              ) : null}
             </Pressable>
           ))}
         </View>
@@ -85,6 +124,19 @@ const styles = StyleSheet.create({
   keyPressed: {backgroundColor: theme.surfaceAlt, borderColor: theme.accent},
   keyDisabled: {opacity: 0.35},
   keyText: {color: theme.text, fontSize: 24, fontWeight: '600'},
+  /*
+   * Absolutely positioned so the key does not change height when the counter
+   * appears. A pad that grows under your thumb mid-press is a pad you let go
+   * of at the wrong moment - and the moment is the whole point here.
+   */
+  ticks: {
+    position: 'absolute',
+    bottom: 6,
+    color: theme.textDim,
+    fontSize: 11,
+    fontVariant: ['tabular-nums'],
+  },
+  ticksHold: {color: theme.warn},
 
   dots: {flexDirection: 'row', gap: 8, justifyContent: 'center'},
   dot: {

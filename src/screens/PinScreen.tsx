@@ -1,4 +1,4 @@
-import React, {useCallback, useState} from 'react';
+import React, {useCallback, useRef, useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
 import {Keypad, PinDots} from '../ui/Keypad';
 import {Logo} from '../ui/Logo';
@@ -33,20 +33,63 @@ export function PinScreen({
   const [count, setCount] = useState(0);
   const [working, setWorking] = useState(false);
 
+  /*
+   * Presses are QUEUED, NOT DROPPED
+   * (FINDING-pin-taps-are-dropped-not-queued.md).
+   *
+   * A press is not instantaneous: it is ten firmware loop iterations at
+   * ~36ms each, plus the poll that notices the release, so about 400ms. A
+   * finger moving between two keys takes half that. Ignoring a tap that
+   * arrives mid-press - which is what a `working` guard does - threw away
+   * roughly every second digit, and the buffer this feeds CANNOT BE CLEARED
+   * except by running it to its rollover, so one lost digit costs the entry
+   * twice over.
+   *
+   * Serialising is still required - okemu_set_button_ticks holds one counter
+   * per button, and a second press starting before the first is released
+   * overwrites the count being aged - but a chain serialises without
+   * discarding anything.
+   */
+  const queue = useRef<Promise<void>>(Promise.resolve());
+
+  /**
+   * Presses ACCEPTED, including ones still waiting their turn.
+   *
+   * The cap has to be counted here rather than off `count`, which only moves
+   * once a press has landed: ten fast taps must queue ten presses, not however
+   * many happened to have finished by the time the tenth arrived.
+   */
+  const accepted = useRef(0);
+
+  /** How many are still in flight, so the screen knows when it has drained. */
+  const outstanding = useRef(0);
+
   const press = useCallback(
-    async (button: number) => {
-      if (working || count >= MAX_PIN) {
+    (button: number) => {
+      if (accepted.current >= MAX_PIN) {
         return;
       }
+      accepted.current += 1;
+      outstanding.current += 1;
       setWorking(true);
-      try {
-        await onPress(button);
-        setCount(prev => prev + 1);
-      } finally {
-        setWorking(false);
-      }
+
+      queue.current = queue.current
+        .then(() => onPress(button))
+        .then(
+          () => {
+            setCount(prev => prev + 1);
+          },
+          () => {
+            /* It never reached the key, so it does not count against the cap. */
+            accepted.current -= 1;
+          },
+        )
+        .then(() => {
+          outstanding.current -= 1;
+          if (outstanding.current === 0) setWorking(false);
+        });
     },
-    [count, onPress, working],
+    [onPress],
   );
 
   /*
@@ -61,20 +104,26 @@ export function PinScreen({
    * the lock gesture. Padding with a single repeated digit also makes an
    * accidental match on someone's real PIN vanishingly unlikely.
    */
-  const startOver = useCallback(async () => {
-    if (working || count === 0) {
+  const startOver = useCallback(() => {
+    if (accepted.current === 0 || accepted.current >= MAX_PIN) {
       return;
     }
-    setWorking(true);
-    try {
-      for (let i = count; i < MAX_PIN; i++) {
-        await onPress(6);
-      }
-      setCount(0);
-    } finally {
-      setWorking(false);
+
+    /* press() stops at MAX_PIN by itself, so this pads exactly to the edge. */
+    const padding = MAX_PIN - accepted.current;
+    for (let i = 0; i < padding; i++) {
+      press(6);
     }
-  }, [count, onPress, working]);
+
+    /*
+     * The counters go back to zero behind the padding rather than beside it -
+     * the buffer is only empty once the last of those presses has been sent.
+     */
+    queue.current = queue.current.then(() => {
+      accepted.current = 0;
+      setCount(0);
+    });
+  }, [press]);
 
   return (
     <View style={styles.root}>
@@ -88,7 +137,7 @@ export function PinScreen({
       </View>
 
       <View style={styles.pad}>
-        <Keypad onPress={press} disabled={busy || working} />
+        <Keypad onPress={press} disabled={busy} />
       </View>
 
       <View style={styles.footer}>

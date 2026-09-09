@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the FileProvider is allowed to hand out.
+
+  ONE DIRECTORY, and a subdirectory of the cache rather than the cache itself.
+  A provider rooted at cache-path "." would expose every temporary file the app
+  has ever written to whatever activity a share was sent to. This exposes the
+  one folder backups are staged in and nothing else.
+-->
+<paths>
+  <cache-path name="shared" path="shared/" />
+</paths>

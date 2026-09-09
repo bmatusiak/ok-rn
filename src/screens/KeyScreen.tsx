@@ -1,9 +1,8 @@
-import React, {useCallback, useEffect, useState} from 'react';
-import {ActivityIndicator, ScrollView, StyleSheet, Text, View} from 'react-native';
+import React from 'react';
+import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
-import {getOnlyKey} from '../onlykey';
 import OkEmu from '../transport/OkEmu';
 import {PinScreen} from './PinScreen';
 import {SetupScreen} from './SetupScreen';
@@ -75,35 +74,6 @@ export function KeyScreen({emu}: {emu: EmuSession}) {
 }
 
 function Unlocked({emu}: {emu: EmuSession}) {
-  const [slots, setSlots] = useState<string[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const {device} = await getOnlyKey();
-      const {labels} = await device.readLabels({timeoutMs: 10000});
-      setSlots(labels);
-    } catch (e) {
-      /*
-       * A label read on a locked device times out saying so rather than
-       * failing fast, because the firmware answers it with nothing at all -
-       * no error frame. Show whatever it worked out; it is more useful than
-       * "failed".
-       */
-      setError(String((e as Error)?.message ?? e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Read them once on arrival; the device has to be unlocked to answer.
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
   return (
     <ScrollView
       style={styles.root}
@@ -117,41 +87,20 @@ function Unlocked({emu}: {emu: EmuSession}) {
         </View>
       </Section>
 
-      <Section
-        title="Slots"
-        right={
-          <Btn title={loading ? '…' : 'Refresh'} disabled={loading} onPress={refresh} />
-        }>
-        {loading && slots === null ? (
-          <ActivityIndicator color={theme.textDim} style={styles.spinner} />
-        ) : error ? (
-          <Text style={styles.error}>{error}</Text>
-        ) : slots && slots.length ? (
-          slots.map((label, i) => (
-            <View key={i} style={styles.slot}>
-              <Text style={styles.slotId}>{slotName(i)}</Text>
-              <Text
-                style={[styles.slotLabel, !label && styles.slotEmpty]}
-                numberOfLines={1}>
-                {label || 'empty'}
-              </Text>
-            </View>
-          ))
-        ) : (
-          <Text style={styles.hint}>No slots reported.</Text>
-        )}
-        <Text style={styles.hint}>
-          Only labels ever leave the key. What a slot types is never read back.
-        </Text>
-      </Section>
-
       <Section title="Buttons">
         <Text style={styles.hint}>
           The key's entire input surface. A site asking for a security key
-          waits on one of these — any of them will do.
+          waits on one of these — any of them will do. Hold one to count ticks:
+          up to 20 types the slot, past 20 types its b profile. It releases
+          itself at 71, before the band that takes a backup.
         </Text>
         <View style={styles.pad}>
-          <Keypad onPress={emu.press} />
+          <Keypad
+            onPress={emu.press}
+            onHoldStart={emu.beginHold}
+            onHoldEnd={emu.endHold}
+            ticks={emu.pressTicks}
+          />
         </View>
       </Section>
     </ScrollView>
@@ -182,17 +131,6 @@ function Message({
       ) : null}
     </View>
   );
-}
-
-/**
- * Slot names as the device means them: two profiles of six.
- *
- * readLabels returns them in wire order, which is 1a-6a then 1b-6b - the same
- * ids setSlot takes.
- */
-function slotName(index: number): string {
-  const profile = index < 6 ? 'a' : 'b';
-  return `${(index % 6) + 1}${profile}`;
 }
 
 function describeLed(pixels: number[]): string {

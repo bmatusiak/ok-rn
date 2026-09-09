@@ -1,0 +1,406 @@
+import React, {useCallback, useEffect, useState} from 'react';
+import {ScrollView, StyleSheet, Text, TextInput} from 'react-native';
+import {Btn, Section} from '../ui/components';
+import {theme} from '../ui/theme';
+import {getOnlyKey} from '../onlykey';
+import OkEmu from '../transport/OkEmu';
+import NativeShare from '../../specs/NativeShare';
+import {useSecureScreen} from '../hooks/useSecureScreen';
+import {useConfigMode} from '../hooks/useConfigMode';
+import {PinScreen} from './PinScreen';
+import type {EmuSession} from '../hooks/useOkEmu';
+
+/*
+ * Backup and restore.
+ *
+ * THE DEVICE TYPES ITS BACKUP. There is no command that reads one out - the
+ * firmware answers the backup gesture by pressing the whole file at the
+ * keyboard, one character at a time (okcore.cpp:6296-6340, 61 slots of it).
+ * On hardware that means into a text editor you opened first. Here the
+ * keystrokes arrive in-process, so the app captures and decodes them, which is
+ * the same machinery the slot reader uses.
+ *
+ * WHAT COMES OUT IS THE WHOLE KEY. Every slot, every private key, everything -
+ * encrypted under the backup passphrase if one is set, and in the clear if not.
+ * That is why this screen blocks screenshots, stages the file where only a
+ * chosen app can read it, and wipes the staging directory afterwards.
+ */
+
+/**
+ * The backup gesture: a hold on button 1 between 72 and 179 ticks.
+ *
+ * `duration < 180 && duration >= 72 && button_selected == '1'`
+ * (OnlyKey.ino:873). 100 sits in the middle of that, so neither end is close.
+ * Above 180 the branch is not taken at all and the press falls through to the
+ * ordinary band dispatch, which would type a slot instead.
+ */
+const BACKUP_TICKS = 100;
+
+export function BackupScreen({
+  emu,
+  blockScreenshots = true,
+}: {
+  emu: EmuSession;
+  blockScreenshots?: boolean;
+}) {
+  useSecureScreen(blockScreenshots);
+
+  const [text, setText] = useState<string | null>(null);
+  const [verified, setVerified] = useState<boolean | null>(null);
+  const [digest, setDigest] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [restoreText, setRestoreText] = useState('');
+  const [restoreFrom, setRestoreFrom] = useState<string | null>(null);
+  const [passphrase, setPassphrase] = useState('');
+
+  /*
+   * Whether the device has told us it has no backup key.
+   *
+   * Not inferred from a failed capture - the firmware says so outright, and
+   * this is the one repair the screen can offer, so it is worth showing only
+   * when it applies.
+   */
+  const [needsPassphrase, setNeedsPassphrase] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const locked = emu.device !== 'unlocked';
+
+  /*
+   * Setting a backup passphrase is an OKSETPRIV, so it needs config mode just
+   * as loading a key does. Shared with the Keys screen rather than written
+   * twice - the sequence is three firmware quirks deep and only worth getting
+   * right once.
+   */
+  const config = useConfigMode(emu.device);
+
+  /* A staged backup must not outlive the screen that made it. */
+  useEffect(() => () => { void NativeShare.clearShared().catch(() => {}); }, []);
+
+  const capture = useCallback(async () => {
+    setBusy('capture');
+    setError(null);
+    setStatus(null);
+    setText(null);
+    setVerified(null);
+    setProgress(0);
+
+    try {
+      const {device} = await getOnlyKey();
+      const result = await device.captureBackup({
+        /*
+         * The trigger is ours because pressing a button is platform-specific;
+         * the library does the capture, decode and verification.
+         */
+        trigger: () => OkEmu.holdTicks(1, BACKUP_TICKS, {allowGesture: true}),
+        timeoutMs: 120000,
+        onProgress: ({characters}: {characters: number}) => setProgress(characters),
+      });
+
+      setText(result.text);
+      setVerified(result.verified);
+      setDigest(result.digest ?? null);
+      setStatus(
+        result.verified
+          ? `Captured ${result.text.length} characters. The digest chain checks out.`
+          : `Captured ${result.text.length} characters, but the digest DOES NOT match.`,
+      );
+    } catch (e) {
+      const err = e as Error & {partial?: string};
+      const message = String(err?.message ?? e);
+
+      /*
+       * A backup with no backup key set is not a failure to capture - it is
+       * the device declining, and there is exactly one thing to do about it.
+       * The partial is NOT shown in that case: it is the refusal sentence the
+       * firmware typed, not a damaged backup, and offering to share it would
+       * be offering to save a link to the documentation.
+       */
+      if (/no backup key/i.test(message)) {
+        setNeedsPassphrase(true);
+        setError(
+          'This key has no backup passphrase, so it will not produce a backup. ' +
+            'Set one below and try again.',
+        );
+        return;
+      }
+
+      if (err.partial) {
+        setText(err.partial);
+        setVerified(false);
+      }
+      setError(message);
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const setBackupPassphrase = useCallback(async () => {
+    setBusy('passphrase');
+    setError(null);
+    setStatus(null);
+    try {
+      const {device} = await getOnlyKey();
+      await device.setBackupPassphrase(passphrase);
+      setNeedsPassphrase(false);
+      setPassphrase('');
+      setStatus(
+        'Backup passphrase set. Restart the app to leave config mode, then back up.',
+      );
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [passphrase]);
+
+  const share = useCallback(async () => {
+    if (!text) return;
+    setBusy('share');
+    setError(null);
+    try {
+      /* Sortable, and it says what it is without saying whose it is. */
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const shown = await NativeShare.shareFile(
+        `onlykey-backup-${stamp}.txt`,
+        text,
+        'text/plain',
+        'Save your OnlyKey backup',
+      );
+      setStatus(
+        shown
+          ? 'Handed to the app you chose. Delete it from this phone once it is somewhere safe.'
+          : 'Nothing on this phone can receive a file.',
+      );
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [text]);
+
+  const pick = useCallback(async () => {
+    setBusy('pick');
+    setError(null);
+    setStatus(null);
+    try {
+      const file = await NativeShare.pickTextFile('text/plain');
+      /* Cancelling is the commonest outcome of a picker, and says nothing. */
+      if (!file.picked) return;
+
+      setRestoreText(file.content);
+      setRestoreFrom(file.name);
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const restore = useCallback(async () => {
+    setBusy('restore');
+    setError(null);
+    setStatus(null);
+    try {
+      const {device} = await getOnlyKey();
+      const result = await device.restore(restoreText);
+      setStatus(
+        `Restored ${result.bytes} bytes. Restart the app so the key reloads what it now holds.`,
+      );
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [restoreText]);
+
+  return (
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}>
+      <Section title="Backup">
+        <Text style={styles.body}>
+          The key types its backup rather than sending it, so this asks it to
+          type and reads what it types. It contains everything the key holds —
+          encrypted under your backup passphrase if you set one, and in the
+          clear if you did not.
+        </Text>
+        <Btn
+          title={busy === 'capture' ? `Reading… ${progress} chars` : 'Back up now'}
+          tone="primary"
+          disabled={busy !== null || locked}
+          onPress={capture}
+        />
+        {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
+      </Section>
+
+      {status ? <Text style={styles.status}>{status}</Text> : null}
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+
+      {text ? (
+        <Section title={verified ? 'Backup captured' : 'Backup captured — unverified'}>
+          {verified === false ? (
+            <Text style={styles.error}>
+              The digest chain does not match, which means the capture is
+              incomplete or damaged. Do not rely on this file; take it again.
+            </Text>
+          ) : (
+            <Text style={styles.note}>
+              Each line is hashed together with the running digest, so this
+              check catches a reordering as well as an edit.
+            </Text>
+          )}
+          {digest ? <Text style={styles.digest}>{digest}</Text> : null}
+          <Btn
+            title={busy === 'share' ? 'Sharing…' : 'Save or share'}
+            tone="primary"
+            disabled={busy !== null}
+            onPress={share}
+          />
+          <Text style={styles.note}>
+            Sent as a file, so a storage app can save it rather than paste it.
+            The copy this app staged is deleted when you leave this screen.
+          </Text>
+        </Section>
+      ) : null}
+
+      {needsPassphrase ? (
+        <Section title="Set a backup passphrase">
+          <Text style={styles.body}>
+            A backup is encrypted under a passphrase, and the key will not make
+            one until it has it. The passphrase never reaches the device — only
+            a key derived from it does — so THIS IS THE ONLY COPY. A backup
+            cannot be restored without it.
+          </Text>
+          <TextInput
+            value={passphrase}
+            onChangeText={setPassphrase}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="at least 25 characters"
+            placeholderTextColor={theme.textDim}
+            style={styles.input}
+          />
+          {!config.ready ? (
+            <>
+              <Text style={styles.note}>
+                The key only accepts a passphrase in config mode, and getting
+                there locks it. The app holds button 6, you enter your PIN
+                again, and afterwards the app has to be restarted — config mode
+                ends only at a restart.
+              </Text>
+              <Btn
+                title={config.entering ? 'Holding…' : 'Enter config mode'}
+                tone="primary"
+                disabled={config.entering || locked}
+                onPress={config.enter}
+              />
+              {config.error ? (
+                <Text style={styles.error}>{config.error}</Text>
+              ) : null}
+              {config.entered ? (
+                <>
+                  <Text style={styles.note}>
+                    The key locked itself. Enter your PIN to carry on.
+                  </Text>
+                  <PinScreen onPress={emu.press} />
+                </>
+              ) : null}
+            </>
+          ) : (
+            <Btn
+              title={busy === 'passphrase' ? 'Setting…' : 'Set passphrase'}
+              tone="primary"
+              disabled={busy !== null || passphrase.length < 25}
+              onPress={setBackupPassphrase}
+            />
+          )}
+          <Text style={styles.note}>
+            {passphrase.length}/25 characters
+          </Text>
+        </Section>
+      ) : null}
+
+      <Section title="Restore">
+        <Text style={styles.body}>
+          Choose a backup file, or paste one, to write it back. It is verified
+          before a single byte is sent, so a damaged file fails with nothing
+          changed.
+        </Text>
+        <Btn
+          title={busy === 'pick' ? 'Opening…' : 'Choose a file'}
+          disabled={busy !== null}
+          onPress={pick}
+        />
+        {restoreFrom ? (
+          <Text style={styles.note}>
+            Read {restoreFrom} — {restoreText.length} characters. Check it below
+            before restoring.
+          </Text>
+        ) : null}
+        <TextInput
+          value={restoreText}
+          onChangeText={t => {
+            setRestoreText(t);
+            /* Edited by hand, so it is no longer what the file said. */
+            if (restoreFrom) setRestoreFrom(null);
+          }}
+          multiline
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="-----BEGIN ONLYKEY BACKUP-----"
+          placeholderTextColor={theme.textDim}
+          style={styles.textarea}
+        />
+        <Btn
+          title={busy === 'restore' ? 'Restoring…' : 'Restore'}
+          tone="danger"
+          disabled={busy !== null || locked || !restoreText.trim()}
+          onPress={restore}
+        />
+        <Text style={styles.note}>
+          A restore replaces what is on the key.
+        </Text>
+      </Section>
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: {flex: 1},
+  content: {padding: 16, gap: 16, paddingBottom: 48},
+
+  body: {color: theme.textSecondary, fontSize: theme.fontSize, lineHeight: theme.lineHeight},
+  note: {color: theme.textDim, fontSize: 12, lineHeight: 18},
+  status: {color: theme.ok, fontSize: 13, lineHeight: 20},
+  error: {color: theme.error, fontSize: 13, lineHeight: 20},
+  digest: {color: theme.textDim, fontSize: 11, fontFamily: theme.mono},
+
+  input: {
+    color: theme.text,
+    fontSize: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderRadius: theme.radius,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.inputBg,
+  },
+
+  textarea: {
+    minHeight: 120,
+    textAlignVertical: 'top',
+    color: theme.text,
+    fontSize: 12,
+    fontFamily: theme.mono,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderRadius: theme.radius,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.inputBg,
+  },
+});

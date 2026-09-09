@@ -1,20 +1,21 @@
 import React, {useCallback, useState} from 'react';
-import {ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import OkEmu from '../transport/OkEmu';
+import {getOnlyKey} from '../onlykey';
+import {Logo} from '../ui/Logo';
 import {Btn} from '../ui/components';
 import {Keypad, PinDots} from '../ui/Keypad';
-import {Logo} from '../ui/Logo';
 import {theme} from '../ui/theme';
-import {getOnlyKey} from '../onlykey';
-import OkEmu from '../transport/OkEmu';
 
 /** The firmware refuses anything outside this, and says so by name. */
 const MIN_PIN = 7;
 const MAX_PIN = 10;
 
-type Stage = 'choose' | 'confirm' | 'applying' | 'done' | 'failed';
+/** A backup passphrase shorter than this is refused. */
+const MIN_PASSPHRASE = 25;
 
 /**
- * First-time setup: choosing the PIN a blank key will use.
+ * First-time setup: choosing the PIN a blank key will use, and what follows.
  *
  * THE DIGITS ARE NOT PRESSED ON THE DEVICE HERE, which is the difference from
  * the unlock pad. Unlocking is the device checking a PIN it already holds, so
@@ -27,13 +28,63 @@ type Stage = 'choose' | 'confirm' | 'applying' | 'done' | 'failed';
  * library with the same digits it already sent, so a typo would be confirmed
  * against itself and committed happily. The only place a mistyped PIN can be
  * caught is here, before any of it starts.
+ *
+ * ## The rest of the wizard
+ *
+ * The desktop wizard is eleven steps, and five of them are "now press the same
+ * thing again on the key" - on hardware each PIN is entered on the device's own
+ * keypad, twice. That split is already handled above, so what is left is the
+ * three PINs the firmware distinguishes and the backup passphrase:
+ *
+ *   primary        unlocks the key
+ *   secondary      unlocks a second, separate profile
+ *   selfDestruct   WIPES the key
+ *
+ * The passphrase is here rather than on the Backup screen because of when it is
+ * allowed: OKSETPRIV is accepted in config mode OR on a device's first use
+ * (okcore.cpp:452). During setup the second applies, so it can be set now
+ * without the config-mode dance the Backup screen otherwise has to do.
  */
+
+type Stage =
+  | 'choose'
+  | 'confirm'
+  | 'applying'
+  | 'passphrase'
+  | 'done'
+  | 'failed';
+
+/** Which PIN is being collected. Order is the order they are offered in. */
+type Kind = 'primary' | 'secondary' | 'selfDestruct';
+
+const KINDS: Kind[] = ['primary', 'secondary', 'selfDestruct'];
+
+const HEADING: Record<Kind, string> = {
+  primary: 'Choose a PIN',
+  secondary: 'Second profile PIN',
+  selfDestruct: 'Self-destruct PIN',
+};
+
+const BLURB: Record<Kind, string> = {
+  primary:
+    'This unlocks the key, and it cannot be recovered. There is no reset that keeps what is on it.',
+  secondary:
+    'An optional second PIN that unlocks a separate set of slots on the same key. Most keys never need one.',
+  selfDestruct:
+    'Entering this PIN WIPES THE KEY — every slot, every private key — with no confirmation and nothing to undo.',
+};
+
 export function SetupScreen({onDone}: {onDone?: () => void}) {
+  const [kind, setKind] = useState<Kind>('primary');
   const [stage, setStage] = useState<Stage>('choose');
   const [pin, setPin] = useState('');
   const [again, setAgain] = useState('');
   const [steps, setSteps] = useState<string[]>([]);
+  const [passphrase, setPassphrase] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  /** PIN kinds that have actually been committed, for the closing summary. */
+  const [set, setSet] = useState<Kind[]>([]);
 
   const entered = stage === 'confirm' ? again : pin;
   const setEntered = stage === 'confirm' ? setAgain : setPin;
@@ -54,6 +105,22 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
     setEntered(entered.slice(0, -1));
   }, [entered, setEntered]);
 
+  /** Start collecting the next PIN, or move on when there are none left. */
+  const advance = useCallback((from: Kind) => {
+    setPin('');
+    setAgain('');
+    setSteps([]);
+    setError(null);
+
+    const next = KINDS[KINDS.indexOf(from) + 1];
+    if (next) {
+      setKind(next);
+      setStage('choose');
+    } else {
+      setStage('passphrase');
+    }
+  }, []);
+
   const apply = useCallback(
     async (digits: string) => {
       setStage('applying');
@@ -64,8 +131,9 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
         off = device.on('progress', (e: {step: string}) =>
           setSteps(prev => [...prev, e.step]),
         );
-        await device.setPin(digits);
-        setStage('done');
+        await device.setPin(digits, {kind});
+        setSet(prev => [...prev, kind]);
+        advance(kind);
       } catch (e) {
         setError(String((e as Error)?.message ?? e));
         setStage('failed');
@@ -73,7 +141,7 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
         off?.();
       }
     },
-    [],
+    [kind, advance],
   );
 
   const next = useCallback(() => {
@@ -90,6 +158,79 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
     void apply(pin);
   }, [again, apply, pin, stage]);
 
+  const applyPassphrase = useCallback(async () => {
+    setStage('applying');
+    setSteps([]);
+    setError(null);
+    try {
+      const {device} = await getOnlyKey();
+      await device.setBackupPassphrase(passphrase);
+      setPassphrase('');
+      setStage('done');
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+      setStage('failed');
+    }
+  }, [passphrase]);
+
+  const startOver = useCallback(() => {
+    setPin('');
+    setAgain('');
+    setSteps([]);
+    setError(null);
+    setStage('choose');
+  }, []);
+
+  /* ---------------------------------------------------------- passphrase */
+
+  if (stage === 'passphrase') {
+    return (
+      <ScrollView style={styles.root} contentContainerStyle={styles.progress}>
+        <Logo height={28} />
+        <Text style={styles.title}>Backup passphrase</Text>
+        <Text style={styles.hint}>
+          A backup is encrypted under this, and the key will not produce one at
+          all until it is set. The passphrase never reaches the device — only a
+          key derived from it does — so this is the only copy of it.
+        </Text>
+        <Text style={styles.hint}>
+          It is offered now because the key has not finished setup, and that is
+          the one other time it is accepted. Afterwards it needs config mode,
+          which only a restart leaves.
+        </Text>
+        <TextInput
+          value={passphrase}
+          onChangeText={setPassphrase}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={`at least ${MIN_PASSPHRASE} characters`}
+          placeholderTextColor={theme.textDim}
+          style={styles.input}
+        />
+        <Text style={styles.step}>
+          {passphrase.length}/{MIN_PASSPHRASE}
+        </Text>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
+        <View style={styles.action}>
+          <View style={styles.cell}>
+            <Btn title="Skip" onPress={() => setStage('done')} />
+          </View>
+          <View style={styles.cell}>
+            <Btn
+              title="Set it"
+              tone="primary"
+              disabled={passphrase.length < MIN_PASSPHRASE}
+              onPress={applyPassphrase}
+            />
+          </View>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  /* ------------------------------------------------- applying/done/failed */
+
   if (stage === 'applying' || stage === 'done' || stage === 'failed') {
     return (
       <ScrollView style={styles.root} contentContainerStyle={styles.progress}>
@@ -104,7 +245,7 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
 
         <View style={styles.steps}>
           {steps.map((s, i) => (
-            <Text key={i} style={styles.step}>
+            <Text style={styles.step} key={i}>
               {s}
             </Text>
           ))}
@@ -114,6 +255,11 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
 
         {stage === 'done' ? (
           <>
+            <Text style={styles.hint}>
+              {set.length === 1
+                ? 'A PIN is set.'
+                : `${set.length} PINs are set: ${set.join(', ')}.`}
+            </Text>
             <Text style={styles.hint}>
               The key only reads its PIN when it boots, and its firmware cannot
               be restarted in this process — so the app has to start again
@@ -131,16 +277,7 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
 
         {stage === 'failed' ? (
           <View style={styles.action}>
-            <Btn
-              title="Start over"
-              onPress={() => {
-                setPin('');
-                setAgain('');
-                setSteps([]);
-                setError(null);
-                setStage('choose');
-              }}
-            />
+            <Btn title="Start over" onPress={startOver} />
             {onDone ? <Btn title="Cancel" onPress={onDone} /> : null}
           </View>
         ) : null}
@@ -148,21 +285,26 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
     );
   }
 
+  /* ----------------------------------------------------------- collecting */
+
   const ready = entered.length >= MIN_PIN;
+  const optional = kind !== 'primary';
 
   return (
     <View style={styles.root}>
       <View style={styles.centre}>
         <Logo height={28} />
-
         <Text style={styles.title}>
-          {stage === 'choose' ? 'Choose a PIN' : 'Enter it again'}
+          {stage === 'choose' ? HEADING[kind] : 'Enter it again'}
         </Text>
         <Text style={styles.hint}>
           {stage === 'choose'
             ? `${MIN_PIN} to ${MAX_PIN} presses. There is no keyboard on a key — a PIN is a sequence of its buttons.`
             : 'So a slip cannot be committed twice.'}
         </Text>
+        {stage === 'choose' ? (
+          <Text style={styles.blurb}>{BLURB[kind]}</Text>
+        ) : null}
 
         <View style={styles.dots}>
           <PinDots count={entered.length} max={MAX_PIN} />
@@ -187,6 +329,17 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
             />
           </View>
         </View>
+
+        {/*
+          * Only the primary PIN is required. The other two are offered because
+          * the firmware has them, not because a key needs them - and a
+          * self-destruct PIN nobody meant to set is worse than none at all.
+          */}
+        {optional && stage === 'choose' ? (
+          <View style={styles.action}>
+            <Btn title="Skip this one" onPress={() => advance(kind)} />
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -194,22 +347,45 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
 
 const styles = StyleSheet.create({
   root: {flex: 1},
-  centre: {flex: 1, alignItems: 'center', justifyContent: 'center'},
-  progress: {alignItems: 'center', paddingVertical: 40},
-  title: {color: theme.text, fontSize: 21, fontWeight: '700', marginTop: 24},
+  centre: {flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 4},
+  progress: {padding: 24, gap: 12, alignItems: 'center'},
+
+  title: {color: theme.text, fontSize: 22, fontWeight: '700', marginTop: 24},
   hint: {
     color: theme.textDim,
     fontSize: 12,
-    lineHeight: 17,
+    lineHeight: 18,
     textAlign: 'center',
-    marginTop: 6,
-    maxWidth: 300,
+    maxWidth: 320,
   },
-  dots: {marginTop: 20, marginBottom: 18},
-  error: {color: theme.error, fontSize: 12, textAlign: 'center', marginBottom: 10, maxWidth: 300},
+  blurb: {
+    color: theme.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    maxWidth: 320,
+    marginTop: 6,
+  },
+
+  dots: {marginTop: 20, marginBottom: 20},
   pad: {width: '100%', maxWidth: 320},
-  action: {flexDirection: 'row', gap: 10, marginTop: 20, width: '100%', maxWidth: 320},
+  action: {flexDirection: 'row', gap: 10, marginTop: 18, width: '100%', maxWidth: 320},
   cell: {flex: 1},
-  steps: {marginTop: 18, alignItems: 'center'},
-  step: {color: theme.textDim, fontSize: 12, fontFamily: theme.mono, marginTop: 2},
+
+  steps: {gap: 2, alignItems: 'center'},
+  step: {color: theme.textDim, fontSize: 12, fontFamily: theme.mono},
+  error: {color: theme.error, fontSize: 13, lineHeight: 20, textAlign: 'center'},
+
+  input: {
+    width: '100%',
+    maxWidth: 320,
+    color: theme.text,
+    fontSize: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderRadius: theme.radius,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.inputBg,
+  },
 });

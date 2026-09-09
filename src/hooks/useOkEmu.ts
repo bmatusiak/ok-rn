@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, protocol} from 'node-onlykey-lib';
-import OkEmu, {DIR, IFACE, type Iface} from '../transport/OkEmu';
+import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
 import {bytesToHex} from '../transport/hex';
 import type {LogLevel} from './useLog';
@@ -43,6 +43,15 @@ export type EmuState =
   | 'halted'
   | 'error';
 
+/**
+ * How long after an UNLOCKED announcement an INITIALIZED is treated as the
+ * report that raced it rather than as a genuine re-lock.
+ *
+ * The broadcast runs at 1 Hz and the racing report lands in milliseconds, so
+ * anything in this window is the race and anything past it is real.
+ */
+const UNLOCK_GRACE_MS = 1500;
+
 const IFACE_NAME: Record<number, string> = {
   [IFACE.KEYBOARD]: 'kbd',
   [IFACE.FIDO]: 'fido',
@@ -80,6 +89,15 @@ export function useOkEmu({log, autoStart = false}: Options) {
   const [led, setLed] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [device, setDevice] = useState<DeviceState>('unknown');
+
+  /*
+   * When the device last announced UNLOCKED.
+   *
+   * Only used to ignore an INITIALIZED that raced it. A ref rather than state
+   * because changing it must not re-render, and because the stream handler
+   * needs the newest value rather than the one captured when it was created.
+   */
+  const unlockedAt = useRef(0);
   const [version, setVersion] = useState('');
   const started = useRef(false);
 
@@ -107,6 +125,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
       if (event.iface === IFACE.VENDOR && event.dir === DIR.OUT) {
         const parsed = protocol.okmsg.parseState(okbytes.toPrintable(event.bytes));
         if (parsed.state === 'unlocked') {
+          unlockedAt.current = Date.now();
           setDevice('unlocked');
           // "UNLOCKEDv3.0.4-testc" - everything after the word is the version.
           setVersion(String(parsed.raw).replace(/^UNLOCKED/, '').trim());
@@ -114,12 +133,27 @@ export function useOkEmu({log, autoStart = false}: Options) {
           setDevice('uninitialized');
         } else if (parsed.state === 'locked') {
           /*
-           * INITIALIZED means provisioned AND locked, and it must never
-           * overwrite 'unlocked': the announcement is a one-off and the
-           * broadcast stops, but a report already in flight can land just
-           * after it and would put the screen back behind a PIN prompt.
+           * INITIALIZED means provisioned AND locked, and a report already in
+           * flight can land just after the one-off UNLOCKED announcement -
+           * which would put the screen back behind a PIN prompt for no reason.
+           *
+           * This used to be handled by making 'unlocked' ABSORBING: once seen,
+           * INITIALIZED was ignored forever. That removed the race and with it
+           * the app's ability to notice the device locking AT ALL - the idle
+           * timeout, a hold on button 3, and entering config mode all lock the
+           * key, and the screen went on saying `unlocked` over every one of
+           * them. See FINDING-relock-was-invisible-to-the-app.md.
+           *
+           * Time tells the two apart. The broadcast runs once a second and the
+           * in-flight report lands within milliseconds of the UNLOCKED it
+           * raced; a genuine re-lock is seconds later at the earliest. So a
+           * short grace window after unlocking suppresses the race and nothing
+           * else.
            */
-          setDevice(prev => (prev === 'unlocked' ? prev : 'locked'));
+          const sinceUnlock = Date.now() - unlockedAt.current;
+          if (sinceUnlock > UNLOCK_GRACE_MS) {
+            setDevice('locked');
+          }
         }
       }
 
@@ -337,14 +371,82 @@ export function useOkEmu({log, autoStart = false}: Options) {
   const press = useCallback(
     async (button: number) => {
       try {
-        await OkEmu.pressButton(button, 120);
-        log('info', `button ${button}`);
+        await OkEmu.holdTicks(button, PRESS_TICKS.TAP);
+        log('info', `button ${button} (${PRESS_TICKS.TAP} ticks)`);
       } catch (error) {
         log('error', `button ${button}: ${String(error)}`);
       }
     },
     [log],
   );
+
+  /*
+   * A held press, with the count the firmware is actually seeing.
+   *
+   * Armed at one tick BELOW the gesture band rather than held open, so the
+   * ceiling is enforced by the emulator instead of by the user letting go in
+   * time. Holding past the end of the counter does nothing at all; there is
+   * no path from this control to backup() or CPU_RESTART().
+   *
+   * The counter is what the LED is on hardware: the only way to tell which
+   * band a press is in while it is still happening.
+   */
+  const [pressTicks, setPressTicks] = useState<{button: number; ticks: number} | null>(
+    null,
+  );
+  const holdPoll = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (holdPoll.current) {
+      clearInterval(holdPoll.current);
+      holdPoll.current = null;
+    }
+  }, []);
+
+  const beginHold = useCallback(
+    async (button: number) => {
+      try {
+        const armed = PRESS_TICKS.GESTURE - 1;
+        await OkEmu.setButtonTicks(button, armed);
+        setPressTicks({button, ticks: 0});
+        stopPolling();
+        holdPoll.current = setInterval(async () => {
+          try {
+            const left = await OkEmu.buttonTicksLeft(button);
+            setPressTicks({button, ticks: armed - left});
+            if (left <= 0) stopPolling();
+          } catch {
+            stopPolling();
+          }
+        }, 60);
+      } catch (error) {
+        log('error', `button ${button}: ${String(error)}`);
+      }
+    },
+    [log, stopPolling],
+  );
+
+  const endHold = useCallback(
+    async (button: number) => {
+      stopPolling();
+      try {
+        /* Cancels the counted hold as well as releasing the pad. */
+        const armed = PRESS_TICKS.GESTURE - 1;
+        const left = await OkEmu.buttonTicksLeft(button);
+        await OkEmu.setButton(button, false);
+        const held = armed - left;
+        const band =
+          held <= 20 ? 'tap' : held < PRESS_TICKS.GESTURE ? 'hold' : 'gesture';
+        log('info', `button ${button} held ${held} ticks (${band})`);
+      } catch (error) {
+        log('error', `button ${button}: ${String(error)}`);
+      }
+      setPressTicks(null);
+    },
+    [log, stopPolling],
+  );
+
+  useEffect(() => stopPolling, [stopPolling]);
 
   const send = useCallback(
     async (iface: Iface, msg: number) => {
@@ -409,6 +511,9 @@ export function useOkEmu({log, autoStart = false}: Options) {
     connect,
     provision,
     press,
+    beginHold,
+    endHold,
+    pressTicks,
     send,
   };
 }

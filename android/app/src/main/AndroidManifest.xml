@@ -75,5 +75,24 @@
             android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
             android:resource="@xml/device_filter" />
       </activity>
+
+      <!--
+        Hands a staged backup file to another app as a content:// URI.
+
+        A file:// URI has been illegal to share since Android 7 (it throws
+        FileUriExposedException), so a backup that is meant to reach Drive has
+        to go through a provider. Not exported: only activities this app grants
+        per-URI permission to can read it, and that grant lasts as long as the
+        share.
+      -->
+      <provider
+        android:name="androidx.core.content.FileProvider"
+        android:authorities="${applicationId}.files"
+        android:exported="false"
+        android:grantUriPermissions="true">
+        <meta-data
+          android:name="android.support.FILE_PROVIDER_PATHS"
+          android:resource="@xml/shared_files" />
+      </provider>
     </application>
 </manifest>

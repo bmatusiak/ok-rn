@@ -129,8 +129,51 @@ module.exports = function deviceFlow({describe, it}) {
       const {device} = await getOnlyKey();
       const label = `e2e${Date.now() % 10000}`;
 
-      const applied = await device.setSlot('1a', {label}, {timeoutMs: 5000});
-      log(`device said: ${applied.map(a => a.response).join(' | ')}`);
+      /*
+       * The bus, captured across the write, printed only if it fails.
+       *
+       * This write used to time out around 40% of the time: it lands about
+       * 12ms after readLabels() resolves, while get_slot_labels() is still
+       * inside its final delay(20) and not yet servicing HID, so the frame sat
+       * unlooked-at and NOTHING came back on any interface - not the
+       * acknowledgement, not the status broadcast, not even a "Received
+       * packet" debug line. setSlot() now resends an unacknowledged frame,
+       * which is what this test proves.
+       *
+       * The capture stays because that is how the cause was found. A bare
+       * timeout cannot tell a frame the device never looked at from an
+       * acknowledgement that arrived and was filtered.
+       */
+      const seen = [];
+      const offBus = OkEmu.on('stream', e => {
+        /* Everything, on every interface: the question is now what came
+         * back rather than whether the write went out. */
+        let text = '';
+        for (const b of e.bytes) {
+          if (b >= 0x20 && b <= 0x7e) text += String.fromCharCode(b);
+        }
+        const hex = Array.from(e.bytes).slice(0, 24).map(b => b.toString(16).padStart(2, '0')).join('');
+        const tag = ['kbd', 'fido', 'vend', 'ser'][e.iface] || e.iface;
+        const t = text.trim();
+        seen.push(`+${Date.now() - t0}ms ${tag}${e.dir === 0 ? '<' : '>'} ${t ? JSON.stringify(t.slice(0, 40)) : hex}`);
+      });
+
+      const t0 = Date.now();
+      let applied;
+      try {
+        applied = await device.setSlot('1a', {label}, {timeoutMs: 5000});
+      } catch (e) {
+        /*
+         * Keep listening. Whether the device is silent forever or merely late
+         * is the whole question, and the timeout alone cannot tell them apart.
+         */
+        await delay(3000);
+        log(`bus during the failed write: ${JSON.stringify(seen)}`);
+        throw e;
+      } finally {
+        offBus();
+      }
+      log(`device said: ${applied.map(a => a.response).join(' | ')} (+${Date.now() - t0}ms, ${applied[0].attempts} attempt(s))`);
       assert.equal(applied.length, 1);
       assert.ok(
         /^Success/i.test(applied[0].response),
