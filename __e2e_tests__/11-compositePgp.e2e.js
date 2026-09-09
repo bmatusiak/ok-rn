@@ -243,5 +243,85 @@ module.exports = function compositePgp({describe, it}) {
       const again = await openpgp.readKey({armoredKey: back.armor()});
       assert.equal(again.getFingerprint(), fingerprint, 'the key did not survive a second round trip');
     });
+
+    it('a message encrypts and decrypts ON THE PHONE', async ({log, assert}) => {
+      /*
+       * The library has seventeen Node tests for this. They cannot see the
+       * class of bug that actually bites here: Hermes is missing globals Node
+       * has, and the failure is a ReferenceError deep inside openpgp rather
+       * than a wrong answer. TextDecoder was exactly that - key generation
+       * worked and reading armour did not.
+       *
+       * So this runs the same round trip where it matters. It uses a key
+       * generated in-process rather than the device's, because the device path
+       * needs a composite key loaded into a slot; that is a separate test and
+       * a separate setup.
+       */
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      const messages = okcrypto.messages;
+
+      const key = await openpgp.generateKey({
+        type: 'pqc',
+        userIDs: [{name: 'e2e', email: 'e2e@example.invalid'}],
+        subkeys: [{}],
+        format: 'object',
+        config: {v6Keys: true},
+      });
+
+      const text = 'the ciphertext is not the message';
+      const armored = await messages.encryptText(openpgp, {
+        text,
+        recipients: key.publicKey,
+      });
+      log(`armoured message: ${String(armored).length} chars`);
+      assert.ok(
+        !String(armored).includes(text),
+        'the plaintext is sitting in the output',
+      );
+
+      const result = await messages.decryptMessage(openpgp, {
+        armored,
+        decryptWith: key.privateKey,
+      });
+      log(`decrypted: ${JSON.stringify(result.data)}`);
+      assert.equal(result.data, text);
+    });
+
+    it('a signature verifies, and a bad one says so rather than throwing', async ({log, assert}) => {
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      const messages = okcrypto.messages;
+
+      const mine = await openpgp.generateKey({
+        type: 'pqc', userIDs: [{name: 'a', email: 'a@example.invalid'}],
+        subkeys: [{}], format: 'object', config: {v6Keys: true},
+      });
+      const other = await openpgp.generateKey({
+        type: 'pqc', userIDs: [{name: 'b', email: 'b@example.invalid'}],
+        subkeys: [{}], format: 'object', config: {v6Keys: true},
+      });
+
+      const signed = await messages.signText(openpgp, {
+        text: 'signed on a phone',
+        signWith: mine.privateKey,
+      });
+
+      const good = await messages.verifyText(openpgp, {
+        armored: signed, verifyWith: mine.publicKey,
+      });
+      log(`own key: valid=${good.valid}`);
+      assert.equal(good.valid, true);
+
+      /*
+       * openpgp's signature results are promises that REJECT, so a wrong key
+       * has to come back as a verdict rather than as an unhandled rejection
+       * somewhere else in the app.
+       */
+      const bad = await messages.verifyText(openpgp, {
+        armored: signed, verifyWith: other.publicKey,
+      });
+      log(`other key: valid=${bad.valid}, error=${bad.signatures[0] && bad.signatures[0].error}`);
+      assert.equal(bad.valid, false);
+      assert.ok(bad.signatures[0] && bad.signatures[0].error, 'no reason given');
+    });
   });
 };

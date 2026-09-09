@@ -38,30 +38,29 @@ type Tool = {
   blocked?: string;
 };
 
-const MESSAGES: Tool[] = [
+const ALREADY_HERE: Tool[] = [
   {
-    label: 'Encrypt messages',
-    detail: 'Encrypt text to an OnlyKey holder, in the browser.',
+    label: 'Encrypt and decrypt messages',
+    detail:
+      'Encrypt text to someone’s public key, and read what was encrypted ' +
+      'to yours. Post-quantum composite keys.',
+    here: 'Messages',
     href: `${WEB_APP}/encrypt`,
   },
   {
-    label: 'Decrypt messages',
-    detail: 'Read a message encrypted to your key.',
-    href: `${WEB_APP}/decrypt`,
-  },
-  {
-    label: 'Encrypt files',
-    detail: 'The same, for a file rather than a message.',
+    label: 'Encrypt and decrypt files',
+    detail:
+      'The same for a file. Picked and shared through Android, and encrypted ' +
+      'as BINARY — a file encrypted as text has its line endings ' +
+      'rewritten, which is not reversible.',
+    here: 'Messages',
     href: `${WEB_APP}/encrypt-file`,
   },
   {
-    label: 'Decrypt files',
-    detail: 'And back again.',
-    href: `${WEB_APP}/decrypt-file`,
+    label: 'Sign and verify',
+    detail: 'Sign text so anyone with your public key can check it came from you.',
+    here: 'Messages',
   },
-];
-
-const ALREADY_HERE: Tool[] = [
   {
     label: 'Derived secrets',
     detail:
@@ -170,17 +169,10 @@ export function ToolsScreen({onOpenTab}: {onOpenTab?: (tab: string) => void}) {
       <Section title="Already in this app">
         <Text style={styles.note}>
           These were web pages and are now screens. The links are kept for the
-          desktop versions, not because you need them here.
+          desktop versions, not because you need them here — a web page
+          cannot reach this key anyway, because the key is the phone.
         </Text>
         {ALREADY_HERE.map(renderTool)}
-      </Section>
-
-      <Section title="Messages and files">
-        <Text style={styles.note}>
-          Not ported yet. These open in a browser on whatever device you are
-          holding, so they are only useful on a computer with a key attached.
-        </Text>
-        {MESSAGES.map(renderTool)}
       </Section>
 
       <Section title="On a computer">
