@@ -442,11 +442,13 @@ module.exports = function derive({describe, it}) {
 
     it('the X-Wing key type returns its split-custody pair', async ({log, assert}) => {
       /*
-       * The one shape the plugin still reports as unavailable, and the reason
-       * given is its shape rather than its reachability: X-Wing returns 64
-       * bytes - [pk_X(32) | mlkem_seed(32)] - not a 65-byte EC point
-       * (ok_extension.cpp:275-281). sk_X never leaves the device; the host
-       * expands the seed and does the ML-KEM half itself.
+       * The odd one out by SHAPE, not by availability - the plugin reported it
+       * as unavailable for a while after this test started passing, and both
+       * that flag and this comment have been corrected.
+       *
+       * X-Wing returns 64 bytes - [pk_X(32) | mlkem_seed(32)] - not a 65-byte
+       * EC point (ok_extension.cpp:275-281). sk_X never leaves the device; the
+       * host expands the seed and does the ML-KEM half itself.
        *
        * Wire keytype 5 becomes KEYTYPE_XWING inside the firmware, which does
        * opt2++ on the way in - so 5 is what goes on the wire, not 6.

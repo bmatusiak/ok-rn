@@ -1,6 +1,6 @@
 # The OpenPGP fork did not load under Hermes: there was no WebCrypto
 
-**Severity:** high — it blocks composite PQC PGP key generation on the phone,
+**Severity:** high — it blocked composite PQC PGP key generation on the phone,
 and it was recorded as working
 **Status:** FIXED - the fork loads, and composite key generation works on the phone
 **Applies to:** ours — `node-onlykey-lib/src/vendor/openpgp/openpgp.js`, and the

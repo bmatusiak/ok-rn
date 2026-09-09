@@ -49,8 +49,11 @@ that survives a release build, which is what a host actually needs.
 
 ## Why it has not bitten
 
-This project compiles the staged firmware with `DEBUG` defined, so the prompts
-are there and setup works. It was verified end to end on device: a factory
+This project compiles the staged firmware with `DEBUG` defined by default, so
+the prompts are there and setup works. That default is no longer the only
+option: `OKEMU_PRODUCTION=1` stages a build with the gate off, and the suite has
+been run against one. Provisioning is untested on that build for the reason this
+finding describes. It was verified end to end on device: a factory
 reset, then the app's own setup flow, and the six progress steps arrived in
 order — `armed, entered, stored, confirming, re-entered, committed` — followed
 by a device that came back provisioned and unlocked to the PIN just chosen.
@@ -76,8 +79,17 @@ sign, but it cannot be given a PIN in the first place.
 
 ## Related
 
-The same `#ifdef DEBUG` boundary is why the app's PIN pad presses real buttons
-through `okemu_set_button()` rather than calling `device.unlock()` — unlock has
-exactly this dependency, and pressing real buttons sidesteps it. Provisioning
-cannot use that trick, because the bracket is a conversation and not just
-digits.
+This finding used to say that the same boundary was why the PIN pad presses real
+buttons rather than calling `device.unlock()` — that unlock had exactly this
+dependency. **It no longer does.** `unlock()` takes an `enterDigits` strategy,
+so a host that can press buttons gets a path that works on either build, and it
+now refuses immediately with the real cause when the build has no console.
+
+Provisioning still cannot use that trick, and that is the part that survives:
+the PIN bracket is a CONVERSATION, not just digits. `runPinSequence` waits for
+`Enter PIN`, `Storing PIN`, `Confirm PIN` and `Both PINs Match`, and those are
+`Serial.print` calls inside `#ifdef DEBUG`. Sending digits is solvable by
+pressing buttons; hearing the six prompts is not.
+
+`session.capabilities.debugConsole` now detects which build is attached, so a
+caller can at least KNOW before it tries.

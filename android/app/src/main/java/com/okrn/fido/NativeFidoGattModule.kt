@@ -45,15 +45,33 @@ import java.util.concurrent.atomic.AtomicInteger
  * CTAP2-over-BLE peripheral: advertises the FIDO service so a desktop can use
  * this phone as a roaming security key. See EXPLAINER/z.md.
  *
- * SCAFFOLD STATUS
- *   Implemented: GATT server, service/characteristic layout, advertising, MTU
- *   negotiation, BLE fragmentation/reassembly, and hardware-backed P-256 key
- *   generation and signing via the Android KeyStore.
+ * WHAT THIS DOES: the transport half, and only that. GATT server, service and
+ * characteristic layout, advertising, MTU negotiation, and BLE
+ * fragmentation/reassembly. A reassembled command goes to JS as an
+ * onCtapRequest event; JS hands it to the FIRMWARE and returns what the
+ * firmware said.
  *
- *   Not implemented: the CTAP2 command handlers themselves. Reassembled
- *   commands are forwarded to JS as onCtapRequest events and JS supplies the
- *   response bytes, so the CBOR encoding of makeCredential / getAssertion and
- *   the BiometricPrompt gate are still to be built.
+ * THE PHONE IS NOT THE AUTHENTICATOR - the firmware is. So there is no CBOR to
+ * build here, no attestation to sign and no credential store to keep. See
+ * src/fidoBridge.ts, which states the same thing from the other side.
+ *
+ * ## The KeyStore credential functions below are from a DIFFERENT design
+ *
+ * This file used to carry a "SCAFFOLD STATUS" notice saying the CTAP2 command
+ * handlers were "still to be built", with makeCredential/getAssertion CBOR and
+ * a BiometricPrompt gate named as the next work. That work was never done,
+ * because the architecture changed: routing to the firmware replaced making the
+ * phone an authenticator in its own right.
+ *
+ * `createCredential` and `signWithCredential` are what remains of that design -
+ * hardware-backed P-256 in the Android KeyStore. Nothing calls them. They are
+ * KEPT DELIBERATELY, not overlooked: older firmware may not answer over this
+ * path at all, and a phone-side credential is the obvious fallback if it does
+ * not. That is a question the firmware version matrix will settle, and deleting
+ * the answer before asking the question is the wrong order.
+ *
+ * Until then they are gated - see UNUSED_KEYSTORE_CREDENTIALS below - so no
+ * caller reaches them by accident and nobody reads their presence as a promise.
  */
 @ReactModule(name = NativeFidoGattSpec.NAME)
 class NativeFidoGattModule(
@@ -797,12 +815,45 @@ class NativeFidoGattModule(
 
   // ------------------------------------------------------------- key material
 
+  /* ---- the gated KeyStore credential path ------------------------------ */
+
+  /**
+   * Whether the phone-side credential functions may be used at all.
+   *
+   * FALSE, and that is the point. These belong to an abandoned design in which
+   * the phone was the authenticator; today the firmware is, and nothing calls
+   * them. They are kept because older firmware may not answer over the BLE
+   * path, and if it does not, a phone-side credential is the obvious fallback -
+   * a question the firmware version matrix will settle.
+   *
+   * The gate means the dead path cannot be reached by accident, and that
+   * anyone who wants it has to turn it on deliberately and say why. Deleting
+   * the code would answer the question by forgetting it.
+   */
+  private val UNUSED_KEYSTORE_CREDENTIALS = false
+
+  private fun refuseGated(name: String, promise: Promise) {
+    promise.reject(
+      ERR_KEYSTORE,
+      "$name belongs to the phone-as-authenticator design, which this app does " +
+        "not use - the firmware is the authenticator. It is kept, disabled, " +
+        "until the firmware version matrix shows whether older firmware needs " +
+        "a fallback. See the header of this file.",
+    )
+  }
+
   /**
    * Generates a P-256 credential key inside the TEE (or StrongBox when the
    * device has a dedicated secure element). The private key never enters app
    * memory - only a KeyStore handle to it does.
+   *
+   * GATED - see UNUSED_KEYSTORE_CREDENTIALS.
    */
   override fun createCredential(rpId: String, userHandleHex: String, promise: Promise) {
+    if (!UNUSED_KEYSTORE_CREDENTIALS) {
+      refuseGated("createCredential", promise)
+      return
+    }
     try {
       val alias = credentialAlias(rpId, userHandleHex)
       val generator = KeyPairGenerator.getInstance(
@@ -867,7 +918,12 @@ class NativeFidoGattModule(
     }
   }
 
+  /** GATED - see UNUSED_KEYSTORE_CREDENTIALS. */
   override fun signWithCredential(credentialIdHex: String, payloadHex: String, promise: Promise) {
+    if (!UNUSED_KEYSTORE_CREDENTIALS) {
+      refuseGated("signWithCredential", promise)
+      return
+    }
     try {
       val alias = String(credentialIdHex.hexToByteArray(), Charsets.UTF_8)
       val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }

@@ -85,6 +85,11 @@ should not, and this is the reason.
   iterations rather than milliseconds, and the long bands are where the
   irreversible gestures live: `>=72` on button 1 is `backup()`, on button 3 is
   this, on button 6 is config mode.
+- The halted state now offers **a one-tap way out**: KeyScreen shows a "Restart
+  the app" action wired to `OkEmu.restartApp()` (RestartActivity.kt). That is
+  the PROCESS restart, not the in-process one below - flash.bin and eeprom.bin
+  persist, so the device comes back as it was. It does not fix the finding; it
+  stops the dead end being a dead end.
 
 ## What would actually fix it
 

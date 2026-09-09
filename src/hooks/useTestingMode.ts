@@ -16,11 +16,15 @@ import {useCallback, useState} from 'react';
  * drives the app from a terminal and cannot type a PIN, so a debug build that
  * demanded one would strand the suite at a login screen.
  *
- * Not persisted. React Native has no localStorage and this app has no storage
- * dependency; the choice lasts for the life of the process, which is enough
- * while the default is right for both builds. Persisting it means adding
- * AsyncStorage, and that is a decision to take on its own rather than in the
- * middle of a layout change.
+ * NOT PERSISTED, and now by choice rather than by necessity. This used to say
+ * the app had no storage dependency, which stopped being true when AsyncStorage
+ * arrived for the vault (src/onlykey.ts wires it to the host plugin).
+ *
+ * It stays unpersisted because remembering it is the wrong behaviour: testing
+ * mode bypasses the PIN and turns off the screenshot block, and a setting like
+ * that surviving a relaunch is a setting someone forgets is on. The default is
+ * already right for both builds - on in debug, off in release - so there is
+ * nothing worth carrying across a restart.
  */
 export function useTestingMode() {
   const [enabled, setEnabled] = useState<boolean>(__DEV__);

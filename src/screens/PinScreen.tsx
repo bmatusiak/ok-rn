@@ -18,9 +18,18 @@ const MAX_PIN = 10;
  * arrives as the device's own broadcast rather than as a reply to anything -
  * the shell watches for it and moves on.
  *
- * This deliberately does NOT use the library's device.unlock(). That sends
- * digits with pressLine over IFACE.SEREMU, the DEBUG console, which does not
- * exist in a release build.
+ * This deliberately does NOT use the library's device.unlock(), and the reason
+ * has changed. It used to be that unlock() could only send digits with
+ * pressLine over IFACE.SEREMU - the DEBUG console, absent from a release build.
+ * That was fixed: unlock() takes an `enterDigits` strategy now, and the e2e
+ * suite passes it one that presses buttons.
+ *
+ * What keeps this screen separate is the KEYPAD. unlock() takes a PIN it
+ * already has; this screen is someone typing one digit at a time, so it needs
+ * the press queue below - presses that merge without an idle gap sum their
+ * durations - and it needs to render progress as each one lands. Handing
+ * unlock() a promise that resolves when the user finishes would be the same
+ * queue with a worse shape.
  */
 export function PinScreen({
   onPress,

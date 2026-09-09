@@ -90,11 +90,23 @@ const ALREADY_HERE: Tool[] = [
     here: 'Crypto',
   },
   {
+    /*
+     * CAREFUL WITH THIS ONE. It has been wrong twice.
+     *
+     * It said key generation was blocked for a long time after it started
+     * working. Correcting that, I then said generation "runs on the phone" and
+     * pointed here at Messages - which was a second wrong claim an hour after
+     * the first, because generation runs in the TEST SUITE and no screen offers
+     * it. Messages does the message half, with a pasted key.
+     *
+     * So this says exactly what a person can reach, and names what they cannot.
+     */
     label: 'PGP-PQC',
     detail:
-      'Composite post-quantum PGP — Ed25519 with ML-DSA to sign, X25519 ' +
-      'with ML-KEM to encrypt. Generating a key, signing, decrypting and ' +
-      'reading armour all run on the phone.',
+      'Composite post-quantum PGP — Ed25519 with ML-DSA to sign, X25519 with ' +
+      'ML-KEM to encrypt. Messages reads and writes these with a key you paste. ' +
+      'Generating one runs on the phone but has no screen yet, so for now the ' +
+      'web page is where you make the key.',
     here: 'Messages',
     href: `${WEB_APP}/pgp-pqc`,
   },

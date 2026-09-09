@@ -1,44 +1,42 @@
 /**
- * The vendored OpenPGP fork does NOT load under Hermes, and this pins that.
+ * Composite PQC PGP on the phone: the fork loads, and a key can be made.
  *
- * Composite PQC PGP is the last of the web app's four crypto areas and the only
- * one needing the 1.2 MB openpgp fork rather than @noble alone. The fork is
- * byte-for-byte verified against upstream and its unit tests pass - IN NODE.
- * Nothing had ever loaded it on the phone, and it was recorded as "Hermes-safe"
- * on the strength of those Node tests.
+ * This suite spent a long time asserting the OPPOSITE - that the vendored
+ * OpenPGP fork does not load under Hermes - and that header outlived the
+ * condition it described. It is worth saying what it used to claim, because the
+ * shape of the mistake is the useful part.
  *
- * It is not. See FINDING-the-openpgp-fork-does-not-load-under-hermes.md.
+ * ## What it looked like, and why every probe missed it
  *
- * ## What was measured, in order
+ * `require('node-onlykey-lib/crypto/pgp')` returned `undefined`. Not an error,
+ * not a rejected promise, nothing in logcat. Ruling things out went: the
+ * exports map (an unresolvable module THROWS, and this one resolved), the
+ * symlink, the resolver, the IIFE shape, and the file's SIZE - the last of
+ * which was blamed and then disproved with a generated 1.9 MB single-IIFE file
+ * that loaded fine.
  *
- *   require('node-onlykey-lib/crypto/pgp')            -> undefined
- *   require('.../src/vendor/openpgp/openpgp.js')      -> undefined
- *   require('../../node-onlykey-lib/src/vendor/...')  -> undefined
- *   require('node-onlykey-lib/definitely-not-here')   -> THROWS
- *   require('node-onlykey-lib/crypto').composite      -> works
- *   a file with the fork's exact top-level shape, tiny -> works
+ * The answer was not a property of the file at all. OpenPGP.js v6 reads
+ * WebCrypto at MODULE SCOPE, React Native has none, so the factory threw - and
+ * Metro's `guardedLoadModule` caught that, handed it to
+ * `ErrorUtils.reportFatalError`, and returned `undefined` WITHOUT rethrowing.
+ * Every probe was inspecting the call site, which is the one place the
+ * information was not.
  *
- * So it is not the exports map, not the symlink and not the resolver: an
- * unresolvable module THROWS, and this one resolves.
+ * Installing a global error handler around the require produced the cause in a
+ * single run. That capture is still the first test below, and it stays: it
+ * passes either way and says which.
  *
- * Nor is it the shape or the size, both of which I first blamed and then
- * disproved - 30,000 generated lines inside a single IIFE, 1.9 MB, loads and
- * returns its exports. Metro builds the real file too: asked for it as a bundle
- * entry, the dev server answers 200 with 1.5 MB.
+ * ## What this suite asserts now
  *
- * What is established is narrower and stranger. A copy of the fork whose LAST
- * LINE was replaced with `module.exports = {markerRan: true}` also comes back
- * undefined - so the export never ran, and since Metro initialises exports to
- * {}, undefined cannot come from a factory that merely did nothing. Nothing
- * throws: not through require, not in logcat, not as a rejected promise.
+ * That the fork loads, that a composite key generates with all four halves
+ * carrying real material, that its armour survives two round trips, and that a
+ * message encrypts and decrypts ON THE PHONE. The last matters because the
+ * library's Node tests cannot see the class of bug that bites here: a global
+ * Hermes lacks, surfacing as a ReferenceError deep inside openpgp rather than
+ * as a wrong answer. TextDecoder was exactly that, and it only appeared once
+ * the WebCrypto gap was closed.
  *
- * The cause is open. See the finding for what to try next.
- *
- * ## Why this suite asserts the failure
- *
- * A skipped test says nothing, and a red suite for a condition nobody is fixing
- * today trains people to ignore red. So this asserts what is TRUE now, and is
- * written to break loudly when that changes.
+ * See FINDING-the-openpgp-fork-does-not-load-under-hermes.md.
  */
 'use strict';
 
