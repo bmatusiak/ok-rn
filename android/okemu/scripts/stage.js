@@ -44,8 +44,18 @@ const CHECKOUTS = path.resolve(OKEMU, '..', '..', '..');
 const ARDUINO = path.join(CHECKOUTS, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
 const CORE_SRC = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'cores', 'teensy3');
 const TLIB = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries');
-const FW = path.join(CHECKOUTS, 'OnlyKey-Firmware');
-const LIB_SRC = path.join(CHECKOUTS, 'libraries');
+/*
+ * The two VERSION-PINNED trees.
+ *
+ * `let`, not `const`, because OKEMU_VERSION repoints them at a released
+ * commit's sources instead of the working tree - see materialiseVersion().
+ * Everything downstream reads these and needs no idea which it got.
+ */
+let FW = path.join(CHECKOUTS, 'OnlyKey-Firmware');
+let LIB_SRC = path.join(CHECKOUTS, 'libraries');
+
+/** Where a pinned version's sources are unpacked, cached between builds. */
+const VERSION_CACHE = path.join(OKEMU, '.stage-src');
 const OVERRIDE = path.join(OKEMU, 'core-override');
 
 const STAGE = path.join(OKEMU, '.stage');
@@ -201,6 +211,20 @@ const PRODUCTION_PATCHES = [
     ],
   },
 ];
+
+/*
+ * Fixes that only SOME releases need live in scripts/versions/<version>.js -
+ * one file per entry in ok-versions.json, loaded by OKEMU_VERSION.
+ *
+ * They were an `optional` array here first, and that shape could not work: an
+ * optional patch that silently misses looks exactly like one that was never
+ * needed, so a release could build with a fix half-applied and nothing would
+ * say so. Per-version files make every patch MANDATORY - the version script
+ * lists what that release needs, and a pattern that does not match is an error.
+ *
+ * Patches shared by several releases live in scripts/versions/_shared.js and
+ * are imported by name; nothing there is applied automatically.
+ */
 
 const PATCHES = [
   {
@@ -421,6 +445,132 @@ const PATCHES = [
   },
 ];
 
+/* ------------------------------------------------ staging a RELEASED version */
+
+/**
+ * Build a released firmware version instead of the working tree.
+ *
+ *     OKEMU_VERSION=v3.0.2 node scripts/stage.js
+ *
+ * The commits come from ok-versions.json, which pins `libraries` and
+ * `OnlyKey-Firmware` per release; everything else that release needs comes from
+ * its own script in scripts/versions/. This is what makes the version matrix
+ * possible: node-onlykey-lib branches on firmware version in a dozen places and
+ * every one of those branches is marked UNVERIFIED, because the emulator is
+ * built from current firmware and CI can only ever prove the current
+ * generation.
+ *
+ * ## It never touches the source repositories
+ *
+ * Not `git checkout`, which would move HEAD in a tree this project must not
+ * write to. `ls-tree` and `cat-file` read the OBJECT DATABASE and leave the
+ * working tree exactly as it was - the same technique version-probe.js uses.
+ * The sources are unpacked into .stage-src/<version>/, inside our own write
+ * scope, and cached so a rebuild does not re-extract.
+ */
+const VERSION = process.env.OKEMU_VERSION || null;
+
+const versions = require('./versions');
+
+/**
+ * Unpack one commit's tree into `dest`.
+ *
+ * Two git calls total, not one per file. `ls-tree -r` names every blob and
+ * `cat-file --batch` streams all their contents through a single process -
+ * which matters because `libraries` is several hundred files, and several
+ * hundred process spawns on Windows is a minute of nothing happening.
+ */
+function materialise(repo, sha, dest) {
+  const { execFileSync } = require('child_process');
+  const git = (args, opts) => execFileSync('git', ['-C', repo, ...args], {
+    maxBuffer: 1 << 30, ...opts,
+  });
+
+  let listing;
+  try {
+    listing = git(['ls-tree', '-r', '-z', sha], { encoding: 'utf8' });
+  } catch (e) {
+    throw new Error(
+      `cannot read ${sha} from ${repo}. The commit may not be in this checkout ` +
+      `- ok-versions.json pins releases that a fork may not carry.`,
+    );
+  }
+
+  /* -z gives NUL-terminated records of "<mode> <type> <sha>\t<path>". */
+  const entries = [];
+  for (const record of listing.split('\0')) {
+    if (!record) continue;
+    const tab = record.indexOf('\t');
+    if (tab === -1) continue;
+    const [, type, blob] = record.slice(0, tab).split(/\s+/);
+    if (type !== 'blob') continue;      // submodules and trees are not files
+    entries.push({ blob, file: record.slice(tab + 1) });
+  }
+  if (!entries.length) throw new Error(`${sha} in ${repo} has no files`);
+
+  const batch = git(['cat-file', '--batch'], {
+    input: entries.map((e) => e.blob).join('\n') + '\n',
+    // No encoding: execFileSync then returns a Buffer, which is required because
+    // the blobs are binary. Setting it to 'buffer' would also be applied to
+    // stdin, where it is not a valid string encoding.
+  });
+
+  /*
+   * The batch stream is "<sha> <type> <size>\n<contents>\n" per object, and the
+   * contents are BINARY - parsed as a Buffer with explicit offsets rather than
+   * split on newlines, which would corrupt any file containing one.
+   */
+  let at = 0;
+  for (const entry of entries) {
+    const nl = batch.indexOf(0x0a, at);
+    const header = batch.slice(at, nl).toString('utf8');
+    const size = Number(header.split(' ')[2]);
+    const start = nl + 1;
+
+    const target = path.join(dest, entry.file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, batch.slice(start, start + size));
+
+    at = start + size + 1;              // trailing newline after each object
+  }
+  return entries.length;
+}
+
+/**
+ * Point FW and LIB_SRC at a released version's sources.
+ *
+ * Cached by commit, so switching back and forth across a matrix run costs one
+ * extraction each rather than one per build.
+ */
+function materialiseVersion(release) {
+  const { version, pins } = release;
+  const out = {};
+
+  for (const [repo, sha] of [
+    ['OnlyKey-Firmware', pins['OnlyKey-Firmware']],
+    ['libraries', pins.libraries],
+  ]) {
+    const dest = path.join(VERSION_CACHE, version, repo);
+    const stamp = path.join(dest, '.commit');
+
+    if (fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8').trim() === sha) {
+      out[repo] = dest;
+      console.log(`stage: ${repo}@${sha} already unpacked`);
+      continue;
+    }
+
+    rmrf(dest);
+    fs.mkdirSync(dest, { recursive: true });
+    const count = materialise(path.join(CHECKOUTS, repo), sha, dest);
+    fs.writeFileSync(stamp, sha + '\n');
+    out[repo] = dest;
+    console.log(`stage: ${repo}@${sha} unpacked, ${count} files`);
+  }
+
+  FW = out['OnlyKey-Firmware'];
+  LIB_SRC = out.libraries;
+}
+
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 
 function copyDir(src, dst) {
@@ -434,9 +584,22 @@ function copyDir(src, dst) {
   }
 }
 
-function applyPatches() {
+/**
+ * Apply every literal fixup to the STAGED tree.
+ *
+ * `extra` is the loaded version script's own patches, or nothing for the
+ * working tree. They are applied on the same terms as the rest: a file that is
+ * not there, or a pattern that does not match, is an ERROR. That is the point
+ * of one script per release - the script names the release, so its patches are
+ * known to belong to it and a miss means the pins moved under it.
+ */
+function applyPatches(extra = []) {
   let applied = 0, missing = 0;
-  const patches = PRODUCTION ? [...PATCHES, ...PRODUCTION_PATCHES] : PATCHES;
+  const patches = [
+    ...PATCHES,
+    ...(PRODUCTION ? PRODUCTION_PATCHES : []),
+    ...extra,
+  ];
   if (PRODUCTION) {
     console.log('stage: OKEMU_PRODUCTION=1 - building with the DEBUG gate OFF');
   }
@@ -641,14 +804,23 @@ function gitShort(dir) {
  * worse than none. Generated rather than committed: a checkout that has never
  * staged reports 'unknown' instead of somebody else's hash.
  */
-function writeBuildInfo(stats) {
+function writeBuildInfo(stats, release = null) {
   const out = path.join(OKEMU, '..', '..', 'src', 'generated');
   fs.mkdirSync(out, { recursive: true });
+  const pins = release ? release.pins : null;
   const info = {
     digest: stats.digest,
     files: stats.files,
-    firmware: gitShort(FW),
-    libraries: gitShort(LIB_SRC),
+    /*
+     * For a pinned build the shas come from ok-versions.json, not from
+     * gitShort() - the unpacked sources are a plain directory with no .git, so
+     * asking it would answer about the wrong repository or not at all.
+     */
+    firmware: pins ? pins['OnlyKey-Firmware'] : gitShort(FW),
+    libraries: pins ? pins.libraries : gitShort(LIB_SRC),
+    /** null means the working tree, which is the ordinary case. */
+    version: release ? release.version : null,
+    production: PRODUCTION,
     stagedAt: new Date().toISOString(),
   };
   fs.writeFileSync(
@@ -658,7 +830,108 @@ function writeBuildInfo(stats) {
   return info;
 }
 
+/**
+ * Say whether the staged tree came out the way this version's script says it
+ * did last time.
+ *
+ * Reported, never fatal. stage.js and the Arduino toolchain are both inputs to
+ * that digest, so a change here moves it for every version at once - which is
+ * information, not a failure. What it catches is the other case: a pinned
+ * version whose digest moved while nothing in this repository did.
+ */
+function checkExpectation(release, stats) {
+  if (!release || !release.expect || !release.expect.digest) {
+    if (release) {
+      console.log(
+        `stage: ${release.version} has no recorded digest. If this build is ` +
+        `good, add  expect: { digest: '${stats.digest}' }  to its script.`);
+    }
+    return;
+  }
+  if (release.expect.digest === stats.digest) {
+    console.log(`stage: digest matches ${release.version}'s recorded ${stats.digest}`);
+  } else {
+    console.log(
+      `stage: digest CHANGED for ${release.version}\n` +
+      `         recorded: ${release.expect.digest}\n` +
+      `         now:      ${stats.digest}\n` +
+      `       Expected if stage.js or the toolchain changed. Otherwise the ` +
+      `pins moved.`);
+  }
+}
+
+/**
+ * `node scripts/stage.js --list` - what can be staged, and how far each got.
+ *
+ * Switching versions is one environment variable, so the thing worth printing
+ * is which names that variable accepts and what is already known about each.
+ */
+function listVersions() {
+  console.log('OKEMU_VERSION accepts:\n');
+  for (const name of versions.list()) {
+    let release;
+    try {
+      release = versions.load(name);
+    } catch (e) {
+      console.log(`  ${name.padEnd(8)} UNLOADABLE  ${e.message.split('\n')[0]}`);
+      continue;
+    }
+    console.log(
+      `  ${name.padEnd(8)} ${release.status.padEnd(8)} ` +
+      `${release.pins['OnlyKey-Firmware']}/${release.pins.libraries}` +
+      `  ${release.patches.length} version patch(es)`);
+    for (const line of release.notes.split('\n')) {
+      if (line) console.log(`             ${line}`);
+    }
+  }
+  console.log(
+    '\n  (unset)  the working tree - OnlyKey-Firmware and libraries as they are\n' +
+    '\nStatus is a ladder: blocked < untried < stages < builds < boots < tested.\n' +
+    'Each rung is something somebody watched happen. Patches applying is not\n' +
+    'linking, and linking is not booting.');
+}
+
 function main() {
+  if (process.argv.includes('--list')) return listVersions();
+
+  /*
+   * Repoint FW and LIB_SRC BEFORE anything reads them, including the existence
+   * check below - so a missing pinned commit fails naming the commit, not the
+   * checkout.
+   */
+  let release = null;
+  if (VERSION) {
+    /*
+     * A load failure is a message, not a stack trace. Every one of them is
+     * something the person running this has to fix by hand - a version with no
+     * script, a script that was copied without being renamed, pins that moved
+     * under a script's notes - and the message says which.
+     */
+    try {
+      release = versions.load(VERSION);
+    } catch (e) {
+      console.error(`stage: ${e.message}`);
+      process.exit(1);
+    }
+
+    /*
+     * A release whose script says it cannot be staged stops here, quoting its
+     * own notes. Letting it proceed would produce a tree built from whatever
+     * git happened to resolve, under a version number that would then be
+     * attached to every measurement taken against it.
+     */
+    if (release.status === 'blocked') {
+      console.error(`stage: ${VERSION} is marked BLOCKED in its version script.`);
+      console.error(release.notes.replace(/^/gm, '  '));
+      process.exit(1);
+    }
+
+    console.log(
+      `stage: OKEMU_VERSION=${VERSION} (${release.status}) - ` +
+      `scripts/versions/${VERSION}.js, ${release.patches.length} version patch(es)`);
+    materialiseVersion(release);
+  }
+
   for (const p of [CORE_SRC, FW, LIB_SRC]) {
     if (!fs.existsSync(p)) {
       console.error(`stage: missing required tree: ${p}`);
@@ -692,9 +965,15 @@ function main() {
     }
   }
 
-  // 4. drop the bare-metal files
+  /*
+   * 4. drop the bare-metal files.
+   *
+   * A version script may add to this list - an older release can ship a core
+   * file that later ones dropped - but never remove from it. Everything in DROP
+   * is bare-metal by nature, not by release.
+   */
   let dropped = 0;
-  for (const f of DROP) {
+  for (const f of [...DROP, ...(release ? release.drop : [])]) {
     const p = path.join(STAGE_CORE, f);
     if (fs.existsSync(p)) { fs.rmSync(p); dropped++; }
   }
@@ -714,12 +993,12 @@ function main() {
   }
   const renamed = defuseTimeHeader();
 
-  // 6. documented source-level fixups
-  const patched = applyPatches();
+  // 6. documented source-level fixups, plus this release's own
+  const patched = applyPatches(release ? release.patches : []);
   const scs = rewriteSystemBlock();
 
   const stats = digestStage();
-  const info = writeBuildInfo(stats);
+  const info = writeBuildInfo(stats, release);
 
   console.log(
     `stage: ${path.relative(OKEMU, STAGE)}\n` +
@@ -730,8 +1009,12 @@ function main() {
     `  system-block registers rebased:            ${scs}\n` +
     `  Time.h consumers repointed at TimeLib.h:   ${renamed}\n` +
     `  staged sources digested:                   ${stats.files} files, ${stats.digest}\n` +
-    `  OnlyKey-Firmware / libraries:              ${info.firmware || '?'} / ${info.libraries || '?'}`
+    `  OnlyKey-Firmware / libraries:              ${info.firmware || '?'} / ${info.libraries || '?'}` +
+    (release ? `
+  version:                                   ${VERSION} (${release.status})` : '')
   );
+
+  checkExpectation(release, stats);
 }
 
 /*
@@ -743,4 +1026,4 @@ function main() {
  */
 if (require.main === module) main();
 
-module.exports = { PATCHES, PRODUCTION_PATCHES, DROP, main };
+module.exports = { PATCHES, PRODUCTION_PATCHES, DROP, main, versions };

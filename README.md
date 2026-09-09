@@ -96,8 +96,24 @@ restores itself afterwards, so a full run is what happens by default.
 Set `ANDROID_SERIAL` when more than one device is attached.
 
 Firmware built with the DEBUG gate off — as it ships — is staged with
-`OKEMU_PRODUCTION=1`. `android/okemu/scripts/version-probe.js` reports which
-released firmware versions can be staged at all.
+`OKEMU_PRODUCTION=1`.
+
+### Building a released firmware version
+
+`OKEMU_VERSION` builds a pinned release instead of the working tree, from the
+commits `ok-versions.json` names:
+
+```bash
+node android/okemu/scripts/stage.js --list     # what OKEMU_VERSION accepts
+node android/okemu/scripts/version-probe.js    # do the patches still match?
+OKEMU_VERSION=v3.0.2 npm run android
+```
+
+Each release has its own stage script in `android/okemu/scripts/versions/`,
+holding the patches that release needs and how far it has actually been taken:
+`blocked`, `untried`, `stages`, `builds`, `boots`, `tested`. Sources are read
+out of the pinned commit's object database into `.stage-src/`, so the firmware
+checkouts are never written to.
 
 ### Developing without hardware
 

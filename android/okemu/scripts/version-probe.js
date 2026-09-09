@@ -102,11 +102,11 @@ function locate(staged) {
   return { source: 'unknown' };
 }
 
-function probe(name, pins) {
+function probe(name, pins, extra) {
   const rows = [];
   let found = 0, missing = 0, absent = 0, fixed = 0;
 
-  for (const patch of stage.PATCHES) {
+  for (const patch of [...stage.PATCHES, ...extra]) {
     const at = locate(patch.file);
 
     /* Toolchain files do not move when a firmware release does. */
@@ -169,13 +169,33 @@ function main() {
       continue;
     }
 
-    const r = probe(name, pins);
+    /*
+     * A release's OWN patches are probed alongside the common ones.
+     *
+     * Without this the probe answers a narrower question than it appears to -
+     * "do the shared patterns match" rather than "does everything this release
+     * needs still apply" - and the version scripts are exactly where the
+     * release-specific patterns live. A version with no script yet is reported
+     * as such rather than silently probed with an empty extra list.
+     */
+    let extra = [];
+    let script = null;
+    try {
+      script = stage.versions.load(name);
+      extra = script.patches;
+    } catch (e) {
+      console.log(`${name.padEnd(8)} NOSCRIPT - ${e.message.split(String.fromCharCode(10))[0]}`);
+      continue;
+    }
+
+    const r = probe(name, pins, extra);
     const pinned = r.found + r.missing + r.absent;
     const ok = r.missing === 0 && r.absent === 0;
     console.log(
       `${name.padEnd(8)} ${ok ? 'OK  ' : 'DIFF'} ` +
       `${r.found}/${pinned} version-pinned patterns match` +
-      `  (+${r.fixed} toolchain patterns, version-independent)`);
+      `  (+${r.fixed} toolchain patterns, version-independent)` +
+      `  [${script.status}, ${extra.length} of its own]`);
 
     for (const row of r.rows) {
       console.log(`           ${row.file}: ${row.note}`);

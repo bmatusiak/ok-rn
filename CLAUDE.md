@@ -66,8 +66,44 @@ a press helper that answers ONE keepalive cannot cover two device operations -
 extra presses type a slot, so it goes quiet after the first. build fresh press
 options per operation.
 
+the bench device state
+--------------
+
+`files/okemu/flash.bin` and `eeprom.bin` ARE the device. the suite expects one
+already provisioned - PIN `1234561`, a signing key in slot 101, the touch-free
+derive preference set - and NOTHING RE-PROVISIONS ITSELF. delete that directory
+and every suite strands at "the device did not unlock within 20000ms", which
+reads like a broken PIN path rather than an empty key.
+
+restoring it is copying the two files off a phone that still has them:
+
+    adb -s <good> exec-out run-as com.okrn cat files/okemu/flash.bin > flash.bin
+    adb -s <bad> push flash.bin /data/local/tmp/flash.bin
+    adb -s <bad> shell chmod 666 /data/local/tmp/flash.bin
+    adb -s <bad> shell run-as com.okrn cp /data/local/tmp/flash.bin files/okemu/flash.bin
+
+in git bash, prefix each adb call with `MSYS_NO_PATHCONV=1` or `/data/...` is
+rewritten into a windows path.
+
+an imported state is not the same state. the touch-free derive preference may
+be off, and the suite turning it on mid-run leaves the device in config mode
+where CTAPHID goes silent for the rest of the run - six timeouts and no cause
+named. run the suite a second time; the byte persists
+(FINDING-enabling-touch-free-derive-mid-run-kills-ctaphid.md).
+
+firmware versions
+--------------
+
+    node android/okemu/scripts/stage.js --list    # what OKEMU_VERSION accepts
+    node android/okemu/scripts/version-probe.js   # do the patches still match?
+    OKEMU_VERSION=v3.0.2 ./gradlew :app:installDebug
     OKEMU_PRODUCTION=1                            # stage firmware with DEBUG off
-    node android/okemu/scripts/version-probe.js   # can an old release be staged?
+
+one stage script per release lives in `android/okemu/scripts/versions/`, and it
+is where that release's own patches and its measured status go. status is a
+ladder - blocked, untried, stages, builds, boots, tested - and each rung is
+something somebody watched happen. see that directory's README.
+
 
 writing tests that can actually fail
 --------------

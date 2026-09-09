@@ -50,6 +50,7 @@ wrong version of the table looks exactly like the right one.
 | 31 | [the vault worked in every test and failed on the phone](FINDING-a-global-that-only-exists-in-the-test-runner.md) | high — Hermes has no TextDecoder, and the error was reported as a wrong key; **fixed** | **ours** | n/a |
 | 32 | [the OpenPGP fork did not load under Hermes](FINDING-the-openpgp-fork-does-not-load-under-hermes.md) | high — blocked composite PGP key generation on the phone, silently, and was recorded as working; the cause was Metro swallowing a module-scope WebCrypto throw; **fixed** | **ours** | n/a |
 | 33 | [every CPU_RESTART() killed the app](FINDING-cpu-restart-writes-to-unmapped-memory.md) | high — the idle lockout, the lock gesture and every wipe took the process down; **fixed** | **ours** | n/a |
+| 34 | [enabling touch-free derive mid-run kills CTAPHID](FINDING-enabling-touch-free-derive-mid-run-kills-ctaphid.md) | medium for the suite - six device tests fail with a timeout that names nothing, and a second run is green | **ours** | n/a |
 
 ## Read #6 first, then #2
 

@@ -57,6 +57,10 @@ tools/*.log
 # ---- okemu (firmware-on-Android) ----
 # Regenerated from the sibling checkouts by scripts/stage.js on every build.
 android/okemu/.stage/
+
+# A pinned release's sources, unpacked from git's object database by
+# OKEMU_VERSION and cached by commit. Reproducible from ok-versions.json.
+android/okemu/.stage-src/
 android/okemu/.cxx-probe/
 android/okemu/sources.cmake
 
