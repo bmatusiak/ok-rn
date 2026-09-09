@@ -148,14 +148,26 @@ async function main() {
   }
 
   process.stdout.write('running');
-  const deadline = Date.now() + 180000;
+  /*
+   * Generous, because the suite's length depends on the firmware build.
+   *
+   * A production build has no debug console, so PIN entry goes through real
+   * button presses - and a press is ten firmware loop iterations plus the idle
+   * rounds the firmware needs to see a release, three times per unlock. That
+   * put the suite past the old 180s deadline while every test in it passed,
+   * which reads as a hang rather than as "this build is slower".
+   */
+  const budgetMs = Number(process.env.OKRN_E2E_TIMEOUT_MS || 420000);
+  const deadline = Date.now() + budgetMs;
   let log = '';
   for (;;) {
     log = adb(['logcat', '-d']);
     if (/TEST COMPLETE/.test(log)) break;
     if (Date.now() > deadline) {
       process.stdout.write('\n');
-      throw new Error('the suite did not finish within 180s');
+      throw new Error(
+        `the suite did not finish within ${Math.round(budgetMs / 1000)}s`,
+      );
     }
     process.stdout.write('.');
     await sleep(2000);

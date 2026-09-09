@@ -37,6 +37,7 @@
 'use strict';
 
 const {getOnlyKey} = require('../src/onlykey');
+const {pressDigits} = require('./helpers/pressDigits');
 const {protocol} = require('node-onlykey-lib');
 
 const OkEmuModule = require('../src/transport/OkEmu');
@@ -217,7 +218,7 @@ module.exports = function cryptoSign({describe, it}) {
           'the device should have locked itself on entering config mode',
         );
 
-        await device.unlock(PIN, {timeoutMs: 20000});
+        await device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
         log('unlocked again, now in config mode');
 
         tap.take();

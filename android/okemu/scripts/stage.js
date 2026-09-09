@@ -94,6 +94,54 @@ const DROP = [
  * where the emulator would add an #ifdef upstream, we patch the copy and say
  * so. Each entry below records what it would have been instead.
  */
+/**
+ * Build the firmware the way it ships, with the DEBUG gate off.
+ *
+ * Set OKEMU_PRODUCTION=1 before `node scripts/stage.js` (the gradle task passes
+ * the environment through), then rebuild. Unset, the staged firmware is a DEBUG
+ * build exactly as before, and nothing about the default path changes.
+ *
+ * ## Why this is a stage patch rather than a compiler flag
+ *
+ * `#define DEBUG` is at onlykey.h:81 - in the firmware SOURCE, not a build
+ * option we can pass. -UDEBUG cannot undefine what a header defines. So the
+ * only way to build the production variant without editing OnlyKey-Firmware,
+ * which is outside this project's write scope, is to patch the staged copy -
+ * the same mechanism every other entry here uses.
+ *
+ * ## What disappears with it
+ *
+ * The define gates 259 sites in okcore.cpp alone. Two things follow:
+ *
+ *   - SEREMU, the debug console, is the device's FOURTH interface and exists
+ *     only on a DEBUG build. A production device enumerates three.
+ *   - Every Serial.print the library matches on. The PIN provisioning flow
+ *     waits for "Enter PIN", "Storing PIN", "Confirm PIN" and "Both PINs
+ *     Match", and a production build prints none of them.
+ *
+ * DEBUG_CTAP_VERBOSE goes too. It is a SEPARATE define on the next line and
+ * gates its own sites in fido2/device.cpp and okcore.cpp, so leaving it defined
+ * would keep printing to a console that is no longer there.
+ *
+ * The version string carries the difference, which is how a host can tell:
+ * onlykey.h defines OKversionkeyword as "-test" under DEBUG and "-prod"
+ * otherwise, so this build announces itself as UNLOCKEDv3.0.4-prodc. See
+ * node-onlykey-lib/src/device/version.js.
+ */
+const PRODUCTION = process.env.OKEMU_PRODUCTION === '1';
+
+const PRODUCTION_PATCHES = [
+  {
+    file: 'libraries/onlykey/onlykey.h',
+    edits: [
+      ['#define DEBUG //Enable Serial Monitor',
+       '//#define DEBUG - removed by stage.js for OKEMU_PRODUCTION=1'],
+      ['#define DEBUG_CTAP_VERBOSE //Enable verbose per-request CTAP/U2F presence-test logging (very noisy - fires on every presence test poll, floods Serial/SEREMU)',
+       '//#define DEBUG_CTAP_VERBOSE - removed with DEBUG; it prints to a console a production build does not have'],
+    ],
+  },
+];
+
 const PATCHES = [
   {
     file: 'core/kinetis.h',
@@ -316,7 +364,11 @@ function copyDir(src, dst) {
 
 function applyPatches() {
   let applied = 0, missing = 0;
-  for (const p of PATCHES) {
+  const patches = PRODUCTION ? [...PATCHES, ...PRODUCTION_PATCHES] : PATCHES;
+  if (PRODUCTION) {
+    console.log('stage: OKEMU_PRODUCTION=1 - building with the DEBUG gate OFF');
+  }
+  for (const p of patches) {
     const target = path.join(STAGE, p.file);
     if (!fs.existsSync(target)) {
       console.error(`stage: WARNING - patch file absent: ${p.file}`);

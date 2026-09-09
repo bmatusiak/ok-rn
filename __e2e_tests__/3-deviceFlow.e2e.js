@@ -18,6 +18,7 @@
 'use strict';
 
 const OnlyKeyModule = require('../src/onlykey');
+const {pressDigits} = require('./helpers/pressDigits');
 const {getOnlyKey, resetOnlyKey} = OnlyKeyModule;
 
 const OkEmuModule = require('../src/transport/OkEmu');
@@ -98,7 +99,7 @@ module.exports = function deviceFlow({describe, it}) {
        * buffer is empty here by construction.
        */
       const {device} = await getOnlyKey();
-      const status = await device.unlock(PIN, {timeoutMs: 20000});
+      const status = await device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
       log(`unlocked: ${status}`);
       assert.ok(/UNLOCKED/i.test(status), `unexpected unlock status: ${status}`);
     });

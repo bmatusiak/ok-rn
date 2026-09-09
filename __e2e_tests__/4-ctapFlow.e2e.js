@@ -18,6 +18,7 @@
 'use strict';
 
 const {getOnlyKey} = require('../src/onlykey');
+const {pressDigits} = require('./helpers/pressDigits');
 const {protocol} = require('node-onlykey-lib');
 
 const OkEmuModule = require('../src/transport/OkEmu');
@@ -65,7 +66,7 @@ async function unlocked(log) {
   let status = 'already unlocked';
   const state = await device.connect();
   if (!/UNLOCKED/i.test(String(state.status))) {
-    status = await device.unlock(PIN, {timeoutMs: 20000});
+    status = await device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
   }
   log(`device: ${status}`);
 
