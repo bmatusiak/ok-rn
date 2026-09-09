@@ -19,9 +19,19 @@ import {theme} from '../ui/theme';
  * cannot even reach this key, because it talks to a device over WebAuthn and the
  * key is the phone.
  *
- * So the ones that are done say so and point at the tab. The rest link out, and
- * the one that is BLOCKED says that plainly rather than offering a link that
- * would half-work.
+ * So the ones that are done say so and point at the tab. The rest link out.
+ *
+ * ## Nothing here is allowed to claim a feature is broken when it is not
+ *
+ * This screen carried "generating a key does not work - the OpenPGP build will
+ * not load on the phone" for as long as that was true, and for a while after it
+ * stopped being. Composite key generation, signing, decrypting and reading
+ * armour all run here now. A stale warning is worse than no warning: it sends
+ * someone to a web page for something the app in their hand already does.
+ *
+ * There is no `blocked` field any more, deliberately. One that nothing sets is
+ * one that gets copied with its old text attached, which is exactly how the
+ * PGP-PQC entry came to be wrong.
  */
 
 /** apps.crp.to is where onlykey.github.io is deployed. */
@@ -35,7 +45,6 @@ type Tool = {
   href?: string;
   /** Or the tab in this app that already does it. */
   here?: string;
-  blocked?: string;
 };
 
 const ALREADY_HERE: Tool[] = [
@@ -83,10 +92,10 @@ const ALREADY_HERE: Tool[] = [
   {
     label: 'PGP-PQC',
     detail:
-      'Composite post-quantum PGP. Signing and decrypting work here, but ' +
-      'generating a key does not — the OpenPGP build this needs will not load ' +
-      'on the phone yet.',
-    blocked: 'key generation is blocked; see FINDING-the-openpgp-fork-does-not-load-under-hermes.md',
+      'Composite post-quantum PGP — Ed25519 with ML-DSA to sign, X25519 ' +
+      'with ML-KEM to encrypt. Generating a key, signing, decrypting and ' +
+      'reading armour all run on the phone.',
+    here: 'Messages',
     href: `${WEB_APP}/pgp-pqc`,
   },
 ];
@@ -132,7 +141,6 @@ export function ToolsScreen({onOpenTab}: {onOpenTab?: (tab: string) => void}) {
     <View key={tool.label} style={styles.tool}>
       <Text style={styles.label}>{tool.label}</Text>
       <Text style={styles.detail}>{tool.detail}</Text>
-      {tool.blocked ? <Text style={styles.blocked}>{tool.blocked}</Text> : null}
       <View style={styles.row}>
         {tool.here ? (
           <Btn
@@ -143,7 +151,7 @@ export function ToolsScreen({onOpenTab}: {onOpenTab?: (tab: string) => void}) {
         ) : null}
         {tool.href ? (
           <Btn
-            title={tool.here || tool.blocked ? 'On the web' : 'Open'}
+            title={tool.here ? 'On the web' : 'Open'}
             onPress={() => open(tool.href as string)}
           />
         ) : null}
@@ -197,6 +205,5 @@ const styles = StyleSheet.create({
   tool: {gap: 4, paddingTop: 8},
   label: {color: theme.text, fontSize: 14, fontWeight: '600'},
   detail: {color: theme.textSecondary, fontSize: 13, lineHeight: 19},
-  blocked: {color: theme.warn, fontSize: 11, lineHeight: 16},
   row: {flexDirection: 'row', gap: 8, marginTop: 4, flexWrap: 'wrap'},
 });
