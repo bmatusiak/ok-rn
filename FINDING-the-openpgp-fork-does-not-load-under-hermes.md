@@ -1,4 +1,4 @@
-# The OpenPGP fork does not load under Hermes: there is no WebCrypto
+# The OpenPGP fork did not load under Hermes: there was no WebCrypto
 
 **Severity:** high — it blocks composite PQC PGP key generation on the phone,
 and it was recorded as working
@@ -113,10 +113,10 @@ test:
   freely, so 9 of 20 genuine signatures were rejected. A single-signature test
   passes about half the time and reads as flakiness rather than a bug.
 
-## The fix, and its size
+## What the shim had to cover
 
-The fork needs a real `crypto.subtle`, at load time. The surface it uses is
-bounded and every piece of it is already a dependency of this library:
+The fork needs a real `crypto.subtle` at load time. The surface it uses is
+bounded, and every piece of it was already a dependency of this library:
 
 | method | calls | algorithms asked for |
 |---|---|---|
@@ -129,18 +129,19 @@ bounded and every piece of it is already a dependency of this library:
 | digest | 1 | SHA-1 and the SHA-2 family |
 | wrapKey / unwrapKey | 2 | AES-KW |
 
-`@noble/curves`, `@noble/ciphers` and `@noble/hashes` cover all of it, and the
-library already depends on all three - so this is a shim over code that is
-present, not a new native dependency.
+`@noble/curves`, `@noble/ciphers` and `@noble/hashes` cover all of it, so this
+is a shim over code that was already present rather than a new native
+dependency.
 
 Adding `react-native-quick-crypto` would also work and was rejected: it is a
 native module, it would have to be built for iOS as well as Android, and it
 would put the answer outside the shared library, which is the opposite of what
 this project is for.
 
-The shim belongs in the library but must NOT install itself - the library is
+It lives in the library and does NOT install itself - the library is
 platform-free by design, and a host that already has WebCrypto must keep its
-own. The host calls `install()` once at startup.
+own, which is more complete and better tested than this will ever be. The host
+calls `install()` once at startup.
 
 ## Not fixed by editing the fork
 
