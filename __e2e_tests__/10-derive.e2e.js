@@ -1,0 +1,240 @@
+/**
+ * Does the OKCONNECT key exchange actually work against the firmware?
+ *
+ * This is the exchange every DERIVED secret rides on - the web app's per-site
+ * "password generator", the vault's AES key, and the device half of an X-Wing
+ * age identity are all the same call with a different key type. The okcrypto
+ * plugin reported `deriveXwing: false` for exactly one reason: "the OKCONNECT
+ * key exchange it rides on is not written yet".
+ *
+ * It is written now, and this is the part that cannot be unit-tested. Three of
+ * its details were transcribed from a JavaScript reference rather than derived
+ * from the firmware, and each one fails silently if it is wrong - a bad transit
+ * key, a bad IV or a bad counter block all decrypt to noise that is
+ * indistinguishable from a key:
+ *
+ *   the AES key is sha256 of the box secret, not the box secret
+ *   the response carries NO GCM TAG, so it is a CTR stream
+ *   the IV is twelve zero bytes
+ *
+ * So "it returned 65 bytes" is not the assertion. DETERMINISM is: the same
+ * label must derive the same key twice, and two labels must differ. Noise
+ * passes the first test and fails the second.
+ *
+ * EVERY DERIVE HERE ASKS FOR THE PRESS VARIANT, and that is not a stylistic
+ * choice. The non-press actions are gated on an EEPROM bit:
+ *
+ *     okeeprom_eeget_derived_key_challenge_mode(&derived_key_challenge_mode);
+ *     if (!(is_bit_set(derived_key_challenge_mode, 3))) {
+ *         ret = CTAP2_ERR_EXTENSION_NOT_SUPPORTED;   // ok_extension.cpp:263
+ *
+ * so on a key that has not had "derived keys per site without touch" turned on
+ * they are refused outright - with a status that reads like the firmware does
+ * not support the feature at all. DERIVE_PUBLIC_KEY_REQ_PRESS skips that check
+ * and asks for a finger instead, which is a device setting this test should
+ * not be depending on.
+ *
+ * THE DEVICE MUST BE UNLOCKED. bridge_to_onlykey() is on the CTAP path, and
+ * U2Finit() only runs once the PIN is accepted (OnlyKey.ino:716) - so on a
+ * locked key there is no FIDO interface to reach at all.
+ */
+'use strict';
+
+const {getOnlyKey} = require('../src/onlykey');
+
+const OkEmuModule = require('../src/transport/OkEmu');
+const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
+
+/** P-256 is the only key type the derive pair really uses. */
+const P256R1 = 1;
+
+/** An uncompressed P-256 point: 0x04 and two 32-byte coordinates. */
+const P256_LEN = 65;
+
+/**
+ * Press when the device asks, from inside the KEEPALIVE.
+ *
+ * A derive can demand user presence even when DERIVE_PUBLIC_KEY is asked for
+ * rather than DERIVE_PUBLIC_KEY_REQ_PRESS - the device has its own
+ * derived-key challenge setting, and it wins. Without a press the firmware
+ * waits, sends KEEPALIVE(UP_NEEDED), and eventually answers
+ * CTAP2_ERR_USER_ACTION_PENDING, which is a refusal rather than a failure.
+ *
+ * The press has to happen FROM the keepalive rather than on a timer: the
+ * device only starts watching its buttons once the ceremony is under way.
+ */
+function pressing(log) {
+  let pressed = 0;
+  return {
+    get count() { return pressed; },
+    onKeepAlive: async () => {
+      if (pressed) return;          /* one press answers it */
+      await OkEmu.pressButton(1);
+      pressed += 1;
+      log(`pressed button 1 for the derive`);
+    },
+  };
+}
+
+const hex = bytes =>
+  Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+
+let shared = null;
+async function connected(log) {
+  if (shared) return shared;
+  if (!OkEmu.isRunning()) await OkEmu.start();
+
+  /*
+   * Wait out the pending-operation window before the first derive.
+   *
+   * The suite before this one runs a FIDO ceremony, and the firmware leaves
+   * pending_operation set for up to twenty seconds afterwards
+   * (FINDING-presses-discarded-after-a-fido-ceremony.md). While it is set an
+   * OKCONNECT lands in ok_extension.cpp's RETRIEVE branch rather than its
+   * derive branch and comes back CTAP2_ERR_USER_ACTION_PENDING - which reads
+   * like "press a button" and is actually "ask again later".
+   */
+  await new Promise(r => setTimeout(r, 22000));
+
+  const {device, okcrypto} = await getOnlyKey();
+  const state = await device.connect();
+  log(`device: ${String(state.status).trim()}`);
+  shared = {device, okcrypto, status: String(state.status)};
+  return shared;
+}
+
+module.exports = function derive({describe, it}) {
+  describe(derive.name, () => {
+    it('the plugin offers the derive pair at all', async ({log, assert}) => {
+      const {okcrypto} = await connected(log);
+      log(`KEYTYPE.P256R1 = ${okcrypto.KEYTYPE.P256R1}`);
+      assert.equal(typeof okcrypto.derivePublicKey, 'function');
+      assert.equal(typeof okcrypto.deriveSharedSecret, 'function');
+      assert.equal(okcrypto.KEYTYPE.P256R1, P256R1);
+    });
+
+    it('derives a public key for a label', async ({log, assert}) => {
+      const {okcrypto, status} = await connected(log);
+      assert.ok(
+        /UNLOCKED/i.test(status),
+        'the device is locked, so there is no FIDO interface to derive over',
+      );
+
+      const press = pressing(log);
+      const result = await okcrypto.derivePublicKey('e2e.example', {
+        keytype: P256R1,
+        requirePress: true,
+        timeoutMs: 30000,
+        onKeepAlive: press.onKeepAlive,
+      });
+
+      log(`status: ${JSON.stringify(result.status)}`);
+      log(`payload: ${result.payload.length} bytes`);
+      log(`public key: ${hex(result.publicKey).slice(0, 32)}...`);
+
+      assert.equal(result.publicKey.length, P256_LEN);
+      assert.equal(
+        result.publicKey[0], 0x04,
+        'an uncompressed P-256 point starts with 0x04; anything else is noise',
+      );
+
+      /*
+       * The status is the device saying who it is, decrypted. Getting this
+       * back in readable ASCII is itself proof that the transit key, the IV
+       * and the counter block are all right - noise does not spell UNLOCKED.
+       */
+      assert.ok(
+        /UNLOCKED/i.test(result.status),
+        `the decrypted status was ${JSON.stringify(result.status)}, which means ` +
+          'the transit key or the cipher framing is wrong',
+      );
+    });
+
+    it('the same label derives the same key twice', async ({log, assert}) => {
+      /*
+       * The assertion that separates a working exchange from noise. Every call
+       * uses a FRESH transit keypair, so the ciphertext differs each time; if
+       * the decryption is right the plaintext underneath is identical, and if
+       * it is wrong these are two unrelated random strings.
+       */
+      const {okcrypto} = await connected(log);
+
+      const first = await okcrypto.derivePublicKey('e2e.example',
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+      const again = await okcrypto.derivePublicKey('e2e.example',
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+
+      log(`first: ${hex(first.publicKey).slice(0, 24)}...`);
+      log(`again: ${hex(again.publicKey).slice(0, 24)}...`);
+      assert.equal(hex(first.publicKey), hex(again.publicKey));
+    });
+
+    it('a different label derives a different key', async ({log, assert}) => {
+      /*
+       * The other half. A derivation that ignored its label would pass the
+       * determinism test perfectly while giving every site the same secret -
+       * which is precisely the bug the reference documents at
+       * onlykey-3rd-party.js:54-66, where Uint8Array.from() on a string
+       * collapsed every label to zero bytes and only its LENGTH survived.
+       *
+       * So the two labels here are the SAME LENGTH. A shorter one would pass
+       * even with that bug present.
+       */
+      const {okcrypto} = await connected(log);
+      assert.equal('e2e.example'.length, 'e2e.exampyy'.length);
+
+      const a = await okcrypto.derivePublicKey('e2e.example',
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+      const b = await okcrypto.derivePublicKey('e2e.exampyy',
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+
+      log(`a: ${hex(a.publicKey).slice(0, 24)}...`);
+      log(`b: ${hex(b.publicKey).slice(0, 24)}...`);
+      assert.notEqual(hex(a.publicKey), hex(b.publicKey));
+    });
+
+    it('a shared secret can be derived against that key', async ({log, assert}) => {
+      /*
+       * The value the web app presents as a generated password, and the value
+       * the vault turns into an AES key. Deriving it against the device's own
+       * derived public key is the two-step the password generator does.
+       */
+      const {okcrypto} = await connected(log);
+
+      const pub = await okcrypto.derivePublicKey('e2e.example',
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+      const secret = await okcrypto.deriveSharedSecret('e2e.example', pub.publicKey, {
+        requirePress: true,
+        timeoutMs: 30000,
+        onKeepAlive: pressing(log).onKeepAlive,
+      });
+
+      log(`shared payload: ${secret.payload.length} bytes`);
+      log(`secret: ${secret.secret.length} bytes, ${hex(secret.secret).slice(0, 24)}...`);
+      log(`its public half: ${hex(secret.publicKey).slice(0, 24)}...`);
+
+      /*
+       * THE SHAPE, not just the length. This response carries two values - the
+       * public key and then the 32-byte secret - and an earlier version of this
+       * test asserted only that the payload was non-empty, which is why a
+       * reader that returned "the last 65 bytes" (33 bytes of public key with
+       * the secret glued on) passed it. That value is the right sort of length,
+       * stable per label, and wrong.
+       */
+      assert.equal(secret.secret.length, 32, 'an ECC shared secret is 32 bytes');
+      assert.equal(secret.publicKey.length, 65, 'with the P-256 point in front of it');
+      assert.equal(
+        secret.payload.length >= 65 + 32, true,
+        `payload is ${secret.payload.length}; it must hold both halves`,
+      );
+      assert.notEqual(
+        hex(secret.secret), hex(secret.publicKey.subarray(secret.publicKey.length - 32)),
+        'the secret must not be the tail of the public key',
+      );
+      assert.ok(
+        /UNLOCKED/i.test(secret.status),
+        `the decrypted status was ${JSON.stringify(secret.status)}`,
+      );
+    });
+  });
+};
