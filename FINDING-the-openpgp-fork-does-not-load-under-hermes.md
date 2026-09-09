@@ -1,105 +1,123 @@
-# The OpenPGP fork does not load under Hermes, and says nothing about it
+# The OpenPGP fork does not load under Hermes: there is no WebCrypto
 
-**Severity:** high — it blocks composite PQC PGP on the phone entirely, and it
-was recorded as working
-**Status:** open — the blockage is pinned by a test; the fix is a re-bundle
-**Applies to:** ours — `node-onlykey-lib/src/vendor/openpgp/openpgp.js` as
-bundled, and the plan's claim about it
+**Severity:** high — it blocks composite PQC PGP key generation on the phone,
+and it was recorded as working
+**Status:** CAUSE FOUND, fix not yet applied
+**Applies to:** ours — `node-onlykey-lib/src/vendor/openpgp/openpgp.js`, and the
+plan's claim about it
 
-## The claim that was wrong
+## The cause
 
-The plan lists "the vendored PQC openpgp fork, verified byte-for-byte and
-Hermes-safe" among the things already finished. The first half is true. The
-second was inferred from Node tests passing, and nothing had ever required the
-file on a phone.
+```
+Error: The WebCrypto API is not available
+    at getWebCrypto
+    at anonymous
+    at loadModuleImplementation
+    at guardedLoadModule
+    at metroRequire
+```
 
-    require('node-onlykey-lib/crypto/pgp')   ->  undefined
+OpenPGP.js v6 reads WebCrypto at MODULE SCOPE, not at point of use. A dozen
+sites do:
 
-Not an error. Not a rejected promise. Nothing in logcat, nothing from Metro.
+```js
+const webCrypto$b = util.getWebCrypto();     // openpgp.js:3209, 4377, 4730, …
+```
 
-## Ruling things out
+and `getWebCrypto` throws when `globalThis.crypto.subtle` is absent
+(openpgp.js:2162-2169). React Native has `crypto.getRandomValues` from
+`react-native-get-random-values` and no `subtle` at all, so the factory throws
+on the first of those lines and never reaches its exports.
 
-Each of these was measured on the device rather than reasoned about:
+## Why every probe missed it
 
-| probe | result |
-|---|---|
-| `node-onlykey-lib/crypto/pgp` (the exports map) | `undefined` |
-| `node-onlykey-lib/src/vendor/openpgp/openpgp.js` | `undefined` |
-| `../../node-onlykey-lib/src/vendor/openpgp/openpgp.js` | `undefined` |
-| `node-onlykey-lib/definitely-not-here` | **throws** |
-| `node-onlykey-lib/crypto` → `.composite.generateCompositeKey` | a function |
-| a tiny file with the fork's exact top-level shape | works |
-| **30,000 generated lines inside one IIFE (1.9 MB)** | **works** |
-| **30,000 generated lines at module top level (1.8 MB)** | **works** |
-| a byte-for-byte copy of the fork whose last line reports what ran | `undefined` |
-| `GET /…/probe-openpgp-copy.bundle` from Metro | **HTTP 200, 1.5 MB** |
+The error is real and it is thrown, but `require()` does not rethrow it.
+`metro-runtime/src/polyfills/require.js`:
 
-## What that leaves, and what it rules out
+```js
+function guardedLoadModule(moduleId, module) {
+  if (!inGuard && global.ErrorUtils) {
+    inGuard = true;
+    let returnValue;
+    try {
+      returnValue = loadModuleImplementation(moduleId, module);
+    } catch (e) {
+      global.ErrorUtils.reportFatalError(e);   // not rethrown
+    }
+    inGuard = false;
+    return returnValue;                        // still undefined
+```
 
-**An unresolvable module throws.** This one resolves, so the exports map, the
-symlink and the resolver are innocent.
+So a module whose factory throws comes back `undefined` at the call site and
+its error goes to the global handler instead. Every probe in the previous
+version of this finding was looking at the call site, which is exactly where
+the information is not.
 
-**The IIFE construction is fine**, proven by reproducing the exact shape.
+It was found by installing `ErrorUtils.setGlobalHandler` around the require and
+reading what arrived. That is now a permanent test -
+`__e2e_tests__/11-compositePgp.e2e.js`, "CAPTURES the error Metro swallows" -
+so the next failure of this kind reports itself instead of being investigated
+from scratch.
 
-**SIZE IS NOT THE CAUSE.** This was my first conclusion and it was wrong: a
-generated 1.9 MB file with a single 30,000-line IIFE loads and returns its
-exports. The correction matters more than the original guess did - a wrong root
-cause in a findings file is worse than an admitted gap, because the next person
-stops looking.
+## What the previous version of this finding got wrong
 
-**Metro builds it.** Asked for that one file as a bundle entry, the dev server
-answers 200 with 1.5 MB of JavaScript, so the transform succeeds.
+It listed the cause as unknown after ruling out the exports map, the symlink,
+the resolver, the IIFE shape, and size. All of that ruling-out was correct and
+none of it was enough, because the missing piece was not a property of the file
+at all - it was that the error had been routed somewhere nobody was looking.
 
-**The factory does not reach its last line.** A copy of the fork whose final
-statement was replaced with `module.exports = {markerRan: true, …}` ALSO comes
-back `undefined` - so it is not that `openpgp` was unset when the export ran;
-the export never ran. And Metro initialises `module.exports` to `{}`, so
-`undefined` cannot come from a factory that merely did nothing. Something set
-it, or the module was never evaluated.
+The earlier "size is the cause" conclusion was already corrected once. Two wrong
+root causes in one finding is the argument for capturing the error rather than
+reasoning about the symptom.
 
-**Nothing throws.** Not through `require`, not in logcat, not as a rejected
-promise - checked with an explicit try/catch around the require.
+## Why the fork's own fallbacks do not save it
 
-So the cause is still open. The next things worth trying: inspecting Metro's
-module registry for the id at runtime, disabling `inlineRequires`, and
-requiring the fork from the app's own module graph rather than from a test
-suite, to rule the harness in or out.
+openpgp v6 has guards that look like they handle a missing WebCrypto:
 
-## Why it is worth its own file
+```js
+if (util.getWebCrypto()) {
+  try {
+    key = await webCrypto$9.importKey('raw', key, { name: 'AES-CBC', … });
+```
 
-Every other Hermes gap found here announced itself:
-`FINDING-a-global-that-only-exists-in-the-test-runner.md` threw a
-`ReferenceError` naming `TextDecoder`. This one has no symptom at the point of
-failure. The first thing the caller sees is
-`Cannot read property 'generateKey' of undefined`, which reads as a wrong import
-path — and the import path is fine.
+They are unreachable. `getWebCrypto()` THROWS rather than returning falsy, so
+the guard throws too - and in any case the module-scope reads happen long
+before any of these run. Upstream v6 assumes WebCrypto is always present, which
+is true of browsers and Node 18+, and false here.
 
-## What still works without it
+## The fix, and its size
 
-Most of the composite feature, as it happens. The blob format, its offsets, and
-the device operations that consume it cost only @noble:
+The fork needs a real `crypto.subtle`, at load time. The surface it uses is
+bounded and every piece of it is already a dependency of this library:
 
-  packBlob / unpackBlob        the four-secret layout
-  composite_sign / _decrypt    proven on device (9-cryptoSign)
-  registerCompositeHooks       wiring, once there is an openpgp to wire
+| method | calls | algorithms asked for |
+|---|---|---|
+| importKey | 18 | ECDH, ECDSA, HMAC, AES-KW, AES-CTR, AES-CBC, HKDF |
+| exportKey | 8 | |
+| generateKey | 4 | |
+| encrypt / decrypt | 5 | AES-CTR, AES-CBC, AES-KW |
+| sign / verify | 6 | ECDSA, HMAC |
+| deriveBits | 3 | ECDH, HKDF |
+| digest | 1 | SHA-1 and the SHA-2 family |
+| wrapKey / unwrapKey | 2 | AES-KW |
 
-Only key GENERATION needs the fork — and only because a composite key is a PGP
-key, not because the device wants one. A key generated elsewhere and loaded into
-a slot would sign on the phone today.
+`@noble/curves`, `@noble/ciphers` and `@noble/hashes` cover all of it, and the
+library already depends on all three - so this is a shim over code that is
+present, not a new native dependency.
 
-## The fix is not yet known
+Adding `react-native-quick-crypto` would also work and was rejected: it is a
+native module, it would have to be built for iOS as well as Android, and it
+would put the answer outside the shared library, which is the opposite of what
+this project is for.
 
-Re-bundling as ordinary modules was the obvious candidate while size looked like
-the cause. It no longer is: the same volume in the same shape loads without
-complaint, so a re-bundle would be a large change made on a guess.
+The shim belongs in the library but must NOT install itself - the library is
+platform-free by design, and a host that already has WebCrypto must keep its
+own. The host calls `install()` once at startup.
 
-The one claim that can be made confidently is the negative one in VENDORED.md.
-It states the appended CommonJS line makes the file "an ordinary require()-able
-module in Node, browsers, nw.js and Hermes alike". It is not, and that sentence
-should not be trusted until this is understood.
+## Not fixed by editing the fork
 
-## Guarded by
-
-`__e2e_tests__/11-compositePgp.e2e.js`, which asserts the failure so the suite
-stays honest and green, and which fails loudly with an instruction the moment
-the fork starts loading.
+The vendored file stays byte-for-byte identical to upstream, which
+`test/openpgp-vendor.test.js` checks. Making `getWebCrypto` return `undefined`
+instead of throwing would be a smaller change and a worse one: the guards it
+would re-enable are not tested upstream in that configuration, so it would
+trade a loud failure for a set of quiet ones.

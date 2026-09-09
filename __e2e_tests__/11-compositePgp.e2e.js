@@ -73,6 +73,76 @@ module.exports = function compositePgp({describe, it}) {
       assert.equal(back.mlkemSeed[0], 4, 'the four halves came back in order');
     });
 
+    it('CAPTURES the error Metro swallows when the fork is required', async ({log, assert}) => {
+      /*
+       * `require()` returning undefined with nothing thrown is not a mystery,
+       * it is Metro's design. metro-runtime/src/polyfills/require.js:
+       *
+       *     function guardedLoadModule(moduleId, module) {
+       *       if (!inGuard && global.ErrorUtils) {
+       *         inGuard = true;
+       *         let returnValue;
+       *         try {
+       *           returnValue = loadModuleImplementation(moduleId, module);
+       *         } catch (e) {
+       *           global.ErrorUtils.reportFatalError(e);   // <- not rethrown
+       *         }
+       *         inGuard = false;
+       *         return returnValue;                        // <- still undefined
+       *
+       * So a module whose factory throws comes back undefined at the call site
+       * and its error goes to the global handler instead. Every probe in the
+       * finding was looking at the call site.
+       *
+       * This installs a handler around the require to read what was actually
+       * thrown. It is a DIAGNOSTIC and is expected to keep passing once the
+       * fork loads - at that point it captures nothing and says so.
+       */
+      const ErrorUtils = global.ErrorUtils;
+      assert.ok(ErrorUtils, 'no ErrorUtils to install a handler on');
+
+      const previous = ErrorUtils.getGlobalHandler && ErrorUtils.getGlobalHandler();
+      const caught = [];
+      ErrorUtils.setGlobalHandler((err, isFatal) => {
+        caught.push({err, isFatal});
+      });
+
+      let returned;
+      try {
+        /*
+         * A fresh path, so Metro's module cache cannot hand back the undefined
+         * a previous require already stored. The other tests in this file use
+         * the exports-map path; this one goes at the file.
+         */
+        returned = require('node-onlykey-lib/src/vendor/openpgp/openpgp.js');
+      } finally {
+        if (previous) ErrorUtils.setGlobalHandler(previous);
+      }
+
+      log(`require returned: ${typeof returned}`);
+      log(`errors captured: ${caught.length}`);
+      for (const {err, isFatal} of caught) {
+        log(`  fatal=${isFatal} name=${err && err.name}`);
+        log(`  message: ${String(err && err.message).slice(0, 400)}`);
+        const NL = String.fromCharCode(10);
+        const stack = String((err && err.stack) || '').split(NL).slice(0, 8);
+        for (const line of stack) log(`    ${line.trim().slice(0, 160)}`);
+      }
+
+      if (returned !== undefined) {
+        log('the fork LOADS - there is nothing left to capture');
+        assert.ok(true);
+        return;
+      }
+
+      assert.ok(
+        caught.length > 0,
+        'the fork came back undefined and NOTHING was reported to ErrorUtils - ' +
+          'that would mean the factory never ran at all, which is a different ' +
+          'problem from a factory that throws',
+      );
+    });
+
     it('the fork still does not load, so key generation stays blocked', async ({log, assert}) => {
       /*
        * WHEN THIS TEST FAILS, THAT IS GOOD NEWS. It means the fork has started
