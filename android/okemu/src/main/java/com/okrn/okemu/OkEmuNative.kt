@@ -85,6 +85,28 @@ object OkEmuNative {
      */
     external fun nativeSetButton(button: Int, down: Boolean)
 
+    /**
+     * Hold a button for a count of firmware main-loop iterations, then let the
+     * HAL release it.
+     *
+     * The bands are counted in iterations, not milliseconds, so this is the
+     * only way to ask for one deterministically - and the long band runs
+     * backup() or restarts the key, so guessing is not a cheap mistake.
+     */
+    external fun nativeSetButtonTicks(button: Int, ticks: Int)
+
+    /** Iterations still owed on a counted hold; 0 when not counting. */
+    external fun nativeButtonTicksLeft(button: Int): Int
+
+    /**
+     * Sense rounds completed since boot.
+     *
+     * The firmware ends a press after three rounds with nothing held, so this
+     * is how a caller waits for one counted press to be over before starting
+     * the next - without it they merge into a single longer one.
+     */
+    external fun nativeRounds(): Double
+
     /** The Yubikey OTP / HMAC-SHA1 channel rides keyboard control transfers. */
     external fun nativeKbdSetReport(data: ByteArray)
 

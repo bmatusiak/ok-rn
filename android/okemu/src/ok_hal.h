@@ -134,6 +134,32 @@ void okemu_set_button(int n, int down);
 int  okemu_get_button(int n);
 int  okemu_touch_for_pin(uint8_t pin);   /* pin -> simulated capacitance */
 
+/*
+ * Hold a button for a count of MAIN-LOOP ITERATIONS, then release it.
+ *
+ * The firmware's press bands are counted in iterations of touch_sense_loop(),
+ * not in milliseconds, and the long band is where the irreversible gestures
+ * live - backup, lock-and-restart, config mode. Ticks make the band a property
+ * of the call instead of a race against the handset's loop speed. See the
+ * comment on the definition for the exact thresholds.
+ *
+ * okemu_set_button() cancels any counted hold on that button.
+ */
+void okemu_set_button_ticks(int n, int ticks);
+
+/* Samples still owed on a counted hold; 0 when the button is not counting. */
+int  okemu_button_ticks_left(int n);
+
+/*
+ * Sense rounds completed since boot.
+ *
+ * The firmware ends a press after THREE rounds with no pad held
+ * (okcore.cpp:2723, key_off > 2), so consecutive counted holds must be
+ * separated by at least that many or they merge into one longer press. This is
+ * how a caller waits for that without guessing at a round's duration.
+ */
+uint64_t okemu_rounds(void);
+
 /* -------------------------------------------------------------- LED */
 
 void okemu_led_set(int index, uint8_t r, uint8_t g, uint8_t b);

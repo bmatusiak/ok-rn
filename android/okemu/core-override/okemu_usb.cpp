@@ -126,6 +126,18 @@ extern uint16_t ALTGR_MASK;
 extern uint16_t RCTRL_MASK;
 extern uint16_t KEY_NON_US_100;
 
+/* Dead keys. Same story: keylayouts.c defines them, keylayouts.h does not. */
+extern uint16_t DEADKEYS_MASK;
+extern uint16_t CIRCUMFLEX_BITS, ACUTE_ACCENT_BITS, GRAVE_ACCENT_BITS;
+extern uint16_t TILDE_BITS, DIAERESIS_BITS, CEDILLA_BITS, RING_ABOVE_BITS;
+extern uint16_t DEGREE_SIGN_BITS, CARON_BITS, BREVE_BITS, OGONEK_BITS;
+extern uint16_t DOT_ABOVE_BITS, DOUBLE_ACUTE_BITS;
+extern uint16_t DEADKEY_CIRCUMFLEX, DEADKEY_ACUTE_ACCENT, DEADKEY_GRAVE_ACCENT;
+extern uint16_t DEADKEY_TILDE, DEADKEY_DIAERESIS, DEADKEY_CEDILLA;
+extern uint16_t DEADKEY_RING_ABOVE, DEADKEY_DEGREE_SIGN, DEADKEY_CARON;
+extern uint16_t DEADKEY_BREVE, DEADKEY_OGONEK, DEADKEY_DOT_ABOVE;
+extern uint16_t DEADKEY_DOUBLE_ACUTE;
+
 static uint16_t okemu_unicode_to_keycode(uint16_t cpoint) {
   if (cpoint < 32) {
     if (cpoint == 10) return KEY_ENTER & 0x3FFF;
@@ -143,6 +155,46 @@ static uint8_t okemu_keycode_to_modifier(uint16_t keycode) {
   if (ALTGR_MASK && (keycode & ALTGR_MASK)) modifier |= (uint8_t)MODIFIERKEY_RIGHT_ALT;
   if (RCTRL_MASK && (keycode & RCTRL_MASK)) modifier |= (uint8_t)MODIFIERKEY_RIGHT_CTRL;
   return modifier;
+}
+
+/*
+ * The dead key a character needs typed before it, or 0.
+ *
+ * On layouts that have them, an accented character is TWO keystrokes: the
+ * accent key, released, then the base key. keylayouts.c encodes which accent
+ * in bits ABOVE the ones that reach the wire - Canadian French has
+ *
+ *     ASCII_5E = CIRCUMFLEX_BITS + KEY_SPACE;   // ^
+ *
+ * where CIRCUMFLEX_BITS is 0x0100 and a report only ever carries the low six
+ * bits. Drop the deadkey press and the accent bits go with it, so the
+ * character is typed as its bare base key: `^` comes out as a space, and
+ * every accented letter comes out unaccented. Nothing errors.
+ *
+ * This is a port of usb_keyboard.c:180-215, which this file replaces
+ * wholesale and had not carried across. The stock core guards each accent
+ * with #ifdef; OnlyKey ships these as runtime variables rather than defines,
+ * so they are tested with `if` - the same reason the mask tests above are
+ * `if` and not `#ifdef`.
+ */
+static uint16_t okemu_deadkey_for(uint16_t keycode) {
+  if (!DEADKEYS_MASK) return 0;
+  uint16_t bits = keycode & DEADKEYS_MASK;
+  if (!bits) return 0;
+  if (ACUTE_ACCENT_BITS && bits == ACUTE_ACCENT_BITS) return DEADKEY_ACUTE_ACCENT;
+  if (CEDILLA_BITS      && bits == CEDILLA_BITS)      return DEADKEY_CEDILLA;
+  if (CIRCUMFLEX_BITS   && bits == CIRCUMFLEX_BITS)   return DEADKEY_CIRCUMFLEX;
+  if (DIAERESIS_BITS    && bits == DIAERESIS_BITS)    return DEADKEY_DIAERESIS;
+  if (GRAVE_ACCENT_BITS && bits == GRAVE_ACCENT_BITS) return DEADKEY_GRAVE_ACCENT;
+  if (TILDE_BITS        && bits == TILDE_BITS)        return DEADKEY_TILDE;
+  if (RING_ABOVE_BITS   && bits == RING_ABOVE_BITS)   return DEADKEY_RING_ABOVE;
+  if (DEGREE_SIGN_BITS  && bits == DEGREE_SIGN_BITS)  return DEADKEY_DEGREE_SIGN;
+  if (CARON_BITS        && bits == CARON_BITS)        return DEADKEY_CARON;
+  if (BREVE_BITS        && bits == BREVE_BITS)        return DEADKEY_BREVE;
+  if (OGONEK_BITS       && bits == OGONEK_BITS)       return DEADKEY_OGONEK;
+  if (DOT_ABOVE_BITS    && bits == DOT_ABOVE_BITS)    return DEADKEY_DOT_ABOVE;
+  if (DOUBLE_ACUTE_BITS && bits == DOUBLE_ACUTE_BITS) return DEADKEY_DOUBLE_ACUTE;
+  return 0;
 }
 
 static uint8_t okemu_keycode_to_key(uint16_t keycode) {
@@ -227,7 +279,29 @@ void usb_keyboard_press_keycode(uint16_t n) {
   }
   uint16_t keycode = okemu_unicode_to_keycode(n);
   if (!keycode) return;
-  okemu_press_key(okemu_keycode_to_key(keycode), okemu_keycode_to_modifier(keycode));
+
+  /*
+   * The dead key goes first, and any modifier already held is dropped for it
+   * and restored after - usb_keyboard.c:316-331. Sending the accent while
+   * shift is down is a different keystroke on most layouts, which is why the
+   * stock core bothers to save and restore rather than just pressing.
+   */
+  uint8_t modrestore = 0;
+  uint16_t dead = okemu_deadkey_for(keycode);
+  if (dead) {
+    modrestore = keyboard_modifier_keys;
+    if (modrestore) {
+      keyboard_modifier_keys = 0;
+      usb_keyboard_send();
+    }
+    uint8_t dkey = okemu_keycode_to_key(dead);
+    uint8_t dmod = okemu_keycode_to_modifier(dead);
+    okemu_press_key(dkey, dmod);
+    okemu_release_key(dkey, dmod);
+  }
+
+  okemu_press_key(okemu_keycode_to_key(keycode),
+                  (uint8_t)(okemu_keycode_to_modifier(keycode) | modrestore));
 }
 
 void usb_keyboard_release_keycode(uint16_t n) {
@@ -260,10 +334,17 @@ void usb_keyboard_write(uint8_t c) {
   usb_keyboard_write_unicode(c);
 }
 
-/* One code point typed as a discrete press/release pair, as write_key() does. */
+/*
+ * One code point typed as a discrete press/release pair, as write_key() does -
+ * preceded by its dead key where the layout has one (usb_keyboard.c:232-236).
+ */
 void usb_keyboard_write_unicode(uint16_t cpoint) {
   uint16_t keycode = okemu_unicode_to_keycode(cpoint);
   if (!keycode) return;
+  uint16_t dead = okemu_deadkey_for(keycode);
+  if (dead) {
+    usb_keyboard_press(okemu_keycode_to_key(dead), okemu_keycode_to_modifier(dead));
+  }
   usb_keyboard_press(okemu_keycode_to_key(keycode), okemu_keycode_to_modifier(keycode));
 }
 

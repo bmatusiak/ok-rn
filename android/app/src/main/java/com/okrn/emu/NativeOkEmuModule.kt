@@ -195,6 +195,69 @@ class NativeOkEmuModule(
     }
   }
 
+  /**
+   * A hold measured in firmware main-loop iterations, released by the HAL.
+   *
+   * The bands are counted in iterations and never in time, so this is the only
+   * way to land in one on purpose. Above 72 iterations the firmware stops
+   * treating the press as a slot read and starts running gestures - backup,
+   * lock-and-restart, config mode - which is why the JS layer refuses that
+   * range unless a caller says it means it.
+   */
+  override fun setButtonTicks(button: Double, ticks: Double, promise: Promise) {
+    executor.execute {
+      try {
+        if (!isRunning()) {
+          promise.reject(ERR_NOT_RUNNING, "firmware is not running")
+          return@execute
+        }
+        val n = button.toInt()
+        if (n < 1 || n > 6) {
+          promise.reject(ERR_WRITE, "button must be 1-6, got $n")
+          return@execute
+        }
+        OkEmuNative.nativeSetButtonTicks(n, ticks.toInt())
+        promise.resolve(null)
+      } catch (e: Exception) {
+        promise.reject(ERR_WRITE, e.message ?: "setButtonTicks failed", e)
+      }
+    }
+  }
+
+  /**
+   * Iterations still owed on a counted hold - the press timer, and the only
+   * honest way to know a hold has finished.
+   *
+   * NOT serialised onto the executor. A poll must be answerable while the
+   * firmware thread is mid-press; queueing it behind the work it is asking
+   * about would report 0 only once everything else had drained. The HAL reads
+   * one int under its own mutex, so this is safe from any thread.
+   */
+  override fun buttonTicksLeft(button: Double, promise: Promise) {
+    try {
+      if (!isRunning()) {
+        promise.resolve(0.0)
+        return
+      }
+      val n = button.toInt()
+      if (n < 1 || n > 6) {
+        promise.reject(ERR_WRITE, "button must be 1-6, got $n")
+        return
+      }
+      promise.resolve(OkEmuNative.nativeButtonTicksLeft(n).toDouble())
+    } catch (e: Exception) {
+      promise.reject(ERR_WRITE, e.message ?: "buttonTicksLeft failed", e)
+    }
+  }
+
+  override fun rounds(promise: Promise) {
+    try {
+      promise.resolve(OkEmuNative.nativeRounds())
+    } catch (e: Exception) {
+      promise.reject(ERR_WRITE, e.message ?: "rounds failed", e)
+    }
+  }
+
   override fun kbdSetReport(hex: String, promise: Promise) {
     executor.execute {
       try {

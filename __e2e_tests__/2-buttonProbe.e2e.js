@@ -47,7 +47,7 @@ function serialTap() {
 /** One press, and the digit the firmware said it was - null if it said none. */
 async function pressAndRead(tap, button) {
   tap.take();
-  await OkEmu.pressButton(button, 150);
+  await OkEmu.pressButton(button);
   await delay(1000);
   const said = tap.take();
   const hits = said.match(/password appended with (\d)/g) || [];
@@ -110,7 +110,7 @@ module.exports = function buttonProbe({describe, it}) {
       const tap = serialTap();
       try {
         for (let i = 0; i < 4; i++) {
-          await OkEmu.pressButton(6, 150);
+          await OkEmu.pressButton(6);
           await delay(1000);
         }
       } finally {

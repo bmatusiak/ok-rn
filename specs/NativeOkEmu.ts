@@ -72,6 +72,35 @@ export interface Spec extends TurboModule {
    */
   setButton(button: number, down: boolean): Promise<void>;
 
+  /**
+   * Hold a button for `ticks` firmware main-loop iterations, then release it.
+   *
+   * The firmware bands a press by ITERATIONS, not by time: <= 20 types the
+   * slot, 21..89 types its b profile, and >= 72 stops being a slot read at all
+   * and becomes a gesture - backup, lock-and-restart, config mode. A hold
+   * timed in milliseconds is therefore a race against how fast this handset
+   * runs the loop, with an irreversible action on the losing side. Counting in
+   * the emulator makes the band a property of the call.
+   *
+   * Releases itself; there is no matching "up" call.
+   */
+  setButtonTicks(button: number, ticks: number): Promise<void>;
+
+  /** Iterations still owed on a counted hold; 0 when idle or stopped. */
+  buttonTicksLeft(button: number): Promise<number>;
+
+  /**
+   * Sense rounds the firmware has completed since boot.
+   *
+   * A RELEASE IS NOT A GAP IN TIME. touch_sense_loop() ends a press only after
+   * three rounds in which no pad read as touched (okcore.cpp:2723), and while
+   * any pad is held it keeps adding to the SAME press - so two counted holds
+   * with no idle round between them arrive as one hold of the combined length.
+   * This is how a caller waits for that, in the firmware's own unit rather
+   * than by guessing what a round costs on this handset.
+   */
+  rounds(): Promise<number>;
+
   kbdSetReport(hex: string): Promise<void>;
   kbdGetReport(): Promise<string>;
 

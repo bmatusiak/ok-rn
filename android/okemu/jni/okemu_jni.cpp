@@ -298,6 +298,43 @@ Java_com_okrn_okemu_OkEmuNative_nativeSetButton(JNIEnv *, jclass,
   okemu_set_button((int)button, down ? 1 : 0);
 }
 
+/*
+ * A press measured in the firmware's own units.
+ *
+ * The band a press lands in - type slot N, type slot N+6, or run backup() -
+ * is decided by a COUNT OF MAIN-LOOP ITERATIONS, never by a clock. Holding
+ * for a wall time and hoping is a race against the handset's loop speed, and
+ * losing it means taking a backup or restarting the key rather than reading a
+ * slot. The HAL counts the samples instead and releases at exactly N.
+ */
+JNIEXPORT void JNICALL
+Java_com_okrn_okemu_OkEmuNative_nativeSetButtonTicks(JNIEnv *, jclass,
+                                                     jint button, jint ticks) {
+  if (!g_running) return;
+  okemu_set_button_ticks((int)button, (int)ticks);
+}
+
+/* Samples still owed on a counted hold - the press timer the UI shows. */
+JNIEXPORT jint JNICALL
+Java_com_okrn_okemu_OkEmuNative_nativeButtonTicksLeft(JNIEnv *, jclass,
+                                                      jint button) {
+  if (!g_running) return 0;
+  return (jint)okemu_button_ticks_left((int)button);
+}
+
+/*
+ * Sense rounds since boot, so a caller can wait for a release to be SEEN.
+ *
+ * jdouble rather than jlong because it crosses to JS, where every number is
+ * one anyway; a round is tens of milliseconds, so 2^53 of them is longer than
+ * the phone will exist.
+ */
+JNIEXPORT jdouble JNICALL
+Java_com_okrn_okemu_OkEmuNative_nativeRounds(JNIEnv *, jclass) {
+  if (!g_running) return 0;
+  return (jdouble)okemu_rounds();
+}
+
 /* The Yubikey OTP / HMAC-SHA1 channel rides keyboard control transfers. */
 JNIEXPORT void JNICALL
 Java_com_okrn_okemu_OkEmuNative_nativeKbdSetReport(JNIEnv *env, jclass,
