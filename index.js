@@ -22,6 +22,15 @@
  */
 import 'react-native-get-random-values';
 
+/*
+ * SECOND, and it depends on the first.
+ *
+ * A side-effect import rather than a call, because `import` statements hoist:
+ * a bare install() between two imports would run after App had already been
+ * evaluated. See src/installWebCrypto.js for what it does and why.
+ */
+import './src/installWebCrypto';
+
 import { AppRegistry } from 'react-native';
 import App from './App';
 import { name as appName } from './app.json';

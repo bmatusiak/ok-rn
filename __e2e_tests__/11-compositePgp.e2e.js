@@ -44,6 +44,9 @@
 
 const okcrypto = require('node-onlykey-lib/crypto');
 
+/** Carried between the generate step and the armour step that reads it back. */
+const shared = {key: null};
+
 module.exports = function compositePgp({describe, it}) {
   describe(compositePgp.name, () => {
     it('the composite blob format works without the fork', async ({log, assert}) => {
@@ -143,22 +146,102 @@ module.exports = function compositePgp({describe, it}) {
       );
     });
 
-    it('the fork still does not load, so key generation stays blocked', async ({log, assert}) => {
+    it('the fork LOADS, and exports the openpgp API', async ({log, assert}) => {
       /*
-       * WHEN THIS TEST FAILS, THAT IS GOOD NEWS. It means the fork has started
-       * loading - re-bundled into ordinary modules, or Hermes grew the limit,
-       * or someone precompiled it. Delete this test and write the real ones:
-       * generate a composite key, check the blob is BLOB_LEN with no 32-byte
-       * run of zeroes, armour the public key and read it back.
+       * This test used to assert the opposite, and was written to fail loudly
+       * the day the fork started loading. It did. What made the difference was
+       * a `crypto.subtle`: OpenPGP.js v6 reads WebCrypto at module scope, React
+       * Native has none, and the shim installed by src/installWebCrypto.js
+       * supplies one backed by @noble.
        */
       const fork = require('node-onlykey-lib/crypto/pgp');
       log(`require returned: ${typeof fork}`);
+      assert.notEqual(fork, undefined, 'the fork is back to not loading');
+      assert.equal(typeof fork.generateKey, 'function', 'no generateKey on the fork');
+      assert.equal(typeof fork.readKey, 'function');
+    });
 
-      assert.equal(
-        typeof fork, 'undefined',
-        'the OpenPGP fork LOADS now - delete this test and write the real ones ' +
-          '(see the comment above it)',
+    it('generates a composite key, and the blob is real key material', async ({log, assert}) => {
+      /*
+       * The thing that has been blocked all along. Ed25519 + ML-DSA-65 for
+       * signing, X25519 + ML-KEM-768 for encryption, packed into the 160-byte
+       * blob okpqc.h expects.
+       *
+       * The assertion is NOT that the blob is 160 bytes. A buffer of zeroes is
+       * also 160 bytes, and that is exactly what a half-failed extraction
+       * produces - so each of the four halves is checked for a run of zeroes
+       * where its seed should be. Every one of them has to have come from
+       * somewhere.
+       */
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      const composite = okcrypto.composite;
+
+      const started = Date.now();
+      const result = await composite.generateCompositeKey(openpgp, {
+        userId: {name: 'e2e', email: 'e2e@example.invalid'},
+      });
+      log(`generated in ${Date.now() - started}ms`);
+
+      assert.equal(result.blob.length, composite.BLOB_LEN,
+        `blob is ${result.blob.length} bytes, expected ${composite.BLOB_LEN}`);
+
+      const parts = composite.unpackBlob(result.blob);
+      for (const [name, half] of Object.entries(parts)) {
+        const allZero = half.every(b => b === 0);
+        log(`  ${name}: ${half.length} bytes, ${allZero ? 'ALL ZERO' : 'has content'}`);
+        assert.equal(allZero, false, `${name} is all zeroes - the extraction failed silently`);
+      }
+
+      shared.key = result;
+      assert.ok(true);
+    });
+
+    it('the generated public key armours and reads back', async ({log, assert}) => {
+      /*
+       * Armour is the format anything else would receive this key in, so a key
+       * that cannot be written out and parsed again is not usable no matter
+       * what its blob looks like.
+       */
+      assert.ok(shared.key, 'the previous test did not produce a key');
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+
+      const armored = shared.key.armoredPublicKey;
+      log(`armored public key: ${String(armored).length} chars`);
+      /*
+       * assert.ok with a test(), not assert.match - this harness provides only
+       * ok, equal and notEqual. Reaching for Node's assert API here fails as
+       * "undefined is not a function" pointing at the assertion line, which
+       * reads like the thing being asserted about is broken.
+       */
+      assert.ok(
+        /BEGIN PGP PUBLIC KEY BLOCK/.test(String(armored)),
+        'the generated key is not PGP armour',
       );
+
+      const back = await openpgp.readKey({armoredKey: armored});
+      assert.ok(back, 'readKey returned nothing');
+
+      /*
+       * Each accessor is checked BEFORE it is called. A bare `back.foo()` on a
+       * missing method fails as "undefined is not a function" with no clue
+       * which one, and the fork's surface is exactly what is under test here.
+       */
+      const present = ['getFingerprint', 'getKeyID', 'getAlgorithmInfo', 'armor']
+        .filter(m => typeof back[m] === 'function');
+      log(`key methods present: ${present.join(', ')}`);
+      assert.ok(present.includes('getFingerprint'), 'the re-read key has no getFingerprint');
+
+      const fingerprint = back.getFingerprint();
+      log(`fingerprint: ${String(fingerprint).slice(0, 16)}…`);
+      assert.ok(fingerprint && String(fingerprint).length >= 32, 'no usable fingerprint');
+
+      /*
+       * Re-armour and read AGAIN. One parse could succeed on a key the fork
+       * cannot reproduce; a second round trip that yields the same fingerprint
+       * says the key survives the format it will actually travel in.
+       */
+      const again = await openpgp.readKey({armoredKey: back.armor()});
+      assert.equal(again.getFingerprint(), fingerprint, 'the key did not survive a second round trip');
     });
   });
 };

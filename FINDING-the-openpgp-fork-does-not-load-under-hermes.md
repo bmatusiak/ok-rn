@@ -2,7 +2,7 @@
 
 **Severity:** high — it blocks composite PQC PGP key generation on the phone,
 and it was recorded as working
-**Status:** CAUSE FOUND, fix not yet applied
+**Status:** FIXED - the fork loads, and composite key generation works on the phone
 **Applies to:** ours — `node-onlykey-lib/src/vendor/openpgp/openpgp.js`, and the
 plan's claim about it
 
@@ -84,6 +84,34 @@ They are unreachable. `getWebCrypto()` THROWS rather than returning falsy, so
 the guard throws too - and in any case the module-scope reads happen long
 before any of these run. Upstream v6 assumes WebCrypto is always present, which
 is true of browsers and Node 18+, and false here.
+
+## Fixed
+
+`node-onlykey-lib/src/webcrypto/subtle.js` supplies a SubtleCrypto over @noble,
+and `text.js` supplies TextEncoder/TextDecoder, which Hermes also lacks. The
+app installs both from `src/installWebCrypto.js` - a side-effect import,
+because `import` statements hoist and a bare call between two of them would run
+after App had already been evaluated.
+
+Measured on the phone: the fork loads, a composite key generates in about a
+second with all four halves carrying real material, and its 18.5 KB armoured
+public key parses back to a stable fingerprint across two round trips.
+
+TextDecoder was a SECOND gap, and it only appeared once the first was closed:
+generation needs no text codecs, reading armour does. That is the same shape as
+the vault's `new TextDecoder()`, which passed twenty-one Node tests and threw
+on the phone.
+
+Two bugs in the shim were caught by checking it against Node's own WebCrypto
+rather than against itself, and neither would have failed a self-consistent
+test:
+
+* `subarray(…).buffer` returns the WHOLE backing store, so ECDH handed back a
+  33-byte secret where 32 were asked for - the compressed point's parity byte
+  still attached.
+* @noble rejects high-S ECDSA signatures by default and WebCrypto emits them
+  freely, so 9 of 20 genuine signatures were rejected. A single-signature test
+  passes about half the time and reads as flakiness rather than a bug.
 
 ## The fix, and its size
 
