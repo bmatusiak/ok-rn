@@ -1,3 +1,4 @@
+import {bytes as okbytes} from 'node-onlykey-lib';
 import NativeUsbHid from '../../specs/NativeUsbHid';
 import type {
   ConnectResult,
@@ -6,7 +7,6 @@ import type {
   Transport,
   UsbDeviceInfo,
 } from '../../specs/NativeUsbHid';
-import {bytesToHex, hexToBytes} from './hex';
 import {encodeFrames, FrameAssembler, HID_REPORT_SIZE, type Frame} from './framing';
 
 export type {ConnectResult, DataEvent, StatusEvent, Transport, UsbDeviceInfo};
@@ -67,7 +67,7 @@ class UsbHidClient {
 
     this.nativeSubs.push(
       NativeUsbHid.onData((event: DataEvent) => {
-        const bytes = hexToBytes(event.hex);
+        const bytes = okbytes.fromHex(event.hex);
         this.emit('packet', bytes);
         const frame = this.assembler.push(bytes);
         if (frame) {
@@ -148,14 +148,14 @@ class UsbHidClient {
 
   /** Write one raw, already-sized report. */
   writeRaw(bytes: Uint8Array): Promise<number> {
-    return NativeUsbHid.write(bytesToHex(bytes));
+    return NativeUsbHid.write(okbytes.toHex(bytes));
   }
 
   /** Frame a message as CTAPHID INIT/CONT packets and write each one. */
   async sendMessage(frame: Frame): Promise<void> {
     const packets = encodeFrames(frame, this.packetSize);
     for (const packet of packets) {
-      await NativeUsbHid.write(bytesToHex(packet));
+      await NativeUsbHid.write(okbytes.toHex(packet));
     }
   }
 

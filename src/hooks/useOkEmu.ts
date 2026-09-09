@@ -2,7 +2,6 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
-import {bytesToHex} from '../transport/hex';
 import type {LogLevel} from './useLog';
 
 /*
@@ -161,7 +160,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
       log(
         arrow,
         `${IFACE_NAME[event.iface] ?? event.iface} ${okbytes
-          .formatHex(bytesToHex(event.bytes))
+          .formatHex(event.bytes)
           .slice(0, 71)}`,
       );
     });

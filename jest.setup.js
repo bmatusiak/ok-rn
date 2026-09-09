@@ -1,7 +1,13 @@
 /**
  * TurboModuleRegistry.getEnforcing throws when the native module is absent,
- * which it always is under Jest. Both specs are mocked here so component tests
- * can import the app without a native runtime.
+ * which it always is under Jest. EVERY spec in `specs/` is mocked here so
+ * component tests can import the app without a native runtime.
+ *
+ * "Every" is load-bearing. This file once said "both specs" and mocked two of
+ * them; three more specs were added later and none was mocked, so the App smoke
+ * test - the only test that renders the whole app - died at the first import of
+ * an unmocked one and stayed dead. Adding a spec means adding it here.
+ * See FINDING-the-app-smoke-test-died-when-specs-outgrew-their-mocks.md.
  */
 
 const noopSubscription = {remove: () => {}};
@@ -112,5 +118,43 @@ jest.mock('./specs/NativeOkEmu', () => ({
     onStream: jest.fn(subscribe(okEmuListeners.stream)),
     onLed: jest.fn(subscribe(okEmuListeners.led)),
     onRestartRequested: jest.fn(subscribe(okEmuListeners.restart)),
+  },
+}));
+
+jest.mock('./specs/NativeSecrets', () => ({
+  __esModule: true,
+  default: {
+    copySensitive: jest.fn(() => Promise.resolve(true)),
+    clearClipboard: jest.fn(() => Promise.resolve(true)),
+    setScreenshotsBlocked: jest.fn(() => Promise.resolve()),
+    screenshotsBlocked: jest.fn(() => Promise.resolve(false)),
+  },
+}));
+
+jest.mock('./specs/NativeShare', () => ({
+  __esModule: true,
+  default: {
+    shareFile: jest.fn(() => Promise.resolve(true)),
+    clearShared: jest.fn(() => Promise.resolve(0)),
+    pickTextFile: jest.fn(() =>
+      Promise.resolve({picked: false, name: '', content: ''}),
+    ),
+  },
+}));
+
+jest.mock('./specs/NativeBtKeyboard', () => ({
+  __esModule: true,
+  default: {
+    isSupported: jest.fn(() => Promise.resolve(true)),
+    requestPermissions: jest.fn(() => Promise.resolve(true)),
+    register: jest.fn(() => Promise.resolve(true)),
+    unregister: jest.fn(() => Promise.resolve()),
+    requestDiscoverable: jest.fn(() => Promise.resolve(true)),
+    localName: jest.fn(() => Promise.resolve('test')),
+    hosts: jest.fn(() => Promise.resolve([])),
+    connect: jest.fn(() => Promise.resolve(true)),
+    disconnect: jest.fn(() => Promise.resolve()),
+    sendReport: jest.fn(() => Promise.resolve(true)),
+    onStatus: jest.fn(() => noopSubscription),
   },
 }));

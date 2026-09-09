@@ -20,11 +20,10 @@
  * is not Android-shaped. What is here is the wiring: which events, which
  * transport, and what to say when the device cannot answer.
  */
-import {protocol} from 'node-onlykey-lib';
+import {bytes as okbytes, protocol} from 'node-onlykey-lib';
 import FidoGatt, {type CtapRequestEvent} from './transport/FidoGatt';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
-import {bytesToHex, hexToBytes} from './transport/hex';
 import type {LogLevel} from './hooks/useLog';
 
 /**
@@ -118,7 +117,7 @@ export function startFidoBridge({log, onPending, onPresence}: Options): () => vo
       }
 
       const active = await ensureBridge();
-      const response = await active.handle(hexToBytes(event.hex), {
+      const response = await active.handle(okbytes.fromHex(event.hex), {
         /*
          * Relayed, not swallowed. The firmware sends one keepalive when its
          * status changes and then goes quiet while it waits for a button; a
@@ -134,7 +133,7 @@ export function startFidoBridge({log, onPending, onPresence}: Options): () => vo
         },
       });
 
-      await FidoGatt.respondToRequest(event.requestId, bytesToHex(response));
+      await FidoGatt.respondToRequest(event.requestId, okbytes.toHex(response));
       log('tx', `${label} -> status 0x${response[0].toString(16)} (${response.length} bytes)`);
     } catch (error) {
       /*

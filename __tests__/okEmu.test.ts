@@ -6,7 +6,7 @@
  * gap is why the most protocol-heavy code in the app has never had a unit test.
  */
 import {OkEmu, IFACE, DIR} from '../src/transport/OkEmu';
-import {bytesToHex} from '../src/transport/hex';
+import {bytes as okbytes} from 'node-onlykey-lib';
 
 declare const __okEmu: {
   emitStream: (hex: string, opts?: {iface?: number; dir?: number}) => void;
@@ -40,7 +40,7 @@ describe('OkEmu', () => {
     __okEmu.emitStream('deadbeef');
 
     expect(seen).toHaveLength(1);
-    expect(bytesToHex(seen[0])).toBe('deadbeef');
+    expect(okbytes.toHex(seen[0])).toBe('deadbeef');
   });
 
   it('only host-bound traffic becomes a report, though everything is a stream', async () => {
@@ -65,7 +65,7 @@ describe('OkEmu', () => {
 
     __okEmu.emitStream('01020304', {iface: IFACE.VENDOR});
 
-    expect(bytesToHex(await pending)).toBe('01020304');
+    expect(okbytes.toHex(await pending)).toBe('01020304');
   });
 
   it('nextReport ignores a report from a different interface', async () => {
@@ -77,7 +77,7 @@ describe('OkEmu', () => {
     __okEmu.emitStream('ffff', {iface: IFACE.SEREMU});
     __okEmu.emitStream('5678', {iface: IFACE.VENDOR});
 
-    expect(bytesToHex(await pending)).toBe('5678');
+    expect(okbytes.toHex(await pending)).toBe('5678');
   });
 
   it('restart rejects, because the firmware thread cannot be restarted', async () => {

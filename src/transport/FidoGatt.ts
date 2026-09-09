@@ -1,3 +1,4 @@
+import {protocol} from 'node-onlykey-lib';
 import NativeFidoGatt from '../../specs/NativeFidoGatt';
 import type {
   AuthenticatorConfig,
@@ -9,25 +10,24 @@ export type {AuthenticatorConfig, CtapRequestEvent, GattStatusEvent};
 
 export type GattState = 'idle' | 'advertising' | 'connected' | 'stopped' | 'error';
 
-/** CTAP2 command bytes (CTAP 2.1, section 6). */
-export const CTAP2 = {
-  MAKE_CREDENTIAL: 0x01,
-  GET_ASSERTION: 0x02,
-  GET_INFO: 0x04,
-  CLIENT_PIN: 0x06,
-  RESET: 0x07,
-  GET_NEXT_ASSERTION: 0x08,
-} as const;
-
-/** CTAP2 status codes used by the response path. */
-export const CTAP2_STATUS = {
-  OK: 0x00,
-  INVALID_COMMAND: 0x01,
-  INVALID_PARAMETER: 0x02,
-  NOT_ALLOWED: 0x30,
-  OPERATION_DENIED: 0x27,
-  UNSUPPORTED_OPTION: 0x2b,
-} as const;
+/*
+ * CTAP2 status codes, from the library.
+ *
+ * This file used to keep its own table, and it was WRONG in two places:
+ * NOT_ALLOWED was 0x30, which the spec does not define at all, and
+ * UNSUPPORTED_OPTION was 0x2b, which is really NO_CREDENTIALS. Since
+ * rejectRequest() defaults to NOT_ALLOWED, every rejected BLE request went out
+ * carrying an undefined status byte.
+ *
+ * Nothing about that was hard to get right; it was hard to NOTICE, because a
+ * second copy of a spec table looks exactly like the first until someone
+ * compares them. protocol/ctaphid.js is the one copy now, and a test there
+ * asserts every sendable status is a code the spec defines.
+ *
+ * The command table that used to sit here went with it - it was byte-identical
+ * to the library's CTAP2_CMD and nothing referenced it.
+ */
+const CTAP2_STATUS = protocol.ctaphid.CTAP2_STATUS;
 
 export const DEFAULT_AUTHENTICATOR_CONFIG: AuthenticatorConfig = {
   displayName: 'OnlyKey Mobile',

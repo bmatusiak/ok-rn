@@ -1,3 +1,4 @@
+import {bytes as okbytes} from 'node-onlykey-lib';
 import {useCallback, useEffect, useState} from 'react';
 import UsbHid, {
   ONLYKEY_PRODUCT_ID,
@@ -7,7 +8,6 @@ import UsbHid, {
   type UsbDeviceInfo,
 } from '../transport/UsbHid';
 import {CTAPHID} from '../transport/framing';
-import {bytesToHex, formatHex} from '../transport/hex';
 import type {LogLevel} from './useLog';
 
 type Options = {
@@ -31,7 +31,7 @@ export function useUsbHid({log}: Options) {
     });
 
     const offPacket = UsbHid.on('packet', bytes => {
-      log('rx', formatHex(bytesToHex(bytes)));
+      log('rx', okbytes.formatHex(okbytes.toHex(bytes)));
     });
 
     const offMessage = UsbHid.on('message', frame => {
@@ -107,7 +107,7 @@ export function useUsbHid({log}: Options) {
       nonce[i] = Math.floor(Math.random() * 256);
     }
     try {
-      log('tx', 'CTAPHID_INIT nonce=' + formatHex(bytesToHex(nonce)));
+      log('tx', 'CTAPHID_INIT nonce=' + okbytes.formatHex(okbytes.toHex(nonce)));
       await UsbHid.sendMessage({
         channelId: 0xffffffff,
         command: CTAPHID.INIT,
@@ -133,7 +133,7 @@ export function useUsbHid({log}: Options) {
         // HID reports are fixed-width; short payloads are zero-padded.
         const padded = new Uint8Array(packetSize);
         padded.set(bytes.subarray(0, packetSize));
-        log('tx', formatHex(bytesToHex(padded)));
+        log('tx', okbytes.formatHex(okbytes.toHex(padded)));
         await UsbHid.writeRaw(padded);
       } catch (error) {
         log('error', 'write: ' + String(error));

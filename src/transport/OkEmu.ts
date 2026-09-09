@@ -1,6 +1,6 @@
+import {bytes as okbytes} from 'node-onlykey-lib';
 import NativeOkEmu from '../../specs/NativeOkEmu';
 import type {LedEvent, StartResult, StreamEvent} from '../../specs/NativeOkEmu';
-import {bytesToHex, hexToBytes} from './hex';
 
 /**
  * Idle sense rounds that must pass before the firmware calls a press finished.
@@ -91,7 +91,7 @@ class OkEmuClient {
 
     this.nativeSubs.push(
       NativeOkEmu.onStream((event: StreamEvent) => {
-        const bytes = hexToBytes(event.hex);
+        const bytes = okbytes.fromHex(event.hex);
         this.emit('stream', {iface: event.iface, dir: event.dir, bytes});
         if (event.dir === DIR.OUT) {
           this.emit('report', {iface: event.iface, bytes});
@@ -173,7 +173,7 @@ class OkEmuClient {
   }
 
   write(iface: Iface, bytes: Uint8Array): Promise<number> {
-    return NativeOkEmu.writeHid(iface, bytesToHex(bytes));
+    return NativeOkEmu.writeHid(iface, okbytes.toHex(bytes));
   }
 
   /** Yubikey OTP / HMAC-SHA1, which rides keyboard control transfers. */
@@ -326,11 +326,11 @@ class OkEmuClient {
   }
 
   kbdSetReport(bytes: Uint8Array): Promise<void> {
-    return NativeOkEmu.kbdSetReport(bytesToHex(bytes));
+    return NativeOkEmu.kbdSetReport(okbytes.toHex(bytes));
   }
 
   async kbdGetReport(): Promise<Uint8Array> {
-    return hexToBytes(await NativeOkEmu.kbdGetReport());
+    return okbytes.fromHex(await NativeOkEmu.kbdGetReport());
   }
 
   /**

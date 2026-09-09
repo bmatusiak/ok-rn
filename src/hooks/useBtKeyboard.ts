@@ -1,8 +1,8 @@
+import {bytes as okbytes} from 'node-onlykey-lib';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import NativeBtKeyboard from '../../specs/NativeBtKeyboard';
 import type {BtHost, BtKeyboardStatusEvent} from '../../specs/NativeBtKeyboard';
 import OkEmu, {IFACE} from '../transport/OkEmu';
-import {bytesToHex} from '../transport/hex';
 
 /*
  * The soft key typing at a real computer.
@@ -135,7 +135,7 @@ export function useBtKeyboard(): BtKeyboard {
        * hold up the ones behind it. A dropped report is a lost character, and
        * the count is what says whether that happened.
        */
-      NativeBtKeyboard.sendReport(bytesToHex(e.bytes))
+      NativeBtKeyboard.sendReport(okbytes.toHex(e.bytes))
         .then(ok => {
           if (ok) setSent(n => n + 1);
         })
