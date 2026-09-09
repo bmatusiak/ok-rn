@@ -18,11 +18,36 @@ import {LoginScreen} from './src/screens/LoginScreen';
 import {PinScreen} from './src/screens/PinScreen';
 import {SetupScreen} from './src/screens/SetupScreen';
 import {KeyScreen} from './src/screens/KeyScreen';
+import {SlotsScreen} from './src/screens/SlotsScreen';
+import {SlotEditorScreen} from './src/screens/SlotEditorScreen';
+import {KeysScreen} from './src/screens/KeysScreen';
+import {BackupScreen} from './src/screens/BackupScreen';
+import {BtKeyboardScreen} from './src/screens/BtKeyboardScreen';
+import {CryptoScreen} from './src/screens/CryptoScreen';
+import {PreferencesScreen} from './src/screens/PreferencesScreen';
 import {FidoScreen} from './src/screens/FidoScreen';
 import {LogScreen} from './src/screens/LogScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
 
-const TABS = ['Key', 'Security', 'Log'] as const;
+/*
+ * 'Soft Key', not 'Key'.
+ *
+ * There are now two things a tab could mean by "key": the emulated device
+ * itself, and the private keys loaded into it. One letter of difference between
+ * 'Key' and 'Keys' is not a distinction anyone can hold onto, so the device
+ * says what it is - a key made of software rather than one on a keyring.
+ */
+const TABS = [
+  'Soft Key',
+  'Slots',
+  'Keys',
+  'Keyboard',
+  'Backup',
+  'Crypto',
+  'Settings',
+  'Security',
+  'Log',
+] as const;
 const TESTING_TAB = 'Testing' as const;
 type Tab = (typeof TABS)[number] | typeof TESTING_TAB;
 
@@ -59,7 +84,16 @@ function Shell() {
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
 
-  const [tab, setTab] = useState<Tab>('Key');
+  const [tab, setTab] = useState<Tab>('Soft Key');
+
+  /*
+   * The slot being edited, if any.
+   *
+   * Held here rather than inside SlotsScreen because the editor is a FULL
+   * SCREEN with a back arrow, not a sheet - there is too much in a slot for a
+   * modal on a phone - so it replaces the body and the drawer alike.
+   */
+  const [openSlot, setOpenSlot] = useState<{id: string; index: number} | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [phase, setPhase] = useState<Phase>('splash');
 
@@ -175,8 +209,33 @@ function Shell() {
             <SetupScreen onDone={() => setPhase('login')} />
           ) : phase === 'pin' ? (
             <PinScreen onPress={emu.press} onBack={() => setPhase('login')} />
-          ) : tab === 'Key' ? (
+          ) : tab === 'Soft Key' ? (
             <KeyScreen emu={emu} />
+          ) : tab === 'Slots' ? (
+            openSlot ? (
+              <SlotEditorScreen
+                slot={openSlot}
+                onBack={() => setOpenSlot(null)}
+                /*
+                 * FLAG_SECURE blanks adb screenshots as well as a bystander
+                 * photo, so testing mode - which exists to make the app
+                 * inspectable - turns it off.
+                 */
+                blockScreenshots={!testing.enabled}
+              />
+            ) : (
+              <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
+            )
+          ) : tab === 'Keys' ? (
+            <KeysScreen emu={emu} />
+          ) : tab === 'Keyboard' ? (
+            <BtKeyboardScreen emu={emu} />
+          ) : tab === 'Backup' ? (
+            <BackupScreen emu={emu} blockScreenshots={!testing.enabled} />
+          ) : tab === 'Crypto' ? (
+            <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} />
+          ) : tab === 'Settings' ? (
+            <PreferencesScreen emu={emu} />
           ) : tab === 'Security' ? (
             <FidoScreen fido={fido} />
           ) : tab === 'Log' ? (
@@ -184,7 +243,7 @@ function Shell() {
               buffers={{
                 Firmware: {entries: emuLog.entries, clear: emuLog.clear},
                 CTAP: {entries: fidoLog.entries, clear: fidoLog.clear},
-                USB: {entries: usbLog.entries, clear: usbLog.clear},
+                'Hard Key': {entries: usbLog.entries, clear: usbLog.clear},
               }}
             />
           ) : (
@@ -209,7 +268,7 @@ function Shell() {
               onPress={() => {
                 testing.toggle();
                 if (tab === TESTING_TAB) {
-                  setTab('Key');
+                  setTab('Soft Key');
                 }
               }}
             />

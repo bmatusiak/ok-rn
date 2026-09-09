@@ -5,5 +5,9 @@ module.exports = [
     require('./3-deviceFlow.e2e.js'),
     require('./4-ctapFlow.e2e.js'),
     require('./5-presence.e2e.js'),
-    require('./6-bridge.e2e.js')
+    require('./6-bridge.e2e.js'),
+    require('./7-pressBands.e2e.js'),
+    require('./8-keystrokes.e2e.js'),
+    require('./9-cryptoSign.e2e.js'),
+    require('./10-derive.e2e.js')
 ];

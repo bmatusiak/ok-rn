@@ -29,6 +29,24 @@ wrong version of the table looks exactly like the right one.
 | 10 | [an unanswered descriptor read stalls every connection](FINDING-descriptor-read-stalls-every-connection.md) | blocking — discovery never completed, and it poisons the host cache | **ours** | n/a |
 | 11 | [setting a PIN only works on a DEBUG build](FINDING-provisioning-needs-a-debug-build.md) | blocking for first-time setup on a release build | OnlyKey firmware | no |
 | 12 | [Windows reserves GATT 0xFFFD](FINDING-windows-reserves-the-fido-service.md) | none — bounds how the BLE path can be tested | Windows | n/a |
+| 13 | [holds were timed against a counted band](FINDING-holds-were-timed-against-a-counted-band.md) | high — overshooting a hold runs backup() or restarts the key | **ours** | n/a |
+| 14 | [presses are discarded for 20s after a FIDO2 ceremony](FINDING-presses-discarded-after-a-fido-ceremony.md) | medium — the key ignores its buttons and only a yellow LED says so | OnlyKey firmware | no |
+| 15 | [a slot write after a label read is never looked at](FINDING-slot-write-after-a-label-read-is-lost.md) | medium — was ~40% of writes; **fixed**, and the cause was found by a debug line that was absent | **ours** | n/a |
+| 16 | [dead keys were dropped from the keyboard override](FINDING-deadkeys-were-dropped-from-the-keyboard-override.md) | medium — accented characters typed as their bare base key, silently | **ours** | n/a |
+| 17 | [only US English types on a debug build](FINDING-only-us-english-types-on-a-debug-build.md) | medium — a settable preference that disables typing entirely | OnlyKey firmware | no |
+| 18 | [two characters, one keystroke](FINDING-layout-tables-map-two-characters-to-one-keystroke.md) | low here, medium upstream — Portuguese types ^ as ~ on real hardware | OnlyKey firmware | no |
+| 19 | [a `=+` typo assigns to the accent mask](FINDING-keylayouts-nested-assignment-typo.md) | low — reaches the ISO-8859-1 tables only | OnlyKey firmware | no |
+| 20 | [loading a key needs config mode, which never ends](FINDING-loading-a-key-requires-config-mode.md) | high for the Keys screen — provisioning and using a key cannot share a firmware lifetime | OnlyKey firmware | no |
+| 21 | [the three-digit signing challenge is one press](FINDING-the-signing-challenge-is-one-press.md) | medium — weaker than it looks, and the extra presses type passwords | OnlyKey firmware | no |
+| 22 | [no side-effect-free confirmation press](FINDING-no-side-effect-free-confirmation-press.md) | design constraint — every press on an unlocked key types a slot, so a press cannot mean "yes" | OnlyKey firmware | no |
+| 23 | [a re-lock was invisible to the app](FINDING-relock-was-invisible-to-the-app.md) | high — an unlocked UI over a locked key, and the PIN door never returned; **fixed** | **ours** | n/a |
+| 24 | [unlocking in config mode is never announced](FINDING-config-mode-unlock-is-silent.md) | medium — a client waits forever over a device that is ready | OnlyKey firmware | no |
+| 25 | [a PIN typed at finger speed loses digits](FINDING-pin-taps-are-dropped-not-queued.md) | high — the first thing anyone does, near-silent, and the buffer cannot be cleared; **fixed** | **ours** | n/a |
+| 26 | [two counted presses with no gap are one longer press](FINDING-counted-presses-merge-without-an-idle-gap.md) | high — the durations SUM, and past 72 that is backup() or CPU_RESTART(); **fixed** | **ours** | n/a |
+| 27 | [a published Bluetooth keyboard is neither visible nor reachable over an old bond](FINDING-a-published-keyboard-is-neither-visible-nor-reusable.md) | medium — registers cleanly and cannot be paired with, with no error anywhere | Android | n/a |
+| 28 | [a connected Bluetooth keyboard that would not type](FINDING-the-keyboard-was-gated-on-a-notification.md) | medium — the profile said connected, the screen said connecting, and typing was hidden; **fixed** | **ours** | n/a |
+| 29 | ["extension not supported" is really a preference bit](FINDING-a-preference-bit-masquerades-as-an-unsupported-feature.md) | medium — two consecutive statuses, neither naming its own cause | OnlyKey firmware | no |
+| 30 | [the derived password was the wrong 32 bytes](FINDING-the-shared-secret-response-is-two-values.md) | high — deterministic, label-sensitive, and not what any other client derives; **fixed** | **ours** | n/a |
 
 ## Read #6 first, then #2
 

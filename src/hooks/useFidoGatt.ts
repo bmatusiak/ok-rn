@@ -114,7 +114,7 @@ export function useFidoGatt({log}: Options) {
    */
   const confirm = useCallback(async () => {
     try {
-      await OkEmu.pressButton(1, 150);
+      await OkEmu.pressButton(1);
       log('tx', 'button pressed');
     } catch (error) {
       log('error', 'confirm: ' + String(error));

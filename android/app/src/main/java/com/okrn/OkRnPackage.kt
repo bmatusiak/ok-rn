@@ -5,11 +5,17 @@ import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.model.ReactModuleInfo
 import com.facebook.react.module.model.ReactModuleInfoProvider
+import com.okrn.specs.NativeBtKeyboardSpec
 import com.okrn.specs.NativeFidoGattSpec
 import com.okrn.specs.NativeOkEmuSpec
+import com.okrn.specs.NativeSecretsSpec
+import com.okrn.specs.NativeShareSpec
 import com.okrn.specs.NativeUsbHidSpec
+import com.okrn.btkbd.NativeBtKeyboardModule
 import com.okrn.emu.NativeOkEmuModule
 import com.okrn.fido.NativeFidoGattModule
+import com.okrn.secrets.NativeSecretsModule
+import com.okrn.share.NativeShareModule
 import com.okrn.usb.NativeUsbHidModule
 
 /**
@@ -26,6 +32,9 @@ class OkRnPackage : BaseReactPackage() {
       NativeUsbHidSpec.NAME -> NativeUsbHidModule(reactContext)
       NativeFidoGattSpec.NAME -> NativeFidoGattModule(reactContext)
       NativeOkEmuSpec.NAME -> NativeOkEmuModule(reactContext)
+      NativeSecretsSpec.NAME -> NativeSecretsModule(reactContext)
+      NativeShareSpec.NAME -> NativeShareModule(reactContext)
+      NativeBtKeyboardSpec.NAME -> NativeBtKeyboardModule(reactContext)
       else -> null
     }
 
@@ -34,6 +43,9 @@ class OkRnPackage : BaseReactPackage() {
       NativeUsbHidSpec.NAME to moduleInfo(NativeUsbHidSpec.NAME),
       NativeFidoGattSpec.NAME to moduleInfo(NativeFidoGattSpec.NAME),
       NativeOkEmuSpec.NAME to moduleInfo(NativeOkEmuSpec.NAME),
+      NativeSecretsSpec.NAME to moduleInfo(NativeSecretsSpec.NAME),
+      NativeShareSpec.NAME to moduleInfo(NativeShareSpec.NAME),
+      NativeBtKeyboardSpec.NAME to moduleInfo(NativeBtKeyboardSpec.NAME),
     )
   }
 

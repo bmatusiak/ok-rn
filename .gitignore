@@ -62,3 +62,6 @@ android/okemu/sources.cmake
 
 # Written by android/okemu/scripts/stage.js - describes the staged firmware.
 src/generated/
+
+# Metro's own log, written beside the project when it is started by hand.
+metro.log

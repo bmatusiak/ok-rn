@@ -28,7 +28,7 @@ export function UsbScreen({
       showsVerticalScrollIndicator={false}
     >
       <Section
-        title="Transport"
+        title="Hard Key transport"
         right={<StatusPill state={hid.state} />}>
         <Segmented options={TRANSPORTS} value={hid.transport} onChange={hid.setTransport} />
         <Text style={styles.hint}>
