@@ -63,18 +63,28 @@ const STATUS = [
   'tested',    // the e2e suite has been run against it and the result recorded
 ];
 
-/** Every version that has a script here, newest name first. */
+/** What OKEMU_VERSION is unset. Every build has a script; this is its name. */
+const WORKING_TREE = 'working-tree';
+
+/** Every RELEASE that has a script here, newest name first. */
 function list() {
   return fs
     .readdirSync(HERE)
     .filter((f) => f.endsWith('.js') && !f.startsWith('_') && f !== 'index.js')
     .map((f) => f.slice(0, -3))
+    .filter((name) => name !== WORKING_TREE)
     .sort()
     .reverse();
 }
 
-/** The pinned commits for one release, from ok-versions.json. */
+/**
+ * The pinned commits for one release, from ok-versions.json.
+ *
+ * Null for the working tree, which is pinned to nothing - it is whatever the
+ * checkouts are at.
+ */
 function pinsFor(version) {
+  if (version === WORKING_TREE) return null;
   if (!fs.existsSync(PIN_FILE)) {
     throw new Error(`OKEMU_VERSION=${version} but ${PIN_FILE} does not exist`);
   }
@@ -130,7 +140,7 @@ function load(version) {
    * would otherwise invalidate every note in the file without changing a line
    * of it.
    */
-  if (mod.pins) {
+  if (mod.pins && pins) {
     for (const repo of Object.keys(mod.pins)) {
       if (mod.pins[repo] !== pins[repo]) {
         throw new Error(
@@ -148,6 +158,13 @@ function load(version) {
     status: mod.status,
     notes: mod.notes || '',
     patches: mod.patches || [],
+    /**
+     * Applied only when the DEBUG gate ends up OFF, whichever way it got
+     * there - OKEMU_PRODUCTION=1, or a release that simply ships that way.
+     * Per-version because the lines they patch do not all exist at every
+     * release.
+     */
+    debugOffPatches: mod.debugOffPatches || [],
     drop: mod.drop || [],
     expect: mod.expect || null,
     /**
@@ -159,8 +176,8 @@ function load(version) {
      * The working tree - no OKEMU_VERSION - keeps the bare `okemu` directory it
      * has always used, so nothing already on a phone moves.
      */
-    slot: version,
+    slot: mod.slot !== undefined ? mod.slot : version,
   };
 }
 
-module.exports = { list, load, pinsFor, STATUS, PIN_FILE };
+module.exports = { list, load, pinsFor, STATUS, PIN_FILE, WORKING_TREE };

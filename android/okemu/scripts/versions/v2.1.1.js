@@ -1,4 +1,5 @@
 'use strict';
+const shared = require('./_shared');
 
 /**
  * v2.1.1 - the older generation. Expect more trouble here than in the 3.0 line;
@@ -23,5 +24,25 @@ module.exports = {
     'Profile_Offset is already uint8_t in both places at 0dc7cf0.',
   ].join('\n'),
 
-  patches: [],
+  patches: [
+    /* The 64-bit flash stride - without this the PIN never matches. */
+    shared.flashWalkStride,
+    /* Replies dropped when the TX queue is busy - one request after another. */
+    shared.droppedTransportResponse,
+    /* HW_MODEL returned a pointer into its own dead frame. */
+    shared.hwModelStackBuffer,
+    /* Non-void functions falling off the end - one hangs FIDO2 registration. */
+    ...shared.missingReturns,
+    /* byteprint() reads through a null argument on a DEBUG build. */
+    shared.byteprintNullArgument,
+    /* The FULLWIPE debug dump starts at page zero, which is unmapped. */
+    shared.pageZeroDebugDump,
+    /* EEPROM setters handed a null pointer - fatal hosted. See _shared.js. */
+    ...shared.nullSetterPointers,
+    shared.wipeSlotNullSetters,
+    shared.hmacChallengeModeNullSetter,
+  ],
+
+  /* Applied because a release ships with the DEBUG gate OFF - see _shared.js. */
+  debugOffPatches: [shared.okconnectBufferGuard],
 };

@@ -105,21 +105,19 @@ const DROP = [
  * so. Each entry below records what it would have been instead.
  */
 /**
- * Build the firmware the way it ships, with the DEBUG gate off.
+ * WHICH SIDE OF THE DEBUG GATE this build is on.
  *
- * Set OKEMU_PRODUCTION=1 before `node scripts/stage.js` (the gradle task passes
- * the environment through), then rebuild. Unset, the staged firmware is a DEBUG
- * build exactly as before, and nothing about the default path changes.
+ *     OKEMU_PRODUCTION=1   force it OFF, the way the firmware ships
+ *     OKEMU_DEBUG=1        force it ON, so the device can be provisioned
+ *     neither              leave the sources as they are, and say which
  *
- * ## Why this is a stage patch rather than a compiler flag
+ * ## It is not a compiler flag
  *
  * `#define DEBUG` is at onlykey.h:81 - in the firmware SOURCE, not a build
  * option we can pass. -UDEBUG cannot undefine what a header defines. So the
- * only way to build the production variant without editing OnlyKey-Firmware,
- * which is outside this project's write scope, is to patch the staged copy -
- * the same mechanism every other entry here uses.
+ * only lever is the staged copy, the same one every other entry here uses.
  *
- * ## What disappears with it
+ * ## What the gate decides
  *
  * The define gates 259 sites in okcore.cpp alone. Two things follow:
  *
@@ -129,30 +127,108 @@ const DROP = [
  *     waits for "Enter PIN", "Storing PIN", "Confirm PIN" and "Both PINs
  *     Match", and a production build prints none of them.
  *
- * DEBUG_CTAP_VERBOSE goes too. It is a SEPARATE define on the next line and
- * gates its own sites in fido2/device.cpp and okcore.cpp, so leaving it defined
- * would keep printing to a console that is no longer there.
- *
  * The version string carries the difference, which is how a host can tell:
  * onlykey.h defines OKversionkeyword as "-test" under DEBUG and "-prod"
- * otherwise, so this build announces itself as UNLOCKEDv3.0.4-prodc. See
- * node-onlykey-lib/src/device/version.js.
+ * otherwise, so a production build announces itself as UNLOCKEDv3.0.4-prodc.
+ * See node-onlykey-lib/src/device/version.js.
+ *
+ * ## Why turning it ON had to exist
+ *
+ * A RELEASE SHIPS WITH IT OFF. v3.0.2's onlykey.h has `//#define DEBUG`, and
+ * the working tree has it uncommented because somebody was working on it. So
+ * every pinned version in ok-versions.json builds as a production device -
+ * correctly, that is how it shipped - and a production device CANNOT BE GIVEN
+ * A PIN at all (FINDING-provisioning-needs-a-debug-build.md). Its fresh
+ * per-version storage would stay UNINITIALIZED forever and no suite that needs
+ * an unlocked device could run against any release.
+ *
+ * OKEMU_DEBUG=1 flips the firmware's own switch, the same one the working tree
+ * already has on. It changes no protocol and no behaviour the firmware does not
+ * itself define; it is the difference between the two builds upstream ships.
  */
-const PRODUCTION = process.env.OKEMU_PRODUCTION === '1';
+const WANT_DEBUG =
+  process.env.OKEMU_DEBUG === '1' ? true
+  : process.env.OKEMU_PRODUCTION === '1' ? false
+  : null;                                      /* leave the sources alone */
 
 /** Multi-line replacement text is written as lines and joined with this. */
 const NL = String.fromCharCode(10);
 
-const PRODUCTION_PATCHES = [
-  {
-    file: 'libraries/onlykey/onlykey.h',
-    edits: [
-      ['#define DEBUG //Enable Serial Monitor',
-       '//#define DEBUG - removed by stage.js for OKEMU_PRODUCTION=1'],
-      ['#define DEBUG_CTAP_VERBOSE //Enable verbose per-request CTAP/U2F presence-test logging (very noisy - fires on every presence test poll, floods Serial/SEREMU)',
-       '//#define DEBUG_CTAP_VERBOSE - removed with DEBUG; it prints to a console a production build does not have'],
-    ],
-  },
+/**
+ * Set - or just read - the DEBUG gate in the staged onlykey.h.
+ *
+ * A TOGGLE rather than a text patch, because the sources arrive on either side
+ * of it: a release has the define commented out, the working tree has it live,
+ * and a patch written for one silently fails to find its pattern in the other.
+ * This finds whichever spelling is there and reports the state it leaves.
+ *
+ * DEBUG_CTAP_VERBOSE is a SEPARATE define that only newer trees carry, and it
+ * follows DEBUG down: it gates its own sites in fido2/device.cpp and
+ * okcore.cpp, so leaving it defined would keep printing to a console a
+ * production build does not have. It is never turned ON - it fires on every
+ * presence-test poll and floods the console this build reads.
+ *
+ * @param want true for DEBUG, false for production, null to leave it be.
+ * @returns whether the staged tree ends up with DEBUG defined.
+ */
+function gateDebug(want) {
+  const target = path.join(STAGE, 'libraries', 'onlykey', 'onlykey.h');
+  const ON = '#define DEBUG //Enable Serial Monitor';
+  const OFF = '//#define DEBUG //Enable Serial Monitor';
+
+  let text = fs.readFileSync(target, 'utf8');
+
+  /* OFF contains ON as a substring, so it has to be tested first. */
+  let on;
+  if (text.includes(OFF)) on = false;
+  else if (text.includes(ON)) on = true;
+  else {
+    console.error(
+      'stage: WARNING - the DEBUG define is not where it has always been in ' +
+      'libraries/onlykey/onlykey.h, so the build gate could not be read.');
+    process.exitCode = 1;
+    return null;
+  }
+
+  if (want === null || want === on) {
+    console.log(`stage: DEBUG gate is ${on ? 'ON' : 'OFF'} as the sources have it`);
+    return on;
+  }
+
+  text = want
+    ? text.split(OFF).join(ON + ' - re-enabled by stage.js for OKEMU_DEBUG=1')
+    : text.split(ON).join('//#define DEBUG - removed by stage.js for OKEMU_PRODUCTION=1');
+
+  /* Only ever downwards, and only where the tree has it. */
+  if (!want) {
+    const verbose = /^#define DEBUG_CTAP_VERBOSE.*$/m;
+    if (verbose.test(text)) {
+      text = text.replace(verbose,
+        '//#define DEBUG_CTAP_VERBOSE - removed with DEBUG; it prints to a ' +
+        'console a production build does not have');
+    }
+  }
+
+  fs.writeFileSync(target, text);
+  console.log(`stage: DEBUG gate turned ${want ? 'ON' : 'OFF'} (was ${on ? 'ON' : 'OFF'})`);
+  return want;
+}
+
+/**
+ * Needed whenever the DEBUG gate ends up OFF, whichever way it got there.
+ *
+ * Not "the OKEMU_PRODUCTION patches": a pinned release is a production build
+ * without anyone asking for one, and it needs these just as much. Keyed on the
+ * RESULTING gate rather than on the environment variable, which is the
+ * difference between a v3.0.2 that survives a getAssertion and one that takes
+ * SIGSEGV on the first one.
+ *
+ * Edits that only some trees have are NOT here - see the version scripts'
+ * `debugOffPatches`. Both edits below were checked to exist verbatim at every
+ * release in ok-versions.json; the third guard in this function is spelled
+ * differently before and after v3.0.2, so it lives in the version scripts.
+ */
+const DEBUG_OFF_PATCHES = [
   {
     /*
      * webcryptcheck() dereferences two pointers its callers hand it as NULL.
@@ -185,7 +261,7 @@ const PRODUCTION_PATCHES = [
     edits: [
       ['    appid_match1 = memcmp (stored_apprpid, rpid, 12);',
        [
-         '    /* Injected by ok-rn stage.js (OKEMU_PRODUCTION=1).',
+         '    /* Injected by ok-rn stage.js wherever the DEBUG gate is OFF.',
          '',
          '       Callers pass NULL for both of these. ctap.cpp:1141 passes',
          '       webcryptcheck(NULL, NULL); extensions.cpp:113 and :125 -',
@@ -204,10 +280,6 @@ const PRODUCTION_PATCHES = [
        ].join(NL)],
       ['	appid_match2 = memcmp (stored_appid, _appid, 32);',
        '	appid_match2 = (_appid == NULL) ? 1 : memcmp (stored_appid, _appid, 32);'],
-      ['	int appid_match3 = memcmp (stored_appid_oa, _appid, 32); //OnlyAgent origin (onlyagent.app)',
-       '	int appid_match3 = (_appid == NULL) ? 1 : memcmp (stored_appid_oa, _appid, 32); //OnlyAgent origin (onlyagent.app)'],
-      ['    } else if (buffer[0]==0xFF && buffer[1]==0xFF && buffer[2]==0xFF && buffer[3]==0xFF && buffer[4]==OKCONNECT && is_bit_set(derived_key_challenge_mode, 2)) {',
-       '    } else if (buffer != NULL && buffer[0]==0xFF && buffer[1]==0xFF && buffer[2]==0xFF && buffer[3]==0xFF && buffer[4]==OKCONNECT && is_bit_set(derived_key_challenge_mode, 2)) {'],
     ],
   },
 ];
@@ -597,12 +669,8 @@ function applyPatches(extra = []) {
   let applied = 0, missing = 0;
   const patches = [
     ...PATCHES,
-    ...(PRODUCTION ? PRODUCTION_PATCHES : []),
     ...extra,
   ];
-  if (PRODUCTION) {
-    console.log('stage: OKEMU_PRODUCTION=1 - building with the DEBUG gate OFF');
-  }
   for (const p of patches) {
     const target = path.join(STAGE, p.file);
     if (!fs.existsSync(target)) {
@@ -804,10 +872,10 @@ function gitShort(dir) {
  * worse than none. Generated rather than committed: a checkout that has never
  * staged reports 'unknown' instead of somebody else's hash.
  */
-function writeBuildInfo(stats, release = null) {
+function writeBuildInfo(stats, release, debugOn) {
   const out = path.join(OKEMU, '..', '..', 'src', 'generated');
   fs.mkdirSync(out, { recursive: true });
-  const pins = release ? release.pins : null;
+  const pins = release.pins;
   const info = {
     digest: stats.digest,
     files: stats.files,
@@ -819,8 +887,13 @@ function writeBuildInfo(stats, release = null) {
     firmware: pins ? pins['OnlyKey-Firmware'] : gitShort(FW),
     libraries: pins ? pins.libraries : gitShort(LIB_SRC),
     /** null means the working tree, which is the ordinary case. */
-    version: release ? release.version : null,
-    production: PRODUCTION,
+    /*
+     * The RELEASE name, or null for the working tree - which is a version
+     * script like any other but is not a released version, and the app must
+     * not report it as one. src/buildInfo.ts turns this into the storage slot.
+     */
+    version: release.pins ? release.version : null,
+    production: !debugOn,
     stagedAt: new Date().toISOString(),
   };
   fs.writeFileSync(
@@ -840,8 +913,24 @@ function writeBuildInfo(stats, release = null) {
  * version whose digest moved while nothing in this repository did.
  */
 function checkExpectation(release, stats) {
-  if (!release || !release.expect || !release.expect.digest) {
-    if (release) {
+  /* The working tree is not pinned to anything, so nothing about it is fixed. */
+  if (!release.pins) return;
+
+  /*
+   * A recorded digest describes the release staged AS IT SHIPS. Forcing the
+   * gate the other way changes four files and therefore the digest, so
+   * comparing then would report a change on every deliberate override - a
+   * warning that fires whenever it is asked to would be a warning nobody reads.
+   */
+  if (WANT_DEBUG !== null) {
+    console.log(
+      `stage: digest not compared - the DEBUG gate was forced ` +
+      `${WANT_DEBUG ? 'ON' : 'OFF'}, and ${release.version}'s recorded digest ` +
+      `is for the build as it ships`);
+    return;
+  }
+  if (!release.expect || !release.expect.digest) {
+    {
       console.log(
         `stage: ${release.version} has no recorded digest. If this build is ` +
         `good, add  expect: { digest: '${stats.digest}' }  to its script.`);
@@ -895,40 +984,47 @@ function main() {
   if (process.argv.includes('--list')) return listVersions();
 
   /*
+   * EVERY build has a version script, the working tree included. It is what
+   * says which storage slot to use and which patches this particular source
+   * tree needs, and having no special case for the default is the point - the
+   * edits the current sources need and no release does used to have nowhere to
+   * live but an unexplained branch in here.
+   *
    * Repoint FW and LIB_SRC BEFORE anything reads them, including the existence
    * check below - so a missing pinned commit fails naming the commit, not the
    * checkout.
    */
-  let release = null;
-  if (VERSION) {
+  let release;
+  try {
     /*
      * A load failure is a message, not a stack trace. Every one of them is
      * something the person running this has to fix by hand - a version with no
      * script, a script that was copied without being renamed, pins that moved
      * under a script's notes - and the message says which.
      */
-    try {
-      release = versions.load(VERSION);
-    } catch (e) {
-      console.error(`stage: ${e.message}`);
-      process.exit(1);
-    }
+    release = versions.load(VERSION || versions.WORKING_TREE);
+  } catch (e) {
+    console.error(`stage: ${e.message}`);
+    process.exit(1);
+  }
 
-    /*
-     * A release whose script says it cannot be staged stops here, quoting its
-     * own notes. Letting it proceed would produce a tree built from whatever
-     * git happened to resolve, under a version number that would then be
-     * attached to every measurement taken against it.
-     */
-    if (release.status === 'blocked') {
-      console.error(`stage: ${VERSION} is marked BLOCKED in its version script.`);
-      console.error(release.notes.replace(/^/gm, '  '));
-      process.exit(1);
-    }
+  /*
+   * A release whose script says it cannot be staged stops here, quoting its
+   * own notes. Letting it proceed would produce a tree built from whatever
+   * git happened to resolve, under a version number that would then be
+   * attached to every measurement taken against it.
+   */
+  if (release.status === 'blocked') {
+    console.error(`stage: ${release.version} is marked BLOCKED in its version script.`);
+    console.error(release.notes.replace(/^/gm, '  '));
+    process.exit(1);
+  }
 
+  if (release.pins) {
     console.log(
-      `stage: OKEMU_VERSION=${VERSION} (${release.status}) - ` +
-      `scripts/versions/${VERSION}.js, ${release.patches.length} version patch(es)`);
+      `stage: OKEMU_VERSION=${release.version} (${release.status}) - ` +
+      `scripts/versions/${release.version}.js, ` +
+      `${release.patches.length} version patch(es)`);
     materialiseVersion(release);
   }
 
@@ -973,7 +1069,7 @@ function main() {
    * is bare-metal by nature, not by release.
    */
   let dropped = 0;
-  for (const f of [...DROP, ...(release ? release.drop : [])]) {
+  for (const f of [...DROP, ...release.drop]) {
     const p = path.join(STAGE_CORE, f);
     if (fs.existsSync(p)) { fs.rmSync(p); dropped++; }
   }
@@ -993,12 +1089,23 @@ function main() {
   }
   const renamed = defuseTimeHeader();
 
-  // 6. documented source-level fixups, plus this release's own
-  const patched = applyPatches(release ? release.patches : []);
+  /*
+   * 6. The DEBUG gate FIRST, because what it lands on decides which patches
+   * are needed. A release ships with it off and the working tree has it on, so
+   * this is read from the staged sources rather than assumed from the
+   * environment.
+   */
+  const debugOn = gateDebug(WANT_DEBUG);
+
+  // 7. documented source-level fixups, plus this release's own
+  const patched = applyPatches([
+    ...release.patches,
+    ...(debugOn === false ? [...DEBUG_OFF_PATCHES, ...release.debugOffPatches] : []),
+  ]);
   const scs = rewriteSystemBlock();
 
   const stats = digestStage();
-  const info = writeBuildInfo(stats, release);
+  const info = writeBuildInfo(stats, release, debugOn);
 
   console.log(
     `stage: ${path.relative(OKEMU, STAGE)}\n` +
@@ -1010,8 +1117,12 @@ function main() {
     `  Time.h consumers repointed at TimeLib.h:   ${renamed}\n` +
     `  staged sources digested:                   ${stats.files} files, ${stats.digest}\n` +
     `  OnlyKey-Firmware / libraries:              ${info.firmware || '?'} / ${info.libraries || '?'}` +
-    (release ? `
-  version:                                   ${VERSION} (${release.status})` : '')
+    `
+  version:                                   ${release.version} (${release.status})` +
+    `
+  build:                                     ${debugOn ? 'debug' : 'production'}` +
+    `
+  storage slot:                              ${release.slot || '(the default)'}`
   );
 
   checkExpectation(release, stats);
@@ -1026,4 +1137,4 @@ function main() {
  */
 if (require.main === module) main();
 
-module.exports = { PATCHES, PRODUCTION_PATCHES, DROP, main, versions };
+module.exports = { PATCHES, DEBUG_OFF_PATCHES, DROP, main, versions };

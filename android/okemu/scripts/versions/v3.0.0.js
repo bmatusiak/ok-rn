@@ -17,5 +17,30 @@ module.exports = {
     'Needs the Profile_Offset patch: measured present at 5515974.',
   ].join('\n'),
 
-  patches: [shared.profileOffsetType],
+  patches: [
+    /* The 64-bit flash stride - without this the PIN never matches. */
+    shared.flashWalkStride,
+    /* Replies dropped when the TX queue is busy - one request after another. */
+    shared.droppedTransportResponse,
+    /* HW_MODEL returned a pointer into its own dead frame. */
+    shared.hwModelStackBuffer,
+    /* Non-void functions falling off the end - one hangs FIDO2 registration. */
+    ...shared.missingReturns,
+    /* byteprint() reads through a null argument on a DEBUG build. */
+    shared.byteprintNullArgument,
+    /* The FULLWIPE debug dump starts at page zero, which is unmapped. */
+    shared.pageZeroDebugDump,
+    shared.profileOffsetType,
+    /*
+     * EEPROM setters handed a null pointer. Fatal hosted, and the
+     * failedlogins one is on the successful-login path - without this the
+     * device cannot be unlocked at all. See _shared.js.
+     */
+    ...shared.nullSetterPointers,
+    shared.wipeSlotNullSetters,
+    shared.hmacChallengeModeNullSetter,
+  ],
+
+  /* Applied because a release ships with the DEBUG gate OFF - see _shared.js. */
+  debugOffPatches: [shared.okconnectBufferGuard],
 };

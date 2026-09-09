@@ -182,7 +182,18 @@ function main() {
     let script = null;
     try {
       script = stage.versions.load(name);
-      extra = script.patches;
+      /*
+       * DEBUG_OFF_PATCHES count for EVERY release, not only under
+       * OKEMU_PRODUCTION=1. A release ships with the DEBUG gate off - v3.0.2's
+       * onlykey.h has `//#define DEBUG` - so staging one applies them by
+       * default, and a probe that left them out would report OK for a version
+       * whose null-pointer guards do not in fact apply.
+       */
+      extra = [
+        ...script.patches,
+        ...stage.DEBUG_OFF_PATCHES,
+        ...script.debugOffPatches,
+      ];
     } catch (e) {
       console.log(`${name.padEnd(8)} NOSCRIPT - ${e.message.split(String.fromCharCode(10))[0]}`);
       continue;

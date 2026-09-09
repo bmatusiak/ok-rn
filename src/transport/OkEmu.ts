@@ -1,6 +1,7 @@
 import {bytes as okbytes, transport} from 'node-onlykey-lib';
 import NativeOkEmu from '../../specs/NativeOkEmu';
 import type {LedEvent, StartResult, StreamEvent} from '../../specs/NativeOkEmu';
+import {storageSlot} from '../buildInfo';
 
 /**
  * Idle sense rounds that must pass before the firmware calls a press finished.
@@ -138,9 +139,18 @@ class OkEmuClient {
     return NativeOkEmu.isRunning();
   }
 
+  /**
+   * Boot the firmware against THIS BUILD'S storage slot.
+   *
+   * The slot is not a parameter here on purpose. It is a property of the
+   * firmware that was staged, not of the caller, and every caller passing it
+   * would be a dozen places that could pass a different one - a device booting
+   * against the wrong flash, looking perfectly healthy. `storageSlot` is
+   * derived once, beside the version it comes from.
+   */
   async start(): Promise<StartResult> {
     this.ensureSubscribed();
-    return NativeOkEmu.start();
+    return NativeOkEmu.start(storageSlot);
   }
 
   stop(): Promise<void> {

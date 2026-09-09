@@ -20,6 +20,9 @@ type Staged = {
   files?: number;
   firmware?: string | null;
   libraries?: string | null;
+  /** A released version name when OKEMU_VERSION was set; null for the tree. */
+  version?: string | null;
+  production?: boolean;
   stagedAt?: string;
 };
 
@@ -42,6 +45,14 @@ export type BuildInfo = {
   firmware: string;
   /** Upstream checkouts the staging read, when they were git repos. */
   sources: string;
+  /**
+   * The released firmware version this was staged from, or null for the
+   * working tree. Set by OKEMU_VERSION - see
+   * android/okemu/scripts/versions/README.md.
+   */
+  version: string | null;
+  /** True when the DEBUG gate was off, as the firmware ships. */
+  production: boolean;
 };
 
 export const buildInfo: BuildInfo = {
@@ -52,4 +63,25 @@ export const buildInfo: BuildInfo = {
     staged.firmware || staged.libraries
       ? `${staged.firmware ?? '?'} / ${staged.libraries ?? '?'}`
       : '',
+  version: staged.version ?? null,
+  production: staged.production === true,
 };
+
+/**
+ * WHICH DEVICE this build boots against.
+ *
+ * flash.bin and eeprom.bin are the device's entire persistent state, so a
+ * firmware version reading another version's flash measures neither of them.
+ * A pinned build therefore gets its own storage slot and finds what it left
+ * there last time.
+ *
+ * The working tree keeps the unnamed slot it has always used. That is not
+ * tidiness: moving it would strand the provisioned device on every phone that
+ * already has one, and nothing re-provisions itself
+ * (see the bench-state note in CLAUDE.md).
+ *
+ * Kept beside the version it comes from rather than computed at the call site,
+ * because two callers computing it differently is a device that boots against
+ * the wrong flash and looks perfectly healthy.
+ */
+export const storageSlot: string = buildInfo.version ?? '';

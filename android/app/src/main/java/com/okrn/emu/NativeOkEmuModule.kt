@@ -38,9 +38,37 @@ class NativeOkEmuModule(
    * flash.bin (256 KB) and eeprom.bin (2 KB) live here - the device's entire
    * persistent state. getFilesDir() is app-private and survives updates, which
    * is what makes a restored backup outlive a reinstall of nothing else.
+   *
+   * A SLOT picks which device. A pinned firmware build (OKEMU_VERSION) gets its
+   * own subdirectory, because a v2.1 firmware reading a v3.0 flash is not a
+   * measurement of either one; an ordinary build passes "" and keeps the
+   * directory it has always used, so nothing already on a phone moves.
+   *
+   * Debug and production builds of the SAME firmware share a slot deliberately.
+   * The DEBUG gate changes what the firmware prints, not what it stores, and a
+   * production build cannot be given a PIN at all
+   * (FINDING-provisioning-needs-a-debug-build.md) - so provisioning on debug
+   * and then running production against that state is the only way to exercise
+   * one.
    */
-  private val storageDir: File
-    get() = File(reactContext.filesDir, "okemu").apply { mkdirs() }
+  private fun storageDirFor(slot: String): File {
+    val base = File(reactContext.filesDir, "okemu")
+    val dir = if (slot.isEmpty()) base else File(base, slot)
+    dir.mkdirs()
+    return dir
+  }
+
+  /**
+   * A slot is a plain name, and anything else is REFUSED rather than cleaned up.
+   *
+   * It arrives from JS and becomes a path under the app's private files. A
+   * sanitiser that silently drops a `..` writes a device's state somewhere its
+   * owner did not ask for, and the firmware would then boot happily against the
+   * wrong flash - which is the exact failure this whole mechanism exists to
+   * prevent.
+   */
+  private fun slotIsPlain(slot: String): Boolean =
+    slot.isEmpty() || slot.matches(Regex("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"))
 
   override fun invalidate() {
     executor.execute { if (OkEmuNative.isLoaded()) OkEmuNative.nativeStop() }
@@ -57,10 +85,10 @@ class NativeOkEmuModule(
 
   // ---------------------------------------------------------------- lifecycle
 
-  override fun start(promise: Promise) {
+  override fun start(storageSlot: String, promise: Promise) {
     executor.execute {
       try {
-        promise.resolve(startLocked())
+        promise.resolve(startLocked(storageSlot))
       } catch (e: Exception) {
         promise.reject(ERR_START, e.message ?: "start failed", e)
       }
@@ -68,8 +96,17 @@ class NativeOkEmuModule(
   }
 
   /** Runs on [executor]. Never throws for the ordinary "cannot start" cases. */
-  private fun startLocked(): WritableMap {
-    val dir = storageDir
+  private fun startLocked(storageSlot: String): WritableMap {
+    if (!slotIsPlain(storageSlot)) {
+      return result(
+        false,
+        "storage slot \"$storageSlot\" is not a plain name - it becomes a " +
+          "directory under the app's private files, and a slot that is not " +
+          "what it looks like would boot the firmware against the wrong flash",
+        storageDirFor(""),
+      )
+    }
+    val dir = storageDirFor(storageSlot)
     if (!OkEmuNative.load()) {
       return result(false, "libokemu.so is not available for this ABI", dir)
     }

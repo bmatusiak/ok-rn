@@ -72,6 +72,54 @@ const KEY = new Uint8Array(32).map((_, i) => (i * 11 + 5) & 0xff);
  */
 const CONFIG_TICKS = 80;
 
+/**
+ * Wait for the device to SAY something on the vendor interface.
+ *
+ * The status replies are plain ASCII in a 64-byte report, so matching text is
+ * what a host actually does with them.
+ *
+ * This exists because the alternative - do the thing, sleep, then read what the
+ * DEBUG console happened to have printed - is a race the device wins whenever
+ * it is slow. A key write erases a flash sector first, and on some devices that
+ * takes longer than the sleep did: the console tap came back EMPTY and the test
+ * reported "the key write never reached ecc_priv_flash", which was measurably
+ * false. The write had landed; the test looked too early.
+ *
+ * Listening from BEFORE the request, and resolving on the answer, cannot lose
+ * that race - and it works on a production build too, where there is no debug
+ * console to sniff at all.
+ */
+function vendorSays(pattern, {timeoutMs = 15000} = {}) {
+  let seen = '';
+  let settle;
+  const done = new Promise((resolve, reject) => {
+    settle = {resolve, reject};
+  });
+  const off = OkEmu.on('stream', e => {
+    if (e.iface !== IFACE.VENDOR || e.dir !== 0) return;
+    let s = '';
+    for (const b of e.bytes) {
+      if (b >= 0x20 && b <= 0x7e) s += String.fromCharCode(b);
+    }
+    seen += s;
+    if (pattern.test(seen)) settle.resolve(seen);
+  });
+  const timer = setTimeout(
+    () => settle.reject(new Error(
+      `the device never said anything matching ${pattern} - it said ` +
+      `${JSON.stringify(seen.slice(-120))}`)),
+    timeoutMs,
+  );
+  return {
+    off: () => {
+      off();
+      clearTimeout(timer);
+    },
+    get seen() { return seen; },
+    done,
+  };
+}
+
 /** What the device says on SEREMU - the only witness some writes have. */
 function serialTap() {
   let text = '';
@@ -238,27 +286,27 @@ module.exports = function cryptoSign({describe, it}) {
          */
         await setTouchFreeDerive(device, log);
 
-        tap.take();
-        await device.loadKey(SLOT, {type: KEY_TYPE, key: KEY});
-        await delay(800);
-
         /*
-         * A plain ECC key write has no acknowledgement on the wire - it is not
-         * a SETSLOT and hidprints nothing on success - so the DEBUG console is
-         * the only witness that the frame was understood rather than dropped by
-         * the config-mode gate.
+         * LISTEN FIRST, then write. The device answers "Successfully set ECC
+         * Key" on the vendor interface (okcore.cpp, ecc_priv_flash) on every
+         * release in the matrix, so there IS an acknowledgement - an earlier
+         * version of this test said there was not and sniffed the DEBUG console
+         * after a fixed 800ms instead.
+         *
+         * That was a race, and v3.0.2 won it: ecc_priv_flash erases a flash
+         * sector before it answers, the console tap came back EMPTY, and the
+         * test reported "the key write never reached ecc_priv_flash" about a
+         * write that had landed. Waiting for the answer cannot lose that race,
+         * and it works on a production build too, which has no console to sniff.
          */
-        const wrote = tap.take();
-        log(`device said: ${JSON.stringify(wrote.split('\n').filter(Boolean).slice(-6))}`);
-        assert.ok(
-          /OKSETECCPRIV MESSAGE RECEIVED/.test(wrote),
-          'the key write never reached ecc_priv_flash - the config-mode gate ' +
-            'refused it',
-        );
-        assert.ok(
-          new RegExp(`Slot =\\s*\\n?\\s*${SLOT}`).test(wrote) || wrote.includes(String(SLOT)),
-          `the write did not name slot ${SLOT}`,
-        );
+        const ack = vendorSays(/Successfully set ECC Key/);
+        try {
+          await device.loadKey(SLOT, {type: KEY_TYPE, key: KEY});
+          const said = await ack.done;
+          log(`device answered: ${JSON.stringify(said.slice(-60))}`);
+        } finally {
+          ack.off();
+        }
 
         shared.provisioned = true;
         log(

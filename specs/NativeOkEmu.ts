@@ -53,8 +53,19 @@ export interface Spec extends TurboModule {
   /**
    * Boots the firmware. Idempotent: resolves with started=false and a reason
    * if it is already running.
+   *
+   * `storageSlot` picks WHICH DEVICE this is. flash.bin and eeprom.bin are the
+   * device's entire persistent state, and a firmware version reading a
+   * different version's flash is not a measurement of either - so a pinned
+   * build (OKEMU_VERSION) gets its own subdirectory and finds what it left
+   * there. Empty string means the directory the app has always used, which is
+   * what an ordinary build passes, so nothing already on a phone moves.
+   *
+   * Rejected rather than sanitised if it is not a plain name: it becomes a path
+   * under the app's own files, and quietly reinterpreting it would put a
+   * device's state somewhere its owner did not ask for.
    */
-  start(): Promise<StartResult>;
+  start(storageSlot: string): Promise<StartResult>;
   stop(): Promise<void>;
   isRunning(): boolean;
 
