@@ -21,7 +21,7 @@ Not an error. Not a rejected promise. Nothing in logcat, nothing from Metro.
 
 Each of these was measured on the device rather than reasoned about:
 
-| require | result |
+| probe | result |
 |---|---|
 | `node-onlykey-lib/crypto/pgp` (the exports map) | `undefined` |
 | `node-onlykey-lib/src/vendor/openpgp/openpgp.js` | `undefined` |
@@ -29,16 +29,41 @@ Each of these was measured on the device rather than reasoned about:
 | `node-onlykey-lib/definitely-not-here` | **throws** |
 | `node-onlykey-lib/crypto` → `.composite.generateCompositeKey` | a function |
 | a tiny file with the fork's exact top-level shape | works |
+| **30,000 generated lines inside one IIFE (1.9 MB)** | **works** |
+| **30,000 generated lines at module top level (1.8 MB)** | **works** |
+| a byte-for-byte copy of the fork whose last line reports what ran | `undefined` |
+| `GET /…/probe-openpgp-copy.bundle` from Metro | **HTTP 200, 1.5 MB** |
 
-The fourth row is the important one: **an unresolvable module throws.** So this
-module resolves, is bundled, and its factory runs — it simply produces
-`undefined`. The exports map, the symlink, the resolver and the
-`var x = (function(exports){...})({}); module.exports = x;` construction are all
-therefore innocent, the last proven by reproducing the shape in a file four
-orders of magnitude smaller.
+## What that leaves, and what it rules out
 
-What is left is SIZE: 1,272,241 bytes, and one function of about 31,000 lines,
-which Hermes fails to yield a value for silently.
+**An unresolvable module throws.** This one resolves, so the exports map, the
+symlink and the resolver are innocent.
+
+**The IIFE construction is fine**, proven by reproducing the exact shape.
+
+**SIZE IS NOT THE CAUSE.** This was my first conclusion and it was wrong: a
+generated 1.9 MB file with a single 30,000-line IIFE loads and returns its
+exports. The correction matters more than the original guess did - a wrong root
+cause in a findings file is worse than an admitted gap, because the next person
+stops looking.
+
+**Metro builds it.** Asked for that one file as a bundle entry, the dev server
+answers 200 with 1.5 MB of JavaScript, so the transform succeeds.
+
+**The factory does not reach its last line.** A copy of the fork whose final
+statement was replaced with `module.exports = {markerRan: true, …}` ALSO comes
+back `undefined` - so it is not that `openpgp` was unset when the export ran;
+the export never ran. And Metro initialises `module.exports` to `{}`, so
+`undefined` cannot come from a factory that merely did nothing. Something set
+it, or the module was never evaluated.
+
+**Nothing throws.** Not through `require`, not in logcat, not as a rejected
+promise - checked with an explicit try/catch around the require.
+
+So the cause is still open. The next things worth trying: inspecting Metro's
+module registry for the id at runtime, disabling `inlineRequires`, and
+requiring the fork from the app's own module graph rather than from a test
+suite, to rule the harness in or out.
 
 ## Why it is worth its own file
 
@@ -62,13 +87,16 @@ Only key GENERATION needs the fork — and only because a composite key is a PGP
 key, not because the device wants one. A key generated elsewhere and loaded into
 a slot would sign on the phone today.
 
-## The fix, when it is worth doing
+## The fix is not yet known
 
-Re-bundle the fork as ordinary modules rather than one enormous IIFE. It is a
-build-configuration change in the vendoring step, not a code change, and it
-keeps the byte-for-byte verification meaningful because the SOURCE does not
-move. Precompiling to Hermes bytecode is the other option and a worse one: it
-pins an engine version into the library.
+Re-bundling as ordinary modules was the obvious candidate while size looked like
+the cause. It no longer is: the same volume in the same shape loads without
+complaint, so a re-bundle would be a large change made on a guess.
+
+The one claim that can be made confidently is the negative one in VENDORED.md.
+It states the appended CommonJS line makes the file "an ordinary require()-able
+module in Node, browsers, nw.js and Hermes alike". It is not, and that sentence
+should not be trusted until this is understood.
 
 ## Guarded by
 

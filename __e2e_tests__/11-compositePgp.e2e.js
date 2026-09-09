@@ -18,11 +18,21 @@
  *   require('node-onlykey-lib/crypto').composite      -> works
  *   a file with the fork's exact top-level shape, tiny -> works
  *
- * So it is not the exports map, not the symlink, not the resolver, and not the
- * IIFE construction: an unresolvable module throws, and this one resolves,
- * runs, and yields `undefined`. What is left is the size - one 31,000-line
- * function - which Hermes fails to produce a value for WITHOUT RAISING
- * ANYTHING. No error in logcat, no rejected promise, no bundler warning.
+ * So it is not the exports map, not the symlink and not the resolver: an
+ * unresolvable module THROWS, and this one resolves.
+ *
+ * Nor is it the shape or the size, both of which I first blamed and then
+ * disproved - 30,000 generated lines inside a single IIFE, 1.9 MB, loads and
+ * returns its exports. Metro builds the real file too: asked for it as a bundle
+ * entry, the dev server answers 200 with 1.5 MB.
+ *
+ * What is established is narrower and stranger. A copy of the fork whose LAST
+ * LINE was replaced with `module.exports = {markerRan: true}` also comes back
+ * undefined - so the export never ran, and since Metro initialises exports to
+ * {}, undefined cannot come from a factory that merely did nothing. Nothing
+ * throws: not through require, not in logcat, not as a rejected promise.
+ *
+ * The cause is open. See the finding for what to try next.
  *
  * ## Why this suite asserts the failure
  *
