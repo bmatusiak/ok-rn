@@ -57,6 +57,15 @@ device state persists between runs, preferences included.
 a suite should work when run ALONE. suites 10+ used to inherit an unlocked
 device from suite 3, which made `--only` useless for them.
 
+the e2e harness's assert is `ok`, `equal`, `notEqual` and nothing else.
+`assert.match` and `assert.deepEqual` fail as "undefined is not a function"
+pointing at the assertion line, which reads as though the thing under test is
+broken.
+
+a press helper that answers ONE keepalive cannot cover two device operations -
+extra presses type a slot, so it goes quiet after the first. build fresh press
+options per operation.
+
     OKEMU_PRODUCTION=1                            # stage firmware with DEBUG off
     node android/okemu/scripts/version-probe.js   # can an old release be staged?
 

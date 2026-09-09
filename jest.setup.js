@@ -158,3 +158,18 @@ jest.mock('./specs/NativeBtKeyboard', () => ({
     onStatus: jest.fn(() => noopSubscription),
   },
 }));
+
+/*
+ * AsyncStorage, which the host plugin is given as its persistent store.
+ *
+ * The package ships ESM that Jest does not transform, so importing it from
+ * src/onlykey.ts took down every suite that reaches the app - onlykey.test.ts
+ * and the App smoke test both stopped RUNNING rather than failing, which reads
+ * as a smaller problem in the summary line than it is.
+ *
+ * The package ships its own in-memory mock for exactly this, and using theirs
+ * rather than a hand-written one means it keeps up with their API.
+ */
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest'),
+);

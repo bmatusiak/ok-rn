@@ -17,9 +17,15 @@ module.exports = {
    * resolves the CJS build through the `require` condition and never sees ESM;
    * in Metro, ESM is transformed as a matter of course. Jest sits between the
    * two and gets neither by default.
+   *
+   * @react-native-async-storage is a SEPARATE scope from @react-native, so the
+   * preset's `@react-native(-community)?` does not cover it - its lib/module
+   * build and even its own Jest mock are ESM. Left out, every suite that
+   * reaches src/onlykey.ts stopped RUNNING rather than failing, which shows up
+   * in the summary as a smaller number of tests rather than as a red line.
    */
   transformIgnorePatterns: [
-    'node_modules/(?!((jest-)?react-native|@react-native(-community)?|@noble)/)',
+    'node_modules/(?!((jest-)?react-native|@react-native(-community|-async-storage)?|@noble)/)',
   ],
 
   /*

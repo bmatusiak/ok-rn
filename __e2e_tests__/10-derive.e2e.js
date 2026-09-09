@@ -349,6 +349,97 @@ module.exports = function derive({describe, it}) {
     });
 
 
+    it('a sealed credential survives being stored and read back', async ({log, assert}) => {
+      /*
+       * The vault could seal and open; it had nowhere to PUT the result, so a
+       * credential lasted exactly as long as the screen showing it. This is
+       * AsyncStorage underneath, reached through the host plugin the same way
+       * randomness is.
+       *
+       * What is stored is the sealed blob and nothing else. The key is derived
+       * from the device and kept nowhere, so this record is unreadable to
+       * anything that can read the phone's storage.
+       */
+      const {okcrypto} = await connected(log);
+      assert.equal(okcrypto.deviceVault.canPersist, true, 'no store was wired');
+
+      /*
+       * FRESH options per device operation. pressing() answers exactly one
+       * keepalive and then goes quiet - deliberately, because extra presses on
+       * an unlocked device type a slot. Sharing one instance across two
+       * derives leaves the second waiting, and the device gives up with a
+       * status rather than an explanation.
+       */
+      const press = () => ({
+        requirePress: true,
+        timeoutMs: 30000,
+        onKeepAlive: pressing(log).onKeepAlive,
+      });
+      const service = 'store.example';
+      await okcrypto.deviceVault.forget(service);
+
+      const record = await okcrypto.deviceVault.save(service, 'stored-secret', press());
+      log(`stored: ${JSON.stringify({...record, encrypted: `${record.encrypted.slice(0, 16)}…`})}`);
+      assert.equal(record.serviceId, service);
+      assert.ok(record.encrypted && record.encrypted.length > 20, 'no sealed blob stored');
+      assert.ok(!record.encrypted.includes('stored-secret'), 'the plaintext went into storage');
+
+      const ids = await okcrypto.deviceVault.serviceIds();
+      log(`stored services: ${JSON.stringify(ids)}`);
+      assert.ok(ids.includes(service), 'the service is not in the list');
+
+      /*
+       * Opened from the STORE, not from the value returned above - reading
+       * back what we already hold in memory would prove nothing about
+       * storage.
+       */
+      okcrypto.deviceVault.lockAll();
+      const opened = await okcrypto.deviceVault.load(service, press());
+      log(`loaded: ${JSON.stringify(opened)}`);
+      assert.equal(opened, 'stored-secret');
+
+      await okcrypto.deviceVault.forget(service);
+      assert.equal(await okcrypto.deviceVault.load(service, press()), null);
+    });
+
+    it('an export carries sealed blobs and imports back', async ({log, assert}) => {
+      const {okcrypto} = await connected(log);
+      const press = () => ({
+        requirePress: true,
+        timeoutMs: 30000,
+        onKeepAlive: pressing(log).onKeepAlive,
+      });
+
+      await okcrypto.deviceVault.save('export.example', 'exported-secret', press());
+      const json = await okcrypto.deviceVault.exportJSON();
+      log(`export: ${json.length} chars`);
+
+      const parsed = JSON.parse(json);
+      assert.equal(parsed.version, 1, 'the envelope must match the web app');
+      assert.ok(Array.isArray(parsed.credentials));
+      assert.ok(
+        !json.includes('exported-secret'),
+        'the plaintext is in the export - it must carry sealed blobs only',
+      );
+
+      await okcrypto.deviceVault.forgetAll();
+      // ok/equal/notEqual is the whole of this harness's assert - no deepEqual.
+      assert.equal((await okcrypto.deviceVault.serviceIds()).length, 0);
+
+      const result = await okcrypto.deviceVault.importJSON(json);
+      log(`imported: ${JSON.stringify(result)}`);
+      assert.ok(result.imported >= 1, 'nothing imported');
+
+      okcrypto.deviceVault.lockAll();
+      assert.equal(
+        await okcrypto.deviceVault.load('export.example', press()),
+        'exported-secret',
+        'a blob that survived an export/import round trip no longer opens',
+      );
+
+      await okcrypto.deviceVault.forgetAll();
+    });
+
     it('the X-Wing key type returns its split-custody pair', async ({log, assert}) => {
       /*
        * The one shape the plugin still reports as unavailable, and the reason

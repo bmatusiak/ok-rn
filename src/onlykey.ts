@@ -12,6 +12,7 @@
  * lifecycle event it knows nothing about.
  */
 import Rectify from '@bmatusiak/rectify';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import hostPlugin from 'node-onlykey-lib/plugins/host';
 import embeddedTransport from 'node-onlykey-lib/plugins/transport/embedded';
 import sessionPlugin from 'node-onlykey-lib/plugins/session';
@@ -71,12 +72,21 @@ export function getOnlyKey(): Promise<OnlyKeyApp> {
     ];
 
     /*
-     * The transport is given OkEmu as its pipe. This is the only place the
-     * library learns anything platform-specific: it never imports
-     * react-native, so it stays loadable in Node for tests and in a browser
-     * for the web app.
+     * The transport is given OkEmu as its pipe, and the host is given
+     * AsyncStorage. This is the only place the library learns anything
+     * platform-specific: it never imports react-native, so it stays loadable
+     * in Node for tests and in a browser for the web app.
+     *
+     * AsyncStorage already has exactly the three methods the store contract
+     * asks for - getItem, setItem, removeItem - so it goes in unwrapped. Only
+     * SEALED blobs are written through it: the key that opens them is derived
+     * from the device and is stored nowhere, so a phone's backup carrying this
+     * data reveals which services have credentials and none of their contents.
      */
-    plugins.config = {transport: {pipe: OkEmu as unknown as BytePipe}};
+    plugins.config = {
+      transport: {pipe: OkEmu as unknown as BytePipe},
+      host: {store: AsyncStorage},
+    };
 
     const app = Rectify.build(plugins, (err: Error | null, started: any) => {
       if (err) {
