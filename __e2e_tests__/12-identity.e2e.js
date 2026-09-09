@@ -12,9 +12,8 @@
  *
  * ## What it pins
  *
- * The emulator is built from OnlyKey-Firmware with DEBUG defined, so it must
- * report itself as a debug build. That is not a detail - it is the reason the
- * library's PIN provisioning works here at all. onlykey.h:
+ * The firmware names its own build, because onlykey.h composes the version
+ * with a keyword that depends on the gate:
  *
  *   #ifdef DEBUG
  *   #define OKversionkeyword "-test"
@@ -22,10 +21,12 @@
  *   #define OKversionkeyword "-prod"
  *   #endif
  *
- * So when the DEBUG-off build is staged, THIS TEST IS THE ONE THAT SHOULD
- * FLIP: same code, `-prod`, `debugConsole: false`. A failure here after that
- * change is the expected result, not a regression, and the assertion messages
- * say so.
+ * So these run against EITHER build without being edited. They assert that the
+ * build is identified and that the identification agrees with the bus - a
+ * debug build has SEREMU traffic, a production build has none - rather than
+ * asserting which build is staged, which only OKEMU_PRODUCTION decides.
+ *
+ * Both have been run: `-testc` with SEREMU present, `-prodc` with it absent.
  */
 'use strict';
 
@@ -108,25 +109,29 @@ module.exports = function identity({describe, it}) {
       assert.equal(caps.challengeFormula, 'modern', 'six buttons means mod 6');
     });
 
-    it('this build is a DEBUG build, and says so', async ({log, assert}) => {
+    it('the build is named, and it is one of the two that exist', async ({log, assert}) => {
       /*
-       * WHEN THE PRODUCTION BUILD IS STAGED, THIS TEST FLIPS. Expect
-       * build=production and debugConsole=false, and change these two
-       * assertions rather than treating the failure as a regression - the
-       * point of the detection is that the two builds are distinguishable.
+       * NOT "this is a debug build". That is what this test said first, and it
+       * failed the moment the DEBUG-off variant was staged - correctly, but a
+       * suite that has to be edited to run against the other build is a suite
+       * that will not be run against it.
+       *
+       * The claim that holds either way is that the build is IDENTIFIED. Which
+       * one it is depends on OKEMU_PRODUCTION, and the next test checks the
+       * answer against the bus rather than trusting it.
        */
       const {status} = await connected(log);
       const info = okdevice.version.parseStatus(status);
       const caps = okdevice.version.capabilities(info);
       log(`build=${info.build} console=${caps.debugConsole}`);
 
-      assert.equal(
-        info.build, 'debug',
-        'the staged firmware defines DEBUG, so the keyword must be -test',
+      assert.ok(
+        info.build === 'debug' || info.build === 'production',
+        `the version keyword named neither build: ${JSON.stringify(info.version)}`,
       );
       assert.equal(
-        caps.debugConsole, true,
-        'a debug build has SEREMU, which is what the PIN prompts arrive on',
+        caps.debugConsole, info.build === 'debug',
+        'a debug build has the console and a production build does not',
       );
     });
 

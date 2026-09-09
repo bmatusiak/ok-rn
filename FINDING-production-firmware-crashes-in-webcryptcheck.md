@@ -1,112 +1,148 @@
-# Production firmware crashes in webcryptcheck on every getAssertion
+# Production firmware: webcryptcheck crashes, and cannot authorise onlyagent.app
 
-## What happens
+Two findings, one function. The first is a null dereference that kills the
+firmware thread. Guarding it reveals the second, which is the more important
+one: the origin check the production build is supposed to perform cannot see an
+origin on the CTAP2 path at all.
 
-Built with the DEBUG gate off, the firmware takes SIGSEGV on a NULL read the
-first time a WebAuthn assertion is requested:
+Both were found by staging a DEBUG-off build (`OKEMU_PRODUCTION=1`) and running
+the e2e suite against it - the first time that has ever been done.
+
+## 1. The crash
 
 ```
 F libc : Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0
          in tid 5293 (okemu-firmware)
   #01 webcryptcheck+224
-  #02 (inlined)
   #03 ctap_filter_invalid_credentials(CTAP_getAssertion*)+428
   #04 ctap_get_assertion(CborEncoder*, unsigned char*, int)+380
   #05 ctap_request+508
   #06 ctaphid_handle_packet+640
 ```
 
-The firmware thread dies, so the device stops answering entirely - the e2e
-suite does not fail, it hangs, because there is nothing left to time out
-against.
+The firmware thread dies, so the suite does not fail - it HANGS, because there
+is nothing left to time out against.
 
-## Why
-
-`add_existing_user_info()` calls webcryptcheck with two null pointers
-(`libraries/fido2/ctap.cpp:1141`):
-
-```c
-if (!webcryptcheck(NULL, NULL)) {
-```
-
-and `webcryptcheck` (`libraries/fido2/device.cpp:83`) returns before touching
-either of them, but ONLY on a DEBUG build:
+`webcryptcheck` (`libraries/fido2/device.cpp:83`) returns before touching its
+arguments, but only on a DEBUG build:
 
 ```c
     #ifdef DEBUG
-    Serial.println("Ctap buffer:");
-    byteprint(ctap_buffer, 12);
     ...
     byteprint(_appid, 32);
-    return 2;                    // Trust all origins for debug firmware
+    return 2;                 // Trust all origins for debug firmware
     #endif
 
     appid_match1 = memcmp(stored_apprpid, rpid, 12);
-    appid_match2 = memcmp(stored_appid, _appid, 32);      // <-- _appid is NULL
+    appid_match2 = memcmp(stored_appid, _appid, 32);        // _appid is NULL
+    int appid_match3 = memcmp(stored_appid_oa, _appid, 32); // NULL again
     ...
-    } else if (buffer[0]==0xFF && buffer[1]==0xFF && ...) // <-- buffer is NULL
+    } else if (buffer[0]==0xFF && ...)                      // buffer is NULL
 ```
 
-The `return 2` is inside the `#ifdef`. With DEBUG defined the function never
-reaches the comparisons; with it undefined, execution falls straight into
-`memcmp(stored_appid, NULL, 32)`.
+The `return 2` is INSIDE the `#ifdef`. With DEBUG defined the function is three
+prints and a constant; with it undefined, execution falls into the comparisons.
 
-There are two null dereferences on that path, not one. `buffer[0]` on the next
-branch would fault the same way for any caller that got past the first.
+Three call sites pass nulls:
 
-## Why nobody has seen it
+| Caller | Passes |
+|---|---|
+| `ctap.cpp:1141` `add_existing_user_info()` | `webcryptcheck(NULL, NULL)` |
+| `extensions.cpp:113` `extend_fido2()` | `_appid = NULL` |
+| `extensions.cpp:125` `extend_fido2()` | `_appid = NULL` |
 
-The early `return 2` means **the production path of this function has never
-run** in any build anyone here has exercised. Every test, every manual session
-and the whole emulator have used the DEBUG build, and on that build the
-function is three prints and a constant.
+`byteprint` already carries a guard for the same pointer, with a comment saying
+callers hand it null freely. So the null was known and guarded in the debug
+print, and not in the code that uses the pointer for its purpose.
 
-`byteprint` already carries a null guard for the same call:
+**The production path of this function had never run**, anywhere. That is the
+whole reason it survived.
+
+## 2. onlyagent.app cannot be authorised over CTAP2
+
+With the crash guarded, the suite completes and nine derive tests fail
+identically:
+
+```
+the device answered the derive with no data (status CTAP2_ERR_EXTENSION_NOT_SUPPORTED)
+```
+
+That status reads like "this firmware has no such feature". It means the origin
+check said no.
+
+`webcryptcheck` has three ways to say yes, and only one of them works without
+`_appid`:
+
+| Check | Reads | Available on CTAP2? |
+|---|---|---|
+| `appid_match1` vs `"apps.crp.to\x02"` | `ctap_buffer+4` | yes |
+| `appid_match2` vs `stored_appid` | `_appid` | **no - it is NULL** |
+| `appid_match3` vs SHA256("onlyagent.app") | `_appid` | **no - it is NULL** |
+
+`extend_fido2()` - the entire CTAP2 route - passes `NULL` for `_appid` on both
+of its branches. So on a production build the only origin a CTAP2 request can
+prove is `apps.crp.to`, via the rpid read out of `ctap_buffer`.
+
+**ok-rn pins `onlyagent.app`.** Its SHA-256 is exactly `stored_appid_oa`:
+
+```
+sha256("onlyagent.app") = b8aae59c19de592adbf1ca0a15c0031588988b6144faa7c2e1c43034c166d583
+stored_appid_oa         = b8aae59c19de592adbf1ca0a15c0031588988b6144faa7c2e1c43034c166d583
+```
+
+so the firmware plainly intends to accept it - there is a constant for it and a
+comment naming it "OnlyAgent origin". The value simply never arrives at the
+comparison. The origin is present in the CTAP2 request; `extend_fido2` does not
+thread it through.
+
+This is not caused by the guard. Without the guard the same path crashes;
+with it, the same path is refused. Either way `onlyagent.app` cannot derive on
+a production build.
+
+## What was staged, and why per-comparison
+
+Decided with the user. `OKEMU_PRODUCTION=1` guards each comparison rather than
+returning early:
 
 ```c
-// Callers hand this null freely - webcryptcheck() does byteprint(_appid, 32)
-// on a path where ctap_filter_invalid_credentials() passed no appid at all.
-if (!bytes) return;
+appid_match1 = memcmp (stored_apprpid, rpid, 12);
+appid_match2 = (_appid == NULL) ? 1 : memcmp (stored_appid, _appid, 32);
+int appid_match3 = (_appid == NULL) ? 1 : memcmp (stored_appid_oa, _appid, 32);
+...
+} else if (buffer != NULL && buffer[0]==0xFF && ...)
 ```
 
-So the null was known and guarded in the DEBUG print, and not in the code that
-uses the pointer for its actual purpose.
+A blanket `if (!_appid || !buffer) return 0;` was written first and is wrong: it
+also skips the rpid check, which reads `ctap_buffer` and needs neither pointer.
+That is the ONLY check the CTAP2 path can satisfy, so skipping it would refuse
+`apps.crp.to` as well - turning one broken origin into two.
 
-## Scope
+A non-zero memcmp result means "no match", which is the honest answer for a
+pointer that is not there. Nothing is trusted that was not proven.
 
-This is an UPSTREAM FIRMWARE bug, not an emulator artifact. Nothing about
-running hosted is involved: the crash is a null dereference in portable C++ on
-a path selected by a preprocessor define. Real hardware running a production
-build would fault at the same instruction.
+Upstream this belongs in `libraries/fido2/device.cpp` unconditionally, and the
+real repair is in `extensions.cpp`: pass the appid the CTAP2 request already
+carries. Neither is done here - that tree is read-only for this project, and
+threading a new argument through is changing what the firmware does, not making
+it run.
 
-The reachable path is `ctap_get_assertion` -> `ctap_filter_invalid_credentials`
--> `add_existing_user_info`, which is the ordinary allowList walk. That is not
-an edge case; it is what happens when a site asks the key to sign in.
+## Measured
 
-## Measured, not inferred
+Staged with `OKEMU_PRODUCTION=1`; the built `libokemu.so` contains
+`UNLOCKEDv3.0.4-prod` and none of the DEBUG-only strings, so the gate really is
+off.
 
-- `OKEMU_PRODUCTION=1 node scripts/stage.js` removes `#define DEBUG` and
-  `#define DEBUG_CTAP_VERBOSE` from the staged `onlykey.h`.
-- The resulting `libokemu.so` contains `UNLOCKEDv3.0.4-prod` and none of the
-  DEBUG-only strings (`no longer a terminator`, `OKCONNECT MESSAGE RECEIVED`),
-  so the gate really is off.
-- Everything before the CTAP assertion passes on that build: boot, OKCONNECT,
-  button mapping, PIN unlock, label read, slot write and read-back, CTAPHID
-  channel allocation, authenticatorGetInfo.
-- The device reports itself as `UNLOCKEDv3.0.4-prodc`, which is the version
-  detection working against a production build.
-- The crash is at the first getAssertion.
+| | debug build | production build |
+|---|---|---|
+| e2e result | 53 pass, 0 fail | 44 pass, 9 fail |
+| reported version | `UNLOCKEDv3.0.4-testc` | `UNLOCKEDv3.0.4-prodc` |
+| SEREMU traffic | present | absent |
+| PIN unlock | console or buttons | buttons only |
+| derive / vault / age | pass | refused, all nine |
 
-## Not fixed here
+Everything else passes on both: boot, OKCONNECT, button mapping, PIN unlock,
+label read, slot write and read-back, CTAPHID channel, authenticatorGetInfo,
+presence ceremonies, keystroke capture and decode, and composite signing
+including the challenge.
 
-A fix has to decide what webcryptcheck should RETURN when it is handed no
-appid, and that is a behaviour change to firmware this project treats as
-read-only. Returning 0 ("not a trusted webcrypt origin - nothing was supplied
-to check") is the honest answer and is what a guard would naturally do, but it
-makes the production build take a different branch in `add_existing_user_info`
-than the debug build does. That divergence already exists by design - the debug
-build trusts all origins - but choosing it is not this project's call to make
-silently.
-
-The staging flag is in place, so the moment a decision exists the measurement
-can be repeated in one command.
+The nine failures are one bug, not nine.

@@ -130,6 +130,9 @@ const DROP = [
  */
 const PRODUCTION = process.env.OKEMU_PRODUCTION === '1';
 
+/** Multi-line replacement text is written as lines and joined with this. */
+const NL = String.fromCharCode(10);
+
 const PRODUCTION_PATCHES = [
   {
     file: 'libraries/onlykey/onlykey.h',
@@ -138,6 +141,63 @@ const PRODUCTION_PATCHES = [
        '//#define DEBUG - removed by stage.js for OKEMU_PRODUCTION=1'],
       ['#define DEBUG_CTAP_VERBOSE //Enable verbose per-request CTAP/U2F presence-test logging (very noisy - fires on every presence test poll, floods Serial/SEREMU)',
        '//#define DEBUG_CTAP_VERBOSE - removed with DEBUG; it prints to a console a production build does not have'],
+    ],
+  },
+  {
+    /*
+     * webcryptcheck() dereferences two pointers its callers hand it as NULL.
+     *
+     * ctap.cpp:1141 calls `webcryptcheck(NULL, NULL)` from
+     * add_existing_user_info(), which is the ordinary allowList walk during a
+     * getAssertion. On a DEBUG build the function returns 2 - "trust all
+     * origins for debug firmware" - BEFORE reaching any comparison, so the
+     * nulls never matter. That return sits inside the #ifdef, so with the gate
+     * off execution falls straight into memcmp(stored_appid, NULL, 32) and the
+     * firmware thread takes SIGSEGV. The device then stops answering entirely.
+     *
+     * The production path of this function has evidently never run anywhere:
+     * byteprint() already carries a guard for the SAME pointer, with a comment
+     * saying callers hand it null freely, so the null was known and guarded in
+     * the debug print but not in the code that uses it.
+     *
+     * Returning 0 is the honest answer - nothing was supplied, so nothing
+     * matches a stored origin - and it is what a guard naturally does. It does
+     * mean the production build takes a different branch here than the debug
+     * build, but that divergence is already deliberate: the debug build trusts
+     * everything.
+     *
+     * DECIDED WITH THE USER, not assumed. Upstream this belongs in
+     * libraries/fido2/device.cpp unconditionally; it is here only because that
+     * tree is outside this project's write scope. See
+     * FINDING-production-firmware-crashes-in-webcryptcheck.md.
+     */
+    file: 'libraries/fido2/device.cpp',
+    edits: [
+      ['    appid_match1 = memcmp (stored_apprpid, rpid, 12);',
+       [
+         '    /* Injected by ok-rn stage.js (OKEMU_PRODUCTION=1).',
+         '',
+         '       Callers pass NULL for both of these. ctap.cpp:1141 passes',
+         '       webcryptcheck(NULL, NULL); extensions.cpp:113 and :125 -',
+         '       extend_fido2(), the whole CTAP2 path - pass NULL as _appid on',
+         '       both branches. Only the #ifdef DEBUG early return above kept a',
+         '       debug build from dereferencing them.',
+         '',
+         '       Guarded per COMPARISON rather than by returning early, so every',
+         '       check whose inputs are actually present still runs. The rpid',
+         '       check reads ctap_buffer, not _appid, and is the only one the',
+         '       CTAP2 path can satisfy - skipping it would refuse requests the',
+         '       firmware is meant to accept. A non-zero memcmp result means "no',
+         '       match", which is the honest answer for a pointer that is not',
+         '       there. */',
+         '    appid_match1 = memcmp (stored_apprpid, rpid, 12);',
+       ].join(NL)],
+      ['	appid_match2 = memcmp (stored_appid, _appid, 32);',
+       '	appid_match2 = (_appid == NULL) ? 1 : memcmp (stored_appid, _appid, 32);'],
+      ['	int appid_match3 = memcmp (stored_appid_oa, _appid, 32); //OnlyAgent origin (onlyagent.app)',
+       '	int appid_match3 = (_appid == NULL) ? 1 : memcmp (stored_appid_oa, _appid, 32); //OnlyAgent origin (onlyagent.app)'],
+      ['    } else if (buffer[0]==0xFF && buffer[1]==0xFF && buffer[2]==0xFF && buffer[3]==0xFF && buffer[4]==OKCONNECT && is_bit_set(derived_key_challenge_mode, 2)) {',
+       '    } else if (buffer != NULL && buffer[0]==0xFF && buffer[1]==0xFF && buffer[2]==0xFF && buffer[3]==0xFF && buffer[4]==OKCONNECT && is_bit_set(derived_key_challenge_mode, 2)) {'],
     ],
   },
 ];
