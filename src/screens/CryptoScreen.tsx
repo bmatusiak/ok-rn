@@ -62,6 +62,15 @@ export function CryptoScreen({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  /* The vault is a second use of the same derivation, so it gets its own
+   * label: the service a credential belongs to, not the site a password is
+   * for. They are usually the same string and must not be assumed to be. */
+  const [service, setService] = useState('');
+  const [plaintext, setPlaintext] = useState('');
+  const [blob, setBlob] = useState('');
+  const [opened, setOpened] = useState<string | null>(null);
+  const [unlocked, setUnlocked] = useState(false);
+
   const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locked = emu.device !== 'unlocked';
 
@@ -144,6 +153,83 @@ export function CryptoScreen({
     }
   }, [secret]);
 
+  /*
+   * Both vault calls derive the key if it is not cached, and deriving needs
+   * a touch - so they raise the same keypad the password generator does.
+   */
+  const vaultOpts = useCallback(
+    () => ({
+      requirePress: true,
+      timeoutMs: 60000,
+      onKeepAlive: async () => setWaiting(true),
+    }),
+    [],
+  );
+
+  const seal = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    setOpened(null);
+    try {
+      const {okcrypto} = await getOnlyKey();
+      const sealed = await okcrypto.vault.seal(service.trim(), plaintext, vaultOpts());
+      setWaiting(false);
+      setBlob(sealed);
+      setPlaintext('');
+      setUnlocked(okcrypto.vault.isUnlocked(service.trim()));
+      setStatus('Sealed. Only this key can open it, and only for this service name.');
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setWaiting(false);
+      setBusy(false);
+    }
+  }, [service, plaintext, vaultOpts]);
+
+  const unseal = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    setOpened(null);
+    try {
+      const {okcrypto} = await getOnlyKey();
+      const text = await okcrypto.vault.open(service.trim(), blob.trim(), vaultOpts());
+      setWaiting(false);
+      setOpened(text);
+      setUnlocked(okcrypto.vault.isUnlocked(service.trim()));
+    } catch (e) {
+      const message = String((e as Error)?.message ?? e);
+
+      /*
+       * AES-GCM cannot tell a wrong key from a tampered blob, so for a TAG
+       * failure this says so and stops. But it must not swallow everything: a
+       * device that refused, a channel that died or a malformed blob are
+       * different failures with different fixes, and reporting them all as
+       * "wrong service name" sends the user to the one place the problem is
+       * not. The first version of this did exactly that, and hid its own bug.
+       */
+      setError(
+        /tag|decrypt|auth/i.test(message)
+          ? 'That did not open. Either the service name is not the one it was '
+            + 'sealed under, or the blob has been altered — there is no way to '
+            + 'tell which.'
+          : message,
+      );
+    } finally {
+      setWaiting(false);
+      setBusy(false);
+    }
+  }, [service, blob, vaultOpts]);
+
+  const lock = useCallback(async () => {
+    const {okcrypto} = await getOnlyKey();
+    okcrypto.vault.lock(service.trim());
+    setUnlocked(false);
+    setOpened(null);
+    setStatus('Key forgotten. The next use touches the device again.');
+  }, [service]);
+
   return (
     <ScrollView
       style={styles.root}
@@ -213,6 +299,83 @@ export function CryptoScreen({
           </Text>
         </Section>
       ) : null}
+
+      <Section title="Vault">
+        <Text style={styles.body}>
+          Seal a note under a key the device derives for a service name. The key
+          is never stored anywhere — not on the phone and not on the key — so a
+          sealed blob is safe to keep in a normal file, and useless without the
+          OnlyKey that made it.
+        </Text>
+        <Text style={styles.note}>
+          The service name is part of the key. Sealing under "github" and trying
+          to open under "github.com" fails, and cannot say why.
+        </Text>
+
+        <TextInput
+          value={service}
+          onChangeText={t => {
+            setService(t);
+            setUnlocked(false);
+            setOpened(null);
+          }}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="service name"
+          placeholderTextColor={theme.textDim}
+          editable={!busy}
+          style={styles.input}
+        />
+
+        {unlocked ? (
+          <View style={styles.row}>
+            <Text style={styles.cached}>key cached</Text>
+            <Btn title="Forget it" onPress={lock} />
+          </View>
+        ) : null}
+
+        <TextInput
+          value={plaintext}
+          onChangeText={setPlaintext}
+          autoCapitalize="none"
+          autoCorrect={false}
+          multiline
+          placeholder="something to seal"
+          placeholderTextColor={theme.textDim}
+          editable={!busy}
+          style={styles.textarea}
+        />
+        <Btn
+          title={busy ? 'Working…' : 'Seal'}
+          tone="primary"
+          disabled={busy || locked || !service.trim() || !plaintext}
+          onPress={seal}
+        />
+
+        <TextInput
+          value={blob}
+          onChangeText={setBlob}
+          autoCapitalize="none"
+          autoCorrect={false}
+          multiline
+          placeholder="a sealed blob, to open"
+          placeholderTextColor={theme.textDim}
+          editable={!busy}
+          style={styles.textarea}
+        />
+        <Btn
+          title={busy ? 'Working…' : 'Open'}
+          disabled={busy || locked || !service.trim() || !blob.trim()}
+          onPress={unseal}
+        />
+
+        {opened !== null ? (
+          <>
+            <Text style={styles.note}>Opened:</Text>
+            <Text style={styles.secret}>{opened}</Text>
+          </>
+        ) : null}
+      </Section>
     </ScrollView>
   );
 }
@@ -233,7 +396,22 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 
-  row: {flexDirection: 'row', gap: 8},
+  row: {flexDirection: 'row', gap: 8, alignItems: 'center'},
+  cached: {color: theme.ok, fontSize: 12, flex: 1},
+
+  textarea: {
+    minHeight: 72,
+    textAlignVertical: 'top',
+    color: theme.text,
+    fontSize: 12,
+    fontFamily: theme.mono,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderRadius: theme.radius,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.inputBg,
+  },
 
   input: {
     color: theme.text,

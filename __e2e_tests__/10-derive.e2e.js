@@ -236,5 +236,53 @@ module.exports = function derive({describe, it}) {
         `the decrypted status was ${JSON.stringify(secret.status)}`,
       );
     });
+
+    it('the SHARED SECRET is stable across calls, not just the public key', async ({log, assert}) => {
+      /*
+       * The assertion whose absence let a broken vault ship.
+       *
+       * "The same label derives the same key twice" was tested for
+       * derive_public_key and quietly assumed for derive_shared_secret - and
+       * the vault's whole premise is that the secret is reproducible, because
+       * it seals with one derivation and opens with another. If it moves, a
+       * blob sealed a minute ago cannot be opened, and AES-GCM reports that as
+       * a tag failure, which reads as "wrong service name".
+       */
+      const {okcrypto} = await connected(log);
+
+      const first = await okcrypto.deriveSharedSecretFor('vault.example',
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+      const again = await okcrypto.deriveSharedSecretFor('vault.example',
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+
+      log(`first: ${hex(first)}`);
+      log(`again: ${hex(again)}`);
+      assert.equal(hex(first), hex(again), 'the vault cannot work if this moves');
+    });
+
+
+    it('a vault blob sealed on this device opens again', async ({log, assert}) => {
+      /*
+       * The unit tests round trip this with a STUBBED derive, which proves the
+       * cache and the cipher wiring and nothing about the device. On hardware
+       * it failed, and a tag failure is the only thing AES-GCM will say - so
+       * the round trip has to run here too.
+       */
+      const {okcrypto} = await connected(log);
+      const opts = {
+        requirePress: true,
+        timeoutMs: 30000,
+        onKeepAlive: pressing(log).onKeepAlive,
+      };
+
+      const blob = await okcrypto.vault.seal('vault.example', 'hunter2-the-secret', opts);
+      log(`blob: ${blob}`);
+      log(`cached after seal: ${okcrypto.vault.isUnlocked('vault.example')}`);
+
+      const opened = await okcrypto.vault.open('vault.example', blob, opts);
+      log(`opened: ${JSON.stringify(opened)}`);
+      assert.equal(opened, 'hunter2-the-secret');
+    });
+
   });
 };
