@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@bmatusiak/rectify": "github:bmatusiak/rectify",
+    "@noble/curves": "^2.4.0",
     "@react-native/new-app-screen": "0.87.1",
     "node-onlykey-lib": "file:../node-onlykey-lib",
     "react": "19.2.3",
