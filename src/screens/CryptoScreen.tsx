@@ -54,8 +54,7 @@ const fromUtf8 = (b: Uint8Array): string => okbytes.bytesToUtf8(b);
 const base64 = (b: Uint8Array): string => okbytes.toBase64(b);
 const unbase64 = (text: string): Uint8Array => okbytes.fromBase64(text);
 
-const hex = (bytes: Uint8Array) =>
-  Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+const hex = (bytes: Uint8Array): string => okbytes.toHex(bytes);
 
 export function CryptoScreen({
   emu,

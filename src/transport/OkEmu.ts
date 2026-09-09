@@ -1,4 +1,4 @@
-import {bytes as okbytes} from 'node-onlykey-lib';
+import {bytes as okbytes, transport} from 'node-onlykey-lib';
 import NativeOkEmu from '../../specs/NativeOkEmu';
 import type {LedEvent, StartResult, StreamEvent} from '../../specs/NativeOkEmu';
 
@@ -12,26 +12,17 @@ const RELEASE_ROUNDS = 4;
 
 export type {LedEvent, StartResult, StreamEvent};
 
-/**
- * usb_desc.h interface numbers. The firmware routes its replies by these, so
- * they are protocol, not an implementation detail.
+/*
+ * Interface numbers and directions come from the library, which is where the
+ * firmware's usb_desc.h is transcribed. They were declared here as well, with
+ * the same values, and a second copy of a wire constant is a copy that can
+ * drift. Re-exported rather than re-imported at each of the twenty-five call
+ * sites, so nothing else has to move.
  */
-export const IFACE = {
-  KEYBOARD: 0,
-  FIDO: 1,
-  VENDOR: 2,
-  /** Debug serial. Only present in DEBUG firmware builds - 4 interfaces, not 3. */
-  SEREMU: 3,
-} as const;
+export const IFACE = transport.IFACE;
+export const DIR = transport.DIR;
 
 export type Iface = (typeof IFACE)[keyof typeof IFACE];
-
-export const DIR = {
-  /** device to host */
-  OUT: 0,
-  /** host to device */
-  IN: 1,
-} as const;
 
 export type OkEmuEvents = {
   /** Every report on every interface, both directions - the full bus trace. */

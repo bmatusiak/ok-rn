@@ -40,7 +40,7 @@ import type {LogLevel} from './hooks/useLog';
  * up. Comparisons below mask the flag off both sides so neither convention can
  * break it again.
  */
-const CMD_MSG = 0x03;
+const CMD_MSG = protocol.ctaphid.CTAPHID.MSG;
 const CMD_MASK = 0x7f;
 
 /**
@@ -51,7 +51,7 @@ const CMD_MASK = 0x7f;
  * error frame - so forwarding to a locked device produces a timeout that is
  * indistinguishable from a dead one. Better to answer immediately and say so.
  */
-const CTAP2_ERR_OPERATION_DENIED = 0x27;
+const CTAP2_ERR_OPERATION_DENIED = protocol.ctaphid.CTAP2_STATUS.OPERATION_DENIED;
 
 type Options = {
   log: (level: LogLevel, text: string) => void;
