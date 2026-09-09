@@ -48,6 +48,7 @@ wrong version of the table looks exactly like the right one.
 | 29 | ["extension not supported" is really a preference bit](FINDING-a-preference-bit-masquerades-as-an-unsupported-feature.md) | medium — two consecutive statuses, neither naming its own cause | OnlyKey firmware | no |
 | 30 | [the derived password was the wrong 32 bytes](FINDING-the-shared-secret-response-is-two-values.md) | high — deterministic, label-sensitive, and not what any other client derives; **fixed** | **ours** | n/a |
 | 31 | [the vault worked in every test and failed on the phone](FINDING-a-global-that-only-exists-in-the-test-runner.md) | high — Hermes has no TextDecoder, and the error was reported as a wrong key; **fixed** | **ours** | n/a |
+| 32 | [the OpenPGP fork does not load under Hermes](FINDING-the-openpgp-fork-does-not-load-under-hermes.md) | high — blocks composite PGP key generation on the phone, silently, and was recorded as working | **ours** | open |
 
 ## Read #6 first, then #2
 
