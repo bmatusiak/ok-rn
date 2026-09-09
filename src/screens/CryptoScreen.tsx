@@ -3,6 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
+import {bytes as okbytes} from 'node-onlykey-lib';
 import {getOnlyKey} from '../onlykey';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {useSecureScreen} from '../hooks/useSecureScreen';
@@ -41,6 +42,18 @@ const CLIPBOARD_TTL_MS = 45000;
 /** Long enough to notice, short enough not to be left on screen. */
 const REVEAL_MS = 15000;
 
+/*
+ * The library's own encoders, not the platform's. Hermes has neither
+ * TextEncoder nor TextDecoder, and reaching for one is what broke the vault
+ * (FINDING-a-global-that-only-exists-in-the-test-runner.md). These are the
+ * same helpers the library uses internally, and they are tested with the
+ * globals deleted.
+ */
+const utf8 = (text: string): Uint8Array => okbytes.utf8ToBytes(text);
+const fromUtf8 = (b: Uint8Array): string => okbytes.bytesToUtf8(b);
+const base64 = (b: Uint8Array): string => okbytes.toBase64(b);
+const unbase64 = (text: string): Uint8Array => okbytes.fromBase64(text);
+
 const hex = (bytes: Uint8Array) =>
   Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 
@@ -69,6 +82,13 @@ export function CryptoScreen({
   const [plaintext, setPlaintext] = useState('');
   const [blob, setBlob] = useState('');
   const [opened, setOpened] = useState<string | null>(null);
+
+  /* age: an identity is derived, a file is text on the way in and out. */
+  const [ageLabel, setAgeLabel] = useState('');
+  const [recipient, setRecipient] = useState<string | null>(null);
+  const [ageText, setAgeText] = useState('');
+  const [ageFile, setAgeFile] = useState('');
+  const [agePlain, setAgePlain] = useState<string | null>(null);
   const [unlocked, setUnlocked] = useState(false);
 
   const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -173,11 +193,11 @@ export function CryptoScreen({
     setOpened(null);
     try {
       const {okcrypto} = await getOnlyKey();
-      const sealed = await okcrypto.vault.seal(service.trim(), plaintext, vaultOpts());
+      const sealed = await okcrypto.deviceVault.seal(service.trim(), plaintext, vaultOpts());
       setWaiting(false);
       setBlob(sealed);
       setPlaintext('');
-      setUnlocked(okcrypto.vault.isUnlocked(service.trim()));
+      setUnlocked(okcrypto.deviceVault.isUnlocked(service.trim()));
       setStatus('Sealed. Only this key can open it, and only for this service name.');
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
@@ -194,10 +214,10 @@ export function CryptoScreen({
     setOpened(null);
     try {
       const {okcrypto} = await getOnlyKey();
-      const text = await okcrypto.vault.open(service.trim(), blob.trim(), vaultOpts());
+      const text = await okcrypto.deviceVault.open(service.trim(), blob.trim(), vaultOpts());
       setWaiting(false);
       setOpened(text);
-      setUnlocked(okcrypto.vault.isUnlocked(service.trim()));
+      setUnlocked(okcrypto.deviceVault.isUnlocked(service.trim()));
     } catch (e) {
       const message = String((e as Error)?.message ?? e);
 
@@ -224,11 +244,71 @@ export function CryptoScreen({
 
   const lock = useCallback(async () => {
     const {okcrypto} = await getOnlyKey();
-    okcrypto.vault.lock(service.trim());
+    okcrypto.deviceVault.lock(service.trim());
     setUnlocked(false);
     setOpened(null);
     setStatus('Key forgotten. The next use touches the device again.');
   }, [service]);
+
+  const ageIdentity = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const {okcrypto} = await getOnlyKey();
+      const id = await okcrypto.deviceAge.identity(ageLabel.trim(), vaultOpts());
+      setWaiting(false);
+      setRecipient(id.recipientString);
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setWaiting(false);
+      setBusy(false);
+    }
+  }, [ageLabel, vaultOpts]);
+
+  const ageEncrypt = useCallback(async () => {
+    if (!recipient) return;
+    setBusy(true);
+    setError(null);
+    setAgePlain(null);
+    try {
+      const {okcrypto} = await getOnlyKey();
+      /*
+       * No device call here at all - encrypting to a recipient is public
+       * work. The base64 is only so the file can live in a text box.
+       */
+      const bytes = okcrypto.deviceAge.encrypt(utf8(ageText), recipient);
+      setAgeFile(base64(bytes));
+      setAgeText('');
+      setStatus('Encrypted. Only this key can read it.');
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }, [recipient, ageText]);
+
+  const ageDecrypt = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setAgePlain(null);
+    try {
+      const {okcrypto} = await getOnlyKey();
+      const out = await okcrypto.deviceAge.decrypt(
+        unbase64(ageFile.trim()),
+        ageLabel.trim(),
+        vaultOpts(),
+      );
+      setWaiting(false);
+      setAgePlain(fromUtf8(out));
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setWaiting(false);
+      setBusy(false);
+    }
+  }, [ageFile, ageLabel, vaultOpts]);
 
   return (
     <ScrollView
@@ -373,6 +453,104 @@ export function CryptoScreen({
           <>
             <Text style={styles.note}>Opened:</Text>
             <Text style={styles.secret}>{opened}</Text>
+          </>
+        ) : null}
+      </Section>
+
+      <Section title="Encrypted files (age)">
+        <Text style={styles.body}>
+          An age identity split between this key and the host: the X25519 half
+          never leaves the key, and the post-quantum half travels as a seed the
+          host expands itself. Both must agree, so a file needs the key AND the
+          label to open.
+        </Text>
+
+        <TextInput
+          value={ageLabel}
+          onChangeText={t => {
+            setAgeLabel(t);
+            setRecipient(null);
+            setAgePlain(null);
+          }}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="identity label"
+          placeholderTextColor={theme.textDim}
+          editable={!busy}
+          style={styles.input}
+        />
+        <Btn
+          title={busy ? 'Working…' : 'Get the recipient'}
+          tone="primary"
+          disabled={busy || locked || !ageLabel.trim()}
+          onPress={ageIdentity}
+        />
+
+        {recipient ? (
+          <>
+            <Text style={styles.note}>
+              Anyone can encrypt to this. It is public, and it is the only thing
+              a sender needs — no key, no app.
+            </Text>
+            {/*
+              * ABBREVIATED ON PURPOSE. An X-Wing recipient is 1216 bytes, so
+              * bech32 makes it about two thousand characters - printed in full
+              * it buries every control on the screen and is no more readable
+              * for being complete. Nobody transcribes one of these by eye; they
+              * copy it.
+              */}
+            <Text style={styles.secret}>
+              {recipient.slice(0, 28)}…{recipient.slice(-12)}
+            </Text>
+            <Text style={styles.note}>{recipient.length} characters</Text>
+            <Btn
+              title="Copy the recipient"
+              onPress={async () => {
+                await NativeSecrets.copySensitive(recipient, CLIPBOARD_TTL_MS);
+                setStatus('Recipient copied.');
+              }}
+            />
+
+            <TextInput
+              value={ageText}
+              onChangeText={setAgeText}
+              multiline
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="something to encrypt"
+              placeholderTextColor={theme.textDim}
+              editable={!busy}
+              style={styles.textarea}
+            />
+            <Btn
+              title={busy ? 'Working…' : 'Encrypt'}
+              disabled={busy || !ageText}
+              onPress={ageEncrypt}
+            />
+          </>
+        ) : null}
+
+        <TextInput
+          value={ageFile}
+          onChangeText={setAgeFile}
+          multiline
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="an encrypted file, base64"
+          placeholderTextColor={theme.textDim}
+          editable={!busy}
+          style={styles.textarea}
+        />
+        <Btn
+          title={busy ? 'Working…' : 'Decrypt'}
+          disabled={busy || locked || !ageLabel.trim() || !ageFile.trim()}
+          onPress={ageDecrypt}
+        />
+
+        {agePlain !== null ? (
+          <>
+            <Text style={styles.note}>Decrypted:</Text>
+            <Text style={styles.secret}>{agePlain}</Text>
           </>
         ) : null}
       </Section>

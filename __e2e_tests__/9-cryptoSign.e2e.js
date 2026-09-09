@@ -180,13 +180,13 @@ module.exports = function cryptoSign({describe, it}) {
       assert.equal(ops.deriveSharedSecret, true);
 
       /*
-       * And the one that is still false must say so for the right reason. The
-       * text has blamed a missing CTAPHID transport (which now exists) and a
-       * missing key exchange (which is now written); what remains is X-Wing's
-       * different response shape.
+       * Nothing is unavailable any more. The reason field has blamed a missing
+       * CTAPHID transport, then a missing key exchange, then X-Wing's response
+       * shape - each true when written and stale within a chunk. It is empty
+       * now, which is the only state that cannot go out of date.
        */
-      assert.equal(ops.deriveXwing, false);
-      assert.ok(/X-Wing/i.test(ops.reason), `stale reason: ${ops.reason}`);
+      assert.equal(ops.deriveXwing, true);
+      assert.equal(ops.reason, '', `nothing is missing, but reason says: ${ops.reason}`);
     });
 
     it('provisions a signing key if the slot is empty, which needs config mode', async ({

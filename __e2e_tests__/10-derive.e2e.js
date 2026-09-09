@@ -275,13 +275,96 @@ module.exports = function derive({describe, it}) {
         onKeepAlive: pressing(log).onKeepAlive,
       };
 
-      const blob = await okcrypto.vault.seal('vault.example', 'hunter2-the-secret', opts);
+      const blob = await okcrypto.deviceVault.seal('vault.example', 'hunter2-the-secret', opts);
       log(`blob: ${blob}`);
-      log(`cached after seal: ${okcrypto.vault.isUnlocked('vault.example')}`);
+      log(`cached after seal: ${okcrypto.deviceVault.isUnlocked('vault.example')}`);
 
-      const opened = await okcrypto.vault.open('vault.example', blob, opts);
+      const opened = await okcrypto.deviceVault.open('vault.example', blob, opts);
       log(`opened: ${JSON.stringify(opened)}`);
       assert.equal(opened, 'hunter2-the-secret');
+    });
+
+
+    it('the X-Wing key type returns its split-custody pair', async ({log, assert}) => {
+      /*
+       * The one shape the plugin still reports as unavailable, and the reason
+       * given is its shape rather than its reachability: X-Wing returns 64
+       * bytes - [pk_X(32) | mlkem_seed(32)] - not a 65-byte EC point
+       * (ok_extension.cpp:275-281). sk_X never leaves the device; the host
+       * expands the seed and does the ML-KEM half itself.
+       *
+       * Wire keytype 5 becomes KEYTYPE_XWING inside the firmware, which does
+       * opt2++ on the way in - so 5 is what goes on the wire, not 6.
+       */
+      const {okcrypto} = await connected(log);
+
+      const first = await okcrypto.derivePublicKey('xwing.example', {
+        keytype: okcrypto.KEYTYPE.XWING,
+        requirePress: true,
+        timeoutMs: 30000,
+        onKeepAlive: pressing(log).onKeepAlive,
+      });
+
+      log(`status: ${JSON.stringify(first.status)}`);
+      log(`payload: ${first.payload.length} bytes, key ${first.publicKey.length}`);
+      log(`pk_X: ${hex(first.publicKey.subarray(0, 32)).slice(0, 24)}...`);
+      log(`seed: ${hex(first.publicKey.subarray(32)).slice(0, 24)}...`);
+
+      assert.equal(first.publicKey.length, 64, 'X-Wing is 32 + 32, not an EC point');
+      assert.ok(/UNLOCKED/i.test(first.status), 'the transit cipher is wrong');
+
+      /* The two halves must not be the same 32 bytes twice. */
+      assert.notEqual(
+        hex(first.publicKey.subarray(0, 32)),
+        hex(first.publicKey.subarray(32)),
+        'pk_X and the ML-KEM seed are the same bytes, which cannot be right',
+      );
+
+      const again = await okcrypto.derivePublicKey('xwing.example', {
+        keytype: okcrypto.KEYTYPE.XWING,
+        requirePress: true,
+        timeoutMs: 30000,
+        onKeepAlive: pressing(log).onKeepAlive,
+      });
+      assert.equal(hex(first.publicKey), hex(again.publicKey), 'an identity must be stable');
+    });
+
+
+    it('an age file encrypted to the device is read back by it', async ({log, assert}) => {
+      /*
+       * The whole point of X-Wing's split custody, end to end.
+       *
+       * ENCRYPTION TOUCHES NO DEVICE. A recipient is public, so anyone holding
+       * the string can encrypt to this key - and that is done here with the
+       * device sitting idle, which is the claim worth proving.
+       *
+       * Decryption sends exactly 32 bytes: ct_X, the X25519 half. ct_M stays on
+       * the host and is decapsulated from the seed, which is what keeps this to
+       * one round trip instead of a 1120-byte upload.
+       */
+      const {okcrypto} = await connected(log);
+      const opts = {
+        requirePress: true,
+        timeoutMs: 30000,
+        onKeepAlive: pressing(log).onKeepAlive,
+      };
+
+      const id = await okcrypto.deviceAge.identity('age.example', opts);
+      log(`recipient: ${id.recipientString.slice(0, 40)}...`);
+      assert.ok(id.recipientString.startsWith('age1'), 'a recipient is bech32');
+
+      const message = 'the ciphertext is not the message';
+      const file = okcrypto.deviceAge.encrypt(
+        new TextEncoder().encode(message),
+        id.recipient,
+      );
+      log(`age file: ${file.length} bytes`);
+      assert.ok(file.length > message.length, 'an age file carries its header');
+
+      const opened = await okcrypto.deviceAge.decrypt(file, 'age.example', opts);
+      const text = String.fromCharCode(...opened);
+      log(`opened: ${JSON.stringify(text)}`);
+      assert.equal(text, message);
     });
 
   });
