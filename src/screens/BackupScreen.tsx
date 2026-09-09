@@ -1,8 +1,9 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput} from 'react-native';
-import {Btn, Section} from '../ui/components';
+import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {getOnlyKey} from '../onlykey';
+import {device as okdevice} from 'node-onlykey-lib';
 import OkEmu from '../transport/OkEmu';
 import NativeShare from '../../specs/NativeShare';
 import {useSecureScreen} from '../hooks/useSecureScreen';
@@ -36,6 +37,16 @@ import type {EmuSession} from '../hooks/useOkEmu';
  */
 const BACKUP_TICKS = 100;
 
+/**
+ * Where the backup key can come from.
+ *
+ * Both land on the same slot. A passphrase is hashed to a key the device
+ * stores; a PGP key supplies one of its own private scalars. The desktop app
+ * offers both, in two separate wizard steps.
+ */
+const BACKUP_SOURCES = ['Passphrase', 'PGP key'] as const;
+type BackupSource = (typeof BACKUP_SOURCES)[number];
+
 export function BackupScreen({
   emu,
   blockScreenshots = true,
@@ -52,6 +63,9 @@ export function BackupScreen({
   const [restoreText, setRestoreText] = useState('');
   const [restoreFrom, setRestoreFrom] = useState<string | null>(null);
   const [passphrase, setPassphrase] = useState('');
+  const [backupSource, setBackupSource] = useState<BackupSource>('Passphrase');
+  const [backupArmored, setBackupArmored] = useState('');
+  const [backupKeyPassphrase, setBackupKeyPassphrase] = useState('');
 
   /*
    * Whether the device has told us it has no backup key.
@@ -135,6 +149,65 @@ export function BackupScreen({
       setBusy(null);
     }
   }, []);
+
+  /*
+   * Take the backup key from a PGP key instead of a passphrase.
+   *
+   * The scalar and its CURVE both come from the key. Guessing the curve writes
+   * a key the device accepts and that then decrypts nothing, which is only
+   * discovered at restore time - the worst possible moment.
+   */
+  const setBackupFromPgp = useCallback(async () => {
+    setBusy('pgpBackup');
+    setError(null);
+    setStatus(null);
+    try {
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      let key = await openpgp.readPrivateKey({armoredKey: backupArmored});
+      if (backupKeyPassphrase && !key.isDecrypted()) {
+        key = await openpgp.decryptKey({
+          privateKey: key,
+          passphrase: backupKeyPassphrase,
+        });
+      }
+
+      const candidates = okdevice.keys.fromPgpKey(key);
+      if (!candidates.length) {
+        throw new Error('that key carries no private material this device can use');
+      }
+
+      /*
+       * ECC only. An RSA candidate has p and q rather than a scalar and no
+       * curve at all, and a backup key's type byte IS a curve - so an RSA key
+       * cannot be one, and saying that beats writing something the device
+       * accepts and cannot use.
+       *
+       * The first ECC candidate is the primary, which is what the desktop's own
+       * form starts on. Choosing among subkeys is a picker this screen does not
+       * have yet.
+       */
+      const chosen = candidates.find(c => c.kind === 'ecc');
+      if (!chosen || chosen.scalar === undefined || chosen.curve === undefined) {
+        throw new Error(
+          'that key is RSA. A backup key is typed by its curve, so it has to be ' +
+            'an Ed25519 or NIST P-256 key.',
+        );
+      }
+
+      const {device} = await getOnlyKey();
+      const result = await device.setBackupKeyFromPgp(chosen.scalar, {
+        curve: chosen.curve,
+      });
+      setStatus(
+        `Backup key set from the PGP key, on slot ${result.slot}. ` +
+          'A backup made from now on needs THAT key to restore.',
+      );
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [backupArmored, backupKeyPassphrase]);
 
   const setBackupPassphrase = useCallback(async () => {
     setBusy('passphrase');
@@ -267,7 +340,53 @@ export function BackupScreen({
       ) : null}
 
       {needsPassphrase ? (
-        <Section title="Set a backup passphrase">
+        <Section title="Set a backup key">
+          <Segmented
+            value={backupSource}
+            options={BACKUP_SOURCES}
+            onChange={setBackupSource}
+          />
+          {backupSource === 'PGP key' ? (
+            <>
+              <Text style={styles.body}>
+                One of a PGP key&apos;s own private keys becomes the backup key
+                — the desktop app&apos;s Setup step 9. It goes to the same slot
+                a passphrase would, and the CURVE is read from the key, because
+                the device is told the type and cannot work it out from the
+                bytes.
+              </Text>
+              <TextInput
+                value={backupArmored}
+                onChangeText={setBackupArmored}
+                multiline
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="-----BEGIN PGP PRIVATE KEY BLOCK-----"
+                placeholderTextColor={theme.textDim}
+                style={[styles.input, styles.textarea]}
+              />
+              <TextInput
+                value={backupKeyPassphrase}
+                onChangeText={setBackupKeyPassphrase}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="Passphrase, if the key has one"
+                placeholderTextColor={theme.textDim}
+                style={styles.input}
+              />
+              {config.ready ? (
+                <Btn
+                  title={busy === 'pgpBackup' ? 'Setting…' : 'Use this key for backups'}
+                  tone="primary"
+                  disabled={busy !== null || !backupArmored.trim()}
+                  onPress={setBackupFromPgp}
+                />
+              ) : null}
+            </>
+          ) : null}
+          {backupSource === 'Passphrase' ? (
+          <>
           <Text style={styles.body}>
             A backup is encrypted under a passphrase, and the key will not make
             one until it has it. The passphrase never reaches the device — only
@@ -287,7 +406,7 @@ export function BackupScreen({
           {!config.ready ? (
             <>
               <Text style={styles.note}>
-                The key only accepts a passphrase in config mode, and getting
+                The key only accepts a backup key in config mode, and getting
                 there locks it. The app holds button 6, you enter your PIN
                 again, and afterwards the app has to be restarted — config mode
                 ends only at a restart.
@@ -321,6 +440,8 @@ export function BackupScreen({
           <Text style={styles.note}>
             {passphrase.length}/25 characters
           </Text>
+          </>
+          ) : null}
         </Section>
       ) : null}
 
