@@ -246,8 +246,20 @@ const PATCHES = [
      */
     file: 'libraries/onlykey/okcore.h',
     edits: [
-      ['#define factorysectoradr 0x5800 //22528 - 23551',
-       '#define factorysectoradr (OKEMU_FLASH_BASE + 0x5800) //22528 - 23551'],
+      /*
+       * The trailing `//22528 - 23551` is deliberately NOT part of the pattern.
+       *
+       * v2.1.0 and v2.1.1 define the same address with no comment after it, so
+       * a pattern carrying the comment misses on those releases while the three
+       * other edits in this file still apply - the patch half-lands, and what
+       * gets built is a tree with one address unrebased. Matching the define
+       * alone applies to every release in ok-versions.json; any comment already
+       * on the line simply trails the replacement, which is still valid C.
+       *
+       * Found by scripts/version-probe.js, which is what it is for.
+       */
+      ['#define factorysectoradr 0x5800',
+       '#define factorysectoradr (OKEMU_FLASH_BASE + 0x5800)'],
       ['#define fwstartadr 0x6060',
        '#define fwstartadr (OKEMU_FLASH_BASE + 0x6060)'],
       ['#define flashstorestart 0x3A800',
@@ -722,4 +734,13 @@ function main() {
   );
 }
 
-main();
+/*
+ * Only stage when RUN, not when required.
+ *
+ * version-probe.js imports the patch tables to ask which of their patterns
+ * still match an older release, and importing a module should not rewrite
+ * .stage as a side effect.
+ */
+if (require.main === module) main();
+
+module.exports = { PATCHES, PRODUCTION_PATCHES, DROP, main };
