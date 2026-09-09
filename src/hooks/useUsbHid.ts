@@ -1,4 +1,4 @@
-import {bytes as okbytes} from 'node-onlykey-lib';
+import {bytes as okbytes, protocol} from 'node-onlykey-lib';
 import {useCallback, useEffect, useState} from 'react';
 import UsbHid, {
   ONLYKEY_PRODUCT_ID,
@@ -7,8 +7,9 @@ import UsbHid, {
   type Transport,
   type UsbDeviceInfo,
 } from '../transport/UsbHid';
-import {CTAPHID} from '../transport/framing';
 import type {LogLevel} from './useLog';
+
+const {CTAPHID, BROADCAST_CID, cidNumber} = protocol.ctaphid;
 
 type Options = {
   log: (level: LogLevel, text: string) => void;
@@ -37,9 +38,9 @@ export function useUsbHid({log}: Options) {
     const offMessage = UsbHid.on('message', frame => {
       log(
         'rx',
-        'MSG cid=0x' + frame.channelId.toString(16) +
-          ' cmd=0x' + frame.command.toString(16) +
-          ' len=' + frame.data.length,
+        'MSG cid=0x' + cidNumber(frame.cid).toString(16) +
+          ' cmd=0x' + frame.cmd.toString(16) +
+          ' len=' + frame.payload.length,
       );
     });
 
@@ -100,20 +101,48 @@ export function useUsbHid({log}: Options) {
     }
   }, [log]);
 
-  /** CTAPHID_INIT with an 8-byte nonce - the standard "is anyone there?" probe. */
+  /**
+   * CTAPHID_INIT with an 8-byte nonce - the standard "is anyone there?" probe.
+   *
+   * The reply is checked to ECHO THE NONCE. The broadcast channel is shared, so
+   * any device on the bus can answer, and an INIT reply that is not carrying
+   * our nonce is somebody else's - taking its channel id would then talk to the
+   * wrong device. This copy of the probe had never checked; the library's does,
+   * and this now says so on screen either way.
+   */
   const sendPing = useCallback(async () => {
     const nonce = new Uint8Array(8);
     for (let i = 0; i < nonce.length; i++) {
       nonce[i] = Math.floor(Math.random() * 256);
     }
+
+    const off = UsbHid.on('message', frame => {
+      if (frame.cmd !== CTAPHID.INIT) {
+        return;
+      }
+      const echoed = frame.payload.subarray(0, 8);
+      if (okbytes.toHex(echoed) === okbytes.toHex(nonce)) {
+        log('info', 'INIT reply echoes our nonce; channel is ours');
+      } else {
+        log(
+          'error',
+          "INIT reply carries a nonce that is not ours (" +
+            okbytes.formatHex(echoed) +
+            '); ignoring the channel it offered',
+        );
+      }
+      off();
+    });
+
     try {
-      log('tx', 'CTAPHID_INIT nonce=' + okbytes.formatHex(okbytes.toHex(nonce)));
+      log('tx', 'CTAPHID_INIT nonce=' + okbytes.formatHex(nonce));
       await UsbHid.sendMessage({
-        channelId: 0xffffffff,
-        command: CTAPHID.INIT,
-        data: nonce,
+        cid: BROADCAST_CID,
+        cmd: CTAPHID.INIT,
+        payload: nonce,
       });
     } catch (error) {
+      off();
       log('error', 'sendMessage: ' + String(error));
     }
   }, [log]);

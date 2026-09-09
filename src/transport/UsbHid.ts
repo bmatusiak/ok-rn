@@ -1,4 +1,3 @@
-import {bytes as okbytes} from 'node-onlykey-lib';
 import NativeUsbHid from '../../specs/NativeUsbHid';
 import type {
   ConnectResult,
@@ -7,7 +6,18 @@ import type {
   Transport,
   UsbDeviceInfo,
 } from '../../specs/NativeUsbHid';
-import {encodeFrames, FrameAssembler, HID_REPORT_SIZE, type Frame} from './framing';
+import {bytes as okbytes, protocol} from 'node-onlykey-lib';
+
+const {Assembler, frame: encodeFrames, cidNumber, PACKET_SIZE} = protocol.ctaphid;
+
+/**
+ * A whole CTAPHID message, as the library's assembler hands it over.
+ *
+ * `src/transport/framing.ts` used to define this alongside a second copy of
+ * the framing itself. Both are gone; the shape is the library's, so a message
+ * crosses this boundary without being renamed on the way.
+ */
+export type Frame = {cid: Uint8Array; cmd: number; payload: Uint8Array};
 
 export type {ConnectResult, DataEvent, StatusEvent, Transport, UsbDeviceInfo};
 
@@ -35,13 +45,21 @@ type Listener<K extends keyof UsbHidEvents> = UsbHidEvents[K];
 /**
  * Thin, typed facade over the NativeUsbHid TurboModule.
  *
- * Owns the FrameAssembler so callers get whole messages, and normalises the
- * native `state` string into the ConnectionState union.
+ * Owns the assembler so callers get whole messages, and normalises the native
+ * `state` string into the ConnectionState union.
  */
 class UsbHidClient {
-  private readonly assembler = new FrameAssembler(HID_REPORT_SIZE);
+  /*
+   * REBUILT on connect, not built once.
+   *
+   * A USB endpoint reports its own packet size, and this used to send at that
+   * size while reassembling at 64 - so against any endpoint that is not 64 the
+   * two ends disagreed about where a payload starts. See
+   * FINDING-the-usb-assembler-ignored-the-endpoints-packet-size.md.
+   */
+  private assembler = new Assembler({packetSize: PACKET_SIZE});
   private readonly listeners = new Map<keyof UsbHidEvents, Set<Function>>();
-  private packetSize = HID_REPORT_SIZE;
+  private packetSize: number = PACKET_SIZE;
   private nativeSubs: Array<{remove: () => void}> = [];
   private started = false;
 
@@ -133,7 +151,8 @@ class UsbHidClient {
     this.ensureSubscribed();
     this.assembler.reset();
     const result = await NativeUsbHid.connect(vendorId, productId);
-    this.packetSize = result.packetSize > 0 ? result.packetSize : HID_REPORT_SIZE;
+    this.packetSize = result.packetSize > 0 ? result.packetSize : PACKET_SIZE;
+    this.assembler = new Assembler({packetSize: this.packetSize});
     return result;
   }
 
@@ -152,8 +171,8 @@ class UsbHidClient {
   }
 
   /** Frame a message as CTAPHID INIT/CONT packets and write each one. */
-  async sendMessage(frame: Frame): Promise<void> {
-    const packets = encodeFrames(frame, this.packetSize);
+  async sendMessage(frame: {cid: Uint8Array | number; cmd: number; payload: Uint8Array}): Promise<void> {
+    const packets = encodeFrames(frame.cid, frame.cmd, frame.payload, this.packetSize);
     for (const packet of packets) {
       await NativeUsbHid.write(okbytes.toHex(packet));
     }
