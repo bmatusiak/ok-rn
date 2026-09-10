@@ -295,21 +295,29 @@ module.exports = function derive({describe, it}) {
        * it failed, and a tag failure is the only thing AES-GCM will say - so
        * the round trip has to run here too.
        *
-       * THE PREFERENCE HAS TO BE ON, and 9-cryptoSign turns it on while it is
-       * already in config mode - reaching config mode costs a gesture that
-       * also locks the device, so paying that twice in one run for one EEPROM
-       * byte is waste.
-       *
        * The vault derives its public key without a touch and its shared secret
        * with one, because the web app does and the pairing decides the key -
        * the press flag is an INPUT to the derivation, not a permission check
-       * (FINDING-the-press-flag-changes-the-derived-key.md). The touch-free
-       * half is refused unless derived_key_challenge_mode bit 3 is set, and
-       * retrying it with a touch would derive a DIFFERENT key, so there is no
-       * shortcut past it. If this fails saying so, run the full suite once:
-       * the byte persists.
+       * (FINDING-the-press-flag-changes-the-derived-key.md). So there is no
+       * retrying this with a touch; it would derive a different key.
+       *
+       * WHAT THAT COSTS DEPENDS ON THE FIRMWARE, and the split is one release
+       * wide (node-onlykey-lib/src/device/version.js, touchFreeDerive):
+       *
+       *   'always'      v3.0.1 and earlier - no preference exists
+       *   'broken'      v3.0.2 - the check reads a RAM cache its own raw-HID
+       *                 path clears, so the derive is refused whatever the
+       *                 preference says, and the vault CANNOT work
+       *   'preference'  after v3.0.2 - an EEPROM bit, set by 9-cryptoSign
+       *                 while it is in config mode for its own reasons
+       *
+       * So on v3.0.2 this asserts the REFUSAL. A suite that only checks for
+       * success cannot tell a version that refuses correctly from one that is
+       * broken, which is the whole point of running the matrix.
        */
       const {device, okcrypto} = await connected(log);
+      const can = device.capabilities && device.capabilities.touchFreeDerive;
+      log(`touch-free derive on this firmware: ${can}`);
 
       const opts = {
         requirePress: true,
@@ -317,17 +325,37 @@ module.exports = function derive({describe, it}) {
         onKeepAlive: pressing(log).onKeepAlive,
       };
 
+      if (can === 'broken') {
+        let refused = null;
+        try {
+          await okcrypto.deviceVault.seal('vault.example', 'hunter2-the-secret', opts);
+        } catch (e) {
+          refused = String(e && e.message);
+        }
+        log(`refusal: ${refused}`);
+        assert.ok(refused, 'this firmware cannot derive touch-free, so the seal must fail');
+        /*
+         * Either message is correct and they come from different layers. The
+         * vault's own translation fires when the firmware returns
+         * EXTENSION_NOT_SUPPORTED cleanly; the derive's status guard fires when
+         * the refusal arrives with a stale buffer behind it, which is the same
+         * refusal wearing different clothes. What must NOT happen is a
+         * plausible-looking key coming back from a device that refused.
+         */
+        assert.ok(
+          /cannot do a touch-free derive|did not answer this derive/.test(refused),
+          'the refusal must name the firmware or say the device did not ' +
+            'answer - not surface as a framing complaint several layers up',
+        );
+        return;
+      }
+
       /*
        * Enable the preference ON DEMAND, then retry THE SAME derive.
        *
-       * This is not the forbidden fallback. The forbidden one is retrying with
-       * a different press flag, which derives a different key; this changes a
-       * device setting and then asks the identical question again, so the
-       * answer is the one the web app would get.
-       *
-       * On demand because the byte persists in EEPROM: it is set once per
-       * device, and the config-mode gesture it costs is slow enough that
-       * paying it on every run would be waste.
+       * Not the forbidden fallback: that one retries with a different press
+       * flag and derives a different key. This changes a device setting and
+       * asks the identical question again.
        */
       let blob;
       try {
@@ -360,8 +388,30 @@ module.exports = function derive({describe, it}) {
        * from the device and kept nowhere, so this record is unreadable to
        * anything that can read the phone's storage.
        */
-      const {okcrypto} = await connected(log);
+      const {device, okcrypto} = await connected(log);
       assert.equal(okcrypto.deviceVault.canPersist, true, 'no store was wired');
+
+      /*
+       * Storage is host-side and works on any firmware; what does not is the
+       * DERIVE that seals the record. On v3.0.2 the touch-free derive is
+       * refused whatever the preference says, so assert that saving refuses
+       * for that reason rather than silently storing nothing.
+       */
+      if (device.capabilities && device.capabilities.touchFreeDerive === 'broken') {
+        let refused = null;
+        try {
+          await okcrypto.deviceVault.save('store.example', 'stored-secret', {
+            requirePress: true, timeoutMs: 30000,
+          });
+        } catch (e) {
+          refused = String(e && e.message);
+        }
+        log(`refusal: ${refused}`);
+        assert.ok(
+          /cannot do a touch-free derive|did not answer this derive/.test(String(refused)),
+          'this firmware cannot seal, and must say so');
+        return;
+      }
 
       /*
        * FRESH options per device operation. pressing() answers exactly one
@@ -403,12 +453,23 @@ module.exports = function derive({describe, it}) {
     });
 
     it('an export carries sealed blobs and imports back', async ({log, assert}) => {
-      const {okcrypto} = await connected(log);
+      const {device, okcrypto} = await connected(log);
       const press = () => ({
         requirePress: true,
         timeoutMs: 30000,
         onKeepAlive: pressing(log).onKeepAlive,
       });
+
+      /*
+       * The envelope is host-side, but there is nothing to put in it on a
+       * firmware that cannot seal - v3.0.2's touch-free derive is refused
+       * whatever the preference says.
+       */
+      if (device.capabilities && device.capabilities.touchFreeDerive === 'broken') {
+        log('this firmware cannot seal, so there is nothing to export');
+        assert.equal((await okcrypto.deviceVault.serviceIds()).length, 0);
+        return;
+      }
 
       await okcrypto.deviceVault.save('export.example', 'exported-secret', press());
       const json = await okcrypto.deviceVault.exportJSON();
@@ -453,7 +514,32 @@ module.exports = function derive({describe, it}) {
        * Wire keytype 5 becomes KEYTYPE_XWING inside the firmware, which does
        * opt2++ on the way in - so 5 is what goes on the wire, not 6.
        */
-      const {okcrypto} = await connected(log);
+      const {device, okcrypto} = await connected(log);
+
+      /*
+       * X-WING DOES NOT EXIST ON EVERY FIRMWARE. `KEYTYPE_XWING` appears
+       * nowhere in libraries@5d7ce7a (v3.0.2), so an older key cannot answer
+       * this at all and the honest assertion is that it REFUSES rather than
+       * that it succeeds. A suite checking only for success cannot tell a
+       * version that correctly lacks a feature from one that is broken.
+       */
+      if (device.capabilities && device.capabilities.xwingDerive === false) {
+        log('this firmware has no X-Wing key type');
+        let refused = null;
+        try {
+          await okcrypto.derivePublicKey('xwing.example', {
+            keytype: okcrypto.KEYTYPE.XWING,
+            requirePress: true,
+            timeoutMs: 15000,
+            onKeepAlive: pressing(log).onKeepAlive,
+          });
+        } catch (e) {
+          refused = String(e && e.message);
+        }
+        log(`refusal: ${String(refused).slice(0, 120)}`);
+        assert.ok(refused, 'a firmware without X-Wing must not answer an X-Wing derive');
+        return;
+      }
 
       const first = await okcrypto.derivePublicKey('xwing.example', {
         keytype: okcrypto.KEYTYPE.XWING,
@@ -499,12 +585,21 @@ module.exports = function derive({describe, it}) {
        * the host and is decapsulated from the seed, which is what keeps this to
        * one round trip instead of a 1120-byte upload.
        */
-      const {okcrypto} = await connected(log);
+      const {device, okcrypto} = await connected(log);
       const opts = {
         requirePress: true,
         timeoutMs: 30000,
         onKeepAlive: pressing(log).onKeepAlive,
       };
+
+      /*
+       * The age format is X-Wing end to end, so a firmware without that key
+       * type cannot hold an identity in it. Nothing to encrypt to.
+       */
+      if (device.capabilities && device.capabilities.xwingDerive === false) {
+        log('this firmware has no X-Wing key type, so it has no age identity');
+        return;
+      }
 
       const id = await okcrypto.deviceAge.identity('age.example', opts);
       log(`recipient: ${id.recipientString.slice(0, 40)}...`);

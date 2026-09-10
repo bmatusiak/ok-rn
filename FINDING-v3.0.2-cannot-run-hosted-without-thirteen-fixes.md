@@ -115,14 +115,54 @@ Then `scripts/version-probe.js` said which releases carry each pattern, and
 caught that v2.1.0 has neither the `wipe_slot` pair nor the hmac one before
 either was ever built.
 
-## What still fails, and what it is not
+## What it genuinely cannot do, and how the library now says so
 
-Five of 67, and none is a defect in this release:
+**v3.0.2 passes 67 of 67.** Two things it cannot do are not defects in the
+release, and neither is patched here - a real v3.0.2 key behaves this way, and
+an emulator that hid it would be worse than useless.
 
-- **the X-Wing key type, and the age file that uses it.** `KEYTYPE_XWING` does
-  not exist at `5d7ce7a`. The suite asks a firmware for a feature it never had.
-  The fix belongs in `node-onlykey-lib/src/device/version.js` as a capability
-  gate, so the app disables what an older key cannot do — not in a stage patch.
-- **three vault tests**, whose touch-free derive returns 65 bytes that do not
-  start `0x04`. The derive suite and deriveParity both pass and both use the
-  PRESS variant, so this is specific to the touch-free path. **Not explained.**
+### The touch-free derive: a check added in this release, reading a stale cache
+
+The split is exactly one release wide:
+
+| firmware | touch-free derive |
+|---|---|
+| v2.1.0 - v3.0.1 | **no gate at all.** `ok_extension.cpp` sets `additional_data[0]` for the REQ_PRESS variants and carries straight on |
+| v3.0.2 | the check was **added**, against `derived_key_challenge_mode` - a RAM cache of an EEPROM byte that the raw-HID pipeline zeroes on every `done_process_packets()`. By the time the FIDO2 path reads it, it is always zero |
+| after v3.0.2 | the same check, reloading the byte from EEPROM first, so the preference works |
+
+So v3.0.2 refuses a setting it is holding. The device answers
+"Successfully set derived key challenge mode" and then rejects every touch-free
+derive with `CTAP2_ERR_EXTENSION_NOT_SUPPORTED`, which reads as "this firmware
+does not have the feature". It has it. Nothing reloaded it.
+
+`capabilities().touchFreeDerive` now reports `always`, `broken` or
+`preference`, and the vault names the firmware rather than telling somebody to
+enable a setting that cannot take effect.
+
+### X-Wing: a feature that arrived later
+
+`KEYTYPE_XWING` appears nowhere in `libraries@5d7ce7a`. An older device does not
+refuse the request - it has no branch for the type, so `pubsize` is never set
+and it answers with a **perfectly well-formed status line and whatever was in
+the key area**. Measured: the derive returned successfully and the caller got 64
+bytes that are not a key.
+
+So `capabilities().xwingDerive` is checked before the request is sent. A device
+that cannot answer is never asked.
+
+## The bug that hid all of it
+
+When the firmware refuses a derive it returns an error code and calls
+`wipedata()`, which starts a TIMER rather than clearing anything. A poll landing
+in that window gets what is left of the previous response.
+
+Measured on v3.0.2, five attempts at a derive the firmware was refusing
+outright: payloads of 76, 84 and 86 bytes, each with a different 65-byte
+"public key", each returned to the caller as a real one. The vault sealed blobs
+under them. The only symptom anywhere was a complaint about key framing several
+layers up, in a function that had done nothing wrong.
+
+The length is not a guard - 76 and 86 both look reasonable, and the value is
+stable per label because the stale buffer is. Only the status can tell an answer
+from a leftover, so `derive()` now requires one.
