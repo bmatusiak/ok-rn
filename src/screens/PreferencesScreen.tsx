@@ -3,7 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {device as okdevice} from 'node-onlykey-lib';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from '../hooks/KeyContext';
 import * as biometrics from '../biometrics';
 import {useConfigMode} from '../hooks/useConfigMode';
 import {PinScreen} from './PinScreen';
@@ -35,6 +35,9 @@ function layoutOptions() {
 }
 
 export function PreferencesScreen({emu}: {emu: EmuSession}) {
+  /* The ACTIVE key, not whichever one this file used to assume. */
+  const getKey = useActiveKey();
+
   const [bioStatus, setBioStatus] = useState<biometrics.BiometricStatus>('unavailable');
   const [bioStored, setBioStored] = useState(false);
   const [bioBusy, setBioBusy] = useState(false);
@@ -115,7 +118,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
 
   useEffect(() => {
     let cancelled = false;
-    getOnlyKey()
+    getKey()
       .then(({device}) => {
         if (!cancelled) setTable(device.preferences());
       })
@@ -125,7 +128,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [getKey]);
 
   const apply = useCallback(
     async (name: string) => {
@@ -138,7 +141,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
       setError(null);
       setStatus(null);
       try {
-        const {device} = await getOnlyKey();
+        const {device} = await getKey();
         const result = await device.setPreference(name, Number(raw));
         setStatus(`${name}: ${result.response}`);
       } catch (e) {
@@ -147,7 +150,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
         setBusy(null);
       }
     },
-    [values],
+    [getKey, values],
   );
 
   /* Config mode locks the key, so the PIN has to go back in. */

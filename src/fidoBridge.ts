@@ -22,7 +22,7 @@
  */
 import {bytes as okbytes, protocol} from 'node-onlykey-lib';
 import FidoGatt, {type CtapRequestEvent} from './transport/FidoGatt';
-import {getOnlyKey} from './onlykey';
+import type {OnlyKeyApp} from './onlykey';
 import OkEmu from './transport/OkEmu';
 import type {LogLevel} from './hooks/useLog';
 
@@ -59,18 +59,29 @@ type Options = {
   onPending?: (event: CtapRequestEvent | null) => void;
   /** The firmware is waiting for a button. Also for the UI. */
   onPresence?: (needed: boolean) => void;
+
+  /**
+   * The key to bridge TO, supplied rather than imported.
+   *
+   * This is not a component, so it cannot read which key is active - and it
+   * used to call getOnlyKey() with no argument, which meant a browser asking
+   * for a security key was always answered by the SOFT one even with a hard
+   * key selected. Passing it in makes that a decision at the call site
+   * rather than a default nobody sees.
+   */
+  getKey: () => Promise<OnlyKeyApp>;
 };
 
 /**
  * Connect the GATT server to the firmware. Returns an unsubscribe function.
  */
-export function startFidoBridge({log, onPending, onPresence}: Options): () => void {
+export function startFidoBridge({log, onPending, onPresence, getKey}: Options): () => void {
   let bridge: ReturnType<typeof protocol.bridge.createCtapBridge> | null = null;
 
   /*
    * Built on first use, not here.
    *
-   * getOnlyKey() boots the firmware and composes the Rectify app, which is not
+   * getKey() boots the firmware and composes the Rectify app, which is not
    * something to do while a screen is mounting - and a bridge is useless until
    * a central actually connects, which may never happen.
    */
@@ -78,7 +89,7 @@ export function startFidoBridge({log, onPending, onPresence}: Options): () => vo
     if (bridge) {
       return bridge;
     }
-    const {transport} = await getOnlyKey();
+    const {transport} = await getKey();
     bridge = protocol.bridge.createCtapBridge(transport, {
       log: (level: string, message: string) =>
         log(level === 'error' ? 'error' : 'info', `[bridge] ${message}`),

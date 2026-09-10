@@ -2,6 +2,12 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
+
+/*
+ * EXPLICITLY 'embedded'. This hook IS the soft key - it boots the firmware
+ * in this process and presses its pads - so leaning on the default would be
+ * relying on a default to say something this file means outright.
+ */
 import type {LogLevel} from './useLog';
 
 /*
@@ -318,7 +324,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
   const connect = useCallback(async () => {
     setBusy(true);
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getOnlyKey('embedded');
       const result = await device.connect();
       log('info', `OKCONNECT -> "${String(result.status ?? '').trim()}"`);
       return result;
@@ -355,7 +361,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
       let offProgress: (() => void) | undefined;
       try {
         log('info', `provisioning with a ${pin.length}-digit PIN`);
-        const {device} = await getOnlyKey();
+        const {device} = await getOnlyKey('embedded');
 
         offProgress = device.on('progress', (e: {step: string}) =>
           log('info', `  ${e.step}`),

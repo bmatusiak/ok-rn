@@ -3,7 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice} from 'node-onlykey-lib';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from '../hooks/KeyContext';
 import {PinScreen} from './PinScreen';
 import {useConfigMode} from '../hooks/useConfigMode';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -82,6 +82,9 @@ function describeType(name: string): string {
 }
 
 export function KeysScreen({emu}: {emu: EmuSession}) {
+  /* The ACTIVE key, not whichever one this file used to assume. */
+  const getKey = useActiveKey();
+
   const [mode, setMode] = useState<Mode>('PGP');
   const [slot, setSlot] = useState<number>(101);
   const [passphrase, setPassphrase] = useState('');
@@ -125,7 +128,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         key = await openpgp.decryptKey({privateKey: key, passphrase});
       }
 
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       const applied = await device.loadPgpKey(key);
       setLoaded(true);
       setStatus(
@@ -138,7 +141,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     } finally {
       setBusy(null);
     }
-  }, [armored, passphrase]);
+  }, [getKey, armored, passphrase]);
 
   const loadHex = useCallback(async () => {
     setBusy('hex');
@@ -159,7 +162,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         return;
       }
 
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       /*
        * The type is ASKED FOR on an ECC or HMAC slot, not inferred.
        *
@@ -204,7 +207,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     } finally {
       setBusy(null);
     }
-  }, [hex, slot]);
+  }, [getKey, hex, slot]);
 
   /*
    * Validated BEFORE anything is sent, and every problem is reported at once.
@@ -220,7 +223,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     setStatus(null);
     setYubiErrors({});
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       const check = device.validateYubiCredential(yubi, {global: true});
       if (!check.ok) {
         const marked: Record<string, string> = {};
@@ -239,14 +242,14 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     } finally {
       setBusy(null);
     }
-  }, [yubi]);
+  }, [getKey, yubi]);
 
   const wipe = useCallback(async () => {
     setBusy('wipe');
     setError(null);
     setStatus(null);
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       await device.wipeKey(slot);
       setStatus(`Wiped slot ${slot}.`);
     } catch (e) {
@@ -254,7 +257,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     } finally {
       setBusy(null);
     }
-  }, [slot]);
+  }, [getKey, slot]);
 
   /* Config mode locks the key; the PIN has to go back in before anything else. */
   if (config.entered && !config.ready) {

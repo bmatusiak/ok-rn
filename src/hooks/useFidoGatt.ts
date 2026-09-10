@@ -5,6 +5,7 @@ import FidoGatt, {
 } from '../transport/FidoGatt';
 import OkEmu from '../transport/OkEmu';
 import {startFidoBridge} from '../fidoBridge';
+import {useActiveKey} from './KeyContext';
 import type {LogLevel} from './useLog';
 
 type Options = {
@@ -18,6 +19,9 @@ export type FidoSession = ReturnType<typeof useFidoGatt>;
  * GATT server's lifetime and the bridge that answers requests.
  */
 export function useFidoGatt({log}: Options) {
+  /* The ACTIVE key answers the browser, not whichever this file assumed. */
+  const getKey = useActiveKey();
+
   /*
    * Seeded from the native side rather than assumed idle. The GATT server
    * outlives any particular mount, so starting at 'idle' would show a stopped
@@ -54,6 +58,7 @@ export function useFidoGatt({log}: Options) {
      * work while being incapable of registering a credential.
      */
     const offBridge = startFidoBridge({
+      getKey,
       log,
       onPending: setPending,
       onPresence: setPresenceNeeded,
@@ -72,7 +77,7 @@ export function useFidoGatt({log}: Options) {
       offStatus();
       offBridge();
     };
-  }, [log]);
+  }, [getKey, log]);
 
   const start = useCallback(async () => {
     try {

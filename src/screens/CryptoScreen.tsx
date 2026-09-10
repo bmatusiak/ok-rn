@@ -4,7 +4,7 @@ import {Btn, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
 import {bytes as okbytes} from 'node-onlykey-lib';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from '../hooks/KeyContext';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {useSecureScreen} from '../hooks/useSecureScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -63,6 +63,9 @@ export function CryptoScreen({
   emu: EmuSession;
   blockScreenshots?: boolean;
 }) {
+  /* The ACTIVE key, not whichever one this file used to assume. */
+  const getKey = useActiveKey();
+
   useSecureScreen(blockScreenshots);
 
   const [label, setLabel] = useState('');
@@ -112,7 +115,7 @@ export function CryptoScreen({
     setSecret(null);
     setRevealed(false);
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
 
       /*
        * The keypad is shown from the KEEPALIVE, not before it. The device only
@@ -167,7 +170,7 @@ export function CryptoScreen({
       setWaiting(false);
       setBusy(false);
     }
-  }, [label]);
+  }, [getKey, label]);
 
   const copy = useCallback(async () => {
     if (!secret) return;
@@ -198,7 +201,7 @@ export function CryptoScreen({
     setStatus(null);
     setOpened(null);
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       const sealed = await okcrypto.deviceVault.seal(service.trim(), plaintext, vaultOpts());
       setWaiting(false);
       setBlob(sealed);
@@ -211,7 +214,7 @@ export function CryptoScreen({
       setWaiting(false);
       setBusy(false);
     }
-  }, [service, plaintext, vaultOpts]);
+  }, [getKey, service, plaintext, vaultOpts]);
 
   const unseal = useCallback(async () => {
     setBusy(true);
@@ -219,7 +222,7 @@ export function CryptoScreen({
     setStatus(null);
     setOpened(null);
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       const text = await okcrypto.deviceVault.open(service.trim(), blob.trim(), vaultOpts());
       setWaiting(false);
       setOpened(text);
@@ -246,22 +249,22 @@ export function CryptoScreen({
       setWaiting(false);
       setBusy(false);
     }
-  }, [service, blob, vaultOpts]);
+  }, [getKey, service, blob, vaultOpts]);
 
   const lock = useCallback(async () => {
-    const {okcrypto} = await getOnlyKey();
+    const {okcrypto} = await getKey();
     okcrypto.deviceVault.lock(service.trim());
     setUnlocked(false);
     setOpened(null);
     setStatus('Key forgotten. The next use touches the device again.');
-  }, [service]);
+  }, [getKey, service]);
 
   const ageIdentity = useCallback(async () => {
     setBusy(true);
     setError(null);
     setStatus(null);
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       const id = await okcrypto.deviceAge.identity(ageLabel.trim(), vaultOpts());
       setWaiting(false);
       setRecipient(id.recipientString);
@@ -271,7 +274,7 @@ export function CryptoScreen({
       setWaiting(false);
       setBusy(false);
     }
-  }, [ageLabel, vaultOpts]);
+  }, [getKey, ageLabel, vaultOpts]);
 
   const ageEncrypt = useCallback(async () => {
     if (!recipient) return;
@@ -279,7 +282,7 @@ export function CryptoScreen({
     setError(null);
     setAgePlain(null);
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       /*
        * No device call here at all - encrypting to a recipient is public
        * work. The base64 is only so the file can live in a text box.
@@ -293,14 +296,14 @@ export function CryptoScreen({
     } finally {
       setBusy(false);
     }
-  }, [recipient, ageText]);
+  }, [getKey, recipient, ageText]);
 
   const ageDecrypt = useCallback(async () => {
     setBusy(true);
     setError(null);
     setAgePlain(null);
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       const out = await okcrypto.deviceAge.decrypt(
         unbase64(ageFile.trim()),
         ageLabel.trim(),
@@ -314,7 +317,7 @@ export function CryptoScreen({
       setWaiting(false);
       setBusy(false);
     }
-  }, [ageFile, ageLabel, vaultOpts]);
+  }, [getKey, ageFile, ageLabel, vaultOpts]);
 
   return (
     <ScrollView

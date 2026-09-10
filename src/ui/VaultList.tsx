@@ -2,7 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Segmented} from './components';
 import {theme} from './theme';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from '../hooks/KeyContext';
 import NativeSecrets from '../../specs/NativeSecrets';
 
 /**
@@ -63,6 +63,9 @@ export function VaultList({
   /** Bump to re-read the list after the screen seals something new. */
   reloadKey?: number;
 }) {
+  /* The ACTIVE key, not whichever one this file used to assume. */
+  const getKey = useActiveKey();
+
   const [rows, setRows] = useState<Row[] | null>(null);
   const [canPersist, setCanPersist] = useState(true);
   const [working, setWorking] = useState<string | null>(null);
@@ -71,7 +74,7 @@ export function VaultList({
 
   const refresh = useCallback(async () => {
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       const vault = okcrypto.deviceVault;
 
       /*
@@ -104,7 +107,7 @@ export function VaultList({
     } catch (e) {
       onError(String((e as Error)?.message ?? e));
     }
-  }, [onError]);
+  }, [getKey, onError]);
 
   useEffect(() => {
     void refresh();
@@ -154,7 +157,7 @@ export function VaultList({
   const forget = useCallback(
     async (row: Row) => {
       try {
-        const {okcrypto} = await getOnlyKey();
+        const {okcrypto} = await getKey();
         await okcrypto.deviceVault.forget(row.serviceId);
         onStatus(`${row.serviceId} deleted. The blob is gone from this phone.`);
         await refresh();
@@ -162,13 +165,13 @@ export function VaultList({
         onError(String((e as Error)?.message ?? e));
       }
     },
-    [onError, onStatus, refresh],
+    [getKey, onError, onStatus, refresh],
   );
 
   const setPolicy = useCallback(
     async (row: Row, policy: Policy) => {
       try {
-        const {okcrypto} = await getOnlyKey();
+        const {okcrypto} = await getKey();
         okcrypto.deviceVault.setPolicy(row.serviceId, policy);
         /*
          * TIGHTENING TO "always" EVICTS the cached key immediately - the
@@ -181,23 +184,23 @@ export function VaultList({
         onError(String((e as Error)?.message ?? e));
       }
     },
-    [onError, onStatus, refresh],
+    [getKey, onError, onStatus, refresh],
   );
 
   const lockAll = useCallback(async () => {
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       okcrypto.deviceVault.lockAll();
       await refresh();
       onStatus('Every cached key forgotten, and its bytes overwritten.');
     } catch (e) {
       onError(String((e as Error)?.message ?? e));
     }
-  }, [onError, onStatus, refresh]);
+  }, [getKey, onError, onStatus, refresh]);
 
   const exportAll = useCallback(async () => {
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       const json = await okcrypto.deviceVault.exportJSON();
       await NativeSecrets.copySensitive(json, CLIPBOARD_TTL_MS);
       onStatus(
@@ -207,11 +210,11 @@ export function VaultList({
     } catch (e) {
       onError(String((e as Error)?.message ?? e));
     }
-  }, [onError, onStatus, rows]);
+  }, [getKey, onError, onStatus, rows]);
 
   const importAll = useCallback(async () => {
     try {
-      const {okcrypto} = await getOnlyKey();
+      const {okcrypto} = await getKey();
       const result = await okcrypto.deviceVault.importJSON(importText);
       setImportText('');
       setImporting(false);
@@ -223,7 +226,7 @@ export function VaultList({
     } catch (e) {
       onError(String((e as Error)?.message ?? e));
     }
-  }, [importText, onError, onStatus, refresh]);
+  }, [getKey, importText, onError, onStatus, refresh]);
 
   if (!canPersist) {
     return (

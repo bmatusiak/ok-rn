@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from './KeyContext';
 
 /*
  * Everything the app learned while unlocked, forgotten when the key locks.
@@ -30,6 +30,9 @@ import {getOnlyKey} from '../onlykey';
  * the user's, and it is re-established by the next connect.
  */
 export function useWipeOnLock(ready: boolean): number {
+  /* The ACTIVE key. This runs for whichever one is selected. */
+  const getKey = useActiveKey();
+
   const [epoch, setEpoch] = useState(0);
 
   /*
@@ -55,10 +58,10 @@ export function useWipeOnLock(ready: boolean): number {
      * locked screen; there is nowhere to show an error and nothing the user
      * could do about it. The remount has already happened either way.
      */
-    getOnlyKey()
+    getKey()
       .then(({okcrypto}) => okcrypto.deviceVault.lockAll())
       .catch(() => {});
-  }, [ready]);
+  }, [getKey, ready]);
 
   return epoch;
 }

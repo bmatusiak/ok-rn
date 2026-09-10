@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from './KeyContext';
 import OkEmu from '../transport/OkEmu';
 
 /*
@@ -49,6 +49,9 @@ export type ConfigMode = {
  * would be a parameter that could be passed wrongly with no effect.
  */
 export function useConfigMode(): ConfigMode {
+  /* The ACTIVE key. This runs for whichever one is selected. */
+  const getKey = useActiveKey();
+
   const [entered, setEntered] = useState(false);
   const [ready, setReady] = useState(false);
   const [entering, setEntering] = useState(false);
@@ -59,7 +62,7 @@ export function useConfigMode(): ConfigMode {
     setEntering(true);
     setError(null);
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
 
       /*
        * THE SEQUENCE IS THE LIBRARY'S; the pressing is ours.
@@ -90,7 +93,7 @@ export function useConfigMode(): ConfigMode {
     } finally {
       setEntering(false);
     }
-  }, []);
+  }, [getKey]);
 
   /*
    * Discover the unlock, because the device will not announce it.
@@ -106,7 +109,7 @@ export function useConfigMode(): ConfigMode {
     let stopped = false;
     const probe = async () => {
       try {
-        const {device} = await getOnlyKey();
+        const {device} = await getKey();
         await device.readLabels({timeoutMs: 2500});
         if (!stopped) setReady(true);
       } catch {
@@ -120,7 +123,7 @@ export function useConfigMode(): ConfigMode {
       stopped = true;
       clearInterval(timer);
     };
-  }, [entered, ready]);
+  }, [getKey, entered, ready]);
 
   return {entered, ready, entering, error, enter};
 }

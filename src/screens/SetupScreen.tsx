@@ -1,7 +1,7 @@
 import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import OkEmu from '../transport/OkEmu';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from '../hooks/KeyContext';
 import {Logo} from '../ui/Logo';
 import {Btn} from '../ui/components';
 import {Keypad, PinDots} from '../ui/Keypad';
@@ -75,6 +75,9 @@ const BLURB: Record<Kind, string> = {
 };
 
 export function SetupScreen({onDone}: {onDone?: () => void}) {
+  /* The ACTIVE key, not whichever one this file used to assume. */
+  const getKey = useActiveKey();
+
   const [kind, setKind] = useState<Kind>('primary');
   const [stage, setStage] = useState<Stage>('choose');
   const [pin, setPin] = useState('');
@@ -127,7 +130,7 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
       setSteps([]);
       let off: (() => void) | undefined;
       try {
-        const {device} = await getOnlyKey();
+        const {device} = await getKey();
         off = device.on('progress', (e: {step: string}) =>
           setSteps(prev => [...prev, e.step]),
         );
@@ -141,7 +144,7 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
         off?.();
       }
     },
-    [kind, advance],
+    [getKey, kind, advance],
   );
 
   const next = useCallback(() => {
@@ -163,7 +166,7 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
     setSteps([]);
     setError(null);
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       await device.setBackupPassphrase(passphrase);
       setPassphrase('');
       setStage('done');
@@ -171,7 +174,7 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
       setError(String((e as Error)?.message ?? e));
       setStage('failed');
     }
-  }, [passphrase]);
+  }, [getKey, passphrase]);
 
   const startOver = useCallback(() => {
     setPin('');

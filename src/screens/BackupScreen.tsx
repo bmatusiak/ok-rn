@@ -2,7 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from '../hooks/KeyContext';
 import {device as okdevice} from 'node-onlykey-lib';
 import OkEmu from '../transport/OkEmu';
 import NativeShare from '../../specs/NativeShare';
@@ -44,6 +44,9 @@ export function BackupScreen({
   emu: EmuSession;
   blockScreenshots?: boolean;
 }) {
+  /* The ACTIVE key, not whichever one this file used to assume. */
+  const getKey = useActiveKey();
+
   useSecureScreen(blockScreenshots);
 
   const [text, setText] = useState<string | null>(null);
@@ -91,7 +94,7 @@ export function BackupScreen({
     setProgress(0);
 
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
 
       /*
        * capabilities() is null until the device has SAID what it is, and
@@ -151,7 +154,7 @@ export function BackupScreen({
     } finally {
       setBusy(null);
     }
-  }, []);
+  }, [getKey]);
 
   /*
    * Take the backup key from a PGP key instead of a passphrase.
@@ -197,7 +200,7 @@ export function BackupScreen({
         );
       }
 
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       const result = await device.setBackupKeyFromPgp(chosen.scalar, {
         curve: chosen.curve,
       });
@@ -210,14 +213,14 @@ export function BackupScreen({
     } finally {
       setBusy(null);
     }
-  }, [backupArmored, backupKeyPassphrase]);
+  }, [getKey, backupArmored, backupKeyPassphrase]);
 
   const setBackupPassphrase = useCallback(async () => {
     setBusy('passphrase');
     setError(null);
     setStatus(null);
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       await device.setBackupPassphrase(passphrase);
       setNeedsPassphrase(false);
       setPassphrase('');
@@ -229,7 +232,7 @@ export function BackupScreen({
     } finally {
       setBusy(null);
     }
-  }, [passphrase]);
+  }, [getKey, passphrase]);
 
   const share = useCallback(async () => {
     if (!text) return;
@@ -279,7 +282,7 @@ export function BackupScreen({
     setError(null);
     setStatus(null);
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       const result = await device.restore(restoreText);
       setStatus(
         `Restored ${result.bytes} bytes. Restart the app so the key reloads what it now holds.`,
@@ -289,7 +292,7 @@ export function BackupScreen({
     } finally {
       setBusy(null);
     }
-  }, [restoreText]);
+  }, [getKey, restoreText]);
 
   return (
     <ScrollView

@@ -3,7 +3,7 @@ import {ActivityIndicator, ScrollView, StyleSheet, Text, View} from 'react-nativ
 import {Btn} from '../ui/components';
 import {SlotGrid} from '../ui/SlotGrid';
 import {theme} from '../ui/theme';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from '../hooks/KeyContext';
 
 /*
  * Slots, as the device's own shape rather than as a list.
@@ -23,6 +23,9 @@ export function SlotsScreen({
 }: {
   onOpen: (slot: {id: string; index: number}) => void;
 }) {
+  /* The ACTIVE key, not whichever one this file used to assume. */
+  const getKey = useActiveKey();
+
   const [labels, setLabels] = useState<(string | null)[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -31,7 +34,7 @@ export function SlotsScreen({
     setLoading(true);
     setError(null);
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       const {labels: got} = await device.readLabels({timeoutMs: 10000});
       setLabels(got);
     } catch (e) {
@@ -44,7 +47,7 @@ export function SlotsScreen({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getKey]);
 
   useEffect(() => {
     void refresh();

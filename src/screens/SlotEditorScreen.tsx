@@ -10,7 +10,7 @@ import {
 import {device as okdevice} from 'node-onlykey-lib';
 import {Btn} from '../ui/components';
 import {theme} from '../ui/theme';
-import {getOnlyKey} from '../onlykey';
+import {useActiveKey} from '../hooks/KeyContext';
 import OkEmu from '../transport/OkEmu';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {useSecureScreen} from '../hooks/useSecureScreen';
@@ -116,6 +116,9 @@ export function SlotEditorScreen({
   /** Off in testing mode, where adb screenshots are the verification. */
   blockScreenshots?: boolean;
 }) {
+  /* The ACTIVE key, not whichever one this file used to assume. */
+  const getKey = useActiveKey();
+
   const [values, setValues] = useState<Values>({});
   const [captured, setCaptured] = useState<string[] | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
@@ -140,7 +143,7 @@ export function SlotEditorScreen({
 
   useEffect(() => {
     let alive = true;
-    getOnlyKey()
+    getKey()
       .then(({device}) => {
         const p = okdevice.slots.pressForSlot(slot.id, {
           deviceType: device.deviceType,
@@ -153,7 +156,7 @@ export function SlotEditorScreen({
     return () => {
       alive = false;
     };
-  }, [slot.id]);
+  }, [getKey, slot.id]);
 
   useEffect(() => {
     /*
@@ -190,7 +193,7 @@ export function SlotEditorScreen({
     setStatus(null);
 
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       const read = await device.readSlot(slot.id, {
         press: (button: number, ticks: number) => OkEmu.holdTicks(button, ticks),
       });
@@ -211,7 +214,7 @@ export function SlotEditorScreen({
     } finally {
       setBusy(null);
     }
-  }, [slot.id]);
+  }, [getKey, slot.id]);
 
   const save = useCallback(async () => {
     const dirty = Object.entries(values).filter(([, v]) => v !== '');
@@ -223,7 +226,7 @@ export function SlotEditorScreen({
     setError(null);
     setStatus(null);
     try {
-      const {device} = await getOnlyKey();
+      const {device} = await getKey();
       const applied = await device.setSlot(slot.id, Object.fromEntries(dirty));
       setStatus(`Saved ${applied.length} field(s).`);
     } catch (e) {
@@ -231,7 +234,7 @@ export function SlotEditorScreen({
     } finally {
       setBusy(null);
     }
-  }, [slot.id, values]);
+  }, [getKey, slot.id, values]);
 
   /**
    * Copy a captured value, without the system announcing it.

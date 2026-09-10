@@ -9,6 +9,7 @@ import {theme} from './src/ui/theme';
 
 import {useLog} from './src/hooks/useLog';
 import {useKey} from './src/hooks/useKey';
+import {KeyBackendProvider} from './src/hooks/KeyContext';
 import {useUsbHid} from './src/hooks/useUsbHid';
 import {useFidoGatt} from './src/hooks/useFidoGatt';
 import {useTestingMode} from './src/hooks/useTestingMode';
@@ -173,7 +174,15 @@ function Shell() {
   }, [ready]);
 
   return (
-    <>
+    /*
+      EVERY SCREEN BELOW READS THE ACTIVE KEY THROUGH THIS.
+
+      Without it they all called getOnlyKey() with no argument and got the
+      soft key, so the header could say Hard Key over a screen showing the
+      soft one's slots. See KeyContext.tsx for why a provider rather than a
+      module-level setter.
+    */
+    <KeyBackendProvider backend={keys.backend}>
       <StatusBar barStyle="light-content" />
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
         {ready ? (
@@ -342,7 +351,7 @@ function Shell() {
           }
         />
       </SafeAreaView>
-    </>
+    </KeyBackendProvider>
   );
 }
 
