@@ -10,6 +10,19 @@ import kotlin.concurrent.thread
 /**
  * Development transport: a plain TCP socket to the Node.js hardware emulator.
  *
+ * IT CARRIES ONE INTERFACE, and says so rather than pretending otherwise.
+ *
+ * The mock speaks the security-key protocol end to end - bare CTAPHID reports
+ * over a socket with no envelope, no interface tag, no direction byte. There
+ * is nowhere to put a second interface without changing its wire format, and
+ * teaching it one would buy nothing: what it is for is the fault switches
+ * (dropped reports, bad checksums, latency) that exercise error handling on a
+ * host with no USB at all.
+ *
+ * So a write to any other interface returns -1 by name. A caller that meant to
+ * set a slot over the mock finds out immediately, rather than discovering by
+ * timeout that its vendor message went into a CTAPHID responder.
+ *
  * The Android emulator reaches the host loopback at 10.0.2.2, not 127.0.0.1.
  * Cleartext to that host is allowed by res/xml/network_security_config.xml,
  * which is wired up for the debug build only.
@@ -22,13 +35,32 @@ class TcpTransport(
 
   override val name: String = "tcp"
 
+  /**
+   * Synthetic, because there is no descriptor to read - the mock is a socket.
+   * Reported anyway so a caller sees the same shape from either transport, and
+   * marked `mock` rather than `usagePage` so nothing mistakes it for a device
+   * that was actually identified.
+   */
+  override val interfaces: List<OpenInterface>
+    get() = if (isOpen()) listOf(
+      OpenInterface(
+        iface = CARRIES,
+        interfaceNumber = CARRIES,
+        usagePage = 0,
+        usage = 0,
+        packetSizeIn = packetSize,
+        packetSizeOut = packetSize,
+        identifiedBy = "mock",
+      ),
+    ) else emptyList()
+
   private var socket: Socket? = null
   private var input: InputStream? = null
   private var output: OutputStream? = null
   private val reading = AtomicBoolean(false)
   private var readerThread: Thread? = null
 
-  override var onData: ((ByteArray) -> Unit)? = null
+  override var onData: ((iface: Int, bytes: ByteArray) -> Unit)? = null
   override var onStatus: ((state: String, message: String) -> Unit)? = null
 
   override fun isOpen(): Boolean = socket?.isConnected == true && socket?.isClosed == false
@@ -57,7 +89,7 @@ class TcpTransport(
           val read = input?.read(buffer) ?: -1
           if (read < 0) break
           if (read > 0) {
-            onData?.invoke(buffer.copyOf(read))
+            onData?.invoke(CARRIES, buffer.copyOf(read))
           }
         }
         if (reading.get()) {
@@ -75,7 +107,15 @@ class TcpTransport(
     }
   }
 
-  override fun write(bytes: ByteArray): Int {
+  override fun write(iface: Int, bytes: ByteArray): Int {
+    if (iface != CARRIES) {
+      onStatus?.invoke(
+        "error",
+        "the tcp mock carries ${Iface.name(CARRIES)} only, so a write to " +
+          "${Iface.name(iface)} went nowhere - use a real key over OTG",
+      )
+      return -1
+    }
     val stream = output ?: return -1
     return try {
       stream.write(bytes)
@@ -102,5 +142,8 @@ class TcpTransport(
 
   companion object {
     private const val CONNECT_TIMEOUT_MS = 4000
+
+    /** The one interface the mock speaks. See the class header. */
+    private const val CARRIES = Iface.FIDO
   }
 }

@@ -21,11 +21,20 @@ jest.mock('./specs/NativeUsbHid', () => ({
     listDevices: jest.fn(() => Promise.resolve([])),
     requestPermission: jest.fn(() => Promise.resolve(true)),
     connect: jest.fn(() =>
-      Promise.resolve({transport: 'tcp', vendorId: 0, productId: 0, packetSize: 64}),
+      Promise.resolve({
+        transport: 'tcp',
+        vendorId: 0,
+        productId: 0,
+        packetSize: 64,
+        // The tcp mock carries one synthetic interface; a real key reports
+        // three or four depending on its build.
+        interfaces: [],
+      }),
     ),
     disconnect: jest.fn(() => Promise.resolve()),
     isConnected: jest.fn(() => false),
-    write: jest.fn(() => Promise.resolve(64)),
+    // write(iface, hex) - the interface number comes first.
+    write: jest.fn((_iface, _hex) => Promise.resolve(64)),
     onStatus: jest.fn(() => noopSubscription),
     onData: jest.fn(() => noopSubscription),
   },

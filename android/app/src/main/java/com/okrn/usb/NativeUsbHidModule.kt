@@ -8,6 +8,7 @@ import com.okrn.specs.NativeUsbHidSpec
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.module.annotations.ReactModule
 import com.okrn.BuildConfig
@@ -181,8 +182,9 @@ class NativeUsbHidModule(
         val mode = resolveMode()
         val transport = buildTransport(mode)
 
-        transport.onData = { bytes ->
+        transport.onData = { iface, bytes ->
           val map = Arguments.createMap()
+          map.putInt("iface", iface)
           map.putString("hex", bytes.toHex())
           map.putInt("length", bytes.size)
           emitData(map)
@@ -198,6 +200,7 @@ class NativeUsbHidModule(
         result.putString("transport", transport.name)
         result.putInt("vendorId", vendorId.toInt())
         result.putInt("productId", productId.toInt())
+        result.putArray("interfaces", describe(transport.interfaces))
         result.putInt("packetSize", transport.packetSize)
         promise.resolve(result)
       } catch (e: Exception) {
@@ -222,9 +225,26 @@ class NativeUsbHidModule(
     }
   }
 
+  /** The open interfaces, as JS sees them. See UsbInterfaceInfo in the spec. */
+  private fun describe(interfaces: List<OpenInterface>): WritableArray {
+    val out = Arguments.createArray()
+    for (info in interfaces) {
+      val map = Arguments.createMap()
+      map.putInt("iface", info.iface)
+      map.putInt("interfaceNumber", info.interfaceNumber)
+      map.putInt("usagePage", info.usagePage)
+      map.putInt("usage", info.usage)
+      map.putInt("packetSizeIn", info.packetSizeIn)
+      map.putInt("packetSizeOut", info.packetSizeOut)
+      map.putString("identifiedBy", info.identifiedBy)
+      out.pushMap(map)
+    }
+    return out
+  }
+
   // -------------------------------------------------------------------- write
 
-  override fun write(hex: String, promise: Promise) {
+  override fun write(iface: Double, hex: String, promise: Promise) {
     executor.execute {
       try {
         val transport = active
@@ -233,9 +253,19 @@ class NativeUsbHidModule(
           return@execute
         }
         val bytes = hex.hexToBytes()
-        val written = transport.write(bytes)
+        val written = transport.write(iface.toInt(), bytes)
         if (written < 0) {
-          promise.reject(ERR_WRITE, "Transfer failed on ${transport.name}")
+          /*
+           * REJECT rather than resolve with -1. A write that went nowhere -
+           * an interface this device does not carry, one with no outbound
+           * endpoint, or a report wider than the endpoint - is a caller
+           * error, and resolving would let it look like a delivery. The
+           * transport has already emitted a status naming which it was.
+           */
+          promise.reject(
+            ERR_WRITE,
+            "write to ${Iface.name(iface.toInt())} failed on ${transport.name}",
+          )
         } else {
           promise.resolve(written.toDouble())
         }

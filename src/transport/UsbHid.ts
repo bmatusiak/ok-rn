@@ -6,7 +6,14 @@ import type {
   Transport,
   UsbDeviceInfo,
 } from '../../specs/NativeUsbHid';
-import {bytes as okbytes, protocol} from 'node-onlykey-lib';
+import {bytes as okbytes, protocol, transport as oktransport} from 'node-onlykey-lib';
+
+/*
+ * The interface numbers are the LIBRARY’S, which are the firmware’s own.
+ * Taken from there rather than written out here, so this file cannot drift
+ * from the transport that routes on them.
+ */
+const {IFACE} = oktransport;
 
 const {Assembler, frame: encodeFrames, cidNumber, PACKET_SIZE} = protocol.ctaphid;
 
@@ -165,16 +172,23 @@ class UsbHidClient {
     return NativeUsbHid.isConnected();
   }
 
-  /** Write one raw, already-sized report. */
-  writeRaw(bytes: Uint8Array): Promise<number> {
-    return NativeUsbHid.write(okbytes.toHex(bytes));
+  /**
+   * Write one raw, already-sized report to one interface.
+   *
+   * Defaults to the security-key interface, which is what every existing
+   * caller meant when there was only one to write to. The parameter is what
+   * lets the byte-level panel reach the vendor and debug interfaces, which
+   * is how the verification ladder is driven by hand.
+   */
+  writeRaw(bytes: Uint8Array, iface: number = IFACE.FIDO): Promise<number> {
+    return NativeUsbHid.write(iface, okbytes.toHex(bytes));
   }
 
   /** Frame a message as CTAPHID INIT/CONT packets and write each one. */
   async sendMessage(frame: {cid: Uint8Array | number; cmd: number; payload: Uint8Array}): Promise<void> {
     const packets = encodeFrames(frame.cid, frame.cmd, frame.payload, this.packetSize);
     for (const packet of packets) {
-      await NativeUsbHid.write(okbytes.toHex(packet));
+      await NativeUsbHid.write(IFACE.FIDO, okbytes.toHex(packet));
     }
   }
 
