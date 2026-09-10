@@ -2,11 +2,17 @@
  * Enter a PIN by pressing the device's buttons, not by typing at its console.
  *
  * `device.unlock()` defaults to writing the digits over SEREMU with pressLine.
- * That is a DEBUG-BUILD FEATURE: the whole simulated-press command interface
- * sits inside `#ifdef DEBUG` in okcore.cpp, so on a production build the
- * firmware never reads what is written there. It does not refuse - it says
- * nothing, and unlock() times out with a message about the PIN possibly being
- * wrong. The PIN is fine; nothing is listening.
+ * Whether anything reads them is `capabilities().consolePress`, and it takes
+ * TWO conditions - which is a correction to what this comment used to say.
+ *
+ * It said the press interface was a debug-build feature and left it there. The
+ * build half is right: the parser sits inside `#ifdef DEBUG` (okcore.cpp:2360).
+ * The half it missed is the VERSION. No released firmware reads the console at
+ * all - `Serial.read` does not appear in okcore.cpp in v3.0.2 or any older pin
+ * - so on every release, debug build or not, the digits go nowhere. It does not
+ * refuse; it says nothing, and unlock() times out blaming the PIN. The PIN is
+ * fine. See FINDING-the-debug-console-is-a-control-channel-on-new-firmware-only.md,
+ * which was written after a probe contradicted two readings of the source.
  *
  * Pressing buttons works on either build, because a button is a button. ok-rn's
  * PIN screen has always done it this way for exactly this reason; passing this

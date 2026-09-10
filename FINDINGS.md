@@ -58,6 +58,8 @@ wrong version of the table looks exactly like the right one.
 | 39 | [the backup refusal is typed, and blocks the device](FINDING-the-backup-refusal-is-typed-and-blocks-the-device.md) | medium for any host that scripts a backup - the device answers nothing on vendor for five to nine seconds and nothing says why; the NEXT thing tried fails | OnlyKey firmware | no |
 | 40 | [USB claims one interface and the app needs three](FINDING-usb-claims-one-interface-and-the-app-needs-three.md) | high for real hardware - over USB the app can speak CTAPHID and nothing else; no PIN, no slots, no labels, no backup. The one interface it claims is picked by a three-way tie-break | ours | n/a |
 | 41 | [blocking presence fails a second shared secret](FINDING-blocking-presence-fails-a-second-shared-secret.md) | high for the 2.1 line - the derive retry went out with NO press, so it could not succeed however many times it ran; the vault round trip was one of the casualties. **Fixed**, 68/68 | ours | n/a |
+| 42 | [the debug console is a control channel on new firmware only](FINDING-the-debug-console-is-a-control-channel-on-new-firmware-only.md) | high for real hardware - it decides whether a developer key can be driven unattended, and unlock()'s default path silently cannot work on ANY released firmware | OnlyKey firmware | n/a |
+| 43 | [probing on a locked key burns PIN attempts](FINDING-probing-on-a-locked-key-burns-pin-attempts.md) | high for anyone iterating on a press probe - repeated `--only` runs of a locked-state press suite WIPED the bench key back to unconfigured | ours | n/a |
 
 ## Read #6 first, then #2
 
