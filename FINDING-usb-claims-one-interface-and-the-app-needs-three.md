@@ -110,7 +110,42 @@ Then `plugins/transport/usb.js` is the same shape as
 demultiplexing and normalisation, so the next host does not reimplement half the
 contract subtly differently.
 
-## How this was found
+## MEASURED, on a physical key
+
+Written originally from the firmware descriptors, with an explicit caveat that
+none of it had been seen on a wire. It has now been read off a real OnlyKey
+attached to the bench phone over OTG:
+
+```
+iface 0 (keyboard) bInterfaceNumber=0 usagePage=0x1    usage=0x6 in=8  out=0  by=usagePage
+iface 1 (fido)     bInterfaceNumber=1 usagePage=0xf1d0 usage=0x1 in=64 out=64 by=usagePage
+iface 2 (vendor)   bInterfaceNumber=2 usagePage=0xffab usage=0x2 in=64 out=64 by=usagePage
+iface 3 (seremu)   bInterfaceNumber=3 usagePage=0xffc9 usage=0x4 in=64 out=32 by=usagePage
+problems: none
+```
+
+Every number is confirmed, including the two that read like transcription
+slips: the keyboard has **no outbound endpoint at all**, and the debug console
+is **asymmetric at 64 in and 32 out**.
+
+Four interfaces means a developer build, which is what this key is. A
+production key enumerates three, the debug console being compiled out.
+
+**All four are claimed now, and every one was identified by its usage page**,
+so the three-way scoring tie is gone rather than merely documented. The vendor
+interface - the one carrying the PIN bracket, slots, labels, preferences and
+restore, and the one that was never claimed - is `bInterfaceNumber` 2.
+
+`__e2e_tests__/15-hardware.e2e.js` is the measurement. It skips with a reason
+when no key is attached rather than passing vacuously.
+
+## Status: the interface half is done
+
+What remains is the layer above - a pipe and a library transport plugin, so
+the claimed interfaces become a device session rather than four open
+endpoints. Enumeration, identification and claiming are proven.
+
+## How this was originally found
 
 By reading, not by measuring - there is no physical key on this bench, so
 nothing here has been observed on a wire. The descriptor table and the scoring
