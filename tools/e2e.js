@@ -137,6 +137,7 @@ function applyOnly(names) {
     `module.exports = ${JSON.stringify(names)};`,
   );
   fs.writeFileSync(ONLY_FILE, body);
+
   console.log(`e2e: running only ${names.join(', ')}`);
   return () => fs.writeFileSync(ONLY_FILE, original);
 }
@@ -224,13 +225,43 @@ async function main() {
     console.log(line.replace(/^'|',?$/g, ''));
   }
 
-  const verdict = /Passed:\s*(\d+)\s*Failed:\s*(\d+)/.exec(log);
+  const verdict = /Passed:\s*(\d+)\s*Failed:\s*(\d+)(?:\s*Skipped:\s*(\d+))?/.exec(log);
   if (!verdict) {
     throw new Error('the suite finished but printed no verdict');
   }
-  const [, passed, failed] = verdict.map(Number);
+  const passed = Number(verdict[1]);
+  const failed = Number(verdict[2]);
+  /*
+   * Skipped is OPTIONAL in the verdict line and absent when nothing skipped, so
+   * an ordinary run reads exactly as it always did. It is reported separately
+   * because a skip is neither a pass nor a failure: a firmware that does not
+   * have a feature is not refusing it, and counting those as passes is how a
+   * matrix sweep comes to look uniform when the devices are not.
+   */
+  const skipped = verdict[3] === undefined ? 0 : Number(verdict[3]);
 
-  console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'}  passed=${passed} failed=${failed}`);
+  console.log(
+    `\n${failed === 0 ? 'PASS' : 'FAIL'}  passed=${passed} failed=${failed}` +
+    (skipped ? ` skipped=${skipped}` : ''),
+  );
+  /*
+   * The verdict, written where tools/matrix.js can read it.
+   *
+   * The sweep runs this script with its output inherited so the progress dots
+   * appear live, which means it sees an exit code and nothing else. A one-line
+   * file is the smallest way to give it the counts as well, and it matters
+   * because a version that SKIPS eleven tests and one that passes them are both
+   * exit code 0 - the table has to be able to tell them apart.
+   */
+  try {
+    fs.writeFileSync(
+      path.join(__dirname, '.last-e2e.json'),
+      JSON.stringify({ passed, failed, skipped, at: new Date().toISOString() }) + '\n',
+    );
+  } catch (_) {
+    /* Reporting is not worth failing a run over. */
+  }
+
   process.exit(failed === 0 ? 0 : 1);
 }
 

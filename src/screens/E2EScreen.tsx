@@ -1,7 +1,8 @@
 import React, {useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
-// test-moniker is plain CommonJS; allowJs picks up its types structurally.
-import MonikerView from 'test-moniker/MonikerView';
+// The harness is VENDORED into this repo - see __e2e_tests__/harness/README.md.
+// It is plain CommonJS; allowJs picks up its types structurally.
+import MonikerView from '../../__e2e_tests__/harness/MonikerView';
 
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';

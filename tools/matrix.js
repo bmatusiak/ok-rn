@@ -139,10 +139,27 @@ function sweep(version) {
    */
   run('node', [path.join(ROOT, 'tools', 'e2e.js'), '--only', 'provision'], env);
 
+  /*
+   * The counts come from a file rather than from stdout: this runs e2e.js with
+   * its output inherited so the progress dots appear live, which leaves only an
+   * exit code here. A version that SKIPS eleven tests and one that passes them
+   * are both exit code 0, and the table has to be able to tell them apart.
+   */
+  const readVerdict = () => {
+    try {
+      return JSON.parse(
+        fs.readFileSync(path.join(ROOT, 'tools', '.last-e2e.json'), 'utf8'));
+    } catch (_) {
+      return null;
+    }
+  };
+
   let last = null;
+  let verdict = null;
   for (let attempt = 1; attempt <= RUNS_PER_VERSION; attempt++) {
     const code = run('node', [path.join(ROOT, 'tools', 'e2e.js')], env);
     last = code;
+    verdict = readVerdict();
     console.log(`\n  ${label}: run ${attempt} exited ${code}\n`);
     if (code === 0) break;      // green; nothing later would be more true
   }
@@ -150,6 +167,11 @@ function sweep(version) {
   return {
     version,
     outcome: last === 0 ? 'PASS' : last === 2 ? 'runner error' : 'FAIL',
+    detail: verdict
+      ? `${verdict.passed} passed`
+        + (verdict.failed ? `, ${verdict.failed} failed` : '')
+        + (verdict.skipped ? `, ${verdict.skipped} skipped` : '')
+      : '',
   };
 }
 

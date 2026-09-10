@@ -69,3 +69,7 @@ src/generated/
 
 # Metro's own log, written beside the project when it is started by hand.
 metro.log
+
+# The last suite verdict, written by tools/e2e.js so tools/matrix.js can read
+# counts it cannot get from an inherited stdout.
+tools/.last-e2e.json

@@ -486,7 +486,7 @@ module.exports = function derive({describe, it}) {
       assert.equal(await okcrypto.deviceVault.load(service, press()), null);
     });
 
-    it('an export carries sealed blobs and imports back', async ({log, assert}) => {
+    it('an export carries sealed blobs and imports back', async ({log, assert, skip}) => {
       const {device, okcrypto} = await connected(log);
       const press = () => ({
         requirePress: true,
@@ -500,9 +500,10 @@ module.exports = function derive({describe, it}) {
        * whatever the preference says.
        */
       if (device.capabilities && device.capabilities.touchFreeDerive === 'broken') {
-        log('this firmware cannot seal, so there is nothing to export');
+        /* The envelope is host-side, but this firmware cannot seal anything to
+         * put in it - so there is nothing here to measure either way. */
         assert.equal((await okcrypto.deviceVault.serviceIds()).length, 0);
-        return;
+        skip('this firmware cannot do a touch-free derive, so the vault holds nothing to export');
       }
 
       await okcrypto.deviceVault.save('export.example', 'exported-secret', press());
@@ -535,7 +536,7 @@ module.exports = function derive({describe, it}) {
       await okcrypto.deviceVault.forgetAll();
     });
 
-    it('the X-Wing key type returns its split-custody pair', async ({log, assert}) => {
+    it('the X-Wing key type returns its split-custody pair', async ({log, assert, skip}) => {
       /*
        * The odd one out by SHAPE, not by availability - the plugin reported it
        * as unavailable for a while after this test started passing, and both
@@ -552,27 +553,18 @@ module.exports = function derive({describe, it}) {
 
       /*
        * X-WING DOES NOT EXIST ON EVERY FIRMWARE. `KEYTYPE_XWING` appears
-       * nowhere in libraries@5d7ce7a (v3.0.2), so an older key cannot answer
-       * this at all and the honest assertion is that it REFUSES rather than
-       * that it succeeds. A suite checking only for success cannot tell a
-       * version that correctly lacks a feature from one that is broken.
+       * nowhere in libraries@5d7ce7a (v3.0.2), so this is not a feature the
+       * device refuses - it is one it never had.
+       *
+       * SKIPPED rather than asserted, and the distinction is the point. The
+       * library now checks the capability and declines to send, so asserting
+       * "it refused" would only be testing our own guard while reading as
+       * though the device had answered. A skip with a reason says what is
+       * actually true, and the count says how many tests this firmware could
+       * not be asked.
        */
       if (device.capabilities && device.capabilities.xwingDerive === false) {
-        log('this firmware has no X-Wing key type');
-        let refused = null;
-        try {
-          await okcrypto.derivePublicKey('xwing.example', {
-            keytype: okcrypto.KEYTYPE.XWING,
-            requirePress: true,
-            timeoutMs: 15000,
-            onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
-          });
-        } catch (e) {
-          refused = String(e && e.message);
-        }
-        log(`refusal: ${String(refused).slice(0, 120)}`);
-        assert.ok(refused, 'a firmware without X-Wing must not answer an X-Wing derive');
-        return;
+        skip('KEYTYPE_XWING does not exist before v3.0.2 - the key type is absent, not refused');
       }
 
       const first = await okcrypto.derivePublicKey('xwing.example', {
@@ -607,7 +599,7 @@ module.exports = function derive({describe, it}) {
     });
 
 
-    it('an age file encrypted to the device is read back by it', async ({log, assert}) => {
+    it('an age file encrypted to the device is read back by it', async ({log, assert, skip}) => {
       /*
        * The whole point of X-Wing's split custody, end to end.
        *
@@ -631,8 +623,7 @@ module.exports = function derive({describe, it}) {
        * type cannot hold an identity in it. Nothing to encrypt to.
        */
       if (device.capabilities && device.capabilities.xwingDerive === false) {
-        log('this firmware has no X-Wing key type, so it has no age identity');
-        return;
+        skip('the age format is X-Wing end to end, and KEYTYPE_XWING does not exist before v3.0.2');
       }
 
       const id = await okcrypto.deviceAge.identity('age.example', opts);
