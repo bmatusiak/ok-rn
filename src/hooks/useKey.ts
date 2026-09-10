@@ -53,7 +53,14 @@ export function useKey({log}: {log: (level: LogLevel, text: string) => void}) {
 
   const [mode, setModeState] = useState<KeyMode>('manual');
   const [override, setOverrideState] = useState<Backend | null>(null);
-  const [attached, setAttached] = useState(false);
+  /**
+   * Whether a hard key is on the bus. NULL until the first look.
+   *
+   * Three states, because "not yet checked" is not "not there" - and the one
+   * that gets rendered is the difference between an honest label and a
+   * confident lie.
+   */
+  const [attached, setAttached] = useState<boolean | null>(null);
   const [ready, setReady] = useState(false);
 
   /* The setting is remembered, so a phone does not forget between launches. */
@@ -85,13 +92,14 @@ export function useKey({log}: {log: (level: LogLevel, text: string) => void}) {
    * attached when the app started - which is the common case, since plugging
    * one in is what launches the app.
    *
-   * Only while in auto: nothing else needs the answer, and enumerating the bus
-   * twice a second for a setting nobody is using is rude to the battery.
+   * ALWAYS, not only while in auto. It was only in auto, to spare the
+   * battery, and that produced a screen saying "no hard key attached" with a
+   * key plainly plugged in - because nothing had looked. Reporting "we did
+   * not check" as "there is nothing there" is the kind of confident wrong
+   * answer this project keeps finding, and a two-second enumeration is a
+   * cheaper price than an untrue label.
    */
   useEffect(() => {
-    if (mode !== 'auto') {
-      return;
-    }
     let alive = true;
 
     const look = async () => {
@@ -112,7 +120,7 @@ export function useKey({log}: {log: (level: LogLevel, text: string) => void}) {
       alive = false;
       clearInterval(timer);
     };
-  }, [mode]);
+  }, []);
 
   const setMode = useCallback(async (next: KeyMode) => {
     setModeState(next);
@@ -137,7 +145,7 @@ export function useKey({log}: {log: (level: LogLevel, text: string) => void}) {
    */
   const backend: Backend = useMemo(() => {
     if (override) return override;
-    if (mode === 'auto' && attached) return 'usb';
+    if (mode === 'auto' && attached === true) return 'usb';
     return 'embedded';
   }, [override, mode, attached]);
 

@@ -33,15 +33,19 @@ import {LogScreen} from './src/screens/LogScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
 
 /*
- * 'Soft Key', not 'Key'.
+ * 'This Key', not 'Key' and no longer 'Soft Key'.
  *
- * There are now two things a tab could mean by "key": the emulated device
- * itself, and the private keys loaded into it. One letter of difference between
- * 'Key' and 'Keys' is not a distinction anyone can hold onto, so the device
- * says what it is - a key made of software rather than one on a keyring.
+ * Two things a tab could mean by "key": the DEVICE, and the private keys
+ * loaded into it. One letter between 'Key' and 'Keys' is not a distinction
+ * anyone can hold onto, which is why this tab has never just been called
+ * 'Key'.
+ *
+ * It was 'Soft Key' while that was the only device there was. It can now be
+ * either - the same screen reads whichever key is selected - so naming it for
+ * one of them would be wrong half the time. The screen itself says which.
  */
 const TABS = [
-  'Soft Key',
+  'This Key',
   'Slots',
   'Keys',
   'Keyboard',
@@ -99,7 +103,7 @@ function Shell() {
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
 
-  const [tab, setTab] = useState<Tab>('Soft Key');
+  const [tab, setTab] = useState<Tab>('This Key');
 
   /*
    * The slot being edited, if any.
@@ -231,8 +235,8 @@ function Shell() {
             <SetupScreen onDone={() => setPhase('login')} />
           ) : phase === 'pin' ? (
             <PinScreen onPress={emu.press} onBack={() => setPhase('login')} />
-          ) : tab === 'Soft Key' ? (
-            <KeyScreen emu={emu} />
+          ) : tab === 'This Key' ? (
+            <KeyScreen emu={emu} keys={keys} />
           ) : tab === 'Slots' ? (
             openSlot ? (
               <SlotEditorScreen
@@ -294,7 +298,7 @@ function Shell() {
               onPress={() => {
                 testing.toggle();
                 if (tab === TESTING_TAB) {
-                  setTab('Soft Key');
+                  setTab('This Key');
                 }
               }}
             />

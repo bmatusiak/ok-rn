@@ -7,6 +7,8 @@ import OkEmu from '../transport/OkEmu';
 import {PinScreen} from './PinScreen';
 import {SetupScreen} from './SetupScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
+import type {KeyControl} from '../hooks/useKey';
+import {KeySource} from '../ui/KeySource';
 
 /**
  * The key itself: what state it is in, what it holds, and its buttons.
@@ -43,7 +45,7 @@ function describeBuild(caps: EmuSession['capabilities']): string {
   return caps.debugConsole ? 'debug (console)' : 'production (no console)';
 }
 
-export function KeyScreen({emu}: {emu: EmuSession}) {
+export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
   if (emu.state === 'halted') {
     return (
       <Message
@@ -92,19 +94,43 @@ export function KeyScreen({emu}: {emu: EmuSession}) {
    * pad the door uses works just as well inside, and it means there is exactly
    * one place a PIN is ever typed.
    */
+  /*
+   * THE SOURCE CONTROL IS ABOVE THE LOCK, not behind it.
+   *
+   * Found by looking at the screen: it was inside the unlocked view, which
+   * means you could not choose which key to talk to until you had already
+   * unlocked one. That is backwards - the choice decides WHICH key you would
+   * be unlocking, and on a phone with a hard key attached the wrong one may
+   * be the one asking for a PIN.
+   *
+   * So it sits above every state this screen has, and the state view scrolls
+   * under it.
+   */
   if (emu.device !== 'unlocked') {
-    return <PinScreen onPress={emu.press} />;
+    return (
+      <ScrollView
+        style={styles.root}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}>
+        <KeySource keys={keys} />
+        <View style={styles.locked}>
+          <PinScreen onPress={emu.press} />
+        </View>
+      </ScrollView>
+    );
   }
 
-  return <Unlocked emu={emu} />;
+  return <Unlocked emu={emu} keys={keys} />;
 }
 
-function Unlocked({emu}: {emu: EmuSession}) {
+function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
   return (
     <ScrollView
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      <KeySource keys={keys} />
+
       <Section title="Key">
         <View style={styles.kv}>
           <KeyValue label="state" value="unlocked" />
@@ -120,10 +146,31 @@ function Unlocked({emu}: {emu: EmuSession}) {
           */}
           <KeyValue label="model" value={describeModel(emu.identity)} />
           <KeyValue label="build" value={describeBuild(emu.capabilities)} />
-          <KeyValue label="LED" value={describeLed(emu.led)} />
+          {/*
+            THE LED IS THE SOFT KEY'S ALONE.
+
+            The emulator reports its pixel state as data because the host IS
+            the hardware. A hard key's LED is light in a room - it never
+            reaches the wire, so there is nothing to show and a row saying
+            "off" would be a lie about a key that may well be lit.
+          */}
+          {keys.backend === 'embedded' ? (
+            <KeyValue label="LED" value={describeLed(emu.led)} />
+          ) : (
+            <KeyValue label="LED" value="on the key itself" />
+          )}
         </View>
       </Section>
 
+      {keys.backend === 'usb' && !(emu as unknown as {canPress?: boolean}).canPress ? (
+        <Section title="Buttons">
+          <Text style={styles.hint}>
+            This key has its own — six of them, under your finger. The app
+            does not draw a keypad for a key you can press. A site asking for
+            a security key is waiting on one of these; any will do.
+          </Text>
+        </Section>
+      ) : (
       <Section title="Buttons">
         <Text style={styles.hint}>
           The key's entire input surface. A site asking for a security key
@@ -140,6 +187,7 @@ function Unlocked({emu}: {emu: EmuSession}) {
           />
         </View>
       </Section>
+      )}
     </ScrollView>
   );
 }
@@ -181,6 +229,11 @@ function describeLed(pixels: number[]): string {
 }
 
 const styles = StyleSheet.create({
+  /*
+   * PinScreen centres itself in whatever it is given, and a ScrollView gives
+   * a child no height at all - so it needs one here or the pad collapses.
+   */
+  locked: {minHeight: 520},
   root: {flex: 1},
   content: {paddingBottom: 4},
   kv: {marginTop: 6},
