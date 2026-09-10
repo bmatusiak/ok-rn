@@ -2,6 +2,7 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, device as device_, protocol, transport as oktransport} from 'node-onlykey-lib';
 
 import UsbPipe from '../transport/UsbPipe';
+import {PRESS_TICKS} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
 import type {LogLevel} from './useLog';
 import type {DeviceState, KeyState} from './keySession';
@@ -126,21 +127,54 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
     };
   }, [log]);
 
-  const start = useCallback(async () => {
+  /**
+   * Open the key.
+   *
+   * Returns nothing, matching the soft key - what was opened is reported
+   * through the status event and read back from the pipe, so a caller does
+   * not have to hold a result to know. Keeping the two signatures identical
+   * is what lets one handle serve both.
+   */
+  /**
+   * Whether the firmware will take a press from software at all.
+   *
+   * Declared here because everything below asks it. A debug build newer than
+   * v3.0.2 has the console parser; anything else needs a finger on the key.
+   */
+  const canPress = Boolean(capabilities && capabilities.consolePress);
+
+  const start = useCallback(async (): Promise<void> => {
     setBusy(true);
     try {
       const result = await UsbPipe.start();
       setState('running');
       log('info', `[usb] opened ${result.interfaces?.length ?? 0} interfaces`);
-      return result;
     } catch (error) {
       setState('error');
       log('error', `[usb] ${String(error)}`);
-      return null;
     } finally {
       setBusy(false);
     }
   }, [log]);
+
+  /**
+   * Restart the key.
+   *
+   * The soft key cannot do this in place - its firmware thread only exits
+   * through the reset trap - and that limitation has been on the not-now list
+   * for a while. A HARD key can, when the console has the parser: `8` is
+   * CPU_RESTART, and unplugging is the manual equivalent.
+   *
+   * Refuses by name otherwise, rather than appearing to work.
+   */
+  const restart = useCallback(async () => {
+    if (!canPress) {
+      throw new Error(unsupported('restart itself'));
+    }
+    const {device: dev} = await getOnlyKey('usb');
+    await dev.press('8');
+    log('info', '[usb] restart requested; the key will re-enumerate');
+  }, [canPress, log]);
 
   const stop = useCallback(async () => {
     setBusy(true);
@@ -170,10 +204,14 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
   }, [log]);
 
   const send = useCallback(
-    async (iface: number, msg: string) => {
-      await UsbPipe.write(iface, protocol.okmsg.build({msg}));
+    async (iface: number, msg: number) => {
+      try {
+        await UsbPipe.write(iface, protocol.okmsg.build({msg}));
+      } catch (error) {
+        log('error', `write: ${String(error)}`);
+      }
     },
-    [],
+    [log],
   );
 
   /**
@@ -190,14 +228,68 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
    */
   const press = useCallback(
     async (button: number) => {
+      if (!canPress) {
+        throw new Error(unsupported('press a button'));
+      }
       const {device: dev} = await getOnlyKey('usb');
-      /* One digit is one tap. The firmware replays it a press per iteration. */
+      /* One digit is one tap. The firmware replays one press per iteration. */
       await dev.press(String(button));
     },
-    [],
+    [canPress],
   );
 
-  const canPress = Boolean(capabilities && capabilities.consolePress);
+  /**
+   * A HELD press, by tick count.
+   *
+   * The console takes an explicit duration - `N#<ticks>` - which reaches any
+   * press band, so a gesture is available here too when the firmware has the
+   * parser. Begin and end are one call rather than two, because the firmware
+   * queues the whole press and replays it; there is no held state to poll the
+   * way the emulator has.
+   */
+  const beginHold = useCallback(
+    async (button: number) => {
+      if (!canPress) {
+        throw new Error(unsupported('hold a button'));
+      }
+      const {device: dev} = await getOnlyKey('usb');
+      /*
+       * ONE CALL, not a begin and an end. The soft key arms a counter and
+       * polls it while a finger is down; the console instead takes the whole
+       * duration up front (`N#<ticks>`) and replays it a press per loop
+       * iteration. So the hold is decided here rather than by how long
+       * someone holds a control that is not being drawn anyway.
+       *
+       * Just under the gesture floor, matching the soft key: far enough for a
+       * b-profile read and short of anything irreversible.
+       */
+      const armed = PRESS_TICKS.GESTURE - 1;
+      await dev.press(`${button}#${armed}`);
+    },
+    [canPress],
+  );
+
+  /** Nothing to end: the firmware owns the duration. Here for the shape. */
+  const endHold = useCallback(async () => {}, []);
+
+  /**
+   * Set a PIN.
+   *
+   * The library owns the bracket. It needs the debug console on any firmware
+   * - the conversation is held entirely in the firmware's own printf output -
+   * so this refuses by name rather than starting something that cannot
+   * finish. See FINDING-provisioning-needs-a-debug-build.md.
+   */
+  const provision = useCallback(
+    async (pin: string) => {
+      if (!capabilities || capabilities.debugConsole !== true) {
+        throw new Error(unsupported('set a PIN'));
+      }
+      const {device: dev} = await getOnlyKey('usb');
+      return dev.setPin(pin);
+    },
+    [capabilities],
+  );
 
   return {
     state,
@@ -210,17 +302,48 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
     /* Absent on a hard key. See the header - each is a fact, not a gap. */
     storageDir: '',
     led: [] as number[],
-    restart: null,
+
+    restart,
 
     start,
     stop,
     connect,
     send,
 
-    /** Null unless the firmware's console can press. A hard key has buttons. */
-    press: canPress ? press : null,
+    /*
+     * PRESENT BUT REFUSING, rather than null.
+     *
+     * Threading a nullable function through eight screens buys nothing: they
+     * would all have to guard it, and one that forgot would crash rather than
+     * explain. `canPress` is what a screen reads to decide whether to DRAW a
+     * keypad - and for a hard key the answer is usually no, because it has six
+     * buttons under a finger. Calling it anyway says why by name.
+     */
+    press,
+    beginHold,
+    endHold,
+    provision,
+
+    /** No held state to poll: the firmware owns the duration. */
+    pressTicks: null,
+
+    /** Whether a keypad is worth drawing at all. */
     canPress,
   };
+}
+
+/**
+ * Why a hard key will not do something in software.
+ *
+ * One message, because the reason is always the same one and a person should
+ * not have to collect three phrasings of it.
+ */
+function unsupported(what: string): string {
+  return (
+    `this key cannot ${what} from software. The firmware's debug console ` +
+    'grew that ability after v3.0.2 and it is compiled out of a production ' +
+    'build - so on this one, a finger on the key is the only way.'
+  );
 }
 
 const UNLOCK_GRACE_MS = 1500;

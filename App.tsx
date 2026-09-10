@@ -8,7 +8,7 @@ import {Logo} from './src/ui/Logo';
 import {theme} from './src/ui/theme';
 
 import {useLog} from './src/hooks/useLog';
-import {useOkEmu} from './src/hooks/useOkEmu';
+import {useKey} from './src/hooks/useKey';
 import {useUsbHid} from './src/hooks/useUsbHid';
 import {useFidoGatt} from './src/hooks/useFidoGatt';
 import {useTestingMode} from './src/hooks/useTestingMode';
@@ -84,7 +84,17 @@ function Shell() {
    * running - the firmware kept going and the screen came back saying
    * "stopped", and the CTAP bridge stopped answering whenever you looked away.
    */
-  const emu = useOkEmu({log: emuLog.log, autoStart: true});
+  /*
+   * THE ACTIVE KEY, soft or hard, never both.
+   *
+   * useKey runs both underlying hooks - React does not allow a conditional
+   * one - and hands over whichever the source setting selects. The soft key
+   * therefore stays alive in the background while a hard one is in use, which
+   * is what makes them comparable: attach a real key, look at it, unplug, and
+   * the emulated one is still where it was rather than freshly booted.
+   */
+  const keys = useKey({log: emuLog.log});
+  const emu = keys.key;
   const fido = useFidoGatt({log: fidoLog.log});
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
