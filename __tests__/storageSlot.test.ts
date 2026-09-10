@@ -118,3 +118,55 @@ describe('the DUO gets a slot of its own', () => {
     expect(buildInfo.model).toBe('classic');
   });
 });
+
+/*
+ * The one-line description on the login card.
+ *
+ * Four things vary independently and each changes what the device does, so the
+ * line has to name all four without becoming noise. The ordinary case reads
+ * "classic · working tree · debug"; anything else is worth seeing at a glance,
+ * which is what that screen is for.
+ */
+describe('what the build was built for', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  const builtFor = (staged: object) => {
+    /*
+     * Reset HERE, not only in beforeEach: two calls in one test would
+     * otherwise both see the first mock, and the second assertion would pass
+     * or fail for a reason that has nothing to do with what it names.
+     */
+    jest.resetModules();
+    jest.doMock('../src/generated/firmware.json', () => staged, {virtual: true});
+    return require('../src/buildInfo').buildInfo.builtFor;
+  };
+
+  it('reads plainly for the ordinary build', () => {
+    expect(builtFor({digest: 'abc', version: null, production: false}))
+      .toBe('classic · working tree · debug');
+  });
+
+  it('names the model, because a DUO is a different device', () => {
+    expect(builtFor({digest: 'abc', version: null, model: 'duo'}))
+      .toBe('DUO · working tree · debug');
+  });
+
+  it('names a pinned release and a production gate', () => {
+    expect(builtFor({digest: 'abc', version: 'v3.0.2', production: true}))
+      .toBe('classic · v3.0.2 · production');
+  });
+
+  it('says travel only when it IS travel', () => {
+    // Printing "standard" every time teaches people to stop reading the line.
+    expect(builtFor({digest: 'abc', version: 'v2.1.1', edition: 'travel'}))
+      .toBe('classic · v2.1.1 · debug · travel');
+    expect(builtFor({digest: 'abc', version: 'v2.1.1', edition: 'standard'}))
+      .toBe('classic · v2.1.1 · debug');
+  });
+
+  it('degrades to something true when nothing was staged', () => {
+    expect(builtFor({})).toBe('classic · working tree · debug');
+  });
+});

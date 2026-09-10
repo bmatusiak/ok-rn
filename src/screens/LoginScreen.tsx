@@ -23,6 +23,7 @@ export function LoginScreen({
 }) {
   const setup = device === 'uninitialized';
 
+
   return (
     <View style={styles.root}>
       <Logo height={44} />
@@ -30,6 +31,7 @@ export function LoginScreen({
       <View style={styles.versions}>
         <Row label="firmware" value={buildInfo.firmware} />
         {buildInfo.sources ? <Row label="sources" value={buildInfo.sources} /> : null}
+        <Row label="built for" value={buildInfo.builtFor} />
         <Row label="library" value={buildInfo.library} />
         <Row label="app" value={buildInfo.app} />
       </View>
@@ -44,7 +46,21 @@ export function LoginScreen({
           {setup
             ? 'This key has no PIN yet. Choose one to finish setting it up.'
             : device === 'locked'
-              ? 'Enter your PIN on the six-button keypad.'
+              /*
+               * A DUO IS NOT UNLOCKED ON A KEYPAD. Its PIN travels in the
+               * message body, so telling its owner to press six buttons is
+               * wrong twice over - it has three, and none of them enter a PIN.
+               *
+               * Read from the BUILD rather than from the device: this screen is
+               * the soft key's own door, and the model is a property of the
+               * firmware that was staged. The device's capabilities are not
+               * available here anyway - they are parsed from the status the
+               * firmware broadcasts on UNLOCK, which is the thing this screen
+               * exists to reach.
+               */
+              ? buildInfo.model === 'duo'
+                ? 'Enter your PIN.'
+                : 'Enter your PIN on the six-button keypad.'
               : 'Waiting for the key\u2026'}
         </Text>
       </View>

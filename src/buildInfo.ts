@@ -56,6 +56,8 @@ export type BuildInfo = {
   version: string | null;
   /** True when the DEBUG gate was off, as the firmware ships. */
   production: boolean;
+  /** model, version, build and edition in one line - see describeBuild(). */
+  builtFor: string;
   /** 'standard' or 'travel'; null when the build predates the gate. */
   edition: string | null;
   /** 'duo' or 'classic'. A DUO is a different device, not a setting. */
@@ -74,7 +76,47 @@ export const buildInfo: BuildInfo = {
   production: staged.production === true,
   edition: staged.edition ?? null,
   model: staged.model === 'duo' ? 'duo' : 'classic',
+  builtFor: '',
 };
+
+/* Assigned after the object exists, because it reads four of its own fields. */
+buildInfo.builtFor = describeBuild();
+
+/**
+ * What this firmware was BUILT FOR, in one line.
+ *
+ * The digest above says which bytes are running; this says what they were meant
+ * to be. Four things can vary independently, and every one of them changes what
+ * the device does:
+ *
+ *   model    a DUO has 24 slots across 4 profiles, three buttons and a PIN that
+ *            travels in the message body. A classic has 12, six, and buttons.
+ *   version  a pinned release from ok-versions.json, or the working tree
+ *   build    DEBUG or production - a production build has no debug console and
+ *            cannot be given a PIN at all
+ *   edition  standard or IN TRVL, which compiles out the encrypted profile
+ *
+ * Written out rather than left to the digest because a digest answers "is this
+ * the same build as before" and never "which build is this". The staging step
+ * knows all four (android/okemu/scripts/stage.js) and records them in
+ * src/generated/firmware.json.
+ *
+ * The ordinary case reads "classic · working tree · debug". Anything else is
+ * worth seeing at a glance, which is the whole point of this screen.
+ */
+function describeBuild(): string {
+  const parts = [
+    buildInfo.model === 'duo' ? 'DUO' : 'classic',
+    buildInfo.version ?? 'working tree',
+    buildInfo.production ? 'production' : 'debug',
+  ];
+  /* Only when it is NOT the standard edition - saying "standard" every time
+   * teaches people to stop reading the line. */
+  if (buildInfo.edition && buildInfo.edition !== 'standard') {
+    parts.push(buildInfo.edition);
+  }
+  return parts.join(' · ');
+}
 
 /**
  * WHICH DEVICE this build boots against.
