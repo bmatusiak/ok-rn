@@ -105,11 +105,46 @@ function pressing(log, capabilities = null) {
     timer = setTimeout(() => { void press('timer - this firmware does not keepalive'); }, 900);
   }
 
+  const blocking = Boolean(capabilities && capabilities.presenceTest === 'blocking');
+
   return {
     get count() { return pressed; },
     done: () => { if (timer) clearTimeout(timer); },
-    onKeepAlive: async () => {
+
+    /*
+     * Called by the device on keepalive firmware, and by the LIBRARY on a
+     * retry - `{retry: true}` says which.
+     *
+     * The budget of one press is per CEREMONY, and a retry is a new one.
+     * Measured on v2.1.1: attempts 2 and 3 of a derive went out with no press
+     * at all, because this helper had already spent its press on attempt 1
+     * and nothing told it otherwise
+     * (FINDING-blocking-presence-fails-a-second-shared-secret.md).
+     *
+     * Re-armed only on BLOCKING firmware. Where the device keepalives, this
+     * hook is called repeatedly for one ceremony and the guard is the whole
+     * point of it - an extra press on an unlocked key types a slot.
+     */
+    onKeepAlive: async (info = null) => {
       if (timer) { clearTimeout(timer); timer = null; }
+      if (blocking && info && info.retry) {
+        /*
+         * RE-ARM THE TIMER, do not press now.
+         *
+         * The library calls this BEFORE it issues the retry, so a press here
+         * lands before the ceremony has started - which is the press the
+         * firmware discards, and it costs the whole five-second window. The
+         * first attempt waits 900ms for exactly that reason and a retry is no
+         * different.
+         *
+         * Measured: pressing immediately on retry put a press in the log for
+         * attempts 2 and 3 and changed nothing about whether they succeeded.
+         */
+        pressed = 0;
+        timer = setTimeout(
+          () => { void press(`retry - attempt ${info.attempt}`); }, 900);
+        return;
+      }
       await press('keepalive');
     },
   };
@@ -160,6 +195,25 @@ async function connected(log) {
   }
 
   log(`device: ${String(state.status).trim()}`);
+
+  /*
+   * EVERY DERIVE ATTEMPT IS LOGGED, not just the ones that fail.
+   *
+   * The library retries a derive up to three times on "did not answer this
+   * derive", and until it announced them a log could not tell an attempt that
+   * went out unpressed from one that was pressed and denied anyway. Counting
+   * `pressed button 1` lines against the tests around them is how that was
+   * guessed at, and the count did not add up
+   * (FINDING-blocking-presence-fails-a-second-shared-secret.md).
+   *
+   * Attached once, on the shared device, so it covers every test below.
+   */
+  okcrypto.on('progress', e => {
+    if (e.step !== 'derive') return;
+    log(`derive attempt ${e.attempt}/${e.attempts}`
+      + (e.label ? ` for ${JSON.stringify(e.label)}` : ''));
+  });
+
   shared = {device, okcrypto, status: String(state.status)};
   return shared;
 }
