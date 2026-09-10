@@ -104,10 +104,15 @@ Firmware built with the DEBUG gate off — as it ships — is staged with
 commits `ok-versions.json` names:
 
 ```bash
+npm run e2e:matrix                             # build and run every release
 node android/okemu/scripts/stage.js --list     # what OKEMU_VERSION accepts
 node android/okemu/scripts/version-probe.js    # do the patches still match?
-OKEMU_VERSION=v3.0.2 npm run android
+OKEMU_VERSION=v3.0.2 OKEMU_DEBUG=1 npm run android
 ```
+
+A release ships with the DEBUG gate off and **cannot be given a PIN at all**
+without it, so pinned versions are staged with `OKEMU_DEBUG=1`. `OKEMU_STD=1` is
+the same lever for the standard-versus-travel edition.
 
 Each release has its own stage script in `android/okemu/scripts/versions/`,
 holding the patches that release needs and how far it has actually been taken:

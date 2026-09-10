@@ -7,9 +7,23 @@ per entry in `ok-versions.json`:
 node scripts/stage.js --list          # what OKEMU_VERSION accepts, and its status
 node scripts/stage.js                 # the working tree, unchanged default
 OKEMU_VERSION=v3.0.2 node scripts/stage.js
-OKEMU_PRODUCTION=1 OKEMU_VERSION=v3.0.2 node scripts/stage.js
 node scripts/version-probe.js         # do the patterns still match? builds nothing
+npm run e2e:matrix                    # build and run EVERY release (from ok-rn/)
 ```
+
+Two build options are gates rather than patches, because the sources arrive on
+both sides of both defines:
+
+```bash
+OKEMU_DEBUG=1        force the DEBUG gate ON  - required to provision a release
+OKEMU_PRODUCTION=1   force it OFF, the way the firmware ships
+OKEMU_STD=1          force the STANDARD edition on
+OKEMU_STD=0          force the IN TRVL edition (STD_VERSION off)
+```
+
+**A release cannot be provisioned without `OKEMU_DEBUG=1`.** Every pinned
+release except v2.1.0 ships with the gate off, and the PIN bracket is a
+conversation held entirely in `Serial.println`.
 
 Sources come out of the pinned commit's **object database** - `git ls-tree` and
 `git cat-file`, never a checkout - into `.stage-src/<version>/`, cached by
@@ -51,6 +65,18 @@ Copy the nearest neighbour, change `version` to match the filename, set
    digest it prints as `expect: { digest: ... }`.
 3. Build, install, watch for OKCONNECT. Raise `status` one rung at a time and
    say in `notes` what you saw.
+
+A release can also DECLARE the build options it must be staged with, when its
+pinned commit does not have them set:
+
+```js
+gates: { std: true },
+```
+
+That is v2.1.1's case — its commit has `STD_VERSION` commented out, so it builds
+as the travel edition and cannot even be given a PIN. Declaring it means the
+release is staged the same way whoever runs it. An environment variable still
+wins. See `FINDING-a-pinned-release-is-the-travel-edition.md`.
 
 Patches that more than one release needs go in `_shared.js` and are imported by
 name. Nothing there is applied automatically - `v2.1.1` and `v2.1.0` import

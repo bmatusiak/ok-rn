@@ -155,6 +155,83 @@ const WANT_DEBUG =
 const NL = String.fromCharCode(10);
 
 /**
+ * WHICH EDITION this build is, and the same lever as the DEBUG gate.
+ *
+ *     OKEMU_STD=1   force the STANDARD edition on
+ *     OKEMU_STD=0   force the TRAVEL edition (STD_VERSION off)
+ *     unset         leave the sources as they are, and say which
+ *
+ * ## Why this had to exist
+ *
+ * `#define STD_VERSION` in onlykey.h decides whether this is the standard
+ * edition or the IN TRVL one, and the difference is not cosmetic: it gates
+ * set_private's body, U2Finit, and the encrypted profile itself - without it
+ * `profilemode` is NONENCRYPTEDPROFILE and most of the device's own code
+ * returns early.
+ *
+ * MEASURED across ok-versions.json: every pin is the standard edition EXCEPT
+ * v2.1.1 (libraries@0dc7cf0), where both DEBUG and STD_VERSION are commented
+ * out. So the pinned commit for that release is a travel build, and staged as
+ * it is, almost nothing the suite exercises exists on it - not because the
+ * release lacked those features, but because that commit's build flags were
+ * left set for a different edition.
+ *
+ * Forcing it on is the same kind of change as OKEMU_DEBUG=1: the firmware
+ * provides the switch and this flips it in the throwaway copy. The version
+ * script records that the commit itself is travel, so nobody reads a standard
+ * result and concludes the commit was standard.
+ */
+const ENV_STD =
+  process.env.OKEMU_STD === '1' ? true
+  : process.env.OKEMU_STD === '0' ? false
+  : null;
+
+/** Resolved in main(), where the version script is known. */
+let WANT_STD = ENV_STD;
+
+/**
+ * Read - or flip - one of onlykey.h's two build-option defines.
+ *
+ * A TOGGLE rather than a text patch, because the sources arrive on either side
+ * of both of them and a patch written for one silently fails to find its
+ * pattern in the other. This finds whichever spelling is there and reports the
+ * state it leaves.
+ *
+ * @param name the define, for the log
+ * @param on the line as it appears when the option is ENABLED
+ * @param want true to enable, false to disable, null to leave it alone
+ * @returns whether the staged tree ends up with it defined
+ */
+function gateDefine(name, on, want) {
+  const target = path.join(STAGE, 'libraries', 'onlykey', 'onlykey.h');
+  const off = `//${on}`;
+
+  let text = fs.readFileSync(target, 'utf8');
+
+  /* `off` contains `on` as a substring, so it has to be tested first. */
+  let enabled;
+  if (text.includes(off)) enabled = false;
+  else if (text.includes(on)) enabled = true;
+  else {
+    console.error(
+      `stage: WARNING - the ${name} define is not where it has always been in ` +
+      'libraries/onlykey/onlykey.h, so the build option could not be read.');
+    process.exitCode = 1;
+    return null;
+  }
+
+  if (want === null || want === enabled) return enabled;
+
+  text = want
+    ? text.split(off).join(on)
+    : text.split(on).join(off);
+  fs.writeFileSync(target, text);
+  console.log(
+    `stage: ${name} turned ${want ? 'ON' : 'OFF'} (was ${enabled ? 'ON' : 'OFF'})`);
+  return want;
+}
+
+/**
  * Set - or just read - the DEBUG gate in the staged onlykey.h.
  *
  * A TOGGLE rather than a text patch, because the sources arrive on either side
@@ -872,7 +949,7 @@ function gitShort(dir) {
  * worse than none. Generated rather than committed: a checkout that has never
  * staged reports 'unknown' instead of somebody else's hash.
  */
-function writeBuildInfo(stats, release, debugOn) {
+function writeBuildInfo(stats, release, debugOn, stdEdition) {
   const out = path.join(OKEMU, '..', '..', 'src', 'generated');
   fs.mkdirSync(out, { recursive: true });
   const pins = release.pins;
@@ -894,6 +971,12 @@ function writeBuildInfo(stats, release, debugOn) {
      */
     version: release.pins ? release.version : null,
     production: !debugOn,
+    /**
+     * 'standard' or 'travel'. The IN TRVL edition compiles out set_private,
+     * U2Finit and the encrypted profile, so a host talking to one sees a device
+     * that refuses most of what it knows how to ask for.
+     */
+    edition: stdEdition === null ? null : stdEdition ? 'standard' : 'travel',
     stagedAt: new Date().toISOString(),
   };
   fs.writeFileSync(
@@ -1020,6 +1103,15 @@ function main() {
     process.exit(1);
   }
 
+  /*
+   * A release may DECLARE the build options it has to be staged with - see
+   * versions/index.js, gates. The environment still wins, so a deliberate
+   * travel build is one OKEMU_STD=0 away.
+   */
+  if (ENV_STD === null && release.gates && release.gates.std !== undefined) {
+    WANT_STD = release.gates.std;
+  }
+
   if (release.pins) {
     console.log(
       `stage: OKEMU_VERSION=${release.version} (${release.status}) - ` +
@@ -1096,6 +1188,16 @@ function main() {
    * environment.
    */
   const debugOn = gateDebug(WANT_DEBUG);
+  /*
+   * The EDITION, read the same way. Reported whether or not it was forced,
+   * because a travel build looks like a broken standard one from the outside:
+   * set_private returns early, there is no FIDO, and the profile is not
+   * encrypted.
+   */
+  const stdEdition = gateDefine(
+    'STD_VERSION',
+    '#define STD_VERSION //Define for STD edition firmare, undefine for IN TRVL edition firmware',
+    WANT_STD);
 
   // 7. documented source-level fixups, plus this release's own
   const patched = applyPatches([
@@ -1105,7 +1207,7 @@ function main() {
   const scs = rewriteSystemBlock();
 
   const stats = digestStage();
-  const info = writeBuildInfo(stats, release, debugOn);
+  const info = writeBuildInfo(stats, release, debugOn, stdEdition);
 
   console.log(
     `stage: ${path.relative(OKEMU, STAGE)}\n` +
@@ -1121,6 +1223,8 @@ function main() {
   version:                                   ${release.version} (${release.status})` +
     `
   build:                                     ${debugOn ? 'debug' : 'production'}` +
+    `
+  edition:                                   ${stdEdition ? 'standard' : 'TRAVEL (STD_VERSION off)'}` +
     `
   storage slot:                              ${release.slot || '(the default)'}`
   );

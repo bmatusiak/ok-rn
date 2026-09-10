@@ -12,12 +12,19 @@ const shared = require('./_shared');
 module.exports = {
   version: 'v3.0.1',
   pins: { libraries: 'a27ffa6', 'OnlyKey-Firmware': 'c3929eb' },
-  status: 'untried',
+  status: 'tested',
 
   notes: [
-    'Probed, never staged. 8/8 version-pinned patterns match.',
-    'Needs the Profile_Offset patch: measured present at a27ffa6.',
-  ].join('\n'),
+    'RUNS AND FULLY PASSES: 67 of 67, with no patches beyond the ones the 3.0',
+    'line shares. Nothing release-specific was needed.',
+    '',
+    'Ships with the DEBUG gate off like every release, so OKEMU_DEBUG=1 is',
+    'required before it can be provisioned.',
+    '',
+    'Has the touch-free derive gate that v3.0.2 reads from a stale cache? NO -',
+    'the check arrived IN v3.0.2. Here the touch-free derive is unconditional,',
+    'which is what capabilities().touchFreeDerive reports as "always".',
+  ].join(String.fromCharCode(10)),
 
   patches: [
     /* The 64-bit flash stride - without this the PIN never matches. */

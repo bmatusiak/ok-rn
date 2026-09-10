@@ -94,15 +94,28 @@ named. run the suite a second time; the byte persists
 firmware versions
 --------------
 
+    npm run e2e:matrix                            # build and run EVERY release
     node android/okemu/scripts/stage.js --list    # what OKEMU_VERSION accepts
     node android/okemu/scripts/version-probe.js   # do the patches still match?
-    OKEMU_VERSION=v3.0.2 ./gradlew :app:installDebug
-    OKEMU_PRODUCTION=1                            # stage firmware with DEBUG off
+    OKEMU_VERSION=v3.0.2 OKEMU_DEBUG=1 npm run android
 
 one stage script per release lives in `android/okemu/scripts/versions/`, and it
 is where that release's own patches and its measured status go. status is a
 ladder - blocked, untried, stages, builds, boots, tested - and each rung is
 something somebody watched happen. see that directory's README.
+
+a RELEASE SHIPS WITH THE DEBUG GATE OFF and cannot be given a PIN at all, so
+every pinned version needs `OKEMU_DEBUG=1`. `OKEMU_STD=1` is the same lever for
+the standard-vs-travel edition; v2.1.1's commit is the travel one and its script
+declares `gates: {std: true}` so nobody has to remember.
+
+a fresh version needs THREE runs: one to set the PIN (the device reports its old
+state until it boots again), one where cryptoSign takes config mode for the
+signing key and the preference, and then a green one. matrix.js does that.
+
+switching versions leaves a stale `android/okemu/.cxx` that links new sources
+against old objects - it presents as undefined symbols in a build that worked
+minutes earlier. matrix.js deletes it; delete it by hand if you switch by hand.
 
 
 writing tests that can actually fail

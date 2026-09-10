@@ -12,7 +12,8 @@
     "tsc": "tsc --noEmit",
     "e2e": "test-moniker",
     "e2e:doctor": "test-moniker doctor",
-    "e2e:run": "node tools/e2e.js"
+    "e2e:run": "node tools/e2e.js",
+    "e2e:matrix": "node tools/matrix.js"
   },
   "dependencies": {
     "@bmatusiak/rectify": "github:bmatusiak/rectify",

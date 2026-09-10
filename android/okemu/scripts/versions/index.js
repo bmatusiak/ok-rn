@@ -166,6 +166,21 @@ function load(version) {
      */
     debugOffPatches: mod.debugOffPatches || [],
     drop: mod.drop || [],
+    /**
+     * Build options this release must be staged with to be comparable, when
+     * its pinned commit does not have them set.
+     *
+     * `std: true` is v2.1.1's case: that commit has STD_VERSION commented out,
+     * so it builds as the IN TRVL edition and almost nothing the suite
+     * exercises exists. Declaring it here means the release is staged the same
+     * way whoever runs it, rather than depending on somebody remembering an
+     * environment variable - and the notes say the commit itself is travel, so
+     * nobody reads a standard result and concludes the commit was standard.
+     *
+     * An environment variable still wins, so a deliberate travel build is one
+     * OKEMU_STD=0 away.
+     */
+    gates: mod.gates || {},
     expect: mod.expect || null,
     /**
      * Where this version's flash.bin and eeprom.bin live, under the app's
