@@ -23,22 +23,6 @@ import OkEmu from '../transport/OkEmu';
  * restart is needed afterwards.
  */
 
-/**
- * The hold that reaches config mode, FROM THE DEVICE.
- *
- * A classic wants button 6 held past 72 main-loop iterations; a DUO wants
- * button 1 held past 180 (OnlyKey.ino:914). The numbers used to be a constant
- * here, which was right while every device was a classic and wrong the moment
- * one was not: holding the classic gesture at a DUO presses a button that does
- * something else, and then waits for a lock that never comes.
- *
- * The margin over the floor is small and deliberate. Past the same band a hold
- * stops being config mode and becomes another gesture, so overshooting is not
- * the safe direction. This is the app's one sanctioned use of the gesture band,
- * which is why `allowGesture` is passed here and nowhere else.
- */
-const TICK_MARGIN = 8;
-const FALLBACK_GESTURE = {button: 6, ticks: 72};
 
 /** How long to wait for the device to lock before calling the hold a failure. */
 const LOCK_TIMEOUT_MS = 8000;
@@ -56,53 +40,53 @@ export type ConfigMode = {
   enter: () => Promise<void>;
 };
 
-export function useConfigMode(deviceState: string): ConfigMode {
+/*
+ * Takes no argument any more.
+ *
+ * It used to take the device state, to watch for the lock that proves the hold
+ * landed. The library does that now - device.enterConfigMode() confirms it by
+ * probing rather than by watching a broadcast - so a parameter nothing reads
+ * would be a parameter that could be passed wrongly with no effect.
+ */
+export function useConfigMode(): ConfigMode {
   const [entered, setEntered] = useState(false);
   const [ready, setReady] = useState(false);
   const [entering, setEntering] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const locked = deviceState !== 'unlocked';
-
-  /* The newest lock state, readable from inside an async callback. */
-  const lockedRef = useRef(locked);
-  useEffect(() => {
-    lockedRef.current = locked;
-  }, [locked]);
 
   const enter = useCallback(async () => {
     setEntering(true);
     setError(null);
     try {
       const {device} = await getOnlyKey();
-      const g =
-        (device.capabilities && device.capabilities.configModeGesture) ||
-        FALLBACK_GESTURE;
-      await OkEmu.holdTicks(g.button, g.ticks + TICK_MARGIN, {allowGesture: true});
 
       /*
-       * Wait for the lock rather than believing the press landed. holdTicks
-       * resolving means the press was delivered and counted, not that payload()
-       * acted on it - the firmware discards presses outright while
-       * pending_operation is set, for up to twenty seconds after a security-key
-       * ceremony, and skips the config-mode branch while a fade is running.
+       * THE SEQUENCE IS THE LIBRARY'S; the pressing is ours.
+       *
+       * The gesture, the retry, and the lock-as-proof all live in
+       * device.enterConfigMode() - they are properties of the firmware, and a
+       * second host would otherwise work them out again. What stays here is
+       * holdTicks, because pressing a button is platform-specific, and the
+       * React state the screen renders.
+       *
+       * One attempt from here, not three. This is a person tapping a button
+       * who can see what happened and try again; the suites pass a higher
+       * count because nobody is watching them.
        */
-      const deadline = Date.now() + LOCK_TIMEOUT_MS;
-      while (Date.now() < deadline && !lockedRef.current) {
-        await new Promise<void>(r => setTimeout(r, 250));
-      }
-
-      if (!lockedRef.current) {
-        setError(
-          'The key did not enter config mode. It ignores button presses for ' +
-            'up to 20 seconds after a security-key ceremony, and while its LED ' +
-            'is fading. Wait a moment and try again.',
-        );
-        return;
-      }
+      await device.enterConfigMode({
+        hold: (button: number, ticks: number) =>
+          OkEmu.holdTicks(button, ticks, {allowGesture: true}),
+        attempts: 1,
+        lockMs: LOCK_TIMEOUT_MS,
+      });
       setEntered(true);
     } catch (e) {
-      setError(String((e as Error)?.message ?? e));
+      setError(
+        'The key did not enter config mode. It ignores button presses for ' +
+          'up to 20 seconds after a security-key ceremony, and while its LED ' +
+          'is fading. Wait a moment and try again.',
+      );
     } finally {
       setEntering(false);
     }

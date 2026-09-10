@@ -37,23 +37,6 @@ const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 const {pressDigits} = require('./pressDigits');
 
 /**
- * The gesture, FROM THE DEVICE rather than from a constant.
- *
- * A classic wants button 6 held past 72 main-loop iterations; a DUO wants
- * button 1 held past 180 (OnlyKey.ino:914). Holding the classic gesture at a
- * DUO presses a button that does something else and then waits for a lock that
- * never comes - measured, as "the device never locked after three attempts".
- *
- * The margin over the floor is small and deliberate: past the same band a hold
- * stops being config mode and becomes another gesture.
- */
-function gestureFor(device) {
-  const caps = device && device.capabilities;
-  const g = (caps && caps.configModeGesture) || {button: 6, ticks: 72};
-  return {button: g.button, ticks: g.ticks + 8};
-}
-
-/**
  * Bit 3 of derived_key_challenge_mode - a BITMASK, not a flag.
  *
  * The library models this as a preference and its table says why the value is 8
@@ -104,48 +87,28 @@ async function enableTouchFreeDerive(device, pin, log) {
   await delay(22000);
 
   /*
-   * RETRIED, because the window in which a hold is ignored is transient and we
-   * cannot see it from here. Two firmware states swallow the gesture:
-   * `isfade` (the LED still fading from the previous press, OnlyKey.ino:914)
-   * and pending_operation after a FIDO ceremony, which discards presses
-   * outright (FINDING-presses-discarded-after-a-fido-ceremony.md). Neither is
-   * readable over the wire, and a single attempt that lands inside either one
-   * is indistinguishable from a gesture the firmware does not implement.
+   * THE SEQUENCE IS THE LIBRARY'S. device.enterConfigMode() owns the gesture,
+   * the retry and the lock-as-proof; this file used to carry its own copy of
+   * all three, which is exactly the duplication that let the DUO's different
+   * gesture go unnoticed until a DUO was emulated.
    *
-   * The lock is the evidence: entering config mode locks the device
-   * (OnlyKey.ino:914-926), so a device still answering readLabels afterwards
-   * did not enter it - the hold was handled as an ordinary long press and
-   * typed a slot instead.
+   * Three attempts here, not the one a person gets: nobody is watching a suite,
+   * and the window that swallows a hold is transient.
    */
-  let locked = false;
-  for (let attempt = 1; attempt <= 3 && !locked; attempt++) {
-    const gesture = gestureFor(device);
-    log(`holding button ${gesture.button} for ${gesture.ticks} ticks (attempt ${attempt})`);
-    await OkEmu.holdTicks(gesture.button, gesture.ticks, {allowGesture: true});
-
-    const lockBy = Date.now() + 8000;
-    while (Date.now() < lockBy) {
-      await delay(1000);
-      try {
-        await device.readLabels({timeoutMs: 2000});
-      } catch {
-        locked = true;
-        break;
-      }
+  const off = device.on('progress', e => {
+    if (e.step === 'configMode') {
+      log(`config mode: ${e.attempt ? `attempt ${e.attempt} ` : ''}${e.button ? `button ${e.button} for ${e.ticks} ticks` : ''}`);
     }
-    if (!locked) {
-      log('still unlocked - the gesture was swallowed; waiting for the window to pass');
-      await delay(22000);
-    }
-  }
+  });
 
-  if (!locked) {
-    throw new Error(
-      'the device never locked after three attempts, so the config-mode ' +
-      'gesture was not taken. A hold is ignored while the LED is fading and ' +
-      'while pending_operation is set after a FIDO ceremony, and is then ' +
-      'handled as an ordinary long press that types a slot.',
-    );
+  try {
+    await device.enterConfigMode({
+      hold: (button, ticks) => OkEmu.holdTicks(button, ticks, {allowGesture: true}),
+      settle: delay,
+      attempts: 3,
+    });
+  } finally {
+    off();
   }
   log('device locked, so the gesture landed');
 
@@ -187,6 +150,5 @@ async function enableTouchFreeDerive(device, pin, log) {
 module.exports = {
   setTouchFreeDerive,
   enableTouchFreeDerive,
-  gestureFor,
   DERIVE_WITHOUT_TOUCH,
 };

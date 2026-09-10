@@ -38,7 +38,7 @@
 
 const {getOnlyKey} = require('../src/onlykey');
 const {pressDigits} = require('./helpers/pressDigits');
-const {setTouchFreeDerive, gestureFor} = require('./helpers/touchFreeDerive');
+const {setTouchFreeDerive} = require('./helpers/touchFreeDerive');
 const {protocol} = require('node-onlykey-lib');
 
 const OkEmuModule = require('../src/transport/OkEmu');
@@ -247,17 +247,19 @@ module.exports = function cryptoSign({describe, it}) {
          * The hold that reaches config mode also locks the device, so the PIN
          * has to go back in before anything will be accepted. Both halves are
          * the firmware's design, not a workaround.
+         *
+         * The sequence is the library's - see enableTouchFreeDerive, and
+         * device.enterConfigMode() behind it. This suite carried its own copy
+         * of the gesture, the wait and the lock check, which is how the DUO's
+         * different gesture went unnoticed until a DUO was emulated.
          */
-        const gesture = gestureFor(device);
-        log(`holding button ${gesture.button} for ${gesture.ticks} ticks`);
-        await OkEmu.holdTicks(gesture.button, gesture.ticks, {allowGesture: true});
-        await delay(2000);
-
-        const said = tap.take();
-        assert.ok(
-          !/UNLOCKED/.test(said.split('\n').slice(-3).join('')),
-          'the device should have locked itself on entering config mode',
-        );
+        await device.enterConfigMode({
+          hold: (button, ticks) =>
+            OkEmu.holdTicks(button, ticks, {allowGesture: true}),
+          settle: delay,
+          attempts: 3,
+        });
+        log('the gesture landed and the device locked');
 
         await device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
         log('unlocked again, now in config mode');

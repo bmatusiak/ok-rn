@@ -87,7 +87,7 @@ export function BackupScreen({
    * twice - the sequence is three firmware quirks deep and only worth getting
    * right once.
    */
-  const config = useConfigMode(emu.device);
+  const config = useConfigMode();
 
   /* A staged backup must not outlive the screen that made it. */
   useEffect(() => () => { void NativeShare.clearShared().catch(() => {}); }, []);

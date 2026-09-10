@@ -103,7 +103,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
    * mode ends only at a restart) and the Backup screen needs exactly the same
    * thing to set a passphrase.
    */
-  const config = useConfigMode(emu.device);
+  const config = useConfigMode();
   const loadPgp = useCallback(async () => {
     setBusy('pgp');
     setError(null);
