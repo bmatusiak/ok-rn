@@ -483,6 +483,30 @@ extern "C" uintptr_t okemu_flash_base = 0;
  * anything during calibration.
  */
 /*
+ * onlykeyhw is WEAK HERE, and that is a version fix.
+ *
+ * The 3.0 line declares it in okcore.cpp:168 (`uint8_t onlykeyhw =
+ * OK_HW_COLOR;`) and branches on it wherever a DUO differs from a classic. THE
+ * 2.1 LINE DOES NOT HAVE IT: that generation asks the chip directly, through
+ * `#define HW_ID SIM_SDID_PINID` (onlykey.h:100), and the DUO did not exist -
+ * its predecessor was OK_GO. So this file, which needs to know which pad map to
+ * use, failed to LINK against v2.1.0 and v2.1.1 with `undefined symbol:
+ * onlykeyhw`. Caught by the version matrix, which is what it is for.
+ *
+ * A weak definition is right in both directions. Where the firmware defines it,
+ * its strong definition wins and the HAL follows whatever the staged build
+ * decided - including a DUO, when OKEMU_MODEL=duo uncomments the firmware's own
+ * DEFINED_HWID override. Where it does not, this supplies OK_HW_COLOR, which is
+ * the only answer a 2.1 build can have: OK_HW_DUO is not a value that release
+ * knows, no build option produces one, and a DUO cannot be staged from it.
+ *
+ * The literal rather than the constant, because onlykey.h is firmware and this
+ * file is the HAL - see pin_for_button(), which cites the same line for the
+ * same reason.
+ */
+__attribute__((weak)) uint8_t onlykeyhw = 5;   /* onlykey.h:105, OK_HW_COLOR */
+
+/*
  * A DUO HAS TWO PADS, AND ITS THIRD BUTTON IS BOTH AT ONCE.
  *
  * okcore.cpp's sense loop has no third branch for a DUO. It reads the two pads
@@ -518,9 +542,8 @@ static bool duo_button_holds_pin(uint8_t pin, const bool *button) {
 }
 
 static uint8_t pin_for_button(int index) {
-  /* onlykey.h:106. Not included here - this file is the HAL, not firmware. */
-  const uint8_t OKEMU_HW_DUO = 9;
-  extern uint8_t onlykeyhw;
+  /* Defined weakly above, so this links against a release without it. */
+  const uint8_t OKEMU_HW_DUO = 9;   /* onlykey.h:104 */
   static const uint8_t kClassic[OKEMU_NUM_BUTTONS] = { 23, 22, 17, 15, 1, 16 };
   static const uint8_t kDuo[OKEMU_NUM_BUTTONS]     = { 23, 15, 17, 22, 1, 16 };
   return (onlykeyhw == OKEMU_HW_DUO ? kDuo : kClassic)[index];
@@ -639,8 +662,7 @@ uint64_t okemu_rounds(void) {
 int okemu_touch_for_pin(uint8_t pin) {
   std::lock_guard<std::mutex> lk(g.mu);
 
-  /* onlykey.h:106 - see pin_for_button() and duo_button_holds_pin() above. */
-  extern uint8_t onlykeyhw;
+  /* onlykey.h:104 - see pin_for_button() and duo_button_holds_pin() above. */
   bool held = false;
   if (onlykeyhw == 9) {
     held = duo_button_holds_pin(pin, g.button);

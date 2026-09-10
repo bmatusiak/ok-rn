@@ -57,6 +57,7 @@ wrong version of the table looks exactly like the right one.
 | 38 | [a DUO has two pads and its third button is a chord](FINDING-the-duo-third-button-is-a-chord.md) | high for any host that presses buttons on a DUO - button 3 does nothing and button 2 answers as something else | OnlyKey firmware | no |
 | 39 | [the backup refusal is typed, and blocks the device](FINDING-the-backup-refusal-is-typed-and-blocks-the-device.md) | medium for any host that scripts a backup - the device answers nothing on vendor for five to nine seconds and nothing says why; the NEXT thing tried fails | OnlyKey firmware | no |
 | 40 | [USB claims one interface and the app needs three](FINDING-usb-claims-one-interface-and-the-app-needs-three.md) | high for real hardware - over USB the app can speak CTAPHID and nothing else; no PIN, no slots, no labels, no backup. The one interface it claims is picked by a three-way tie-break | ours | n/a |
+| 41 | [blocking presence fails a second shared secret](FINDING-blocking-presence-fails-a-second-shared-secret.md) | medium for the 2.1 line - two derive tests fail reproducibly and the vault round trip is one of them; NOT root-caused, and shown not to be the new suites | unknown | n/a |
 
 ## Read #6 first, then #2
 
