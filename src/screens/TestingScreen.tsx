@@ -18,6 +18,17 @@ const TEST_PIN = '1234561';
  * Reachable only in testing mode, which is the point: the E2E suite stops the
  * firmware and cannot restart it, and a factory reset is exactly as final as it
  * sounds. Neither belongs one stray tap away from a PIN pad.
+ *
+ * ## IT IS ALWAYS THE SOFT KEY, whatever the app is otherwise reading
+ *
+ * Starting and stopping firmware, the storage files, a factory reset - these
+ * are the emulator's controls and a hard key has none of them. Following the
+ * active key would put a Start button over a device that cannot be started and
+ * a storage path over one whose storage is inside it.
+ *
+ * The USB panel further down is the other half: that one is only ever about a
+ * physical key. So this tab shows both, each labelled, rather than one that
+ * changes meaning underneath you.
  */
 export function TestingScreen({
   emu,
@@ -37,7 +48,11 @@ export function TestingScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Section title="Firmware">
+      {/*
+        "Soft Key firmware", not "Firmware". Both keys run firmware, and this
+        panel can only ever be about one of them.
+      */}
+      <Section title="Soft Key firmware">
         <View style={styles.kv}>
           <KeyValue label="state" value={emu.state} />
           <KeyValue label="device" value={emu.device} />
@@ -78,8 +93,11 @@ export function TestingScreen({
         </Text>
       </Section>
 
-      <Section title="Wipe">
+      <Section title="Wipe the Soft Key">
         <Text style={styles.note}>
+          The soft key, always — a hard key is not reachable from this tab, and
+          wiping one would not be a developer convenience.
+          {' '}
           Fills flash and EEPROM with 0xFF and asks the firmware to reboot,
           which leaves an unprovisioned key — the state a brand new one is in.
           It is the only way to reach the setup flow on a key that already has

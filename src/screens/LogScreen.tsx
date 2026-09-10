@@ -4,11 +4,17 @@ import {Btn, LogList, Section, Segmented} from '../ui/components';
 import type {LogEntry} from '../hooks/useLog';
 
 /*
- * 'Hard Key' rather than 'USB': this buffer carries traffic to and from a
- * PHYSICAL OnlyKey plugged into the phone, as against the soft key running
- * inside it. USB is how it is attached, not what it is.
+ * NAMED FOR THE DEVICE, not for the layer.
+ *
+ * "Firmware" was unambiguous while there was one key. It is not now - both
+ * keys run firmware and both talk - so the two device logs say which device.
+ *
+ * And the buffer that used to be called 'Hard Key' was never a hard key's
+ * firmware: it is the byte-level USB panel behind the Testing tab, which is a
+ * different thing from a device session and now has a name that says so. The
+ * hard key's own log took the name it had been borrowing.
  */
-const SOURCES = ['Firmware', 'CTAP', 'Hard Key'] as const;
+const SOURCES = ['Soft Key', 'Hard Key', 'CTAP', 'USB bytes'] as const;
 type Source = (typeof SOURCES)[number];
 
 export type LogBuffers = Record<
@@ -27,7 +33,7 @@ export type LogBuffers = Record<
  * this screen.
  */
 export function LogScreen({buffers}: {buffers: LogBuffers}) {
-  const [source, setSource] = useState<Source>('Firmware');
+  const [source, setSource] = useState<Source>('Soft Key');
   const active = buffers[source];
 
   return (

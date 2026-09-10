@@ -82,6 +82,9 @@ function Shell() {
   const fidoLog = useLog();
   const emuLog = useLog();
 
+  /* The hard key talks too, and it is a different device saying it. */
+  const hardLog = useLog();
+
   /*
    * Sessions are APP-SCOPED. Created inside a screen they died with it, so
    * switching views tore down every listener while the native thing carried on
@@ -97,7 +100,7 @@ function Shell() {
    * is what makes them comparable: attach a real key, look at it, unplug, and
    * the emulated one is still where it was rather than freshly booted.
    */
-  const keys = useKey({log: emuLog.log});
+  const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log});
   const emu = keys.key;
   const fido = useFidoGatt({log: fidoLog.log});
   const hid = useUsbHid({log: usbLog.log});
@@ -286,15 +289,33 @@ function Shell() {
             <FidoScreen fido={fido} />
           ) : tab === 'Log' ? (
             <LogScreen
+              /*
+                NAMED FOR THE DEVICE, not for the layer.
+
+                "Firmware" was unambiguous while one key existed. It is not
+                now: both keys run firmware and both talk. And the buffer
+                that used to be called "Hard Key" was never the hard key's
+                firmware at all - it is the byte-level USB panel, which is a
+                different thing from a device session.
+              */
               buffers={{
-                Firmware: {entries: emuLog.entries, clear: emuLog.clear},
+                'Soft Key': {entries: emuLog.entries, clear: emuLog.clear},
+                'Hard Key': {entries: hardLog.entries, clear: hardLog.clear},
                 CTAP: {entries: fidoLog.entries, clear: fidoLog.clear},
-                'Hard Key': {entries: usbLog.entries, clear: usbLog.clear},
+                'USB bytes': {entries: usbLog.entries, clear: usbLog.clear},
               }}
             />
           ) : (
+            /*
+              THE SOFT KEY, explicitly - not whichever is active.
+
+              This tab starts and stops firmware, shows the storage files and
+              factory-resets. Those are the emulator's controls; a hard key
+              has none of them, and following the active key would put a
+              Start button over a device that cannot be started.
+            */
             <TestingScreen
-              emu={emu}
+              emu={keys.soft}
               hid={hid}
               usbEntries={usbLog.entries}
               clearUsb={usbLog.clear}

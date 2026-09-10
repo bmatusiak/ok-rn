@@ -47,9 +47,23 @@ const OVERRIDE_KEY = 'ok-rn/key-source/override';
 /** How often to look for a hard key while in auto. */
 const POLL_MS = 2000;
 
-export function useKey({log}: {log: (level: LogLevel, text: string) => void}) {
-  const soft = useOkEmu({log, autoStart: true});
-  const hard = useHardKey({log});
+/**
+ * ONE LOG PER KEY, not one between them.
+ *
+ * They were given the same buffer at first, and the result was a "Firmware"
+ * log carrying whichever key happened to be active - so a line about a
+ * device sat next to a line about a different device with nothing marking
+ * the change. Two devices, two logs.
+ */
+export function useKey({
+  softLog,
+  hardLog,
+}: {
+  softLog: (level: LogLevel, text: string) => void;
+  hardLog: (level: LogLevel, text: string) => void;
+}) {
+  const soft = useOkEmu({log: softLog, autoStart: true});
+  const hard = useHardKey({log: hardLog});
 
   const [mode, setModeState] = useState<KeyMode>('manual');
   const [override, setOverrideState] = useState<Backend | null>(null);
