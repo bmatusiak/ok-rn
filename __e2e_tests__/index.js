@@ -9,6 +9,7 @@ module.exports = [
     require('./6-bridge.e2e.js'),
     require('./7-pressBands.e2e.js'),
     require('./8-keystrokes.e2e.js'),
+    require('./8b-backup.e2e.js'),
     require('./9-cryptoSign.e2e.js'),
     require('./10-derive.e2e.js'),
     require('./11-compositePgp.e2e.js'),

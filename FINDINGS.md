@@ -55,6 +55,7 @@ wrong version of the table looks exactly like the right one.
 | 36 | [old firmware blocks for a touch instead of asking](FINDING-old-firmware-blocks-for-a-touch-instead-of-asking.md) | high for any host written against newer firmware - every press-required derive fails and the device blames the user | OnlyKey firmware | no |
 | 37 | [a pinned release is the travel edition](FINDING-a-pinned-release-is-the-travel-edition.md) | high for the matrix - v2.1.1 cannot be given a PIN as pinned, and nothing says why | ours / the pin | n/a |
 | 38 | [a DUO has two pads and its third button is a chord](FINDING-the-duo-third-button-is-a-chord.md) | high for any host that presses buttons on a DUO - button 3 does nothing and button 2 answers as something else | OnlyKey firmware | no |
+| 39 | [the backup refusal is typed, and blocks the device](FINDING-the-backup-refusal-is-typed-and-blocks-the-device.md) | medium for any host that scripts a backup - the device answers nothing on vendor for five to nine seconds and nothing says why; the NEXT thing tried fails | OnlyKey firmware | no |
 
 ## Read #6 first, then #2
 

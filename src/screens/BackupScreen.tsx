@@ -28,16 +28,6 @@ import type {EmuSession} from '../hooks/useOkEmu';
  */
 
 /**
- * The backup gesture: a hold on button 1 between 72 and 179 ticks.
- *
- * `duration < 180 && duration >= 72 && button_selected == '1'`
- * (OnlyKey.ino:873). 100 sits in the middle of that, so neither end is close.
- * Above 180 the branch is not taken at all and the press falls through to the
- * ordinary band dispatch, which would type a slot instead.
- */
-const BACKUP_TICKS = 100;
-
-/**
  * Where the backup key can come from.
  *
  * Both land on the same slot. A passphrase is hashed to a key the device
@@ -102,12 +92,25 @@ export function BackupScreen({
 
     try {
       const {device} = await getOnlyKey();
+
+      /*
+       * capabilities() is null until the device has SAID what it is, and
+       * getOnlyKey only builds the app - it does not connect. Guessing a
+       * band here would defeat the point of reading one.
+       */
+      if (!device.capabilities) await device.connect();
+      const backup = device.capabilities.gestures.backup;
       const result = await device.captureBackup({
         /*
          * The trigger is ours because pressing a button is platform-specific;
-         * the library does the capture, decode and verification.
+         * the library does the capture, decode and verification - and it says
+         * which button and how long, because THAT BAND MOVED. The 2.1 line
+         * leaves the backup hold open-ended on classic hardware while the 3.0
+         * line bounds it at 180, where the same button becomes a DUO's
+         * config-mode gesture. A hold this screen picked itself would be a
+         * backup on one key and a typed slot on another.
          */
-        trigger: () => OkEmu.holdTicks(1, BACKUP_TICKS, {allowGesture: true}),
+        trigger: () => OkEmu.holdTicks(backup.button, backup.ticks, {allowGesture: true}),
         timeoutMs: 120000,
         onProgress: ({characters}: {characters: number}) => setProgress(characters),
       });
