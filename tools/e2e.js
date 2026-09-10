@@ -123,10 +123,10 @@ function readOnlyArg() {
 /**
  * Point the app at a subset, and hand back a function that undoes it.
  *
- * The restore runs in a `finally`, including on failure and on a thrown
- * deadline, because a filter left behind would make the NEXT full run skip
- * most of the suite while still reporting a pass. A stale filter that says
- * "PASS" is worse than no filter at all.
+ * The restore runs in a `finally`, on process exit AND on a signal. A filter
+ * left behind would make the NEXT full run skip most of the suite while still
+ * reporting a pass, and a stale filter that says "PASS" is worse than no
+ * filter at all.
  */
 function applyOnly(names) {
   const original = fs.readFileSync(ONLY_FILE, 'utf8');
@@ -277,6 +277,28 @@ const restore = applyOnly(readOnlyArg());
  * against here.
  */
 process.on('exit', restore);
+
+/*
+ * A SIGNAL DOES NOT FIRE 'exit'.
+ *
+ * Measured, by interrupting a run: node's default SIGINT handling terminates
+ * the process without running the 'exit' listeners, so a Ctrl-C - or a harness
+ * killing the runner - left `only.js` naming one suite. The next thing that
+ * rendered the app got a deliberate "names suites that do not exist" error,
+ * which is the friendly end of that failure; the unfriendly end is a filter
+ * that still matches, making a full run skip most of the suite and report a
+ * pass.
+ *
+ * Re-raising with the default handler after restoring keeps the exit status
+ * honest - a run that was interrupted should not look like one that finished.
+ */
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    restore();
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  });
+}
 
 main()
   .catch(err => {

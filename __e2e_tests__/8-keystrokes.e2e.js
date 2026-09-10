@@ -178,5 +178,72 @@ module.exports = function keystrokeCapture({describe, it}) {
         'a modifier other than shift appeared while typing a password',
       );
     });
+
+    /*
+     * The same loop, through the library.
+     *
+     * Everything above is this suite pressing a button, watching IFACE.KEYBOARD
+     * and decoding by hand - which is exactly what SlotEditorScreen used to do,
+     * and what device.readSlot() now owns. Running both against the same slot
+     * is what keeps the move honest: if readSlot picked a different button, a
+     * different band or a different end-of-typing rule, these two would
+     * disagree about a password that is right there in the log.
+     */
+    it('device.readSlot() reads the same slot the same way', async ({log, assert}) => {
+      const {device} = await ready(log);
+
+      const read = await device.readSlot('2a', {
+        press: (button, ticks) => OkEmu.holdTicks(button, ticks),
+      });
+
+      log(`readSlot: button ${read.button}, ${read.band}, slot ${read.slot}, `
+        + `${read.reports} reports`);
+      log(`segments: ${JSON.stringify(read.segments)}`);
+
+      assert.equal(read.button, 2, 'slot 2a is typed by button 2');
+      assert.equal(read.band, 'tap', 'the a profile is a tap');
+      assert.equal(read.slot, 2, 'gen_press types slot 2 for button 2 in profile 1');
+      assert.ok(
+        read.segments.includes(SECRET),
+        `expected ${JSON.stringify(SECRET)} among the fields readSlot returned`,
+      );
+    });
+
+    /*
+     * THE B PROFILE, which is the half that can be got wrong silently.
+     *
+     * pressForSlot() inverts gen_hold(): a hold on button N types slot N+6 on a
+     * classic and N+3 on a DUO. Nothing in the reply says which slot was typed,
+     * so a wrong span would come back as a perfectly valid password from the
+     * wrong slot - which is why the two slots are given DIFFERENT contents and
+     * the test asserts it got the second one rather than merely got something.
+     */
+    it('a hold types the b profile, and it is a different slot', async ({log, assert}) => {
+      const {device} = await ready(log);
+
+      const B_SECRET = 'held-2b-not-2a';
+      await device.setSlot('2b', {label: 'held', password: B_SECRET});
+      log(`slot 2b password: ${JSON.stringify(B_SECRET)}`);
+
+      const read = await device.readSlot('2b', {
+        press: (button, ticks) => OkEmu.holdTicks(button, ticks),
+      });
+
+      log(`readSlot: button ${read.button}, ${read.band}, slot ${read.slot}, `
+        + `${read.reports} reports`);
+      log(`segments: ${JSON.stringify(read.segments)}`);
+
+      assert.equal(read.button, 2, 'the b profile is the SAME button, held');
+      assert.equal(read.band, 'hold');
+      assert.equal(read.slot, 8, 'gen_hold adds 6 on a classic: button 2 -> slot 8');
+      assert.ok(
+        read.segments.includes(B_SECRET),
+        'the hold typed something, but not what is in 2b',
+      );
+      assert.ok(
+        !read.segments.includes(SECRET),
+        'the hold typed slot 2a - the b-profile span is wrong',
+      );
+    });
   });
 };

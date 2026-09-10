@@ -11,11 +11,9 @@ import {device as okdevice} from 'node-onlykey-lib';
 import {Btn} from '../ui/components';
 import {theme} from '../ui/theme';
 import {getOnlyKey} from '../onlykey';
-import OkEmu, {IFACE, PRESS_TICKS} from '../transport/OkEmu';
+import OkEmu from '../transport/OkEmu';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {useSecureScreen} from '../hooks/useSecureScreen';
-
-const {keystrokes} = okdevice;
 
 /*
  * One slot, in full.
@@ -127,9 +125,35 @@ export function SlotEditorScreen({
 
   useSecureScreen(blockScreenshots);
 
-  /* The a profile is a tap, the b profile is a hold. */
-  const isBProfile = slot.id.endsWith('b');
-  const button = Number(slot.id[0]);
+  /**
+   * Which button types this slot, and for how long.
+   *
+   * Not `slot.id[0]`, which was right only for a classic: a DUO's ids run to
+   * '12b' over three buttons, so the first character of '12b' is button 1 where
+   * the answer is button 3. slots.pressForSlot() is the inverse of the
+   * firmware's own gen_press()/gen_hold(), and it needs the device type, so
+   * this is asked rather than assumed.
+   *
+   * Null until the device has answered. The header says what it knows.
+   */
+  const [plan, setPlan] = useState<{button: number; band: string} | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getOnlyKey()
+      .then(({device}) => {
+        const p = okdevice.slots.pressForSlot(slot.id, {
+          deviceType: device.deviceType,
+        });
+        if (alive) setPlan({button: p.button, band: p.band});
+      })
+      .catch(() => {
+        if (alive) setPlan(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [slot.id]);
 
   useEffect(() => {
     /*
@@ -151,38 +175,27 @@ export function SlotEditorScreen({
   /**
    * Ask the key to type this slot, and read what it typed.
    *
-   * The press is COUNTED, not timed: a tap is 10 firmware loop iterations and a
-   * hold is 40, which is inside the b-profile band and well below the 72 where
-   * button 1 starts taking a backup. See
-   * FINDING-holds-were-timed-against-a-counted-band.md.
+   * THE SEQUENCE IS THE LIBRARY'S. device.readSlot() works out which button
+   * types this slot and for how long, waits for the typing to stop rather than
+   * for a fixed time, and decodes and splits what came back. This screen used
+   * to carry its own copy of all four, including a quiescence loop and a
+   * hard-coded "a is a tap, b is a hold" that is only true on a classic.
+   *
+   * The press itself stays here, because pressing is the host's job - a JNI
+   * call to the soft key here, a finger on a real one.
    */
   const readFromKey = useCallback(async () => {
     setBusy('reading');
     setError(null);
     setStatus(null);
 
-    const reports: number[][] = [];
-    const off = OkEmu.on('stream', e => {
-      if (e.iface !== IFACE.KEYBOARD || e.dir !== 0) return;
-      reports.push(Array.from(e.bytes));
-    });
-
     try {
-      await OkEmu.holdTicks(button, isBProfile ? PRESS_TICKS.HOLD : PRESS_TICKS.TAP);
+      const {device} = await getOnlyKey();
+      const read = await device.readSlot(slot.id, {
+        press: (button: number, ticks: number) => OkEmu.holdTicks(button, ticks),
+      });
 
-      /*
-       * Wait for the typing to STOP rather than for a fixed time. A slot is
-       * typed one character at a time, paced by its own TYPESPEED, so how long
-       * it takes is a property of the slot.
-       */
-      let quiet = 0;
-      for (let i = 0; i < 80 && quiet < 6; i++) {
-        const before = reports.length;
-        await new Promise<void>(r => setTimeout(r, 100));
-        quiet = reports.length === before ? quiet + 1 : 0;
-      }
-
-      if (!reports.length) {
+      if (!read.reports) {
         setError(
           'The key typed nothing. An unlocked key types a slot when its button ' +
             'is pressed; if it has just finished a security-key ceremony it ' +
@@ -191,17 +204,14 @@ export function SlotEditorScreen({
         return;
       }
 
-      const {text} = keystrokes.decode(reports);
-      const {segments} = keystrokes.splitFields(text);
-      setCaptured(segments);
-      setStatus(`Read ${segments.length} field(s) from slot ${slot.id}.`);
+      setCaptured(read.segments);
+      setStatus(`Read ${read.segments.length} field(s) from slot ${slot.id}.`);
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
-      off();
       setBusy(null);
     }
-  }, [button, isBProfile, slot.id]);
+  }, [slot.id]);
 
   const save = useCallback(async () => {
     const dirty = Object.entries(values).filter(([, v]) => v !== '');
@@ -283,9 +293,9 @@ export function SlotEditorScreen({
         <View style={styles.headerText}>
           <Text style={styles.title}>Slot {slot.id}</Text>
           <Text style={styles.subtitle}>
-            {isBProfile
-              ? `Hold button ${button} to type this slot`
-              : `Tap button ${button} to type this slot`}
+            {plan
+              ? `${plan.band === 'hold' ? 'Hold' : 'Tap'} button ${plan.button} to type this slot`
+              : 'Asking the key which button types this slot…'}
           </Text>
         </View>
       </View>
