@@ -71,3 +71,50 @@ describe('storage slot', () => {
     expect(NativeOkEmu.start).toHaveBeenCalledWith('v2.1.0');
   });
 });
+
+/*
+ * A DUO is a different DEVICE, not a setting.
+ *
+ * It has 24 slots across 4 profiles where a classic has 12 across 2, and its
+ * PIN travels in the message body rather than on the buttons. Emulating one is
+ * a build option (OKEMU_MODEL=duo), which makes it exactly the hazard the slot
+ * exists to prevent: the same firmware version, two incompatible flash images.
+ */
+describe('the DUO gets a slot of its own', () => {
+  beforeEach(() => {
+    jest.resetModules();
+  });
+
+  it('separates a DUO working tree from the classic one', () => {
+    jest.doMock(
+      '../src/generated/firmware.json',
+      () => ({digest: 'abc', version: null, model: 'duo'}),
+      {virtual: true},
+    );
+    const {storageSlot, buildInfo} = require('../src/buildInfo');
+    expect(storageSlot).toBe('duo');
+    expect(buildInfo.model).toBe('duo');
+  });
+
+  it('separates a DUO release from the same release as a classic', () => {
+    jest.doMock(
+      '../src/generated/firmware.json',
+      () => ({digest: 'abc', version: 'v3.0.2', model: 'duo'}),
+      {virtual: true},
+    );
+    expect(require('../src/buildInfo').storageSlot).toBe('v3.0.2-duo');
+  });
+
+  it('treats anything but "duo" as a classic, including a missing field', () => {
+    // A build staged before the model was recorded must not become a DUO by
+    // accident - that would point it at an empty slot and look like a wipe.
+    jest.doMock(
+      '../src/generated/firmware.json',
+      () => ({digest: 'abc', version: 'v3.0.2'}),
+      {virtual: true},
+    );
+    const {storageSlot, buildInfo} = require('../src/buildInfo');
+    expect(storageSlot).toBe('v3.0.2');
+    expect(buildInfo.model).toBe('classic');
+  });
+});

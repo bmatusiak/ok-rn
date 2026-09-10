@@ -36,6 +36,8 @@
 
 const {getOnlyKey} = require('../src/onlykey');
 const {pressDigits} = require('./helpers/pressDigits');
+const {protocol} = require('node-onlykey-lib');
+const okmsg = protocol.okmsg;
 
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
@@ -108,26 +110,51 @@ module.exports = function provision({describe, it}) {
           'to answer it - stage the version with OKEMU_DEBUG=1',
       );
 
-      log(`device is UNINITIALIZED; setting the PIN to ${PIN}`);
-      const steps = [];
-      const off = device.on('progress', e => {
-        steps.push(e.step);
-        log(`  ${e.step}`);
-      });
-      try {
-        await device.setPin(PIN, {enterDigits: pressDigits({log})});
-      } finally {
-        off();
+      /*
+       * A DUO IS PROVISIONED BY A MESSAGE, not by the six-step bracket.
+       *
+       * The classic device captures digits from its own buttons and the host
+       * only brackets that, waiting for six console prompts. A DUO carries its
+       * PINs in the message body: one OKPIN with a leading 0xFF meaning SET,
+       * and each PIN in its own 16-byte slot. The middle slot is the second
+       * profile PIN, which a DUO does not have, so it goes as empty.
+       *
+       * There are no prompts to count here, so the evidence is different: the
+       * device answers, and the next boot reports INITIALIZED. Asserting "six
+       * steps" against a DUO would fail on a device that had just been set up
+       * correctly.
+       */
+      if (device.deviceType === 'duo') {
+        log(`device is a DUO and UNINITIALIZED; setting the PIN to ${PIN} by message`);
+        const problems = device.validateDuoPins({pin: PIN, pinConfirm: PIN});
+        assert.ok(problems.ok, `the PIN this suite uses is not valid for a DUO: ${
+          problems.primary.concat(problems.selfDestruct).join(' ')}`);
+
+        const reply = await device.duoPin([PIN, '', ''], {set: true});
+        log(`device answered: ${JSON.stringify(String(okmsg.text(reply)).slice(0, 60))}`);
+      } else {
+        log(`device is UNINITIALIZED; setting the PIN to ${PIN}`);
+        const steps = [];
+        const off = device.on('progress', e => {
+          steps.push(e.step);
+          log(`  ${e.step}`);
+        });
+        try {
+          await device.setPin(PIN, {enterDigits: pressDigits({log})});
+        } finally {
+          off();
+        }
+
+        /*
+         * The six steps are the evidence. "setPin resolved" is not: the bracket
+         * is six waits, and one of them silently satisfied by the wrong prompt
+         * would leave a device whose PIN is not what we think it is - which
+         * presents, one suite later, as an unlock that never happens.
+         */
+        log(`steps: ${steps.join(', ')}`);
+        assert.equal(steps.length, 6, 'the PIN bracket did not run to completion');
       }
 
-      /*
-       * The six steps are the evidence. "setPin resolved" is not: the bracket
-       * is six waits, and one of them silently satisfied by the wrong prompt
-       * would leave a device whose PIN is not what we think it is - which
-       * presents, one suite later, as an unlock that never happens.
-       */
-      log(`steps: ${steps.join(', ')}`);
-      assert.equal(steps.length, 6, 'the PIN bracket did not run to completion');
 
       assert.ok(
         false,

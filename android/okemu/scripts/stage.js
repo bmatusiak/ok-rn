@@ -190,7 +190,43 @@ const ENV_STD =
 let WANT_STD = ENV_STD;
 
 /**
- * Read - or flip - one of onlykey.h's two build-option defines.
+ * WHICH MODEL this build is.
+ *
+ *     OKEMU_MODEL=duo       build as an OnlyKey DUO
+ *     OKEMU_MODEL=classic   force the classic detection path
+ *     unset                 leave the sources as they are (classic)
+ *
+ * ## The firmware provides this switch itself
+ *
+ * On hardware the model is read from the chip: `HW_ID` is `SIM_SDID_PINID`, the
+ * package-type field, and okcore.cpp's touch-sense loop uses it plus an analog
+ * reading to decide between a DUO and an OK_Color. Reproducing that in the HAL
+ * would mean faking a register AND an analog pin, and getting the interplay
+ * right.
+ *
+ * There is no need. onlykey.h already carries
+ *
+ *     //#define DEFINED_HWID OK_HW_DUO
+ *
+ * with the comment "override auto hw detection, hardcoded" at its use site
+ * (okcore.cpp). Uncommenting it is the firmware's own way of saying which model
+ * this build is, so that is the lever - the same kind of change as the DEBUG and
+ * STD_VERSION gates, not a new mechanism.
+ *
+ * ## It is not available on every release
+ *
+ * MEASURED: the override is present at v3.0.2, v3.0.1, v3.0.0 and the working
+ * tree, and ABSENT at v2.1.1 and v2.1.0. The DUO is newer than the 2.1 line, so
+ * asking those to be one is asking for a device that never existed - the gate
+ * reports that rather than silently producing a classic.
+ */
+const WANT_DUO =
+  process.env.OKEMU_MODEL === 'duo' ? true
+  : process.env.OKEMU_MODEL === 'classic' ? false
+  : null;
+
+/**
+ * Read - or flip - one of onlykey.h's build-option defines.
  *
  * A TOGGLE rather than a text patch, because the sources arrive on either side
  * of both of them and a patch written for one silently fails to find its
@@ -202,7 +238,7 @@ let WANT_STD = ENV_STD;
  * @param want true to enable, false to disable, null to leave it alone
  * @returns whether the staged tree ends up with it defined
  */
-function gateDefine(name, on, want) {
+function gateDefine(name, on, want, { universal = true } = {}) {
   const target = path.join(STAGE, 'libraries', 'onlykey', 'onlykey.h');
   const off = `//${on}`;
 
@@ -213,10 +249,18 @@ function gateDefine(name, on, want) {
   if (text.includes(off)) enabled = false;
   else if (text.includes(on)) enabled = true;
   else {
-    console.error(
-      `stage: WARNING - the ${name} define is not where it has always been in ` +
-      'libraries/onlykey/onlykey.h, so the build option could not be read.');
-    process.exitCode = 1;
+    /*
+     * ABSENT. For a define every release carries that is a real problem - the
+     * option has been renamed and we would otherwise read a silent, wrong
+     * 'off'. For one that only some releases have, DEFINED_HWID being the
+     * case, absence is the ordinary state and saying nothing is correct.
+     */
+    if (universal) {
+      console.error(
+         +
+        'libraries/onlykey/onlykey.h, so the build option could not be read.');
+      process.exitCode = 1;
+    }
     return null;
   }
 
@@ -949,7 +993,7 @@ function gitShort(dir) {
  * worse than none. Generated rather than committed: a checkout that has never
  * staged reports 'unknown' instead of somebody else's hash.
  */
-function writeBuildInfo(stats, release, debugOn, stdEdition) {
+function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel) {
   const out = path.join(OKEMU, '..', '..', 'src', 'generated');
   fs.mkdirSync(out, { recursive: true });
   const pins = release.pins;
@@ -977,6 +1021,12 @@ function writeBuildInfo(stats, release, debugOn, stdEdition) {
      * that refuses most of what it knows how to ask for.
      */
     edition: stdEdition === null ? null : stdEdition ? 'standard' : 'travel',
+    /**
+     * The model this build reports as. A DUO is 24 slots across 4 profiles
+     * with 3 buttons and a PIN carried in the message body rather than pressed
+     * on the device, so a host that reads this wrong gets all of that wrong.
+     */
+    model: duoModel ? 'duo' : 'classic',
     stagedAt: new Date().toISOString(),
   };
   fs.writeFileSync(
@@ -1199,6 +1249,27 @@ function main() {
     '#define STD_VERSION //Define for STD edition firmare, undefine for IN TRVL edition firmware',
     WANT_STD);
 
+  /*
+   * The MODEL. Asked for only when OKEMU_MODEL says so - left alone, this reads
+   * the sources and reports classic, which is what every release ships as.
+   *
+   * A release that does not carry the override cannot be asked to be a DUO, and
+   * saying so beats producing a classic under a DUO's name: every measurement
+   * taken against it would be attributed to the wrong device.
+   */
+  const duoModel = gateDefine(
+    'DEFINED_HWID',
+    '#define DEFINED_HWID OK_HW_DUO',
+    WANT_DUO,
+    { universal: false });
+  if (WANT_DUO === true && duoModel !== true) {
+    console.error(
+      `stage: OKEMU_MODEL=duo, but ${release.version} has no DEFINED_HWID ` +
+      'override in onlykey.h - the DUO is newer than this release, so there ' +
+      'is no such device to emulate.');
+    process.exit(1);
+  }
+
   // 7. documented source-level fixups, plus this release's own
   const patched = applyPatches([
     ...release.patches,
@@ -1207,7 +1278,7 @@ function main() {
   const scs = rewriteSystemBlock();
 
   const stats = digestStage();
-  const info = writeBuildInfo(stats, release, debugOn, stdEdition);
+  const info = writeBuildInfo(stats, release, debugOn, stdEdition, duoModel);
 
   console.log(
     `stage: ${path.relative(OKEMU, STAGE)}\n` +
@@ -1225,6 +1296,8 @@ function main() {
   build:                                     ${debugOn ? 'debug' : 'production'}` +
     `
   edition:                                   ${stdEdition ? 'standard' : 'TRAVEL (STD_VERSION off)'}` +
+    `
+  model:                                     ${duoModel ? 'DUO' : 'classic'}` +
     `
   storage slot:                              ${release.slot || '(the default)'}`
   );

@@ -36,8 +36,22 @@ const OkEmuModule = require('../../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 const {pressDigits} = require('./pressDigits');
 
-/** Comfortably inside the 72..179 gesture window - see 9-cryptoSign. */
-const CONFIG_TICKS = 80;
+/**
+ * The gesture, FROM THE DEVICE rather than from a constant.
+ *
+ * A classic wants button 6 held past 72 main-loop iterations; a DUO wants
+ * button 1 held past 180 (OnlyKey.ino:914). Holding the classic gesture at a
+ * DUO presses a button that does something else and then waits for a lock that
+ * never comes - measured, as "the device never locked after three attempts".
+ *
+ * The margin over the floor is small and deliberate: past the same band a hold
+ * stops being config mode and becomes another gesture.
+ */
+function gestureFor(device) {
+  const caps = device && device.capabilities;
+  const g = (caps && caps.configModeGesture) || {button: 6, ticks: 72};
+  return {button: g.button, ticks: g.ticks + 8};
+}
 
 /**
  * Bit 3 of derived_key_challenge_mode - a BITMASK, not a flag.
@@ -105,8 +119,9 @@ async function enableTouchFreeDerive(device, pin, log) {
    */
   let locked = false;
   for (let attempt = 1; attempt <= 3 && !locked; attempt++) {
-    log(`holding button 6 for ${CONFIG_TICKS} ticks (attempt ${attempt})`);
-    await OkEmu.holdTicks(6, CONFIG_TICKS, {allowGesture: true});
+    const gesture = gestureFor(device);
+    log(`holding button ${gesture.button} for ${gesture.ticks} ticks (attempt ${attempt})`);
+    await OkEmu.holdTicks(gesture.button, gesture.ticks, {allowGesture: true});
 
     const lockBy = Date.now() + 8000;
     while (Date.now() < lockBy) {
@@ -172,6 +187,6 @@ async function enableTouchFreeDerive(device, pin, log) {
 module.exports = {
   setTouchFreeDerive,
   enableTouchFreeDerive,
-  CONFIG_TICKS,
+  gestureFor,
   DERIVE_WITHOUT_TOUCH,
 };

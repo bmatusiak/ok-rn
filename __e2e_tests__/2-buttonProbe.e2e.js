@@ -21,6 +21,7 @@
  * types a slot's contents at the keyboard instead - no digit, and side effects.
  */
 'use strict';
+const {getOnlyKey} = require('../src/onlykey');
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 const {IFACE} = OkEmuModule;
@@ -63,6 +64,25 @@ module.exports = function buttonProbe({describe, it}) {
       // first press, or the touch baseline has not been taken yet.
       await delay(1500);
 
+      /*
+       * HOW MANY BUTTONS THIS DEVICE HAS, from the device.
+       *
+       * A classic has six pads. A DUO has TWO, and its third button is both of
+       * them at once - okcore.cpp's sense loop has no third branch for a DUO,
+       * it reads the two pads as buttons 2 and 1 and each branch checks whether
+       * the other is also held. Its touchread1, 4, 5 and 6 branches are guarded
+       * `!= OK_HW_DUO`, so those pads produce no button at all.
+       *
+       * This used to walk 1..6 unconditionally, which on a DUO asserts three
+       * buttons that do not exist. Reading the count is not merely tidier: the
+       * pads BEYOND the count must stay silent, and that is worth checking too
+       * - a device that answered button 5 would be one whose mapping had
+       * drifted into the classic table.
+       */
+      const {device} = await getOnlyKey();
+      const buttons = (device.capabilities && device.capabilities.buttons) || 6;
+      log(`this device has ${buttons} buttons`);
+
       const tap = serialTap();
       const seen = {};
       try {
@@ -76,15 +96,35 @@ module.exports = function buttonProbe({describe, it}) {
       }
 
       log(`mapping: ${JSON.stringify(seen)}`);
-      for (let button = 1; button <= 6; button++) {
+      for (let button = 1; button <= buttons; button++) {
         assert.equal(
           seen[button], button,
           `pressing button ${button} registered as ${seen[button]}`,
         );
       }
+      for (let button = buttons + 1; button <= 6; button++) {
+        assert.equal(
+          seen[button], null,
+          `this device has ${buttons} buttons, but ${button} answered as ` +
+            `${seen[button]} - the mapping has drifted`,
+        );
+      }
     });
 
-    it('leaves the PIN buffer clean for the suites that follow', async ({log, assert}) => {
+    it('leaves the PIN buffer clean for the suites that follow', async ({log, assert, skip}) => {
+      /*
+       * A DUO HAS NO BUTTON PIN BUFFER TO CLEAN.
+       *
+       * Its PIN travels in the message body - one OKPIN carrying the digits as
+       * ASCII - so presses never append to a password buffer and there is
+       * nothing here to roll over. The cleanup below also pads with button 6,
+       * which a DUO does not have.
+       */
+      const {device} = await getOnlyKey();
+      if (device.deviceType === 'duo') {
+        skip('a DUO carries its PIN in the message body, so presses never enter a buffer');
+      }
+
       /*
        * Six presses are now sitting in the password buffer, and the next suite
        * unlocks with a seven-digit PIN. Thirteen appends would overrun

@@ -38,7 +38,7 @@
 
 const {getOnlyKey} = require('../src/onlykey');
 const {pressDigits} = require('./helpers/pressDigits');
-const {setTouchFreeDerive} = require('./helpers/touchFreeDerive');
+const {setTouchFreeDerive, gestureFor} = require('./helpers/touchFreeDerive');
 const {protocol} = require('node-onlykey-lib');
 
 const OkEmuModule = require('../src/transport/OkEmu');
@@ -62,15 +62,6 @@ const SLOT = 101;
 const KEY_TYPE = 1 | 0x40;          // CURVE.ED25519 | MODIFIER.SIGNATURE
 const KEY = new Uint8Array(32).map((_, i) => (i * 11 + 5) & 0xff);
 
-/**
- * The gesture that reaches config mode.
- *
- * Comfortably inside the 72..179 window: below 72 it is an ordinary hold, and
- * on button 6 there is nothing above it to overshoot into. This is the one
- * place in the suite that deliberately asks for the gesture band, which is why
- * it is the one place that passes allowGesture.
- */
-const CONFIG_TICKS = 80;
 
 /**
  * Wait for the device to SAY something on the vendor interface.
@@ -257,8 +248,9 @@ module.exports = function cryptoSign({describe, it}) {
          * has to go back in before anything will be accepted. Both halves are
          * the firmware's design, not a workaround.
          */
-        log(`holding button 6 for ${CONFIG_TICKS} ticks`);
-        await OkEmu.holdTicks(6, CONFIG_TICKS, {allowGesture: true});
+        const gesture = gestureFor(device);
+        log(`holding button ${gesture.button} for ${gesture.ticks} ticks`);
+        await OkEmu.holdTicks(gesture.button, gesture.ticks, {allowGesture: true});
         await delay(2000);
 
         const said = tap.take();

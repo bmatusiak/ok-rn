@@ -24,13 +24,21 @@ import OkEmu from '../transport/OkEmu';
  */
 
 /**
- * The hold that reaches config mode: 72..179 ticks on button 6.
+ * The hold that reaches config mode, FROM THE DEVICE.
  *
- * 80 sits inside it with room either side. This is the one sanctioned use of
- * the gesture band in the app, which is why `allowGesture` is passed here and
- * nowhere else.
+ * A classic wants button 6 held past 72 main-loop iterations; a DUO wants
+ * button 1 held past 180 (OnlyKey.ino:914). The numbers used to be a constant
+ * here, which was right while every device was a classic and wrong the moment
+ * one was not: holding the classic gesture at a DUO presses a button that does
+ * something else, and then waits for a lock that never comes.
+ *
+ * The margin over the floor is small and deliberate. Past the same band a hold
+ * stops being config mode and becomes another gesture, so overshooting is not
+ * the safe direction. This is the app's one sanctioned use of the gesture band,
+ * which is why `allowGesture` is passed here and nowhere else.
  */
-const CONFIG_TICKS = 80;
+const TICK_MARGIN = 8;
+const FALLBACK_GESTURE = {button: 6, ticks: 72};
 
 /** How long to wait for the device to lock before calling the hold a failure. */
 const LOCK_TIMEOUT_MS = 8000;
@@ -66,7 +74,11 @@ export function useConfigMode(deviceState: string): ConfigMode {
     setEntering(true);
     setError(null);
     try {
-      await OkEmu.holdTicks(6, CONFIG_TICKS, {allowGesture: true});
+      const {device} = await getOnlyKey();
+      const g =
+        (device.capabilities && device.capabilities.configModeGesture) ||
+        FALLBACK_GESTURE;
+      await OkEmu.holdTicks(g.button, g.ticks + TICK_MARGIN, {allowGesture: true});
 
       /*
        * Wait for the lock rather than believing the press landed. holdTicks

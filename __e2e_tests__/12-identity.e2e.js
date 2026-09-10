@@ -32,6 +32,8 @@
 
 const {device: okdevice} = require('node-onlykey-lib');
 const {getOnlyKey} = require('../src/onlykey');
+/* What the staging step recorded, to check the device against. */
+const {buildInfo} = require('../src/buildInfo');
 
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
@@ -116,11 +118,47 @@ module.exports = function identity({describe, it}) {
       const caps = okdevice.version.capabilities(info);
       log(`slots=${caps.slots} profiles=${caps.profiles} buttons=${caps.buttons}`);
 
-      // The emulator is the Color hardware path, so these are the Classic numbers.
-      assert.equal(info.model, 'classic');
-      assert.equal(caps.slots, 12);
-      assert.equal(caps.buttons, 6);
-      assert.equal(caps.challengeFormula, 'modern', 'six buttons means mod 6');
+      /*
+       * The numbers must MATCH THE MODEL, not match the bench.
+       *
+       * This used to assert `classic`, 12 slots and 6 buttons - a claim about
+       * the device that happened to be plugged in rather than about the parse.
+       * The emulator can now be staged as either (OKEMU_MODEL=duo), and on a
+       * DUO those assertions failed against a device that was reporting itself
+       * perfectly.
+       *
+       * The pairs below are the whole point of the model letter: reading it
+       * wrong means enumerating 12 of 24 slots with no error, or showing a
+       * three-button device a challenge with a 4 in it.
+       */
+      if (info.model === 'duo') {
+        assert.equal(caps.slots, 24, 'a DUO is 24 slots across 4 profiles');
+        assert.equal(caps.profiles, 4);
+        assert.equal(caps.buttons, 3);
+        assert.equal(caps.challengeFormula, 'duo', 'three buttons means mod 3');
+        assert.equal(caps.configModeGesture.button, 1, 'a DUO takes config mode on button 1');
+      } else {
+        assert.equal(info.model, 'classic');
+        assert.equal(caps.slots, 12);
+        assert.equal(caps.profiles, 2);
+        assert.equal(caps.buttons, 6);
+        assert.equal(caps.challengeFormula, 'modern', 'six buttons means mod 6');
+        assert.equal(caps.configModeGesture.button, 6);
+      }
+
+      /*
+       * And the model must agree with what was STAGED. buildInfo comes from
+       * src/generated/firmware.json, which the staging step writes; the status
+       * comes from the firmware itself. If those two disagree, the JS is
+       * talking to a device it does not think it is talking to - which is the
+       * failure that made a v3.0.2 library open the working tree's flash and
+       * look perfectly healthy.
+       */
+      log(`staged model: ${buildInfo.model}`);
+      assert.equal(
+        info.model, buildInfo.model,
+        'the firmware reports a different model than the one that was staged',
+      );
     });
 
     it('the build is named, and it is one of the two that exist', async ({log, assert}) => {

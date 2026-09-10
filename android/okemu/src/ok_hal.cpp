@@ -454,7 +454,77 @@ extern "C" uintptr_t okemu_flash_base = 0;
  * Measured, not reasoned about: the firmware answered a tap on 1 with
  * "password appended with 5".
  */
-static const uint8_t kPinForButton[OKEMU_NUM_BUTTONS] = { 23, 22, 17, 15, 1, 16 };
+/*
+ * A DUO SWAPS TWO OF THESE, and it swaps them in the firmware rather than in
+ * the hardware.
+ *
+ * okcore.cpp's rngloop() reads the pads into six globals, and on a DUO two of
+ * those reads are crossed:
+ *
+ *     if (onlykeyhw == OK_HW_DUO) {
+ *         touchread2 = touchRead(TOUCHPIN5);
+ *         touchread5 = touchRead(TOUCHPIN2);
+ *     } else {
+ *         touchread2 = touchRead(TOUCHPIN2);
+ *         touchread5 = touchRead(TOUCHPIN5);
+ *     }
+ *
+ * So on a DUO, "button 2" is whatever TOUCHPIN5 reports and "button 5" is
+ * whatever TOUCHPIN2 reports. A host that holds button 2 against the classic
+ * table is answering a pad the firmware is reading as button 5, and the press
+ * is observed as nothing at all - measured, as "pressing button 2 registered as
+ * null" on an emulated DUO.
+ *
+ * Read from `onlykeyhw` rather than baked in at build time, because that is the
+ * same variable the firmware branches on: if its detection or its DEFINED_HWID
+ * override ever changes, this follows rather than drifting. It is declared in
+ * okcore.cpp and initialised to OK_HW_COLOR, so before the model is settled
+ * this is the classic table - which is correct, since nothing is pressing
+ * anything during calibration.
+ */
+/*
+ * A DUO HAS TWO PADS, AND ITS THIRD BUTTON IS BOTH AT ONCE.
+ *
+ * okcore.cpp's sense loop has no third branch for a DUO. It reads the two pads
+ * as buttons 2 and 1, and each branch then checks whether THE OTHER one is
+ * also held:
+ *
+ *     else if (touchread2 > ...) {
+ *         button_selected = '2';
+ *         if (onlykeyhw == OK_HW_DUO) {
+ *             if (touchread3 > ...) { button_3_on++; button_3_off = 0; }
+ *             else { button_3_off++; if (button_3_off > 2) button_3_on = 0; }
+ *         }
+ *     }
+ *
+ * - and symmetrically in the touchread3 branch. So "button 3" on a DUO is a
+ * chord, not a pad. The `!= OK_HW_DUO` guards on the touchread1, 4, 5 and 6
+ * branches say the same thing from the other side: those pads produce no button
+ * at all on a DUO.
+ *
+ * A host that holds button 3 expecting a pad gets nothing, because there is
+ * nothing there - measured, as "pressing button 3 registered as null".
+ *
+ * So an emulated DUO reports button 3 as both of its pads held. That is what a
+ * finger on each does, and it is the only way the firmware's counter advances.
+ */
+static bool duo_button_holds_pin(uint8_t pin, const bool *button) {
+  /* The DUO's two pads: TOUCHPIN3 (its button 1) and TOUCHPIN5 (its button 2). */
+  const uint8_t kPadOne = 23;
+  const uint8_t kPadTwo = 15;
+  if (pin == kPadOne) return button[1] || button[3];
+  if (pin == kPadTwo) return button[2] || button[3];
+  return false;   /* no other pad produces a button on a DUO */
+}
+
+static uint8_t pin_for_button(int index) {
+  /* onlykey.h:106. Not included here - this file is the HAL, not firmware. */
+  const uint8_t OKEMU_HW_DUO = 9;
+  extern uint8_t onlykeyhw;
+  static const uint8_t kClassic[OKEMU_NUM_BUTTONS] = { 23, 22, 17, 15, 1, 16 };
+  static const uint8_t kDuo[OKEMU_NUM_BUTTONS]     = { 23, 15, 17, 22, 1, 16 };
+  return (onlykeyhw == OKEMU_HW_DUO ? kDuo : kClassic)[index];
+}
 
 /*
  * The pad rngloop() samples LAST in a round, and therefore the moment at which
@@ -569,9 +639,15 @@ uint64_t okemu_rounds(void) {
 int okemu_touch_for_pin(uint8_t pin) {
   std::lock_guard<std::mutex> lk(g.mu);
 
+  /* onlykey.h:106 - see pin_for_button() and duo_button_holds_pin() above. */
+  extern uint8_t onlykeyhw;
   bool held = false;
-  for (int i = 0; i < OKEMU_NUM_BUTTONS; i++) {
-    if (kPinForButton[i] == pin) { held = g.button[i + 1]; break; }
+  if (onlykeyhw == 9) {
+    held = duo_button_holds_pin(pin, g.button);
+  } else {
+    for (int i = 0; i < OKEMU_NUM_BUTTONS; i++) {
+      if (pin_for_button(i) == pin) { held = g.button[i + 1]; break; }
+    }
   }
 
   /*

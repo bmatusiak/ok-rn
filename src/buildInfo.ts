@@ -23,6 +23,9 @@ type Staged = {
   /** A released version name when OKEMU_VERSION was set; null for the tree. */
   version?: string | null;
   production?: boolean;
+  edition?: string | null;
+  /** 'duo' or 'classic' - which model the staged firmware reports as. */
+  model?: string | null;
   stagedAt?: string;
 };
 
@@ -53,6 +56,10 @@ export type BuildInfo = {
   version: string | null;
   /** True when the DEBUG gate was off, as the firmware ships. */
   production: boolean;
+  /** 'standard' or 'travel'; null when the build predates the gate. */
+  edition: string | null;
+  /** 'duo' or 'classic'. A DUO is a different device, not a setting. */
+  model: string;
 };
 
 export const buildInfo: BuildInfo = {
@@ -65,6 +72,8 @@ export const buildInfo: BuildInfo = {
       : '',
   version: staged.version ?? null,
   production: staged.production === true,
+  edition: staged.edition ?? null,
+  model: staged.model === 'duo' ? 'duo' : 'classic',
 };
 
 /**
@@ -84,4 +93,16 @@ export const buildInfo: BuildInfo = {
  * because two callers computing it differently is a device that boots against
  * the wrong flash and looks perfectly healthy.
  */
-export const storageSlot: string = buildInfo.version ?? '';
+export const storageSlot: string = (() => {
+  /*
+   * A DUO IS A DIFFERENT DEVICE, not a setting on this one. It has 24 slots
+   * across 4 profiles where a classic has 12 across 2, and its PIN travels in
+   * the message body rather than on the buttons - so the two cannot share a
+   * flash image any more than two firmware versions can. Emulating one is a
+   * build option (OKEMU_MODEL=duo), which makes it exactly the same hazard
+   * this slot exists to prevent.
+   */
+  const base = buildInfo.version ?? '';
+  if (buildInfo.model !== 'duo') return base;
+  return base ? base + '-duo' : 'duo';
+})();
