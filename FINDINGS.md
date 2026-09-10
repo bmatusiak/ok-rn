@@ -52,6 +52,7 @@ wrong version of the table looks exactly like the right one.
 | 33 | [every CPU_RESTART() killed the app](FINDING-cpu-restart-writes-to-unmapped-memory.md) | high — the idle lockout, the lock gesture and every wipe took the process down; **fixed** | **ours** | n/a |
 | 34 | [enabling touch-free derive mid-run kills CTAPHID](FINDING-enabling-touch-free-derive-mid-run-kills-ctaphid.md) | medium for the suite - six device tests fail with a timeout that names nothing, and a second run is green | **ours** | n/a |
 | 35 | [a shipped release needs thirteen fixes to run hosted](FINDING-v3.0.2-cannot-run-hosted-without-thirteen-fixes.md) | high for the version matrix - v3.0.2 could not be unlocked at all, and blamed the PIN; **fixed**, 67/67 | OnlyKey firmware | no |
+| 36 | [old firmware blocks for a touch instead of asking](FINDING-old-firmware-blocks-for-a-touch-instead-of-asking.md) | high for any host written against newer firmware - every press-required derive fails and the device blames the user | OnlyKey firmware | no |
 
 ## Read #6 first, then #2
 

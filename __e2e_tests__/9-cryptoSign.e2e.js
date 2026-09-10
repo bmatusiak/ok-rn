@@ -284,7 +284,13 @@ module.exports = function cryptoSign({describe, it}) {
          * the touch-free half is refused as CTAP2_ERR_EXTENSION_NOT_SUPPORTED,
          * and retrying with a touch would derive a DIFFERENT key.
          */
+        log(`console after unlock: ${JSON.stringify(
+          tap.take().split(String.fromCharCode(10)).filter(Boolean).slice(-8))}`);
+
         await setTouchFreeDerive(device, log);
+
+        log(`console after the preference: ${JSON.stringify(
+          tap.take().split(String.fromCharCode(10)).filter(Boolean).slice(-8))}`);
 
         /*
          * LISTEN FIRST, then write. The device answers "Successfully set ECC
@@ -299,11 +305,32 @@ module.exports = function cryptoSign({describe, it}) {
          * write that had landed. Waiting for the answer cannot lose that race,
          * and it works on a production build too, which has no console to sniff.
          */
+        /*
+         * loadKey now waits for the acknowledgement and retries, so this only
+         * has to check that it came - see plugins/device/index.js. The retry
+         * used to live here, which meant every other caller of loadKey still
+         * had the fire-and-forget behaviour that lost the write.
+         */
         const ack = vendorSays(/Successfully set ECC Key/);
+        tap.take();
         try {
-          await device.loadKey(SLOT, {type: KEY_TYPE, key: KEY});
+          const written = await device.loadKey(SLOT, {type: KEY_TYPE, key: KEY});
+          log(`loadKey returned: ${JSON.stringify(written)}`);
           const said = await ack.done;
-          log(`device answered: ${JSON.stringify(said.slice(-60))}`);
+          log(`device answered: ${JSON.stringify(said.slice(-40))}`);
+        } catch (e) {
+          /*
+           * SAY WHAT THE CONSOLE SAW. An acknowledgement that never arrives is
+           * the least informative failure this suite can produce - it looks
+           * identical whether the frame was refused, dropped, or answered on a
+           * path nobody is watching. The DEBUG console sees all three
+           * differently, so print it rather than leaving the next person to
+           * rebuild this by hand.
+           */
+          const console_ = tap.take();
+          log(`console after the write: ${JSON.stringify(
+            console_.split(String.fromCharCode(10)).filter(Boolean).slice(-12))}`);
+          throw e;
         } finally {
           ack.off();
         }

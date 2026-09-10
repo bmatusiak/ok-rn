@@ -58,15 +58,34 @@ const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 const P256R1 = 1;
 const LABEL = 'parity.example';
 
-/** Press when the device asks, from inside the KEEPALIVE - see 10-derive. */
-function pressing(log) {
+/**
+ * Press when the device asks - or, on the 2.1 line, before it can ask.
+ *
+ * The same split 10-derive documents at length: 'keepalive' firmware returns
+ * CTAP2_ERR_PROCESSING and can be answered from the keepalive, while 'blocking'
+ * firmware sits inside ctap_user_presence_test(5000) with nothing to answer and
+ * then denies. On the latter the press has to go out on a timer.
+ */
+function pressing(log, capabilities = null) {
   let pressed = 0;
+  let timer = null;
+
+  const press = async (why) => {
+    if (pressed) return;
+    pressed += 1;
+    await OkEmu.pressButton(1);
+    log(`pressed button 1 for the derive (${why})`);
+  };
+
+  if (capabilities && capabilities.presenceTest === 'blocking') {
+    timer = setTimeout(() => { void press('timer - this firmware does not keepalive'); }, 900);
+  }
+
   return {
+    done: () => { if (timer) clearTimeout(timer); },
     onKeepAlive: async () => {
-      if (pressed) return;
-      await OkEmu.pressButton(1);
-      pressed += 1;
-      log('pressed button 1 for the derive');
+      if (timer) { clearTimeout(timer); timer = null; }
+      await press('keepalive');
     },
   };
 }
@@ -89,7 +108,7 @@ module.exports = function deriveParity({describe, it}) {
       const pub = await okcrypto.derivePublicKey(LABEL, {
         keytype: P256R1,
         requirePress: true,
-        ...pressing(log),
+        ...pressing(log, shared && shared.device && shared.device.capabilities),
       });
       const devicePoint = pub.publicKey;
       log(`device point: ${okbytes.toHex(devicePoint).slice(0, 24)}… (${devicePoint.length} bytes)`);
@@ -106,7 +125,7 @@ module.exports = function deriveParity({describe, it}) {
       const answer = await okcrypto.deriveSharedSecret(LABEL, ourPoint, {
         keytype: P256R1,
         requirePress: true,
-        ...pressing(log),
+        ...pressing(log, shared && shared.device && shared.device.capabilities),
       });
 
       /*
@@ -137,7 +156,7 @@ module.exports = function deriveParity({describe, it}) {
       const pub = await okcrypto.derivePublicKey(LABEL, {
         keytype: P256R1,
         requirePress: true,
-        ...pressing(log),
+        ...pressing(log, shared && shared.device && shared.device.capabilities),
       });
 
       const ours = p256.keygen();
@@ -146,7 +165,7 @@ module.exports = function deriveParity({describe, it}) {
       const answer = await okcrypto.deriveSharedSecret(LABEL, ourPoint, {
         keytype: P256R1,
         requirePress: true,
-        ...pressing(log),
+        ...pressing(log, shared && shared.device && shared.device.capabilities),
       });
       const expected = p256.getSharedSecret(ours.secretKey, pub.publicKey).slice(1);
 

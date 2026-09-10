@@ -57,26 +57,60 @@ const P256R1 = 1;
 const P256_LEN = 65;
 
 /**
- * Press when the device asks, from inside the KEEPALIVE.
+ * Press when the device asks - or, on older firmware, before it can ask.
  *
  * A derive can demand user presence even when DERIVE_PUBLIC_KEY is asked for
- * rather than DERIVE_PUBLIC_KEY_REQ_PRESS - the device has its own
- * derived-key challenge setting, and it wins. Without a press the firmware
- * waits, sends KEEPALIVE(UP_NEEDED), and eventually answers
- * CTAP2_ERR_USER_ACTION_PENDING, which is a refusal rather than a failure.
+ * rather than DERIVE_PUBLIC_KEY_REQ_PRESS - the device has its own derived-key
+ * challenge setting, and it wins.
  *
- * The press has to happen FROM the keepalive rather than on a timer: the
- * device only starts watching its buttons once the ceremony is under way.
+ * HOW the device asks is a version difference, and it is the whole reason this
+ * takes a capability (node-onlykey-lib/src/device/version.js, presenceTest):
+ *
+ *   'keepalive'  the 3.0 line. The request returns CTAP2_ERR_PROCESSING while
+ *                it waits, the host keeps polling, and a press answered from
+ *                inside the keepalive completes it. Pressing from the keepalive
+ *                is right here because the device only starts watching its
+ *                buttons once the ceremony is under way.
+ *   'blocking'   the 2.1 line. ctap_user_presence_test(5000) BLOCKS for five
+ *                seconds and then denies. There is no keepalive to answer, so
+ *                a press that waits to be asked never happens and the derive
+ *                comes back CTAP2_ERR_OPERATION_DENIED - which reads like a
+ *                refusal rather than like nobody having touched it.
+ *
+ * So on 'blocking' firmware the press goes out on a TIMER, shortly after the
+ * request. Measured on v2.1.0: without it every press-required shared-secret
+ * derive failed while the touch-free derives beside them passed.
+ *
+ * The timer is armed unconditionally on that firmware and the press is still
+ * guarded by `pressed`, so a keepalive arriving first wins and only one press
+ * is ever sent. An extra press on an unlocked device types a slot.
  */
-function pressing(log) {
+function pressing(log, capabilities = null) {
   let pressed = 0;
+  let timer = null;
+
+  const press = async (why) => {
+    if (pressed) return;
+    pressed += 1;
+    await OkEmu.pressButton(1);
+    log(`pressed button 1 for the derive (${why})`);
+  };
+
+  if (capabilities && capabilities.presenceTest === 'blocking') {
+    /*
+     * Inside the device's five seconds and after the request has reached it.
+     * Pressing sooner than the ceremony starts is a press the firmware
+     * discards, which costs the whole window.
+     */
+    timer = setTimeout(() => { void press('timer - this firmware does not keepalive'); }, 900);
+  }
+
   return {
     get count() { return pressed; },
+    done: () => { if (timer) clearTimeout(timer); },
     onKeepAlive: async () => {
-      if (pressed) return;          /* one press answers it */
-      await OkEmu.pressButton(1);
-      pressed += 1;
-      log(`pressed button 1 for the derive`);
+      if (timer) { clearTimeout(timer); timer = null; }
+      await press('keepalive');
     },
   };
 }
@@ -147,7 +181,7 @@ module.exports = function derive({describe, it}) {
         'the device is locked, so there is no FIDO interface to derive over',
       );
 
-      const press = pressing(log);
+      const press = pressing(log, shared && shared.device && shared.device.capabilities);
       const result = await okcrypto.derivePublicKey('e2e.example', {
         keytype: P256R1,
         requirePress: true,
@@ -187,9 +221,9 @@ module.exports = function derive({describe, it}) {
       const {okcrypto} = await connected(log);
 
       const first = await okcrypto.derivePublicKey('e2e.example',
-        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
       const again = await okcrypto.derivePublicKey('e2e.example',
-        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
 
       log(`first: ${hex(first.publicKey).slice(0, 24)}...`);
       log(`again: ${hex(again.publicKey).slice(0, 24)}...`);
@@ -211,9 +245,9 @@ module.exports = function derive({describe, it}) {
       assert.equal('e2e.example'.length, 'e2e.exampyy'.length);
 
       const a = await okcrypto.derivePublicKey('e2e.example',
-        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
       const b = await okcrypto.derivePublicKey('e2e.exampyy',
-        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
 
       log(`a: ${hex(a.publicKey).slice(0, 24)}...`);
       log(`b: ${hex(b.publicKey).slice(0, 24)}...`);
@@ -229,11 +263,11 @@ module.exports = function derive({describe, it}) {
       const {okcrypto} = await connected(log);
 
       const pub = await okcrypto.derivePublicKey('e2e.example',
-        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
       const secret = await okcrypto.deriveSharedSecret('e2e.example', pub.publicKey, {
         requirePress: true,
         timeoutMs: 30000,
-        onKeepAlive: pressing(log).onKeepAlive,
+        onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
       });
 
       log(`shared payload: ${secret.payload.length} bytes`);
@@ -278,9 +312,9 @@ module.exports = function derive({describe, it}) {
       const {okcrypto} = await connected(log);
 
       const first = await okcrypto.deriveSharedSecretFor('vault.example',
-        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
       const again = await okcrypto.deriveSharedSecretFor('vault.example',
-        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log).onKeepAlive});
+        {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
 
       log(`first: ${hex(first)}`);
       log(`again: ${hex(again)}`);
@@ -322,7 +356,7 @@ module.exports = function derive({describe, it}) {
       const opts = {
         requirePress: true,
         timeoutMs: 30000,
-        onKeepAlive: pressing(log).onKeepAlive,
+        onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
       };
 
       if (can === 'broken') {
@@ -423,7 +457,7 @@ module.exports = function derive({describe, it}) {
       const press = () => ({
         requirePress: true,
         timeoutMs: 30000,
-        onKeepAlive: pressing(log).onKeepAlive,
+        onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
       });
       const service = 'store.example';
       await okcrypto.deviceVault.forget(service);
@@ -457,7 +491,7 @@ module.exports = function derive({describe, it}) {
       const press = () => ({
         requirePress: true,
         timeoutMs: 30000,
-        onKeepAlive: pressing(log).onKeepAlive,
+        onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
       });
 
       /*
@@ -531,7 +565,7 @@ module.exports = function derive({describe, it}) {
             keytype: okcrypto.KEYTYPE.XWING,
             requirePress: true,
             timeoutMs: 15000,
-            onKeepAlive: pressing(log).onKeepAlive,
+            onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
           });
         } catch (e) {
           refused = String(e && e.message);
@@ -545,7 +579,7 @@ module.exports = function derive({describe, it}) {
         keytype: okcrypto.KEYTYPE.XWING,
         requirePress: true,
         timeoutMs: 30000,
-        onKeepAlive: pressing(log).onKeepAlive,
+        onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
       });
 
       log(`status: ${JSON.stringify(first.status)}`);
@@ -567,7 +601,7 @@ module.exports = function derive({describe, it}) {
         keytype: okcrypto.KEYTYPE.XWING,
         requirePress: true,
         timeoutMs: 30000,
-        onKeepAlive: pressing(log).onKeepAlive,
+        onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
       });
       assert.equal(hex(first.publicKey), hex(again.publicKey), 'an identity must be stable');
     });
@@ -589,7 +623,7 @@ module.exports = function derive({describe, it}) {
       const opts = {
         requirePress: true,
         timeoutMs: 30000,
-        onKeepAlive: pressing(log).onKeepAlive,
+        onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive,
       };
 
       /*

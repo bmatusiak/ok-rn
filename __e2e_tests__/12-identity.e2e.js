@@ -79,9 +79,23 @@ module.exports = function identity({describe, it}) {
 
       assert.equal(info.state, 'unlocked', 'the suite runs against an unlocked key');
       assert.ok(info.version, 'a version was found after the state word');
+      /*
+       * That the version PARSES, not that it is any particular one.
+       *
+       * This used to assert `major >= 3`, which is a claim about the key on the
+       * bench rather than about the parser - and it failed the moment the suite
+       * was run against v2.1.0, on a release whose version had parsed perfectly.
+       * Every release in ok-versions.json is 2.x or 3.x, so the parse is what
+       * matters and the number is what varies.
+       */
+      assert.ok(info.release, `the version did not parse: ${JSON.stringify(info.version)}`);
       assert.ok(
-        info.release && info.release.major >= 3,
+        Number.isInteger(info.release.major) && info.release.major >= 2,
         `the release parsed as numbers: ${JSON.stringify(info.release)}`,
+      );
+      assert.ok(
+        Number.isInteger(info.release.minor),
+        `the minor version is not a number: ${JSON.stringify(info.release)}`,
       );
     });
 
