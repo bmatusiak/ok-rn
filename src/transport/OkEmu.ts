@@ -1,15 +1,8 @@
-import {bytes as okbytes, transport} from 'node-onlykey-lib';
+import {bytes as okbytes, device, transport} from 'node-onlykey-lib';
 import NativeOkEmu from '../../specs/NativeOkEmu';
 import type {LedEvent, StartResult, StreamEvent} from '../../specs/NativeOkEmu';
 import {storageSlot} from '../buildInfo';
 
-/**
- * Idle sense rounds that must pass before the firmware calls a press finished.
- *
- * `key_off > 2` in okcore.cpp:2723 - three rounds with no pad held - plus one
- * for the round the hold retired in, which still read as held.
- */
-const RELEASE_ROUNDS = 4;
 
 export type {LedEvent, StartResult, StreamEvent};
 
@@ -46,28 +39,19 @@ type Listener<K extends keyof OkEmuEvents> = OkEmuEvents[K];
  * speaks - it belongs above this, not inside it.
  */
 /**
- * Press lengths in FIRMWARE MAIN-LOOP ITERATIONS, which is the only unit the
- * firmware bands on (OnlyKey.ino:873-942):
+ * The press bands come from the LIBRARY, which is where the firmware's
+ * OnlyKey.ino is transcribed.
  *
- *     <= 20      types the slot
- *     21 .. 89   types the slot's b profile
- *     >= 72      stops being a slot read: button 1 backs up, 2 dumps labels,
- *                3 locks and restarts, 6 enters config mode
- *     >= 90      rejected outright
+ * They were declared here, and restated in ten more files across screens,
+ * hooks and suites. A press band is protocol - the same firmware runs on a
+ * physical key over USB - so a second host would have transcribed them again,
+ * and a transcription that drifts by one band is the difference between typing
+ * a password and taking a backup.
  *
- * The gesture branches return before the band dispatch, so 21..71 is the whole
- * safe window for a b-profile read. TAP and HOLD sit in the middle of their
- * bands rather than at an edge, since the only cost of being wrong upward is
- * an irreversible action.
+ * Re-exported rather than re-imported at each call site, so nothing else moves.
  */
-export const PRESS_TICKS = {
-  /** Types slot N. */
-  TAP: 10,
-  /** Types slot N+6, the b profile. Comfortably short of a gesture. */
-  HOLD: 40,
-  /** The first tick at which a press stops being a slot read. */
-  GESTURE: 72,
-} as const;
+export const PRESS_TICKS = device.press.PRESS_TICKS;
+const RELEASE_ROUNDS = device.press.RELEASE_ROUNDS;
 
 
 class OkEmuClient {
@@ -218,14 +202,9 @@ class OkEmuClient {
     ticks: number,
     {allowGesture = false}: {allowGesture?: boolean} = {},
   ): Promise<void> {
-    if (!allowGesture && ticks >= PRESS_TICKS.GESTURE) {
-      return Promise.reject(
-        new Error(
-          `${ticks} ticks is in the gesture band (>= ${PRESS_TICKS.GESTURE}): ` +
-            'button 1 backs up, 3 restarts, 6 enters config mode. ' +
-            'Pass {allowGesture: true} if that is what you mean.',
-        ),
-      );
+    const refusal = device.press.gestureRefusal(button, ticks, {allowGesture});
+    if (refusal) {
+      return Promise.reject(new Error(refusal));
     }
     this.ensureSubscribed();
     return NativeOkEmu.setButtonTicks(button, ticks);

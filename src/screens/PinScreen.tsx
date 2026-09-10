@@ -3,11 +3,18 @@ import {StyleSheet, Text, View} from 'react-native';
 import {Keypad, PinDots} from '../ui/Keypad';
 import {Logo} from '../ui/Logo';
 import {Btn} from '../ui/components';
+import {device as okdevice} from 'node-onlykey-lib';
 import * as biometrics from '../biometrics';
 import {theme} from '../ui/theme';
 
-/** The firmware accepts 7-10 digits, each of them a button number. */
-const MAX_PIN = 10;
+/**
+ * The firmware accepts 7-10 digits, each of them a button number.
+ *
+ * From the library, which is where the firmware is transcribed - the same
+ * number decides where the buffer rolls over, and two copies of it would be two
+ * places to get the cap wrong.
+ */
+const MAX_PIN = okdevice.pin.MAX_DIGITS;
 
 /**
  * PIN entry, on the device's own buttons.
@@ -129,24 +136,24 @@ export function PinScreen({
   /*
    * THE BUFFER CANNOT BE CLEARED, so this does not pretend to.
    *
-   * clearPinEntry() appends before it resets, and the only clean way back to an
-   * empty buffer is the firmware's own rollover: pass_keypress starts at 1 and
-   * the tenth press takes the else branch, which calls password.reset()
-   * (OnlyKey.ino:964-989). So "Start over" presses the rest of the way there.
+   * There is no message for it - the firmware's clearPinEntry APPENDS before it
+   * resets - and the only clean way back to empty is its own rollover. The
+   * arithmetic and the reasoning live in the library
+   * (node-onlykey-lib/src/device/pin.js, rolloverPresses), because it is a
+   * property of the firmware rather than of this screen: a second host would
+   * have to work it out again, and getting it wrong pads with the lock gesture.
    *
-   * Button 6 for the padding, and never button 3 - a press is a press, and 3 is
-   * the lock gesture. Padding with a single repeated digit also makes an
-   * accidental match on someone's real PIN vanishingly unlikely.
+   * What stays here is the PRESSING. Each padded press goes through the same
+   * queue as a typed one, because they merge the same way if they do not.
    */
   const startOver = useCallback(() => {
-    if (accepted.current === 0 || accepted.current >= MAX_PIN) {
+    const padding = okdevice.pin.rolloverPresses(accepted.current);
+    if (!padding.length) {
       return;
     }
 
-    /* press() stops at MAX_PIN by itself, so this pads exactly to the edge. */
-    const padding = MAX_PIN - accepted.current;
-    for (let i = 0; i < padding; i++) {
-      press(6);
+    for (const button of padding) {
+      press(button);
     }
 
     /*
