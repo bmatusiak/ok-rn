@@ -1,5 +1,11 @@
 /**
- * A REAL OnlyKey over USB OTG: what it enumerates, and which interface is which.
+ * THE HARD KEY: a physical OnlyKey over USB OTG.
+ *
+ * Hard key and soft key, which is the app's own vocabulary - the Log tab has
+ * kept a buffer for each since before either could do this. They are two
+ * devices answering the same protocol, and everything above the byte pipe is
+ * the same code for both. That is the whole claim of the port, and this suite
+ * is where it stops being an assertion.
  *
  * This is the measurement FINDING #40 was written without. That finding says the
  * device exposes four HID interfaces, that three of them are identical in class,
@@ -30,24 +36,19 @@
 
 const {transport: oktransport} = require('node-onlykey-lib');
 
-const UsbHidModule = require('../src/transport/UsbHid');
-const UsbHid = UsbHidModule.default || UsbHidModule.UsbHid;
-const {ONLYKEY_VENDOR_ID, ONLYKEY_PRODUCT_ID} = UsbHidModule;
+const UsbPipeModule = require('../src/transport/UsbPipe');
+const UsbPipe = UsbPipeModule.default || UsbPipeModule.UsbPipe;
+const {getOnlyKey, resetOnlyKey} = require('../src/onlykey');
 
 const {usb, IFACE} = oktransport;
 
 let shared = null;
 
-module.exports = function hardware({describe, it}) {
-  describe(hardware.name, () => {
+module.exports = function hardKey({describe, it}) {
+  describe(hardKey.name, () => {
     it('a real key is attached, or there is nothing to measure', async ({log, assert, skip}) => {
-      /*
-       * USB, not the mock. `resolveMode()` picks tcp on an Android emulator, and
-       * this suite is meaningless there - it would enumerate a socket.
-       */
-      UsbHid.setTransport('usb');
 
-      const devices = await UsbHid.listDevices();
+      const devices = await UsbPipe.listDevices();
       log(`usb devices visible: ${devices.length}`);
       for (const d of devices) {
         log(`  vid=0x${d.vendorId.toString(16)} pid=0x${d.productId.toString(16)}`
@@ -56,7 +57,7 @@ module.exports = function hardware({describe, it}) {
       }
 
       const key = devices.find(
-        d => d.vendorId === ONLYKEY_VENDOR_ID && d.productId === ONLYKEY_PRODUCT_ID);
+        d => d.vendorId === UsbPipeModule.VENDOR_ID && d.productId === UsbPipeModule.PRODUCT_ID);
 
       if (!key) {
         skip(
@@ -94,7 +95,13 @@ module.exports = function hardware({describe, it}) {
     it('every interface is identified BY ITS USAGE PAGE, not by luck', async ({log, assert}) => {
       assert.ok(shared, 'no key was found');
 
-      const result = await UsbHid.connect(ONLYKEY_VENDOR_ID, ONLYKEY_PRODUCT_ID);
+      /*
+       * THE PIPE, not the byte-level debug facade. This is the object the
+       * library is handed, so opening it here is opening it the way a real
+       * session does - and the session below then reuses it rather than
+       * racing a second open against the same device.
+       */
+      const result = await UsbPipe.start();
       shared.result = result;
 
       log(`transport=${result.transport} packetSize=${result.packetSize}`);
@@ -148,11 +155,45 @@ module.exports = function hardware({describe, it}) {
       assert.equal(fido.usagePage, usb.describe(IFACE.FIDO).usagePage);
     });
 
+    it('the VENDOR interface answers - a real device session', async ({log, assert}) => {
+      assert.ok(shared && shared.result, 'the connect test did not run');
+
+      /*
+       * The first time this app has spoken the vendor protocol to a physical
+       * key. Everything below the call is the same code the soft key uses -
+       * same session, same device plugin, same parser - which is the whole
+       * claim of the port, tested rather than asserted.
+       */
+      const {device} = await getOnlyKey('usb');
+      const state = await device.connect();
+      const status = String(state.status || '').trim();
+      log(`status: ${JSON.stringify(status)}`);
+
+      assert.ok(
+        status.length > 0,
+        'the vendor interface was claimed but the device said nothing - ' +
+          'OKCONNECT went out and no reply came back',
+      );
+
+      /*
+       * A LOCKED key answers with no version at all, which is not a failure -
+       * it is the same thing the soft key does, and the reason capabilities()
+       * cannot report a build until the PIN is in.
+       */
+      const caps = device.capabilities;
+      log(`model=${device.deviceType} console=${caps ? caps.debugConsole : 'unknown'}`);
+      if (/UNLOCKED/i.test(status)) {
+        log(`identity: ${JSON.stringify(device.identity)}`);
+      } else {
+        log('locked, so no version in the status - expected');
+      }
+    });
     it('and the key is handed back to the phone', async ({log, assert}) => {
       assert.ok(shared, 'no key was found');
-      await UsbHid.disconnect();
+      await resetOnlyKey('usb');
+      await UsbPipe.stop();
       log('interfaces released; the key can type into other apps again');
-      assert.equal(UsbHid.isConnected(), false);
+      assert.equal(UsbPipe.isRunning(), false);
     });
   });
 };
