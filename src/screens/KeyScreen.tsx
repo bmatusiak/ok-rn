@@ -123,6 +123,27 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
   return <Unlocked emu={emu} keys={keys} />;
 }
 
+/**
+ * Which device the rows below are about, in a few words.
+ *
+ * Says HOW it was chosen as well as which it is, because "Hard Key" alone
+ * leaves open whether that was a decision or an accident - and if it was
+ * forced, the difference matters: an override stays put when the key is
+ * unplugged, and a screen still saying "Hard Key" over a device that has left
+ * the building is the kind of stale reading this app keeps trying not to do.
+ */
+function sourceLabel(keys: KeyControl): string {
+  if (keys.override) {
+    return `${keys.name} (forced)`;
+  }
+  if (keys.mode === 'auto') {
+    return keys.backend === 'usb'
+      ? `${keys.name} (attached)`
+      : `${keys.name} (no hard key attached)`;
+  }
+  return `${keys.name} (chosen)`;
+}
+
 function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
   return (
     <ScrollView
@@ -131,8 +152,19 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
       showsVerticalScrollIndicator={false}>
       <KeySource keys={keys} />
 
-      <Section title="Key">
+      {/*
+        THE PANEL NAMES ITS OWN SUBJECT.
+
+        Every row below - firmware, model, build - describes a device, and
+        two of them are reachable from this screen. Read on its own, with the
+        source card scrolled off the top, "OnlyKey Classic, v3.0.4" does not
+        say WHICH key that is. On a phone with both a soft key and a hard one
+        attached, that is a genuinely ambiguous reading of a screen whose
+        whole job is to be unambiguous.
+      */}
+      <Section title={`Key — ${keys.name}`}>
         <View style={styles.kv}>
+          <KeyValue label="source" value={sourceLabel(keys)} />
           <KeyValue label="state" value="unlocked" />
           <KeyValue label="firmware" value={emu.version || '-'} />
           {/*

@@ -188,10 +188,26 @@ function Shell() {
               <Text style={styles.barSep}>|</Text>
               <Text style={styles.barTitle}>{tab}</Text>
             </Pressable>
-            <StatusPill
-              state={emu.device}
-              label={emu.device === 'unknown' ? emu.state : emu.device}
-            />
+            {/*
+              WHICH KEY, ON EVERY TAB.
+
+              The lock pill has always said what the device is doing. It did
+              not say WHICH device, and once there are two that is a gap on
+              every screen rather than one: "12 slots, 3 configured" is a
+              different fact about a soft key than about the one in your hand,
+              and nothing on the Slots tab said which it had read.
+
+              Here rather than per screen, because the answer is the same
+              everywhere and repeating it eleven times is eleven chances to
+              disagree.
+            */}
+            <View style={styles.barRight}>
+              <Text style={styles.barKey}>{keys.name}</Text>
+              <StatusPill
+                state={emu.device}
+                label={emu.device === 'unknown' ? emu.state : emu.device}
+              />
+            </View>
           </View>
         ) : null}
 
@@ -327,6 +343,11 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   barLeft: {flexDirection: 'row', alignItems: 'center', gap: 10},
+  barRight: {flexDirection: 'row', alignItems: 'center', gap: 8},
+
+  /* Quiet: it is context, not a headline. The pill beside it is the state. */
+  barKey: {color: theme.textDim, fontSize: 12},
+
   barTitle: {color: theme.text, fontSize: 16, fontWeight: '700'},
   barSep: {color: theme.border, fontSize: 15},
   pressed: {opacity: 0.6},
