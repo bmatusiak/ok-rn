@@ -57,6 +57,34 @@ The line buffer is 32 bytes because that is `SEREMU_RX_SIZE`, one OUT report.
 developer key can be driven exactly as the emulator is — taps, b-profile holds,
 the backup gesture, config mode.
 
+## What this is NOT: "can a host press a button"
+
+Pressing is a property of the HOST. This is only about whether the CONSOLE
+accepts press commands, which is the question for a real key reached over a
+wire.
+
+**An emulated key presses in any build, production included, and never needs
+the console.** The host fakes the capacitive reading, so the press arrives at
+`touch_sense_loop()`'s `touchread1..6` comparisons (`okcore.cpp:2574`) exactly
+as a finger would. Those sit outside every `#ifdef DEBUG` in that function -
+the first one is the console parser, further down - so the gate this capability
+turns on is simply not in that path.
+
+The full picture:
+
+| key | build | pressed in software by |
+|---|---|---|
+| soft | debug | the host, faking the pads (or the console) |
+| soft | **production** | **the host, faking the pads** |
+| real | debug, new firmware | the console |
+| real | debug, released firmware | nothing - a finger |
+| real | production | nothing - a finger |
+
+Reading `consolePress === false` as "this device cannot be pressed" would
+disable a soft key that presses perfectly well. The library never presses; every
+call site takes the press from its caller, which is what makes all five rows
+the same code.
+
 ## Why this matters more than it looks
 
 **A restart is available.** `8` calls `CPU_RESTART()`. "In-process firmware
