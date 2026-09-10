@@ -188,6 +188,51 @@ module.exports = function hardKey({describe, it}) {
         log('locked, so no version in the status - expected');
       }
     });
+    it('the debug console can drive it, or says a finger is needed', async ({log, assert}) => {
+      assert.ok(shared && shared.result, 'the connect test did not run');
+
+      /*
+       * THE QUESTION A SCREEN HAS TO ANSWER before it draws anything.
+       *
+       * A hard key has six buttons under a finger, so the app does not draw a
+       * keypad for it. What it may do instead is ask the firmware to press
+       * one - and only on a debug build newer than v3.0.2, where the console
+       * grew a parser. capabilities().consolePress is that answer.
+       */
+      const {device} = await getOnlyKey('usb');
+      const caps = device.capabilities;
+
+      if (!caps) {
+        log('locked, so no version and no capabilities - a screen shows the'
+          + ' keypad-free path until the PIN is in');
+        return;
+      }
+
+      /*
+       * THREE-VALUED, and it must be printed as three. debugConsole is null
+       * for UNKNOWN - a locked key carries no version, so the build cannot be
+       * read yet - and rendering null as "production" tells someone holding a
+       * developer key that they have a production one. A screen doing the same
+       * would be worse.
+       */
+      const build = caps.debugConsole === null ? 'unknown (locked)'
+        : caps.debugConsole ? 'debug' : 'production';
+      log(`build=${build}`
+        + ` consolePress=${caps.consolePress}`);
+
+      /*
+       * Not asserted true - a production key is a legitimate answer, and this
+       * suite runs against whichever key is plugged in. What IS asserted is
+       * that the two agree: a console that cannot press must not claim it.
+       */
+      if (caps.consolePress) {
+        assert.equal(
+          caps.debugConsole, true,
+          'consolePress without a console is impossible - the parser is inside'
+            + ' the same #ifdef DEBUG',
+        );
+      }
+    });
     it('and the key is handed back to the phone', async ({log, assert}) => {
       assert.ok(shared, 'no key was found');
       await resetOnlyKey('usb');
