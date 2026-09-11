@@ -166,11 +166,16 @@ async function probeKey(device, log, slot = SLOT) {
     log(`slot ${slot}: holds a key (${key.length} bytes back)`);
     return true;
   } catch (e) {
-    const said = String(e.message);
-    if (/no ECC Private Key|no RSA Private Key/i.test(said)) {
-      log(`slot ${slot}: empty (${said})`);
+    /*
+     * BY KIND, not by sentence. The firmware has 113 of them and this used
+     * to match two by hand; okmsg.errorKind groups them and the library
+     * attaches the kind to what it throws, so "the slot is empty" is a
+     * comparison rather than a regex that goes stale when a word changes.
+     */
+    if (e.kind === 'emptySlot') {
+      log(`slot ${slot}: empty (${e.deviceText})`);
     } else {
-      log(`probe failed: ${said}`);
+      log(`probe failed: ${e.message}`);
     }
     return false;
   }
@@ -835,18 +840,25 @@ module.exports = function cryptoSign({describe, it}) {
        */
       await delay(1500);
       let refused = null;
+      let refusedKind = null;
       try {
         const point = new Uint8Array(32).map((_, i) => (i * 7 + 3) & 0xff);
         await okcrypto.decrypt(SLOT, point, {timeoutMs: 6000, confirm: null});
       } catch (error) {
         refused = String(error.message);
+        refusedKind = error.kind ?? null;
       }
-      log(`refusal: ${refused}`);
+      log(`refusal: ${refused} (kind: ${refusedKind})`);
       assert.ok(refused, 'the device decrypted with a slot that has no decryption role');
       assert.ok(
         /not set as decryption key/i.test(refused),
         'refused, but not for the role: the message should name the missing decryption bit',
       );
+      /*
+       * And the library classified it. A caller that wants to say "this key
+       * cannot decrypt" should not have to match the sentence itself.
+       */
+      assert.equal(refusedKind, 'wrongRole', 'the refusal was not classified as a role problem');
     });
 
     it('nothing is signed without a press at all', async ({log, assert}) => {
