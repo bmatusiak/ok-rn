@@ -1,5 +1,35 @@
 import {protocol} from 'node-onlykey-lib';
 import NativeFidoGatt from '../../specs/NativeFidoGatt';
+import {bytes as okbytes} from 'node-onlykey-lib';
+
+/**
+ * The relying-party id inside a CTAP2 request, or '' if it is not there.
+ *
+ * makeCredential (0x01) carries it as key 2, a map with a text "id";
+ * getAssertion (0x02) carries it as key 1, a text string (CTAP 2.1 §6.1,
+ * §6.2). Anything else - a PING, a getInfo, a payload that does not decode -
+ * is '' rather than a throw, because this runs on every event and a bad
+ * request must not take the listener down with it.
+ */
+export function rpIdFromPayload(commandName: string, hex: string): string {
+  if (!hex) return '';
+  try {
+    const value = protocol.cbor.decode(okbytes.fromHex(hex));
+    if (!(value instanceof Map)) return '';
+    if (commandName === 'makeCredential') {
+      const rp = value.get(2);
+      const id = rp instanceof Map ? rp.get('id') : null;
+      return typeof id === 'string' ? id : '';
+    }
+    if (commandName === 'getAssertion') {
+      const id = value.get(1);
+      return typeof id === 'string' ? id : '';
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
 import type {
   AuthenticatorConfig,
   CtapRequestEvent,
@@ -68,7 +98,14 @@ class FidoGattClient {
 
     this.nativeSubs.push(
       NativeFidoGatt.onCtapRequest((event: CtapRequestEvent) => {
-        this.emit('request', event);
+        /*
+         * The native side reassembles the CTAP2 payload and hands it over as
+         * hex; it never parsed the relying party out of it, so `rpId` was
+         * '' on every event and the FIDO screen showed "-" for a year. The
+         * library's CBOR decoder is the right parser and the wrong thing to
+         * grow in Kotlin, so the id is filled in here, from the same bytes.
+         */
+        this.emit('request', event.rpId ? event : {...event, rpId: rpIdFromPayload(event.commandName, event.hex)});
       }),
     );
   }

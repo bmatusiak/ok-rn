@@ -43,6 +43,8 @@ const {getOnlyKey, resetOnlyKey} = require('../src/onlykey');
 const {usb, IFACE} = oktransport;
 
 let shared = null;
+/** Why the first test skipped, if it did; every later test skips on it. */
+let absent = null;
 
 module.exports = function hardKey({describe, it}) {
   describe(hardKey.name, () => {
@@ -60,13 +62,20 @@ module.exports = function hardKey({describe, it}) {
         d => d.vendorId === UsbPipeModule.VENDOR_ID && d.productId === UsbPipeModule.PRODUCT_ID);
 
       if (!key) {
-        skip(
-          'no OnlyKey on the USB bus. Attach one over OTG to measure what it ' +
-            'enumerates; the soft key cannot answer this.',
-        );
+        /*
+         * Recorded before the skip, so the tests after this one skip for the
+         * SAME reason instead of failing on "no key was found": a full run on
+         * a phone without a key read as seven red tests for a morning
+         * (2026-09-11) when it should have read as nine skipped.
+         */
+        absent = 'no OnlyKey on the USB bus. Attach one over OTG to measure what it ' +
+          'enumerates; the soft key cannot answer this.';
+        skip(absent);
       }
 
       if (!key.hasPermission) {
+        absent = 'the key is attached but this app has no USB permission for it. ' +
+          'Android asks on attach; accept it and run again.';
         /*
          * Asked for rather than skipped over: the grant is remembered, so one
          * tap makes every later run work. It cannot be granted from here.
@@ -92,7 +101,8 @@ module.exports = function hardKey({describe, it}) {
       shared = {key};
     });
 
-    it('every interface is identified BY ITS USAGE PAGE, not by luck', async ({log, assert}) => {
+    it('every interface is identified BY ITS USAGE PAGE, not by luck', async ({log, assert, skip}) => {
+      if (absent) skip(absent);
       assert.ok(shared, 'no key was found');
 
       /*
@@ -128,7 +138,8 @@ module.exports = function hardKey({describe, it}) {
       assert.equal(problems.length, 0, problems.join('; '));
     });
 
-    it('the vendor interface is there, which is the whole point', async ({log, assert}) => {
+    it('the vendor interface is there, which is the whole point', async ({log, assert, skip}) => {
+      if (absent) skip(absent);
       assert.ok(shared && shared.result, 'the connect test did not run');
       const found = shared.result.interfaces || [];
 
@@ -155,7 +166,8 @@ module.exports = function hardKey({describe, it}) {
       assert.equal(fido.usagePage, usb.describe(IFACE.FIDO).usagePage);
     });
 
-    it('the VENDOR interface answers - a real device session', async ({log, assert}) => {
+    it('the VENDOR interface answers - a real device session', async ({log, assert, skip}) => {
+      if (absent) skip(absent);
       assert.ok(shared && shared.result, 'the connect test did not run');
 
       /*
@@ -188,7 +200,8 @@ module.exports = function hardKey({describe, it}) {
         log('locked, so no version in the status - expected');
       }
     });
-    it('the debug console can drive it, or says a finger is needed', async ({log, assert}) => {
+    it('the debug console can drive it, or says a finger is needed', async ({log, assert, skip}) => {
+      if (absent) skip(absent);
       assert.ok(shared && shared.result, 'the connect test did not run');
 
       /*
@@ -233,7 +246,8 @@ module.exports = function hardKey({describe, it}) {
         );
       }
     });
-    it('the console is ASKED whether it answers, pressing nothing', async ({log, assert}) => {
+    it('the console is ASKED whether it answers, pressing nothing', async ({log, assert, skip}) => {
+      if (absent) skip(absent);
       assert.ok(shared && shared.result, 'the connect test did not run');
 
       /*
@@ -261,6 +275,7 @@ module.exports = function hardKey({describe, it}) {
       }
     });
     it('types a slot over the CLAIMED keyboard interface, and the phone reads it back', async ({log, assert, skip}) => {
+      if (absent) skip(absent);
       assert.ok(shared && shared.result, 'the connect test did not run');
       const {device} = await getOnlyKey('usb');
 
@@ -310,7 +325,8 @@ module.exports = function hardKey({describe, it}) {
         `expected ${JSON.stringify(SECRET)} among what the key typed`,
       );
     });
-    it('and the key is handed back to the phone', async ({log, assert}) => {
+    it('and the key is handed back to the phone', async ({log, assert, skip}) => {
+      if (absent) skip(absent);
       assert.ok(shared, 'no key was found');
       await resetOnlyKey('usb');
       await UsbPipe.stop();

@@ -333,6 +333,18 @@ async function main() {
     }
     if (/TEST COMPLETE/.test(log)) break;
 
+    /*
+     * A wrong --only name is thrown IN THE APP (only.js says why), on the
+     * ReactNativeJS tag rather than as a [Moniker] line - so the loop above
+     * never saw it, and a typo ("bridge" for "bridgeFlow") cost a ninety
+     * second stall that ended in "the suite has not printed anything".
+     * Measured 2026-09-11. Surface it the moment it appears, with the list.
+     */
+    const unknown = /names suites that do not exist: ([^\n\]]*)/.exec(log);
+    if (unknown) {
+      throw new Error(`e2e: ${unknown[0].replace(/s+/g, ' ')}`);
+    }
+
     /* The app leaving the screen is the one stall that needs no waiting for. */
     const front = foregroundApp();
     if (front !== PACKAGE && acceptUsbPrompt()) {
