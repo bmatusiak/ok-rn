@@ -233,6 +233,17 @@ const WANT_DUO =
  * pattern in the other. This finds whichever spelling is there and reports the
  * state it leaves.
  *
+ * MATCHED ON THE DEFINE, NOT ON THE WHOLE LINE. It used to compare the exact
+ * text passed as `on`, trailing comment and all, and that comment is not
+ * stable across releases: the 2019 beta line writes
+ * `#define STD_VERSION //Define for US Version Firmare` where the 3.0 line
+ * writes `//Define for STD edition firmare, undefine for IN TRVL edition
+ * firmware`. Same define, same meaning, a different sentence after it - and
+ * the old comparison read that as ABSENT, printed a bare `NaN` from a
+ * broken error message, and reported the build as TRAVEL. That is a
+ * different firmware: no FIDO, no encrypted profile, set_private returns
+ * early. A comment is not a build option.
+ *
  * @param name the define, for the log
  * @param on the line as it appears when the option is ENABLED
  * @param want true to enable, false to disable, null to leave it alone
@@ -240,14 +251,26 @@ const WANT_DUO =
  */
 function gateDefine(name, on, want, { universal = true } = {}) {
   const target = path.join(STAGE, 'libraries', 'onlykey', 'onlykey.h');
-  const off = `//${on}`;
 
   let text = fs.readFileSync(target, 'utf8');
 
-  /* `off` contains `on` as a substring, so it has to be tested first. */
+  /*
+   * The line as it stands in THIS tree, found by the DEFINE rather than by
+   * the sentence after it. String.raw so the regex keeps its own escapes: in
+   * an ordinary template literal `\b` is a backspace, not a word boundary,
+   * and the difference is a matcher that silently never matches.
+   *
+   * Commented-out is tested first, because `//#define X` contains `#define X`.
+   */
+  const offLine = new RegExp(String.raw`^[ \t]*//[ \t]*#define[ \t]+${name}\b.*$`, 'm');
+  const onLine = new RegExp(String.raw`^[ \t]*#define[ \t]+${name}\b.*$`, 'm');
+
   let enabled;
-  if (text.includes(off)) enabled = false;
-  else if (text.includes(on)) enabled = true;
+  let here = null;
+  const offMatch = offLine.exec(text);
+  const onMatch = offMatch ? null : onLine.exec(text);
+  if (offMatch) { enabled = false; here = offMatch[0]; }
+  else if (onMatch) { enabled = true; here = onMatch[0]; }
   else {
     /*
      * ABSENT. For a define every release carries that is a real problem - the
@@ -256,9 +279,17 @@ function gateDefine(name, on, want, { universal = true } = {}) {
      * case, absence is the ordinary state and saying nothing is correct.
      */
     if (universal) {
+      /*
+       * This message had lost its first operand - `console.error( + '...')`
+       * - so a unary plus on a string printed a bare `NaN` and nothing else,
+       * and the exit code was set by something that named neither the define
+       * nor the file. Met while staging the 2019 line.
+       */
       console.error(
-         +
-        'libraries/onlykey/onlykey.h, so the build option could not be read.');
+        `stage: ${name} is absent from libraries/onlykey/onlykey.h, so the ` +
+        'build option could not be read. Either it was renamed at this pin, ' +
+        'or this release predates it - if the latter, pass ' +
+        '{ universal: false } for it.');
       process.exitCode = 1;
     }
     return null;
@@ -266,9 +297,15 @@ function gateDefine(name, on, want, { universal = true } = {}) {
 
   if (want === null || want === enabled) return enabled;
 
+  /*
+   * Flipped IN PLACE, keeping whatever comment this tree carries. Rewriting
+   * the line to the `on` string passed in would replace one release's
+   * comment with another's, which is how a staged tree quietly stops being
+   * the release it claims to be.
+   */
   text = want
-    ? text.split(off).join(on)
-    : text.split(on).join(off);
+    ? text.replace(here, here.replace(/^([ \t]*)\/\/[ \t]*/, '$1'))
+    : text.replace(here, here.replace(/^([ \t]*)/, '$1//'));
   fs.writeFileSync(target, text);
   console.log(
     `stage: ${name} turned ${want ? 'ON' : 'OFF'} (was ${enabled ? 'ON' : 'OFF'})`);
@@ -786,15 +823,49 @@ function copyDir(src, dst) {
  * of one script per release - the script names the release, so its patches are
  * known to belong to it and a miss means the pins moved under it.
  */
-function applyPatches(extra = []) {
-  let applied = 0, missing = 0;
+/** The first line of a pattern, so an error about one stays readable. */
+function firstLine(text) {
+  return String(text).split(String.fromCharCode(10))[0];
+}
+
+/**
+ * @param extra   patches this release adds
+ * @param absent  `from` patterns (or file paths) this release declares its
+ *                tree does not contain
+ */
+function applyPatches(extra = [], absent = []) {
+  let applied = 0, missing = 0, expected = 0;
   const patches = [
     ...PATCHES,
     ...extra,
   ];
+  /*
+   * SOME BASE PATCHES DO NOT APPLY TO EVERY RELEASE, and for an old enough
+   * tree that is a fact about the release rather than a fault.
+   *
+   * The 2019 beta line has no `factorysectoradr` in okcore.h and no
+   * `end_byte` span in ctap_parse.cpp: the first arrived later, the second
+   * belongs to a fido2 library that release predates. A base patch written
+   * against the 3.0 line finds neither, and failing the whole stage for it
+   * would mean the matrix can never reach back past the oldest tree that
+   * happens to contain every pattern.
+   *
+   * So a release may DECLARE a pattern absent. Declared-absent is counted
+   * and reported - it is not silence. And a pattern declared absent that
+   * turns out to be PRESENT throws, because the declaration has gone stale
+   * and the tree would be built unpatched on the strength of it.
+   */
+  const declaredAbsent = new Set(absent);
+  const seen = new Set();
   for (const p of patches) {
     const target = path.join(STAGE, p.file);
     if (!fs.existsSync(target)) {
+      if (declaredAbsent.has(p.file)) {
+        console.log(`stage: ${p.file} is absent at this pin, as its release says`);
+        seen.add(p.file);
+        expected++;
+        continue;
+      }
       console.error(`stage: WARNING - patch file absent: ${p.file}`);
       missing++;
       continue;
@@ -812,14 +883,39 @@ function applyPatches(extra = []) {
         : text.includes(crlf(from)) ? crlf(from)
         : null;
       if (from2 === null) {
-        console.error(`stage: WARNING - pattern not found in ${p.file}`);
+        if (declaredAbsent.has(from)) {
+          seen.add(from);
+          expected++;
+          continue;
+        }
+        console.error(
+          `stage: WARNING - pattern not found in ${p.file}: ${firstLine(from)}` +
+          ' | if this release predates it, list that line in the version ' +
+          "script's `absentPatterns`");
         missing++;
         continue;
+      }
+      if (declaredAbsent.has(from)) {
+        throw new Error(
+          `stage: ${p.file} DOES contain a pattern its release declares ` +
+          `absent: ${firstLine(from)} | remove it from absentPatterns - the ` +
+          'tree would be left unpatched on the strength of a stale claim');
       }
       text = text.split(from2).join(from2 === from ? to : crlf(to));
       applied++;
     }
     fs.writeFileSync(target, text);
+  }
+  for (const declared of declaredAbsent) {
+    if (!seen.has(declared)) {
+      throw new Error(
+        'stage: this release declares a pattern absent that no patch looks ' +
+        `for: ${firstLine(declared)} | either a typo, or the base patch it ` +
+        'belonged to has gone');
+    }
+  }
+  if (expected) {
+    console.log(`stage: ${expected} base patch edit(s) absent at this pin, as declared`);
   }
   if (missing) {
     console.error('stage: a patch did not apply - upstream may have changed.');
@@ -950,6 +1046,65 @@ function defuseTimeHeader() {
  * Path is hashed alongside content so that moving a file changes the digest,
  * and the walk is sorted so the answer does not depend on readdir order.
  */
+/**
+ * Rename Crypto/SHA256.h out of the way, the way upstream later did.
+ *
+ * THE 2019 TREE HAS TWO HEADERS WHOSE NAMES DIFFER ONLY IN CASE:
+ * `Crypto/SHA256.h`, the Arduino Crypto library's C++ class, and
+ * `sha256/sha256.h`, Brad Conte's C implementation that defines
+ * `SHA256_CTX`. On a case-insensitive filesystem - which is every Windows
+ * checkout of this project - `#include "sha256.h"` from fido2/device.h
+ * resolves to whichever directory comes first on the include path, and
+ * Crypto is listed before sha256 (CMakeLists.txt:54 vs :60). So device.h
+ * got the C++ class, and every translation unit that wanted SHA256_CTX
+ * failed with "unknown type name".
+ *
+ * Upstream hit this too and fixed it the same way: at the current libraries
+ * HEAD the file is `Crypto/SHA256_2.h`. This does that rename to the STAGED
+ * copy for the releases that predate it, so an old tree builds without
+ * anyone editing the checkout.
+ *
+ * Not a patch entry, because a patch edits text in place and this moves a
+ * file and rewrites the includes that name it - the same shape as
+ * defuseTimeHeader above, and for the same kind of reason.
+ *
+ * @returns how many files were repointed, or -1 when there was nothing to do
+ */
+function renameCryptoSha256() {
+  const dir = path.join(STAGE_LIB, 'Crypto');
+  if (!fs.existsSync(dir)) return -1;
+  /*
+   * `existsSync` is case-INSENSITIVE on Windows and answers true for the
+   * already-renamed tree too, so the directory listing is the only honest
+   * test of which name is really on disk.
+   */
+  const names = fs.readdirSync(dir);
+  if (!names.includes('SHA256.h')) return -1;
+
+  fs.renameSync(path.join(dir, 'SHA256.h'), path.join(dir, 'SHA256_2.h'));
+  if (names.includes('SHA256.cpp')) {
+    fs.renameSync(path.join(dir, 'SHA256.cpp'), path.join(dir, 'SHA256_2.cpp'));
+  }
+
+  let rewritten = 0;
+  const re = /(#\s*include\s*)(["<])SHA256\.h([">])/g;
+  const walkAll = (d) => {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      const q = path.join(d, ent.name);
+      if (ent.isDirectory()) { walkAll(q); continue; }
+      if (!/\.(c|cpp|h|hpp|ino)$/.test(ent.name)) continue;
+      const text = fs.readFileSync(q, 'utf8');
+      if (!re.test(text)) { re.lastIndex = 0; continue; }
+      re.lastIndex = 0;
+      fs.writeFileSync(q, text.replace(re, '$1$2SHA256_2.h$3'));
+      rewritten++;
+    }
+  };
+  walkAll(STAGE);
+  return rewritten;
+}
+
+
 function digestStage() {
   const crypto = require('crypto');
   const hash = crypto.createHash('sha256');
@@ -1218,7 +1373,25 @@ function main() {
 
   // 5. vendored libraries and the sketch
   copyDir(LIB_SRC, STAGE_LIB);
-  copyDir(path.join(FW, 'OnlyKey'), STAGE_SKETCH);
+  /*
+   * WHERE THE SKETCH LIVES IS PER-RELEASE. Every release from v2.1.0 on
+   * keeps it at OnlyKey/OnlyKey.ino, but the 2019 beta line has
+   * OnlyKey_Beta/OnlyKey_Beta.ino - a different directory AND a different
+   * file name. It is staged AS OnlyKey.ino either way, because
+   * okemu_sketch.cpp includes that name and the name is not the part that
+   * varies between releases; the contents are.
+   */
+  const sketch = release.sketch || { dir: 'OnlyKey', file: 'OnlyKey.ino' };
+  copyDir(path.join(FW, sketch.dir), STAGE_SKETCH);
+  if (sketch.file !== 'OnlyKey.ino') {
+    const from = path.join(STAGE_SKETCH, sketch.file);
+    if (!fs.existsSync(from)) {
+      throw new Error(
+        `stage: ${release.version} names its sketch ${sketch.dir}/${sketch.file}, ` +
+        'which is not in the checkout at this pin');
+    }
+    fs.renameSync(from, path.join(STAGE_SKETCH, 'OnlyKey.ino'));
+  }
 
   /*
    * 5a. The stock Arduino libraries the firmware uses, staged rather than
@@ -1230,6 +1403,8 @@ function main() {
     copyDir(path.join(TLIB, lib), path.join(STAGE_LIB, lib));
   }
   const renamed = defuseTimeHeader();
+  /* Only the old trees have it; -1 means this release was already fixed. */
+  const shaRenamed = renameCryptoSha256();
 
   /*
    * 6. The DEBUG gate FIRST, because what it lands on decides which patches
@@ -1274,7 +1449,7 @@ function main() {
   const patched = applyPatches([
     ...release.patches,
     ...(debugOn === false ? [...DEBUG_OFF_PATCHES, ...release.debugOffPatches] : []),
-  ]);
+  ], release.absentPatterns);
   const scs = rewriteSystemBlock();
 
   const stats = digestStage();
@@ -1288,6 +1463,9 @@ function main() {
     `  literal patches applied:                   ${patched}\n` +
     `  system-block registers rebased:            ${scs}\n` +
     `  Time.h consumers repointed at TimeLib.h:   ${renamed}\n` +
+    (shaRenamed < 0 ? '' :
+      `  Crypto/SHA256.h renamed, consumers repointed: ${shaRenamed}
+`) +
     `  staged sources digested:                   ${stats.files} files, ${stats.digest}\n` +
     `  OnlyKey-Firmware / libraries:              ${info.firmware || '?'} / ${info.libraries || '?'}` +
     `

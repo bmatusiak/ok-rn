@@ -184,6 +184,25 @@ function load(version) {
     debugOffPatches: mod.debugOffPatches || [],
     drop: mod.drop || [],
     /**
+     * Where this release keeps its sketch, when it is not OnlyKey/OnlyKey.ino.
+     *
+     * The 2019 beta line has OnlyKey_Beta/OnlyKey_Beta.ino - a different
+     * directory and a different file name. stage.js stages it AS
+     * OnlyKey.ino whatever it was called, because okemu_sketch.cpp includes
+     * that name and the name is not the part that varies.
+     */
+    sketch: mod.sketch || null,
+    /**
+     * Base-patch patterns this release's tree does not contain.
+     *
+     * Old trees predate some of the patterns the base patches look for, and
+     * a stage that fails for that reason puts a floor under how far back the
+     * matrix can reach. Declaring one is a claim stage.js CHECKS: a pattern
+     * declared absent that turns out to be present is an error, because the
+     * tree would otherwise be built unpatched on a stale note.
+     */
+    absentPatterns: mod.absentPatterns || [],
+    /**
      * Build options this release must be staged with to be comparable, when
      * its pinned commit does not have them set.
      *
