@@ -44,6 +44,15 @@ const PIN = '1234561';
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
+/*
+ * ARMED by the first test, checked by every later one. A skip() ends ONE
+ * test; the rest of the suite still runs, and in a full run the wipe test
+ * then failed with "No open transport" against a pipe the first test never
+ * opened - three red lines for a suite that was correctly staying out of
+ * the way. So the later tests ask whether the first one armed them.
+ */
+let armed = false;
+
 function isNamed() {
   const only = require('./only.js');
   return Array.isArray(only) && only.includes('hardKeyProvision');
@@ -111,10 +120,12 @@ module.exports = function hardKeyProvision({describe, it}) {
       if (!answers) {
         skip('this key does not read its console, so it cannot be wiped or provisioned from here');
       }
-      assert.ok(true);
+      armed = true;
+      assert.ok(armed);
     });
 
-    it('wipes userspace and the key reboots', async ({log, assert}) => {
+    it('wipes userspace and the key reboots', async ({log, assert, skip}) => {
+      if (!armed) skip('not armed - see the first test');
       const {device} = await getOnlyKey('usb');
       device.console.clear();
       await device.wipeUserspace();
@@ -135,7 +146,8 @@ module.exports = function hardKeyProvision({describe, it}) {
       assert.ok(/UNINITIALIZED/i.test(status), `expected UNINITIALIZED, got ${status}`);
     });
 
-    it('sets a PIN through the firmware bracket, and restarts to make it real', async ({log, assert}) => {
+    it('sets a PIN through the firmware bracket, and restarts to make it real', async ({log, assert, skip}) => {
+      if (!armed) skip('not armed - see the first test');
       const {device} = await getOnlyKey('usb');
       /*
        * No enterDigits: the default presses through the console, which this
@@ -156,7 +168,8 @@ module.exports = function hardKeyProvision({describe, it}) {
       assert.ok(/^INITIALIZED/i.test(status), `expected INITIALIZED (locked), got ${status}`);
     });
 
-    it('UNLOCKS with that PIN - the first time a hard key has', async ({log, assert}) => {
+    it('UNLOCKS with that PIN - the first time a hard key has', async ({log, assert, skip}) => {
+      if (!armed) skip('not armed - see the first test');
       const {device} = await getOnlyKey('usb');
       /*
        * unlock() resolves with the status text it SAW - the device's own
@@ -171,7 +184,8 @@ module.exports = function hardKeyProvision({describe, it}) {
       log(`capabilities: ${JSON.stringify(device.capabilities)}`);
     });
 
-    it('and the key is handed back to the phone', async ({log, assert}) => {
+    it('and the key is handed back to the phone', async ({log, assert, skip}) => {
+      if (!armed) skip('not armed - see the first test');
       await resetOnlyKey('usb');
       await UsbPipe.stop();
       log('interfaces released');

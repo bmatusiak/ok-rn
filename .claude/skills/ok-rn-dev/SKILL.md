@@ -96,6 +96,15 @@ line as the phone logs it, and fails within 90 s of silence with
 doctor `--shot` and look. Suite names are the `describe()` names
 (`hardKey`, `derive`, …); a wrong one throws in the app.
 
+Never chain a commit behind `e2e.js | grep …`: grep's exit code replaces
+the runner's, and a red run was committed as green that way once. Use
+`set -o pipefail` in the shell, or read the verdict from
+`tools/.last-e2e.json` (`doctor.js` prints it) before committing.
+
+A suite that must never run unnamed (`hardKeyProvision` wipes the key)
+arms itself in its first test and every later test skips when unarmed -
+`skip()` ends one test, not the suite.
+
 `__e2e_tests__/only.js` must read `[]` between runs. The runner resets it,
 and doctor warns if it did not (a killed run on Windows runs no handlers).
 
