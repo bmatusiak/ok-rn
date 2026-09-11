@@ -33,10 +33,11 @@ export function rpIdFromPayload(commandName: string, hex: string): string {
 import type {
   AuthenticatorConfig,
   CtapRequestEvent,
+  PermissionStatus,
   GattStatusEvent,
 } from '../../specs/NativeFidoGatt';
 
-export type {AuthenticatorConfig, CtapRequestEvent, GattStatusEvent};
+export type {AuthenticatorConfig, CtapRequestEvent, GattStatusEvent, PermissionStatus};
 
 export type GattState = 'idle' | 'advertising' | 'connected' | 'stopped' | 'error';
 
@@ -142,6 +143,18 @@ class FidoGattClient {
 
   requestPermissions(): Promise<boolean> {
     return NativeFidoGatt.requestPermissions();
+  }
+
+  permissionStatus(): Promise<PermissionStatus> {
+    return NativeFidoGatt.permissionStatus();
+  }
+
+  requestNotificationPermission(): Promise<boolean> {
+    return NativeFidoGatt.requestNotificationPermission();
+  }
+
+  openAppSettings(): void {
+    NativeFidoGatt.openAppSettings();
   }
 
   configure(config: Partial<AuthenticatorConfig> = {}): void {

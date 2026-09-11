@@ -57,6 +57,18 @@
       android:usesCleartextTraffic="${usesCleartextTraffic}"
       android:supportsRtl="true">
       <!--
+        Foreground while the BLE GATT server is up, so a long security-key
+        session is not throttled once the screen is off. connectedDevice is
+        the Android 14 type for a Bluetooth peripheral; the matching
+        FOREGROUND_SERVICE_CONNECTED_DEVICE permission is declared above.
+        Started and stopped by NativeFidoGattModule with the server.
+      -->
+      <service
+        android:name=".fido.FidoGattService"
+        android:exported="false"
+        android:foregroundServiceType="connectedDevice" />
+
+      <!--
         Relaunches the app after the firmware has ended itself. Its own process
         on purpose: killing the main one leaves this alive and in the
         foreground, and only a foreground process may start an activity.

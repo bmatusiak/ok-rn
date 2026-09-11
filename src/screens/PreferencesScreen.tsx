@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useState} from 'react';
-import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {device as okdevice} from 'node-onlykey-lib';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
@@ -11,6 +11,8 @@ import {PinScreen} from './PinScreen';
 import {SetupScreen} from './SetupScreen';
 import OkEmu from '../transport/OkEmu';
 import type {EmuSession} from '../hooks/useOkEmu';
+import {FidoGatt} from '../transport/FidoGatt';
+import type {PermissionStatus} from '../transport/FidoGatt';
 
 const {keystrokes} = okdevice;
 
@@ -120,6 +122,46 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
   const [error, setError] = useState<string | null>(null);
 
   const config = useConfigMode(emu);
+
+  /*
+   * PERMISSIONS, visible and re-askable. The security-key role asks for
+   * Bluetooth and, on Android 13+, notifications (the foreground service's
+   * "acting as a security key" line) the first time advertising starts. A
+   * dialog dismissed by accident left no way back in the app: Android does
+   * not ask twice on its own, and the service then runs with no notification
+   * to say so. This reads the state every time the screen is shown or the
+   * app returns from the system settings page, and offers the ask again.
+   */
+  const [perms, setPerms] = useState<PermissionStatus | null>(null);
+  const [permNote, setPermNote] = useState<string | null>(null);
+  const readPerms = useCallback(() => {
+    FidoGatt.permissionStatus().then(setPerms).catch(e => setPermNote(String((e as Error)?.message ?? e)));
+  }, []);
+  useEffect(() => {
+    readPerms();
+    const sub = AppState.addEventListener('change', s => { if (s === 'active') readPerms(); });
+    return () => sub.remove();
+  }, [readPerms]);
+  const askBluetooth = useCallback(async () => {
+    setPermNote(null);
+    try {
+      const ok = await FidoGatt.requestPermissions();
+      if (!ok) setPermNote('Bluetooth was not granted. If no dialog appeared, Android has stopped asking; use the system settings.');
+    } catch (e) {
+      setPermNote(String((e as Error)?.message ?? e));
+    }
+    readPerms();
+  }, [readPerms]);
+  const askNotifications = useCallback(async () => {
+    setPermNote(null);
+    try {
+      const ok = await FidoGatt.requestNotificationPermission();
+      if (!ok) setPermNote('Notifications were not granted. If no dialog appeared, Android has stopped asking; use the system settings.');
+    } catch (e) {
+      setPermNote(String((e as Error)?.message ?? e));
+    }
+    readPerms();
+  }, [readPerms]);
 
   /*
    * CHANGE PINS, which the desktop offers on an initialized key and this app
@@ -244,6 +286,36 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      <Section title="Permissions">
+        <Text style={styles.body}>
+          What the security-key role needs from the phone. A dialog dismissed
+          by accident can be asked again here; once Android has stopped
+          asking, the system settings page is the only way back.
+        </Text>
+        <View style={styles.permRow}>
+          <Text style={styles.body}>Bluetooth (acting as a security key)</Text>
+          <Text style={perms?.bluetooth ? styles.permOn : styles.permOff}>
+            {perms ? (perms.bluetooth ? 'granted' : 'not granted') : '…'}
+          </Text>
+        </View>
+        {perms && !perms.bluetooth ? <Btn title="Ask for Bluetooth" onPress={() => void askBluetooth()} /> : null}
+        <View style={styles.permRow}>
+          <Text style={styles.body}>Notifications (the "acting as a security key" line)</Text>
+          <Text style={perms?.notifications ? styles.permOn : styles.permOff}>
+            {perms
+              ? perms.notificationsApply
+                ? perms.notifications ? 'granted' : 'not granted'
+                : 'not needed on this Android'
+              : '…'}
+          </Text>
+        </View>
+        {perms && perms.notificationsApply && !perms.notifications ? (
+          <Btn title="Ask for notifications" onPress={() => void askNotifications()} />
+        ) : null}
+        {permNote ? <Text style={styles.error}>{permNote}</Text> : null}
+        <Btn title="Open the system settings for this app" onPress={() => FidoGatt.openAppSettings()} />
+      </Section>
+
       <Section title={`Change PINs — ${keyName}`}>
         {!config.entered ? (
           <>
@@ -538,5 +610,8 @@ const styles = StyleSheet.create({
   inputDisabled: {opacity: 0.4},
 
   chips: {flexDirection: 'row', flexWrap: 'wrap', gap: 6},
+  permRow: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginTop: 6},
+  permOn: {color: theme.ok, fontSize: 13, fontWeight: '600'},
+  permOff: {color: theme.warn, fontSize: 13, fontWeight: '600'},
   bits: {gap: 6},
 });

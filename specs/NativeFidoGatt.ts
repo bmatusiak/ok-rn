@@ -62,15 +62,39 @@ export type AuthenticatorConfig = {
   preferStrongBox: boolean;
 };
 
+export type PermissionStatus = {
+  bluetooth: boolean;
+  notifications: boolean;
+  notificationsApply: boolean;
+};
+
 export interface Spec extends TurboModule {
   /** BLE peripheral mode + advertising + hardware keystore all present. */
   isSupported(): Promise<boolean>;
 
   /**
    * Runtime permissions (BLUETOOTH_ADVERTISE / BLUETOOTH_CONNECT on API 31+).
-   * Resolves true once every required permission is granted.
+   * Resolves true once every required permission is granted. Asks for
+   * POST_NOTIFICATIONS in the same dialog on API 33+, without requiring it.
    */
   requestPermissions(): Promise<boolean>;
+
+  /**
+   * Where each permission stands right now, without asking. `notificationsApply`
+   * is false below API 33, where there is no such permission to grant.
+   */
+  permissionStatus(): Promise<PermissionStatus>;
+
+  /** Ask for POST_NOTIFICATIONS alone (API 33+); true below that. */
+  requestNotificationPermission(): Promise<boolean>;
+
+  /**
+   * The system's page for this app, where a permission refused with "don't
+   * ask again" can only be turned back on. Android stops showing the dialog
+   * after that refusal, so an in-app "ask again" that silently returns
+   * false needs this next to it.
+   */
+  openAppSettings(): void;
 
   configure(config: AuthenticatorConfig): void;
 

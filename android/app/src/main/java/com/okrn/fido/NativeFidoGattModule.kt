@@ -18,6 +18,9 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
+import android.net.Uri
+import android.content.Intent
 import android.util.Log
 import android.os.ParcelUuid
 import android.security.keystore.KeyGenParameterSpec
@@ -166,8 +169,66 @@ class NativeFidoGattModule(
     ContextCompat.checkSelfPermission(reactContext, it) == PackageManager.PERMISSION_GRANTED
   }
 
+  /*
+   * Asked for alongside the required ones, never required: without it the
+   * foreground service's notification is not shown (API 33+), but the
+   * service still runs and the process is still protected. Requiring it
+   * would let a denied notification prompt block the security key itself.
+   */
+  private fun wantedPermissions(): Array<String> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      arrayOf(Manifest.permission.POST_NOTIFICATIONS)
+    } else {
+      emptyArray()
+    }
+
+  private fun hasWantedPermissions(): Boolean = wantedPermissions().all {
+    ContextCompat.checkSelfPermission(reactContext, it) == PackageManager.PERMISSION_GRANTED
+  }
+
   override fun requestPermissions(promise: Promise) {
-    if (hasPermissions()) {
+    if (hasPermissions() && hasWantedPermissions()) {
+      promise.resolve(true)
+      return
+    }
+    val activity = reactApplicationContext.currentActivity as? PermissionAwareActivity
+    if (activity == null) {
+      promise.reject(ERR_PERMISSION, "No activity available to request permissions")
+      return
+    }
+    /* One dialog for both lists; only the required ones decide the answer. */
+    val required = requiredPermissions()
+    activity.requestPermissions(
+      required + wantedPermissions(),
+      PERMISSION_REQUEST_CODE,
+      PermissionListener { requestCode, _, grantResults ->
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+          val granted = grantResults.size >= required.size &&
+            grantResults.take(required.size).all { it == PackageManager.PERMISSION_GRANTED }
+          promise.resolve(granted)
+        }
+        true
+      },
+    )
+  }
+
+  override fun permissionStatus(promise: Promise) {
+    val map: WritableMap = Arguments.createMap()
+    map.putBoolean("bluetooth", hasPermissions())
+    map.putBoolean("notifications", hasWantedPermissions())
+    map.putBoolean("notificationsApply", Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+    promise.resolve(map)
+  }
+
+  /*
+   * Notifications alone, for the Settings screen: the first ask rides along
+   * with the Bluetooth dialog, and a person who dismissed that one has no
+   * other way back to it. Android shows the dialog at most twice per
+   * permission; after "don't ask again" this resolves false without a
+   * dialog, which is what openAppSettings() is for.
+   */
+  override fun requestNotificationPermission(promise: Promise) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || hasWantedPermissions()) {
       promise.resolve(true)
       return
     }
@@ -177,17 +238,22 @@ class NativeFidoGattModule(
       return
     }
     activity.requestPermissions(
-      requiredPermissions(),
-      PERMISSION_REQUEST_CODE,
+      wantedPermissions(),
+      NOTIFICATION_REQUEST_CODE,
       PermissionListener { requestCode, _, grantResults ->
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-          val granted = grantResults.isNotEmpty() &&
-            grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-          promise.resolve(granted)
+        if (requestCode == NOTIFICATION_REQUEST_CODE) {
+          promise.resolve(grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED })
         }
         true
       },
     )
+  }
+
+  override fun openAppSettings() {
+    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+      .setData(Uri.fromParts("package", reactContext.packageName, null))
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    reactContext.startActivity(intent)
   }
 
   override fun configure(configMap: ReadableMap) {
@@ -251,6 +317,8 @@ class NativeFidoGattModule(
       val server = manager.openGattServer(reactContext, gattCallback)
         ?: throw IllegalStateException("openGattServer returned null")
       gattServer = server
+      /* The process is now doing what the notification says; see FidoGattService. */
+      FidoGattService.start(reactContext)
 
       /*
        * addService() is ASYNCHRONOUS - it completes at onServiceAdded() - and
@@ -358,6 +426,8 @@ class NativeFidoGattModule(
     statusCharacteristic = null
     connectedDevice = null
     assembler.reset()
+    /* No server, no foreground: the notification goes with it. */
+    FidoGattService.stop(reactContext)
     pendingRequests.clear()
     clearNotifications("GATT server stopped")
     mtu = DEFAULT_MTU
@@ -993,7 +1063,8 @@ class NativeFidoGattModule(
     private const val TAG = "FidoGatt"
     private const val SERVICE_ADD_TIMEOUT_MS = 2000
     private const val SERVICE_ADD_POLL_MS = 10
-    private const val PERMISSION_REQUEST_CODE = 0xF1D0
+    private const val PERMISSION_REQUEST_CODE = 0
+    private const val NOTIFICATION_REQUEST_CODE = 0xF1D1
 
     private const val ERR_UNSUPPORTED = "ERR_BLE_UNSUPPORTED"
     private const val ERR_PERMISSION = "ERR_BLE_PERMISSION"
