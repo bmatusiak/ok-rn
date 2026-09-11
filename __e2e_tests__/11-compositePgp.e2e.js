@@ -285,6 +285,62 @@ module.exports = function compositePgp({describe, it}) {
       assert.equal(result.data, text);
     });
 
+    it('a message encrypts to SEVERAL keys, and each of them opens it', async ({log, assert}) => {
+      /*
+       * The web app encrypts to a list of recipients and this app took one
+       * key; the library's encryptText has always accepted an array, so
+       * what was missing was the split (ok-rn/src/armoredKeys.ts). The
+       * property worth pinning is the one a person is relying on when they
+       * paste two keys: BOTH can read it, independently, with neither
+       * private key involved in the other decryption.
+       */
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      const messages = okcrypto.messages;
+      const {splitPublicKeys} = require('../src/armoredKeys');
+
+      /*
+       * ARMOURED, not objects. The other tests here keep the key objects
+       * because they hand them straight to the library; this one is about
+       * the text a person PASTES, so it needs the armour a person would
+       * have.
+       */
+      const make = name => openpgp.generateKey({
+        type: 'pqc',
+        userIDs: [{name, email: `${name}@example.invalid`}],
+        subkeys: [{}],
+        format: 'armored',
+        config: {v6Keys: true},
+      });
+      const alice = await make('alice');
+      const bob = await make('bob');
+
+      /*
+       * Through the SPLIT, not by handing over an array directly - the box
+       * on the Messages screen is one string with two blocks in it, and
+       * that is the part that had no test.
+       */
+      const pasted = `${alice.publicKey}
+
+${bob.publicKey}
+`;
+      const blocks = splitPublicKeys(pasted);
+      log(`blocks found in the box: ${blocks.length}`);
+      assert.equal(blocks.length, 2, 'the two pasted keys did not come out as two blocks');
+
+      const text = 'one message, two readers';
+      const armored = await messages.encryptText(openpgp, {text, recipients: blocks});
+      assert.ok(!String(armored).includes(text), 'the plaintext is sitting in the output');
+
+      for (const [who, key] of [['alice', alice], ['bob', bob]]) {
+        const result = await messages.decryptMessage(openpgp, {
+          armored,
+          decryptWith: key.privateKey,
+        });
+        log(`${who} read: ${JSON.stringify(result.data)}`);
+        assert.equal(result.data, text, `${who} could not open a message addressed to them`);
+      }
+    });
+
     it('a signature verifies, and a bad one says so rather than throwing', async ({log, assert}) => {
       const openpgp = require('node-onlykey-lib/crypto/pgp');
       const messages = okcrypto.messages;

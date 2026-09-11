@@ -70,6 +70,26 @@ test('ProtonMail: an address or key id, a 404 is "nobody", other errors are erro
   await expect(lookupProtonmail('0xdead', fn)).rejects.toThrow('answered 500');
 });
 
+test('ProtonMail: a bare name is an address there, as the web app assumes', async () => {
+  /*
+   * search.js:140-142 appends the domain to anything with no "@" and no
+   * "0x" prefix. Without it, typing a username searched for a bare word,
+   * found nothing, and read as "they have no key".
+   */
+  const {fn, asked} = fakeFetch({
+    'https://api.protonmail.ch/pks/lookup?op=get&search=alice%40protonmail.com': {body: KEY},
+  });
+  expect((await lookupProtonmail('alice', fn))[0].armored).toBe(KEY);
+  expect(asked[0]).toContain('alice%40protonmail.com');
+
+  /* An address and a key id are left exactly as typed. */
+  const other = fakeFetch({});
+  await lookupProtonmail('someone@example.org', other.fn);
+  await lookupProtonmail('0xdeadbeef', other.fn);
+  expect(other.asked[0]).toContain('someone%40example.org');
+  expect(other.asked[1]).toContain('0xdeadbeef');
+});
+
 test('a URL: https only, and the page has to carry a key block', async () => {
   const {fn, asked} = fakeFetch({
     'https://example.org/key.asc': {body: `hello ${KEY}`},

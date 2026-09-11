@@ -3,6 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {lookup, type Found, type Source} from '../keySearch';
+import {splitPublicKeys, summarizeKey, type KeySummary} from '../armoredKeys';
 import {bytes as okbytes} from 'node-onlykey-lib';
 /*
  * The crypto subtree is NOT on the library's root export, on purpose - keeping
@@ -58,6 +59,20 @@ const KEY_LABEL: Record<Mode, string> = {
 };
 
 /* Where a public key can be looked up - the web app's search page's three. */
+/**
+ * The recipient keys in the box, as a list.
+ *
+ * The web app encrypts to several people at once and this took one key;
+ * the library's encryptText has always accepted an array. A box with no
+ * armour headers is passed through as-is so the error a caller gets is
+ * openpgp's own ("Misformed armored text"), which says more about a
+ * mangled paste than anything invented here would.
+ */
+function recipientKeys(text: string): string | string[] {
+  const blocks = splitPublicKeys(text);
+  return blocks.length ? blocks : text;
+}
+
 const SOURCES: Source[] = ['keybase', 'protonmail', 'url'];
 const SOURCE_LABEL: Record<Source, string> = {keybase: 'Keybase', protonmail: 'ProtonMail', url: 'URL'};
 const SOURCE_PLACEHOLDER: Record<Source, string> = {
@@ -106,6 +121,28 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
    * never because a screen opened or a box changed (src/keySearch.ts). One
    * match fills the key box; several are listed for the person to pick.
    */
+  /*
+   * WHAT THAT KEY ACTUALLY IS. A key fetched by pressing one button has had
+   * nothing verify it, and a box of base64 cannot be compared with a
+   * fingerprint someone read out to you. The web app's search page shows
+   * this beside every result; here it is on request, for whatever is in the
+   * box - fetched or pasted.
+   */
+  const [summaries, setSummaries] = useState<KeySummary[] | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const describeKeys = useCallback(async () => {
+    setSummaryError(null);
+    setSummaries(null);
+    try {
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      const blocks = splitPublicKeys(keyText);
+      if (!blocks.length) throw new Error('No public key block in the box.');
+      setSummaries(await Promise.all(blocks.map(b => summarizeKey(openpgp, b))));
+    } catch (e) {
+      setSummaryError(String((e as Error)?.message ?? e));
+    }
+  }, [keyText]);
+
   const [lookupSource, setLookupSource] = useState<Source>('keybase');
   const [lookupQuery, setLookupQuery] = useState('');
   const [lookupBusy, setLookupBusy] = useState(false);
@@ -178,19 +215,24 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
           const armored = await messages.encryptFile(openpgp, {
             data: file.bytes,
             filename: file.name,
-            recipients: keyText,
+            recipients: recipientKeys(keyText),
             armor: true,
           });
           setOutput(String(armored));
           setStatus(`Encrypted ${file.name} (${file.bytes.length} bytes).`);
         } else {
           if (!input) throw new Error('nothing to encrypt');
+          const to = recipientKeys(keyText);
           const armored = await messages.encryptText(openpgp, {
             text: input,
-            recipients: keyText,
+            recipients: to,
           });
           setOutput(String(armored));
-          setStatus('Encrypted. Only the holder of that key can read it.');
+          setStatus(
+            to.length > 1
+              ? `Encrypted to ${to.length} keys. Any one of them can read it.`
+              : 'Encrypted. Only the holder of that key can read it.',
+          );
         }
         return;
       }
@@ -472,6 +514,38 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
           autoCapitalize="none"
           autoCorrect={false}
         />
+        {mode === 'encrypt' || mode === 'verify' ? (
+          <>
+            <Btn
+              title="What is this key?"
+              disabled={!keyText.trim()}
+              onPress={() => void describeKeys()}
+            />
+            <Text style={styles.lookupHint}>
+              Nothing has verified a key you fetched. Compare the fingerprint
+              with one you were given some other way before you trust it.
+              {mode === 'encrypt'
+                ? ' Paste more than one key to encrypt to several people.'
+                : ''}
+            </Text>
+            {summaryError ? <Text style={styles.lookupError}>{summaryError}</Text> : null}
+            {summaries
+              ? summaries.map((k, i) => (
+                  <View key={k.fingerprint} style={styles.keyCard}>
+                    <Text style={styles.keyCardTitle}>
+                      {summaries.length > 1 ? `${i + 1}. ` : ''}
+                      {k.users.length ? k.users.join(', ') : 'no user id on this key'}
+                    </Text>
+                    <Text style={styles.keyCardLine}>{k.fingerprint}</Text>
+                    <Text style={styles.lookupHint}>
+                      {k.algorithm}
+                      {k.created ? `, created ${k.created}` : ''}
+                    </Text>
+                  </View>
+                ))
+              : null}
+          </>
+        ) : null}
         {mode === 'decrypt' || mode === 'sign' ? (
           <TextInput
             style={styles.input}
@@ -599,6 +673,16 @@ const styles = StyleSheet.create({
   lookup: {marginBottom: 10, gap: 8},
   lookupHint: {color: theme.textDim, fontSize: 11, lineHeight: 16},
   lookupError: {color: theme.warn, fontSize: 12, lineHeight: 17},
+  keyCard: {
+    borderColor: theme.border,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+    gap: 3,
+  },
+  keyCardTitle: {color: theme.text, fontSize: 13, fontWeight: '600'},
+  keyCardLine: {color: theme.textSecondary, fontSize: 11, fontFamily: 'monospace'},
   body_input: {minHeight: 110},
 
   output: {

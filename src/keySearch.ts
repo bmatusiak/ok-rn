@@ -94,8 +94,16 @@ export async function lookupKeybase(query: string, fetchFn: FetchLike): Promise<
  * (onlykey.github.io/index.js:91); a native fetch has no such rule.
  */
 export async function lookupProtonmail(query: string, fetchFn: FetchLike): Promise<Found[]> {
-  const q = query.trim();
-  if (!q) throw new Error('Type a ProtonMail address, or 0x followed by a key id.');
+  const raw = query.trim();
+  if (!raw) throw new Error('Type a ProtonMail address, or 0x followed by a key id.');
+  /*
+   * A bare name means a ProtonMail address, which is what the web app's
+   * search page assumes too (search.js:140-142): anything with no "@" and
+   * no "0x" key-id prefix gets "@protonmail.com" appended. Without it,
+   * typing a username here searched the key server for a bare word and
+   * found nothing, which reads as "they have no key".
+   */
+  const q = !raw.startsWith('0x') && !raw.includes('@') ? `${raw}@protonmail.com` : raw;
   const where = PROTONMAIL + encodeURIComponent(q);
   const res = await fetchFn(where);
   if (!res.ok) {
