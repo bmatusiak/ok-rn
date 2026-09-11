@@ -105,6 +105,28 @@ function stripMoniker(line) {
   return line.replace(/^.*\[Moniker\]',?\s*/, '').replace(/^'|',?$/g, '');
 }
 
+/**
+ * If Android's USB permission dialog is in front, accept it. True if it was.
+ *
+ * The dialog names the device and offers OK; anything else in front of the
+ * app is left alone and reported by the caller. Read from a fresh dump - the
+ * dialog is a separate window, so the app's own dump never shows it.
+ */
+function acceptUsbPrompt() {
+  let xml;
+  try {
+    xml = dumpUiShared({trace});
+  } catch (_) {
+    return false;
+  }
+  if (!/ONLYKEY|USB/i.test(xml)) return false;
+  const ok = findByText(xml, 'OK') || findByText(xml, 'Allow');
+  if (!ok) return false;
+  trace('accepting the USB permission prompt for the key');
+  adb(['shell', 'input', 'tap', String(ok.x), String(ok.y)]);
+  return true;
+}
+
 /** The runner's tap, with its trace attached. */
 function tapText(label, opts = {}) {
   return tapTextShared(label, {...opts, trace});
@@ -313,6 +335,15 @@ async function main() {
 
     /* The app leaving the screen is the one stall that needs no waiting for. */
     const front = foregroundApp();
+    if (front !== PACKAGE && acceptUsbPrompt()) {
+      /*
+       * Not a failure: a suite that reboots the key (hardKeyProvision) makes
+       * it re-enumerate, and Android may ask again whether this app can use
+       * it. The suite waits for the grant; this is the finger it waits for.
+       */
+      await sleep(1000);
+      continue;
+    }
     if (front !== PACKAGE) {
       throw new Error(
         `${PACKAGE} left the screen mid-run` + (front ? ` ("${front}" is in front)` : '') +

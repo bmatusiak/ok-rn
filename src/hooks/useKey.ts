@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useMemo, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {useOkEmu} from './useOkEmu';
@@ -177,9 +177,23 @@ export function useKey({
    */
   const {start, connect: connectHard, state: hardState, busy: hardBusy} = hard;
 
+  /*
+   * What the backend WAS, so leaving the hard key is an event and not a
+   * standing condition. Closing the pipe whenever it was open while the
+   * soft key was selected fought every other owner: the e2e suites open the
+   * pipe themselves, and the moment one did, the hard key's state became
+   * 'running', this effect re-ran, and the pipe was shut under the suite -
+   * "No open transport", three tests in a row. The app releases what IT
+   * opened, when the person moves away from it; it does not police the bus.
+   */
+  const previousBackend = useRef<Backend>(backend);
+
   useEffect(() => {
+    const left = previousBackend.current === 'usb' && backend !== 'usb';
+    previousBackend.current = backend;
+
     if (backend !== 'usb') {
-      if (UsbPipe.isRunning()) void UsbPipe.stop();
+      if (left && UsbPipe.isRunning()) void UsbPipe.stop();
       return;
     }
     /*
