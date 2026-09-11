@@ -9,6 +9,7 @@ import {theme} from './src/ui/theme';
 
 import {useLog} from './src/hooks/useLog';
 import {useKey} from './src/hooks/useKey';
+import {useKeystrokes} from './src/hooks/useKeystrokes';
 import {KeyBackendProvider} from './src/hooks/KeyContext';
 import {useUsbHid} from './src/hooks/useUsbHid';
 import {useFidoGatt} from './src/hooks/useFidoGatt';
@@ -103,6 +104,8 @@ function Shell() {
    */
   const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log});
   const emu = keys.key;
+  /* What the active key types, heard from every tab. See useKeystrokes. */
+  const typed = useKeystrokes(keys.backend);
   const fido = useFidoGatt({log: fidoLog.log});
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
@@ -284,7 +287,7 @@ function Shell() {
           ) : tab === 'Keys' ? (
             <KeysScreen emu={emu} />
           ) : tab === 'Keyboard' ? (
-            <BtKeyboardScreen emu={emu} />
+            <BtKeyboardScreen emu={emu} typed={typed} />
           ) : tab === 'Backup' ? (
             <BackupScreen emu={emu} blockScreenshots={!testing.enabled} />
           ) : tab === 'Crypto' ? (

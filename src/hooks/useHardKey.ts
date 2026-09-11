@@ -279,30 +279,47 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
    * queues the whole press and replays it; there is no held state to poll the
    * way the emulator has.
    */
+  /**
+   * A hold is MEASURED ON THE FINGER, then sent as one line.
+   *
+   * The soft key arms a counter on press-in and reads it while the finger
+   * is down; the console takes the whole duration up front (`N#<ticks>`)
+   * and replays it a press per loop iteration. The first version sent the
+   * maximum on press-in and made endHold a no-op - so every tap on the
+   * keypad was a 71-tick hold, which types the b slot, and the capture pane
+   * read nothing from a tap because slot 1b was empty. Measured, on the
+   * Keyboard tab, against a slot the editor had just read fine.
+   *
+   * So press-in only notes the time, and press-out converts the elapsed
+   * time to iterations at the firmware's ~36 ms each (press.js) and sends
+   * that: a tap lands in the a band, a held finger in the b band, and the
+   * clamp keeps it under the gesture floor exactly as the soft key's
+   * counter does. The firmware never sees the clock; the caller converts.
+   */
+  const holdStartedAt = useRef<number | null>(null);
+
   const beginHold = useCallback(
     async (button: number) => {
       if (!canPress) {
-        throw new Error(unsupported('hold a button'));
+        throw new Error(unsupported(`hold button ${button}`));
       }
-      const {device: dev} = await getOnlyKey('usb');
-      /*
-       * ONE CALL, not a begin and an end. The soft key arms a counter and
-       * polls it while a finger is down; the console instead takes the whole
-       * duration up front (`N#<ticks>`) and replays it a press per loop
-       * iteration. So the hold is decided here rather than by how long
-       * someone holds a control that is not being drawn anyway.
-       *
-       * Just under the gesture floor, matching the soft key: far enough for a
-       * b-profile read and short of anything irreversible.
-       */
-      const armed = PRESS_TICKS.GESTURE - 1;
-      await dev.press(`${button}#${armed}`);
+      holdStartedAt.current = Date.now();
     },
     [canPress],
   );
 
-  /** Nothing to end: the firmware owns the duration. Here for the shape. */
-  const endHold = useCallback(async () => {}, []);
+  const endHold = useCallback(
+    async (button: number) => {
+      const started = holdStartedAt.current;
+      holdStartedAt.current = null;
+      if (started === null || !canPress) return;
+      const elapsedTicks = Math.round((Date.now() - started) / MS_PER_TICK);
+      const ticks = Math.max(PRESS_TICKS.TAP, Math.min(PRESS_TICKS.GESTURE - 1, elapsedTicks));
+      const {device: dev} = await getOnlyKey('usb');
+      await dev.press(`${button}#${ticks}`);
+    },
+    [canPress],
+  );
 
   /**
    * A hold of an exact length: `N#<ticks>` on the console.
@@ -400,6 +417,9 @@ function unsupported(what: string): string {
 }
 
 const UNLOCK_GRACE_MS = 1500;
+
+/** One firmware main-loop iteration, the unit a press is banded in. See press.js. */
+const MS_PER_TICK = 36;
 
 const IFACE_NAME: Record<number, string> = {
   [IFACE.KEYBOARD]: 'kbd',

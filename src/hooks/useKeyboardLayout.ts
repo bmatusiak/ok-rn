@@ -56,14 +56,20 @@ export async function rememberLayout(backend: Backend, name: string): Promise<vo
   await AsyncStorage.setItem(storageKey(backend), name);
 }
 
-export function useKeyboardLayout(): {
+export function useKeyboardLayout(backendOverride?: Backend): {
   /** The layout name for the decoder. Never null: the default stands in. */
   layout: string;
   /** False until the stored value has been read. */
   known: boolean;
   setLayout: (name: string) => Promise<void>;
 } {
-  const backend = useBackend();
+  /*
+   * From the context unless handed in. App.tsx sits ABOVE the provider - it
+   * renders it - so a hook that must run at app scope (the capture pane has
+   * to hear typing from any tab) is given the backend it is choosing.
+   */
+  const context = useBackend();
+  const backend = backendOverride ?? context;
   const [layout, setLayoutState] = useState(DEFAULT_LAYOUT_NAME);
   const [known, setKnown] = useState(false);
 

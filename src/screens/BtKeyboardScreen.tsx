@@ -3,7 +3,9 @@ import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useBtKeyboard} from '../hooks/useBtKeyboard';
-import OkEmu, {PRESS_TICKS} from '../transport/OkEmu';
+import {PRESS_TICKS} from '../transport/OkEmu';
+import type {Keystrokes} from '../hooks/useKeystrokes';
+import {useKeyName} from '../hooks/KeyContext';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 /*
@@ -23,8 +25,10 @@ import type {EmuSession} from '../hooks/useOkEmu';
 /** Buttons 1-6, the same six a slot is read from. */
 const SLOT_BUTTONS = [1, 2, 3, 4, 5, 6];
 
-export function BtKeyboardScreen({emu}: {emu: EmuSession}) {
+export function BtKeyboardScreen({emu, typed}: {emu: EmuSession; typed: Keystrokes}) {
   const bt = useBtKeyboard();
+  /* The name, for the panel that shows what the key typed. */
+  const keyName = useKeyName();
   const [pressing, setPressing] = useState<number | null>(null);
   const locked = emu.device !== 'unlocked';
 
@@ -44,12 +48,13 @@ export function BtKeyboardScreen({emu}: {emu: EmuSession}) {
     async (button: number, ticks: number) => {
       setPressing(button);
       try {
-        await OkEmu.holdTicks(button, ticks);
+        /* The ACTIVE key's hold, not the emulator's. See useOkEmu.holdTicks. */
+        await emu.holdTicks(button, ticks);
       } finally {
         setPressing(null);
       }
     },
-    [],
+    [emu],
   );
 
   if (bt.supported === false) {
@@ -101,6 +106,24 @@ export function BtKeyboardScreen({emu}: {emu: EmuSession}) {
             onPress={bt.withdraw}
           />
         )}
+      </Section>
+
+      {/*
+        * THE CAPTURE PANE. Everything the key types comes here and nowhere
+        * else on the phone - a hard key's keyboard interface is claimed, and
+        * the soft key never had another outlet - so this is where a slot is
+        * seen to come out, and where a wrong decode layout shows itself.
+        */}
+      <Section
+        title={`Typed by the key — ${keyName}`}
+        right={<Btn title="Clear" onPress={typed.clear} disabled={!typed.reports} />}>
+        <Text style={styles.body}>
+          {typed.text ? typed.text : 'Nothing yet. Press a button on the key and its slot appears here.'}
+        </Text>
+        <Text style={styles.note}>
+          {typed.reports} reports, decoded as {typed.layout.replace(/_/g, ' ').toLowerCase()}.
+          If the characters look wrong, the key is typing in a layout this app was not told about — set it under Settings.
+        </Text>
       </Section>
 
       {bt.state !== 'unregistered' && bt.state !== 'unsupported' ? (

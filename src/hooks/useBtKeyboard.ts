@@ -3,6 +3,8 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import NativeBtKeyboard from '../../specs/NativeBtKeyboard';
 import type {BtHost, BtKeyboardStatusEvent} from '../../specs/NativeBtKeyboard';
 import OkEmu, {IFACE} from '../transport/OkEmu';
+import UsbPipe from '../transport/UsbPipe';
+import {useBackend} from './KeyContext';
 
 /*
  * The soft key typing at a real computer.
@@ -61,6 +63,14 @@ export type BtKeyboard = {
 };
 
 export function useBtKeyboard(): BtKeyboard {
+  /*
+   * ONE SOURCE, the active key. This forwarded the soft key's reports only,
+   * which with a hard key selected meant the Bluetooth host got the wrong
+   * key's typing - or, had both been forwarded, both keys' typing at once,
+   * doubled. The two pipes emit the same stream shape; the backend picks
+   * which one feeds the host, and a switch re-subscribes.
+   */
+  const backend = useBackend();
   const [supported, setSupported] = useState<boolean | null>(null);
   const [state, setState] = useState('unregistered');
   const [message, setMessage] = useState('');
@@ -123,7 +133,8 @@ export function useBtKeyboard(): BtKeyboard {
 
   /* The forwarder. Attached once, for the life of the screen. */
   useEffect(() => {
-    const off = OkEmu.on('stream', (e: {iface: number; dir: number; bytes: Uint8Array}) => {
+    const pipe = backend === 'usb' ? UsbPipe : OkEmu;
+    const off = pipe.on('stream', (e: {iface: number; dir: number; bytes: Uint8Array}) => {
       if (e.iface !== IFACE.KEYBOARD || e.dir !== 0) return;
       if (!typingRef.current || !connectedRef.current) return;
       if (e.bytes.length !== REPORT_BYTES) return;
@@ -142,7 +153,7 @@ export function useBtKeyboard(): BtKeyboard {
         .catch(() => {});
     });
     return off;
-  }, []);
+  }, [backend]);
 
   const refreshHosts = useCallback(async () => {
     try {
