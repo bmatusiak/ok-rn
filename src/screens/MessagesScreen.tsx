@@ -12,6 +12,8 @@ import {bytes as okbytes} from 'node-onlykey-lib';
 import okpure from 'node-onlykey-lib/crypto';
 import NativeShare from '../../specs/NativeShare';
 import NativeSecrets from '../../specs/NativeSecrets';
+import {useActiveKey, useKeyName} from '../hooks/KeyContext';
+import type {EmuSession} from '../hooks/useOkEmu';
 
 /**
  * Encrypt, decrypt, sign and verify PGP messages and files.
@@ -54,8 +56,33 @@ const KEY_LABEL: Record<Mode, string> = {
   verify: "Signer's public key",
 };
 
-export function MessagesScreen() {
+/** RSA slots 1-4 are where a composite key lives, as the reference CLI's setpqc puts it. */
+const RSA_SLOTS = ['1', '2', '3', '4'] as const;
+
+export function MessagesScreen({emu}: {emu: EmuSession}) {
+  /* The ACTIVE key, for the composite key that lives on the device. */
+  const getKey = useActiveKey();
+  const keyName = useKeyName();
+
   const [mode, setMode] = useState<Mode>('encrypt');
+
+  /*
+   * THE COMPOSITE KEY ON THE DEVICE.
+   *
+   * The web app's composite page ends by printing a CLI command to copy,
+   * because a browser cannot load a private key onto the key. This app can:
+   * generate (on the phone, with the vendored fork), load the 160-byte seed
+   * blob into an RSA slot over the vendor interface (OKSETPRIV, type 0x67,
+   * the same op and the same slots python-onlykey's setpqc uses), and then
+   * decrypt and sign THROUGH the device - openpgp's private-key operations
+   * are routed to it by the fork's hardware hooks, and the private material
+   * never exists on the phone once the blob is gone.
+   */
+  const [generated, setGenerated] = useState<{armoredPublicKey: string} | null>(null);
+  const blobRef = React.useRef<Uint8Array | null>(null);
+  const [rsaSlot, setRsaSlot] = useState<(typeof RSA_SLOTS)[number]>('1');
+  const [onDevice, setOnDevice] = useState(false);
+  const [challenge, setChallenge] = useState<number[] | null>(null);
   const [keyText, setKeyText] = useState('');
   const [passphrase, setPassphrase] = useState('');
   const [input, setInput] = useState('');
@@ -91,6 +118,24 @@ export function MessagesScreen() {
         throw new Error(`${KEY_LABEL[mode]} is empty`);
       }
 
+      /*
+       * DEVICE-BACKED: the pasted key is the PUBLIC half, and the fork is
+       * handed a placeholder private key whose secret scalars are marked
+       * hardware-backed. Its hooks then call the device for the X25519 and
+       * ML-KEM halves of a decrypt and both halves of a signature; the
+       * device raises a three-button challenge for each and this screen
+       * shows the digits. The hooks are cleared afterwards so a later
+       * generate is not hijacked (see composite_pgp.js on hooks.signer).
+       */
+      let deviceKey: unknown = null;
+      if (onDevice && (mode === 'decrypt' || mode === 'sign')) {
+        const {okcrypto} = await getKey();
+        const pub = await openpgp.readKey({armoredKey: keyText});
+        deviceKey = openpgp.createHardwarePrivateKey(pub);
+        okcrypto.registerPgpHooks(openpgp, Number(rsaSlot));
+        okcrypto.on('challenge', ({digits}: {digits: number[]}) => setChallenge(digits));
+      }
+
       if (mode === 'encrypt') {
         if (file) {
           const armored = await messages.encryptFile(openpgp, {
@@ -121,7 +166,7 @@ export function MessagesScreen() {
         }
         const result = await messages.decryptMessage(openpgp, {
           armored: input,
-          decryptWith: keyText,
+          decryptWith: deviceKey ?? keyText,
           passphrase: passphrase || null,
         });
 
@@ -144,7 +189,7 @@ export function MessagesScreen() {
         if (!input) throw new Error('nothing to sign');
         const signed = await messages.signText(openpgp, {
           text: input,
-          signWith: keyText,
+          signWith: deviceKey ?? keyText,
           passphrase: passphrase || null,
         });
         setOutput(String(signed));
@@ -167,9 +212,66 @@ export function MessagesScreen() {
     } catch (e) {
       setError(translate(String((e as Error)?.message ?? e)));
     } finally {
+      setChallenge(null);
+      if (onDevice) {
+        try { require('node-onlykey-lib/crypto/pgp').clearHardwareHooks(); } catch { /* not loaded */ }
+      }
       setBusy(false);
     }
-  }, [mode, keyText, passphrase, input, file, reset]);
+  }, [mode, keyText, passphrase, input, file, reset, onDevice, rsaSlot, getKey]);
+
+  /** Generate a composite key on the phone; the blob waits in memory for a load. */
+  const generate = useCallback(async () => {
+    reset();
+    setBusy(true);
+    try {
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      const {okcrypto} = await getKey();
+      const result = await okcrypto.composite.generateCompositeKey(openpgp, {
+        userId: {name: 'OnlyKey', email: 'onlykey@example.invalid'},
+      });
+      blobRef.current = result.blob;
+      setGenerated({armoredPublicKey: String(result.armoredPublicKey)});
+      setKeyText(String(result.armoredPublicKey));
+      setStatus('Generated. Load it onto the key, then only the key can use it.');
+    } catch (e) {
+      setError(translate(String((e as Error)?.message ?? e)));
+    } finally {
+      setBusy(false);
+    }
+  }, [getKey, reset]);
+
+  /**
+   * Load the blob into an RSA slot. OKSETPRIV is allowed only in config mode
+   * (or on a key that has never been set up); outside it the device answers
+   * "Error not in config mode" and the library reports that by name.
+   * On success the blob is zeroed here: from then on the key is the only
+   * holder.
+   */
+  const load = useCallback(async () => {
+    const blob = blobRef.current;
+    if (!blob) return;
+    reset();
+    setBusy(true);
+    try {
+      const {device, okcrypto} = await getKey();
+      await device.loadKey(Number(rsaSlot), {type: okcrypto.composite.PQC_KEY_TYPE_BYTE, key: blob});
+      blob.fill(0);
+      blobRef.current = null;
+      setOnDevice(true);
+      setStatus(`Loaded into RSA slot ${rsaSlot}. The private half now exists only on the key.`);
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }, [getKey, reset, rsaSlot]);
+
+  /** Press the challenge digits through the key's console, when it takes presses. */
+  const pressChallenge = useCallback(async () => {
+    if (!challenge) return;
+    for (const digit of challenge) await emu.press(digit);
+  }, [challenge, emu]);
 
   const pickFile = useCallback(async () => {
     reset();
@@ -230,6 +332,52 @@ export function MessagesScreen() {
           PGP over composite post-quantum keys. Encrypting needs only the other
           person's public key; reading needs a private one.
         </Text>
+      </Section>
+
+      <Section title={`Composite key on the device — ${keyName}`}>
+        <Text style={styles.hint}>
+          A post-quantum composite key (ML-DSA-65 + Ed25519, ML-KEM-768 +
+          X25519) made here and kept on the key. Decrypting and signing then
+          happen on the key, one button challenge per half.
+        </Text>
+        <View style={styles.row}>
+          <Btn title={busy ? 'Working…' : 'Generate'} onPress={generate} disabled={busy} />
+          <Btn
+            title="Load onto the key"
+            tone="primary"
+            disabled={busy || !blobRef.current}
+            onPress={load}
+          />
+        </View>
+        <Text style={styles.hint}>RSA slot to hold it</Text>
+        <Segmented options={RSA_SLOTS} value={rsaSlot} onChange={setRsaSlot} />
+        {generated ? (
+          <Text style={styles.hint}>
+            The public key is in the key box below; copy it from there. Loading
+            needs config mode on the key.
+          </Text>
+        ) : null}
+        <Btn
+          title={onDevice ? 'Using the key on the device for decrypt and sign' : 'Use the key on the device for decrypt and sign'}
+          tone={onDevice ? 'primary' : undefined}
+          onPress={() => setOnDevice(v => !v)}
+        />
+        {onDevice ? (
+          <Text style={styles.hint}>
+            Paste the composite PUBLIC key below; the private half is on RSA
+            slot {rsaSlot}.
+          </Text>
+        ) : null}
+        {challenge ? (
+          <>
+            <Text style={styles.status}>
+              The key is waiting: press {challenge.join(' - ')} on it.
+            </Text>
+            {emu.canPress === true ? (
+              <Btn title="Press them for me" onPress={pressChallenge} />
+            ) : null}
+          </>
+        ) : null}
       </Section>
 
       <Section title={KEY_LABEL[mode]}>

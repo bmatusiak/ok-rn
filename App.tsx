@@ -293,7 +293,7 @@ function Shell() {
           ) : tab === 'Crypto' ? (
             <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} />
           ) : tab === 'Messages' ? (
-            <MessagesScreen />
+            <MessagesScreen emu={emu} />
           ) : tab === 'Tools' ? (
             <ToolsScreen onOpenTab={next => setTab(next as Tab)} />
           ) : tab === 'Settings' ? (
