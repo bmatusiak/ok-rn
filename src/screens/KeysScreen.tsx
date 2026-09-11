@@ -6,6 +6,7 @@ import {device as okdevice} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import {PinScreen} from './PinScreen';
 import {useConfigMode} from '../hooks/useConfigMode';
+import {missingNote, supports} from '../firmwareFeatures';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 /*
@@ -59,6 +60,17 @@ type Mode = (typeof MODES)[number];
  * wrong produces a key it accepts and that then verifies nowhere.
  */
 const RAW_TYPES = okdevice.keys.RAW_KEY_TYPES;
+
+/**
+ * The types the DEVICE makes, which is a different list from the ones a
+ * person pastes in.
+ *
+ * Kept apart because the difference is the whole point: a raw key is material
+ * the phone has seen, and one of these is a seed made inside the key that
+ * never crosses the wire. Putting them in one picker would present that as a
+ * formatting choice.
+ */
+const GENERATED_TYPES = okdevice.keys.GENERATED_KEY_TYPES;
 
 /**
  * The global Yubico credential's three fields.
@@ -147,6 +159,19 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
    * thing to set a passphrase.
    */
   const config = useConfigMode(emu);
+
+  /*
+   * Post-quantum generation, and whether this firmware has it at all - which
+   * NO RELEASE DOES, so on a key from a box this section is faded. See
+   * src/firmwareFeatures.ts.
+   */
+  const pqc = supports(emu.capabilities, 'postQuantum');
+  const [genType, setGenType] = useState<string>(GENERATED_TYPES[0].name);
+  const [genSlot, setGenSlot] = useState<number>(110);
+  const [genChallenge, setGenChallenge] = useState<number[] | null>(null);
+  const [generated, setGenerated] = useState<{
+    slot: number; recipient: string; identity: string;
+  } | null>(null);
   const loadPgp = useCallback(async () => {
     setBusy('pgp');
     setError(null);
@@ -368,6 +393,67 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
       setBusy(null);
     }
   }, [getKey, slot, keyRows, refreshKeys]);
+
+  /**
+   * Ask the DEVICE to make a post-quantum key, and show what it can be
+   * addressed by.
+   *
+   * The private half is a seed generated inside the key and written to flash.
+   * It never crosses the wire, so unlike every other button on this screen
+   * there is nothing here the phone could leak.
+   *
+   * What comes back is only useful once it is encoded: the RECIPIENT is what
+   * someone else encrypts to, and the IDENTITY is what this person keeps to
+   * read those files. Both are the same strings python-onlykey writes, so a
+   * file encrypted against one of these opens with the command-line plugin
+   * and the other way round.
+   */
+  const generate = useCallback(async () => {
+    setBusy('generate');
+    setError(null);
+    setStatus(null);
+    setGenerated(null);
+    try {
+      const chosen = GENERATED_TYPES.find(t => t.name === genType) ?? GENERATED_TYPES[0];
+      const {device} = await getKey();
+      const pqcLib = require('node-onlykey-lib/crypto').pqc;
+
+      const publicKey = await device.generateKey(genSlot, chosen.type, {
+        confirm: ({digits}: {digits: number[]}) => {
+          setGenChallenge(digits);
+        },
+        timeoutMs: 60000,
+      });
+
+      setGenerated({
+        slot: genSlot,
+        recipient: pqcLib.encodeRecipient(publicKey),
+        /*
+         * The versioned identity, which carries a fingerprint of this exact
+         * key. A slot can be generated again, and without the fingerprint a
+         * file encrypted to the old key fails with "no identity matched",
+         * which points at nothing.
+         */
+        identity: pqcLib.encodeSlotIdentity(genSlot, publicKey),
+      });
+      setStatus(
+        `Generated a ${chosen.name} key in slot ${genSlot}. ` +
+        'The private half never left the key.',
+      );
+      if (keyRows) void refreshKeys();
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setGenChallenge(null);
+      setBusy(null);
+    }
+  }, [getKey, genType, genSlot, keyRows, refreshKeys]);
+
+  /** Press the challenge on the key's behalf, where the key takes presses. */
+  const pressGenChallenge = useCallback(async () => {
+    if (!genChallenge) return;
+    for (const digit of genChallenge) await emu.press(digit);
+  }, [genChallenge, emu]);
 
   /* Config mode locks the key; the PIN has to go back in before anything else. */
   if (config.entered && !config.ready) {
@@ -682,6 +768,62 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         />
       </Section>
 
+      <Section title="Generate a post-quantum key" faded={!pqc}>
+        {pqc ? null : <Text style={styles.note}>{missingNote('postQuantum')}</Text>}
+        <Text style={styles.body}>
+          The key makes this one itself. A seed is generated inside it,
+          encrypted and written to flash, and only the public half comes back.
+          Unlike a key you paste in, there is no moment when this phone has
+          held the private part.
+        </Text>
+        <Text style={styles.note}>
+          Needs config mode, and the key asks for a three-button confirmation.
+        </Text>
+
+        <Segmented
+          options={GENERATED_TYPES.map(t => t.name)}
+          value={genType}
+          onChange={setGenType}
+        />
+        <SlotPicker
+          slot={genSlot}
+          onChange={setGenSlot}
+          slots={ECC_SLOTS}
+          note="101–116 only. A post-quantum key cannot live in an RSA slot."
+        />
+
+        <Btn
+          title={busy === 'generate' ? 'Generating\u2026' : `Generate in slot ${genSlot}`}
+          tone="primary"
+          disabled={busy !== null || !config.ready || !pqc}
+          onPress={generate}
+        />
+
+        {genChallenge ? (
+          <>
+            <Text style={styles.status}>
+              The key is waiting: press {genChallenge.join(' - ')} on it.
+            </Text>
+            {emu.canPress === true ? (
+              <Btn title="Press them for me" onPress={pressGenChallenge} />
+            ) : null}
+          </>
+        ) : null}
+
+        {generated ? (
+          <>
+            <Text style={styles.note}>
+              Recipient \u2014 give this to anyone encrypting to you:
+            </Text>
+            <Text style={styles.mono} selectable>{generated.recipient}</Text>
+            <Text style={styles.note}>
+              Identity \u2014 keep this; it is how you read those files:
+            </Text>
+            <Text style={styles.mono} selectable>{generated.identity}</Text>
+          </>
+        ) : null}
+      </Section>
+
       <Section title="Wipe a slot">
         <Text style={styles.note}>
           Erases the key in one slot. Irreversible, and it also needs config
@@ -709,12 +851,32 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
   );
 }
 
-function SlotPicker({slot, onChange}: {slot: number; onChange: (n: number) => void}) {
+function SlotPicker({
+  slot,
+  onChange,
+  slots,
+  note,
+}: {
+  slot: number;
+  onChange: (n: number) => void;
+  /**
+   * Which slots to offer. Defaults to all of them, which is right for
+   * loading and wiping and WRONG for anything a slot cannot hold.
+   *
+   * The post-quantum generator is the case that forced this: 1 to 4 are RSA
+   * slots, a post-quantum key lives only in 101 to 116, and the firmware
+   * does not refuse the difference - okcrypto.cpp has no else for a slot
+   * outside the range, so the request simply produces no answer at all. A
+   * picker that offers an impossible slot is offering a silent timeout.
+   */
+  slots?: number[];
+  note?: string;
+}) {
   return (
     <View style={styles.picker}>
       <Text style={styles.label}>Slot</Text>
       <View style={styles.chips}>
-        {[...RSA_SLOTS, ...ECC_SLOTS].map(n => (
+        {(slots ?? [...RSA_SLOTS, ...ECC_SLOTS]).map(n => (
           <Btn
             key={n}
             title={String(n)}
@@ -724,7 +886,7 @@ function SlotPicker({slot, onChange}: {slot: number; onChange: (n: number) => vo
         ))}
       </View>
       <Text style={styles.note}>
-        1–4 are RSA, 101–116 are ECC.
+        {note ?? '1–4 are RSA, 101–116 are ECC.'}
       </Text>
     </View>
   );

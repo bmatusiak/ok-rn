@@ -287,6 +287,50 @@ module.exports = function pqcSlots({describe, it}) {
         assert.equal(key.every(b => b === 0), false, 'the whole key is zeros');
       });
 
+    it('the generated key encodes to a recipient and an identity that agree',
+      async ({log, assert, skip}) => {
+        /*
+         * EXACTLY WHAT THE KEYS SCREEN DOES after a generation, in the same
+         * order: encode the public key as a recipient, encode the slot and a
+         * fingerprint of that key as an identity. Driving the screen itself
+         * would cost an unlock and a config-mode gesture through the UI; this
+         * runs the composition against a key the device actually made, which
+         * is the part that can be wrong.
+         *
+         * The fingerprint check is the one that matters. An identity names a
+         * slot, and a slot can be generated again - so an identity written
+         * against one key must NOT verify against the next one in the same
+         * slot, or a person would be told their file is readable when it is
+         * not.
+         */
+        const s = await ready(log);
+        if (!s.generated) {
+          skip('nothing was generated');
+        }
+
+        const pqc = require('node-onlykey-lib/crypto').pqc;
+        const recipient = pqc.encodeRecipient(s.generated);
+        const identity = pqc.encodeSlotIdentity(SLOT, s.generated);
+
+        log(`recipient: ${recipient.slice(0, 32)}...`);
+        log(`identity : ${identity}`);
+
+        assert.ok(recipient.startsWith('age1onlykey1'), `bad recipient: ${recipient.slice(0, 20)}`);
+        assert.ok(identity.startsWith('AGE-PLUGIN-ONLYKEY-1'), `bad identity: ${identity}`);
+
+        const decoded = pqc.decodeIdentity(identity);
+        assert.equal(decoded.derived, false);
+        assert.equal(decoded.slot, SLOT);
+        assert.equal(decoded.legacy, false);
+        assert.ok(pqc.identityMatchesKey(decoded, s.generated),
+          'the identity does not match the key it was made from');
+
+        /* The recipient round-trips to the same 1216 bytes the device sent. */
+        const back = pqc.decodeRecipient(recipient);
+        assert.equal(back.length, XWING_BYTES);
+        assert.ok(back.every((b, i) => b === s.generated[i]), 'recipient lost bytes');
+      });
+
     it('and the device is left in config mode, which the next run clears',
       async ({log, assert, skip}) => {
         /*
