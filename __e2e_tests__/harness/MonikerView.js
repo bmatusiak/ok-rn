@@ -20,6 +20,14 @@ const monikerConfig = (() => {
     }
 })();
 
+// VENDORED: a per-test deadline. harness.run reads 0 as "wait forever", and a
+// test awaiting a promise that never settles then sat until the runner's whole
+// budget with nothing on the phone or the terminal naming it - measured, as
+// two minutes of progress dots. Two minutes covers the slowest real test (a
+// backup capture on a production build); moniker.config's testTimeoutMs
+// overrides it.
+const TEST_TIMEOUT_MS = Number(monikerConfig.testTimeoutMs) || 120000;
+
 function MonikerView(props = { tests: [] }) {
     const [running, setRunning] = useState(false);
     const [results, setResults] = useState(null);
@@ -104,7 +112,7 @@ function MonikerView(props = { tests: [] }) {
         };
 
         try {
-            const res = await harness.run({ render: renderComponent, log, onTestUpdate, onTestStart: onTestStartTiming, onTestEnd: onTestEndTiming, config: monikerConfig });
+            const res = await harness.run({ render: renderComponent, log, onTestUpdate, onTestStart: onTestStartTiming, onTestEnd: onTestEndTiming, config: monikerConfig, timeoutMs: TEST_TIMEOUT_MS });
             setResults(res);
             const stopTime = Date.now();
             const totalDurationMs = stopTime - allStart;
@@ -157,7 +165,7 @@ function MonikerView(props = { tests: [] }) {
 
         const suiteStart = Date.now();
         try {
-            const res = await harness.run({ render: renderComponent, log, onTestUpdate, testFilter: (testName, suiteName) => suiteName === targetSuite, config: monikerConfig });
+            const res = await harness.run({ render: renderComponent, log, onTestUpdate, testFilter: (testName, suiteName) => suiteName === targetSuite, config: monikerConfig, timeoutMs: TEST_TIMEOUT_MS });
             setResults(res);
             const dur = Date.now() - suiteStart;
             setSuiteDurations(prev => ({ ...prev, [targetSuite]: dur }));

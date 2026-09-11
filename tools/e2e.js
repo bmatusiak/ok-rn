@@ -19,39 +19,136 @@
  */
 'use strict';
 
-const {execFileSync} = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+
+/*
+ * adb, the serial and the foreground check are shared with tools/doctor.js.
+ * They were inlined here until a second tool needed them.
+ */
+const {adb, foregroundApp} = require('./adb');
 
 const PACKAGE = 'com.okrn';
 const ACTIVITY = `${PACKAGE}/.MainActivity`;
 
-const ADB =
-  process.env.ADB ||
-  path.join(
-    process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
-    'Android',
-    'Sdk',
-    'platform-tools',
-    process.platform === 'win32' ? 'adb.exe' : 'adb',
-  );
-
-const serial = process.env.ANDROID_SERIAL || null;
-
-function adb(args, opts = {}) {
-  const full = serial ? ['-s', serial, ...args] : args;
-  return execFileSync(ADB, full, {encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts});
-}
-
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+/**
+ * Say what the runner is doing, as it does it.
+ *
+ * This drives a phone through its UI, so when a step does not find what it
+ * expects there is no stack trace to read - the runner simply waits out its
+ * timeout and reports nothing. Measured the hard way: a slow Metro made the
+ * first tap wait two minutes while the terminal printed one line, which is
+ * indistinguishable from a hang.
+ *
+ * So every navigation step announces itself and every failure carries what
+ * was ACTUALLY on screen.
+ */
+const TRACE = !process.argv.includes('--quiet');
+function trace(message) {
+  if (TRACE) process.stdout.write(`  · ${message}${String.fromCharCode(10)}`);
+}
+
+/**
+ * Every label the screen is showing, for an error that has to name them.
+ *
+ * Truncated, because a full hierarchy is hundreds of nodes and the useful
+ * part is "what could I have tapped".
+ */
+function visibleLabels(xml, limit = 25) {
+  const seen = new Set();
+  for (const node of xml.split('<node ')) {
+    for (const attr of [/text="([^"]+)"/, /content-desc="([^"]+)"/]) {
+      const m = attr.exec(node);
+      if (m && m[1].trim()) seen.add(m[1].trim());
+    }
+  }
+  const all = [...seen];
+  return all.length > limit
+    ? all.slice(0, limit).join(' | ') + ` … and ${all.length - limit} more`
+    : all.join(' | ');
+}
+
+/**
+ * WAIT for our app to be on screen, then say so.
+ *
+ * Every step below reads a UI dump and taps coordinates out of it. If the app
+ * has crashed, been killed, or is behind a system dialog, those dumps are of
+ * SOMETHING ELSE - and tapping into it is how a run spends two minutes failing
+ * to find a button that was never going to be there.
+ *
+ * Polled, not asserted. The first version asserted the instant after
+ * `am start` and reported "nothing is on screen" for an app that Android
+ * displayed 400 ms later - a false alarm from the runner's own check.
+ */
+async function waitForApp({timeoutMs = 60000} = {}) {
+  const started = Date.now();
+  let front = null;
+  for (;;) {
+    front = foregroundApp();
+    if (front === PACKAGE) {
+      const took = Date.now() - started;
+      trace(`${PACKAGE} is on screen` + (took > 1000 ? ` after ${(took / 1000).toFixed(1)}s` : ''));
+      return;
+    }
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(
+        `${PACKAGE} did not come to the front within ${timeoutMs}ms - ` +
+        (front ? `"${front}" is there instead.` : 'nothing is focused.') +
+        ' The app was killed, crashed during the bundle load, or a system dialog is in front of it.',
+      );
+    }
+    await sleep(500);
+  }
+}
+
+function assertOnTask(step) {
+  const front = foregroundApp();
+  if (front === PACKAGE) return;
+  throw new Error(
+    `${step}: ${PACKAGE} is not on screen - ` +
+    (front ? `"${front}" is instead.` : 'nothing is.') +
+    ' The app was killed, crashed, or a system dialog is in front of it.',
+  );
+}
+
 /** The current view hierarchy, as XML. */
+const DUMP_FILE = '/sdcard/ok-e2e-ui.xml';
+
+/**
+ * The current view hierarchy, as XML - or an error, never a stale one.
+ *
+ * uiautomator WAITS FOR THE SCREEN TO GO QUIET before it will describe it,
+ * and gives up after ten seconds with "ERROR: could not get idle state" and
+ * NO FILE. The first version ignored that output and read the file anyway -
+ * the one left by the previous dump - so with a hard key attached (its
+ * once-a-second broadcast repainted the Traffic panel five times a second)
+ * every dump after the first described a screen that was no longer there.
+ * The runner tapped into it and reported the wrong screen's labels as
+ * missing buttons. See FINDING-uiautomator-cannot-dump-a-screen-that-never-idles.md.
+ *
+ * So: remove the old file first, read what the dump SAID, and try a few
+ * times - the app now batches its log rendering so quiet windows exist.
+ * Still nothing is an error that says what to look for, not a stale answer.
+ *
+ * The dump is written on the device and read back; -o - is not supported on
+ * every Android version, so this takes the portable route.
+ */
 function dumpUi() {
-  // The dump is written on the device and read back; -o - is not supported on
-  // every Android version, so this takes the portable route.
-  adb(['shell', 'uiautomator', 'dump', '/sdcard/ok-e2e-ui.xml']);
-  return adb(['shell', 'cat', '/sdcard/ok-e2e-ui.xml']);
+  let said = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    adb(['shell', 'rm', '-f', DUMP_FILE]);
+    said = adb(['shell', 'uiautomator', 'dump', DUMP_FILE]).trim();
+    if (/dumped to/i.test(said)) {
+      return adb(['shell', 'cat', DUMP_FILE]);
+    }
+    trace(`ui dump ${attempt}/3 failed: ${said || '(no output)'}`);
+  }
+  throw new Error(
+    `the screen could not be read: uiautomator said "${said}". It needs a second ` +
+    'with no content changes; something on screen is repainting continuously.',
+  );
 }
 
 /**
@@ -86,16 +183,54 @@ function findByText(xml, label) {
   return fallback;
 }
 
+/** One of the suite's logcat lines, stripped to what the harness said. */
+function stripMoniker(line) {
+  return line.replace(/^.*\[Moniker\]',?\s*/, '').replace(/^'|',?$/g, '');
+}
+
+/** The display size, from the root node of a UI dump. Falls back to a phone. */
+function screenSize(xml) {
+  const m = /bounds="\[0,0\]\[(\d+),(\d+)\]"/.exec(xml);
+  return m ? {w: Number(m[1]), h: Number(m[2])} : {w: 1080, h: 2400};
+}
+
 async function tapText(label, {timeoutMs = 15000} = {}) {
   const deadline = Date.now() + timeoutMs;
+  const started = Date.now();
+  let waited = false;
+  let last = null;
+
   for (;;) {
-    const spot = findByText(dumpUi(), label);
+    last = dumpUi();
+    const spot = findByText(last, label);
     if (spot) {
+      const took = Date.now() - started;
+      trace(`tapped "${label}" at ${spot.x},${spot.y}`
+        + (took > 1000 ? ` after ${(took / 1000).toFixed(1)}s` : ''));
       adb(['shell', 'input', 'tap', String(spot.x), String(spot.y)]);
       return spot;
     }
+
+    /*
+     * Say so ONCE, as soon as it is clear this is a wait rather than a tap.
+     * Silence for the whole timeout is what makes a slow step look like a
+     * broken one.
+     */
+    if (!waited && Date.now() - started > 2000) {
+      waited = true;
+      trace(`waiting for "${label}" … on screen now: ${visibleLabels(last, 12)}`);
+    }
+
     if (Date.now() > deadline) {
-      throw new Error(`could not find "${label}" on screen within ${timeoutMs}ms`);
+      /*
+       * The error names what WAS there. Without it this reads as "could not
+       * find X" with no way to tell a wrong screen from a renamed control
+       * from an app that never finished loading.
+       */
+      throw new Error(
+        `could not find "${label}" within ${timeoutMs}ms.` +
+        `${String.fromCharCode(10)}  on screen: ${visibleLabels(last)}`,
+      );
     }
     await sleep(500);
   }
@@ -130,16 +265,30 @@ function readOnlyArg() {
  */
 function applyOnly(names) {
   const original = fs.readFileSync(ONLY_FILE, 'utf8');
-  if (!names.length) return () => {};
+  const FILTER = /module\.exports = \[[^\]]*\];/;
+  /*
+   * The restore writes [] - NOT whatever was there before. A run killed from
+   * outside (Ctrl-C on Windows delivers no signal, so no handler runs) leaves
+   * its filter behind, and a restore that put "the previous contents" back
+   * would carry that stale filter into the next run. tools/doctor.js caught
+   * exactly that.
+   */
+  const clean = original.replace(FILTER, 'module.exports = [];');
+  const restore = () => fs.writeFileSync(ONLY_FILE, clean);
 
-  const body = original.replace(
-    /module\.exports = \[[^\]]*\];/,
-    `module.exports = ${JSON.stringify(names)};`,
-  );
+  if (!names.length) {
+    if (clean !== original) {
+      console.log('e2e: a stale --only filter was left behind; reset to the full suite');
+      restore();
+    }
+    return () => {};
+  }
+
+  const body = original.replace(FILTER, `module.exports = ${JSON.stringify(names)};`);
   fs.writeFileSync(ONLY_FILE, body);
 
   console.log(`e2e: running only ${names.join(', ')}`);
-  return () => fs.writeFileSync(ONLY_FILE, original);
+  return restore;
 }
 
 async function main() {
@@ -149,6 +298,17 @@ async function main() {
     adb(['shell', 'am', 'force-stop', PACKAGE]);
   }
   adb(['logcat', '-c']);
+  /*
+   * A bigger ring. The default holds well under a minute of this suite's
+   * output; the verdict line is only needed at the end, but a buffer that
+   * cannot hold the whole run makes every earlier line a coin toss for
+   * anyone reading the log afterwards. Not every device allows it.
+   */
+  try {
+    adb(['logcat', '-G', '16M']);
+  } catch (_) {
+    trace('could not enlarge the logcat buffer; continuing with the default');
+  }
   adb(['shell', 'am', 'start', '-n', ACTIVITY]);
 
   /*
@@ -168,10 +328,18 @@ async function main() {
    * only in testing mode - which defaults ON in a debug build precisely so
    * this runner does not stall at a PIN pad it cannot type on.
    */
+  /*
+   * CHECK IT IS OURS FIRST. The launch may have died during the bundle load,
+   * and every failure after this point would then be about the wrong app -
+   * reported as a missing button rather than as a missing app.
+   */
+  await waitForApp({timeoutMs: 60000});
+
   await tapText('Menu', {timeoutMs: 120000});
   await sleep(600);
   await tapText('Testing', {timeoutMs: 15000});
   await sleep(1500);
+  assertOnTask('after opening the Testing tab');
 
   /*
    * MonikerView auto-runs once on mount, so on a fresh launch the tab press has
@@ -182,14 +350,45 @@ async function main() {
    * So: press it only if it is actually offered. On a revisit, where the
    * harness has already finished, it is the only thing that starts a run.
    */
-  const idle = findByText(dumpUi(), 'RUN TESTS');
-  if (idle) {
-    adb(['shell', 'input', 'tap', String(idle.x), String(idle.y)]);
-  } else {
-    process.stdout.write('a run was already under way' + '\\n');
+  /*
+   * The button is at the BOTTOM of the Testing tab, under the soft-key panel,
+   * and uiautomator only dumps what is drawn. After the naming pass made that
+   * panel taller the button fell below the fold - and the old branch below
+   * then reported "a run was already under way" and waited out the whole
+   * budget for a run that never started. So: scroll for it, a bounded number
+   * of times, and say so each time.
+   */
+  let beforeRun = '';
+  let idle = null;
+  for (let attempt = 0; ; attempt++) {
+    beforeRun = dumpUi();
+    idle = findByText(beforeRun, 'RUN TESTS');
+    if (idle || /Running|RUNNING/.test(beforeRun) || attempt === 3) break;
+    const {w, h} = screenSize(beforeRun);
+    trace(`RUN TESTS is not on screen, swiping up (${attempt + 1}/3)`);
+    adb(['shell', 'input', 'swipe',
+      String(w >> 1), String(Math.round(h * 0.75)),
+      String(w >> 1), String(Math.round(h * 0.3)), '300']);
+    await sleep(800);
   }
 
-  process.stdout.write('running');
+  if (idle) {
+    trace(`pressing RUN TESTS at ${idle.x},${idle.y}`);
+    adb(['shell', 'input', 'tap', String(idle.x), String(idle.y)]);
+  } else if (/Running|RUNNING/.test(beforeRun)) {
+    trace('a run was already under way');
+  } else {
+    /*
+     * NEITHER, which is a real failure. It used to be reported as "already
+     * under way", so a run that never started looked like one in progress and
+     * then timed out with nothing to say.
+     */
+    throw new Error(
+      'the Testing tab is open but neither RUN TESTS nor a running suite is on '
+      + `it, even after scrolling.\n  on screen: ${visibleLabels(beforeRun)}`,
+    );
+  }
+
   /*
    * Generous, because the suite's length depends on the firmware build.
    *
@@ -200,30 +399,67 @@ async function main() {
    * which reads as a hang rather than as "this build is slower".
    */
   const budgetMs = Number(process.env.OKRN_E2E_TIMEOUT_MS || 420000);
+  /*
+   * STREAMED, NOT DOTTED. The old loop printed one dot every two seconds and
+   * the suite's lines only at the end, so a run that sat on one test for two
+   * minutes looked identical to one making progress - and when it was killed,
+   * nothing had been printed at all. Now each [Moniker] line appears as the
+   * phone logs it, and a quiet stretch longer than STALL_MS is an error that
+   * names the last thing the suite said.
+   *
+   * 90 s: the slowest single step measured is a backup capture on a production
+   * build, well under a minute; a real hang is infinite.
+   */
+  const stallMs = Number(process.env.OKRN_E2E_STALL_MS || 90000);
   const deadline = Date.now() + budgetMs;
   let log = '';
+  /*
+   * NEW LINES ARE FOUND BY IDENTITY, NOT BY COUNT. logcat is a ring buffer,
+   * and this suite prints byteprints fast enough to churn it: old lines fall
+   * off the front at the rate new ones arrive, so "more lines than last time"
+   * stopped being true while the suite was still running - and the first
+   * version of this loop called that a stall, ninety seconds into a passing
+   * run. The last line printed is remembered verbatim (timestamp included)
+   * and everything after its position is new; if it has scrolled out
+   * entirely, everything in the buffer is newer than it.
+   */
+  let lastRaw = null;
+  let lastNewAt = Date.now();
+  let lastLine = '(the suite has not printed anything)';
+  console.log('');
   for (;;) {
     log = adb(['logcat', '-d']);
+    const raw = log.split(/\r?\n/).filter(l => l.includes('[Moniker]'));
+    const at = lastRaw === null ? -1 : raw.lastIndexOf(lastRaw);
+    const fresh = raw.slice(at + 1);
+    if (fresh.length) {
+      for (const line of fresh) console.log(`  ${stripMoniker(line)}`);
+      lastRaw = raw[raw.length - 1];
+      lastNewAt = Date.now();
+      lastLine = stripMoniker(lastRaw);
+    }
     if (/TEST COMPLETE/.test(log)) break;
-    if (Date.now() > deadline) {
-      process.stdout.write('\n');
+
+    /* The app leaving the screen is the one stall that needs no waiting for. */
+    const front = foregroundApp();
+    if (front !== PACKAGE) {
       throw new Error(
-        `the suite did not finish within ${Math.round(budgetMs / 1000)}s`,
+        `${PACKAGE} left the screen mid-run` + (front ? ` ("${front}" is in front)` : '') +
+        `. Last from the suite: ${lastLine}`,
       );
     }
-    process.stdout.write('.');
+    if (Date.now() - lastNewAt > stallMs) {
+      throw new Error(
+        `stuck after: ${lastLine}\n  no new line from the suite for ${Math.round(stallMs / 1000)}s. ` +
+        'Run node tools/doctor.js --shot and read the phone.',
+      );
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`the suite did not finish within ${Math.round(budgetMs / 1000)}s. Last: ${lastLine}`);
+    }
     await sleep(2000);
   }
-  process.stdout.write('\n\n');
-
-  const lines = log
-    .split(/\r?\n/)
-    .filter(l => l.includes('[Moniker]'))
-    .map(l => l.replace(/^.*\[Moniker\]',?\s*/, '').replace(/^'|'$/g, ''));
-
-  for (const line of lines) {
-    console.log(line.replace(/^'|',?$/g, ''));
-  }
+  console.log('');
 
   const verdict = /Passed:\s*(\d+)\s*Failed:\s*(\d+)(?:\s*Skipped:\s*(\d+))?/.exec(log);
   if (!verdict) {

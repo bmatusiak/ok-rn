@@ -116,6 +116,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
         setIdentity(null);
         setCapabilities(null);
         setVersion('');
+        setConsoleAnswers(null);
       }
     });
 
@@ -136,12 +137,24 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
    * is what lets one handle serve both.
    */
   /**
-   * Whether the firmware will take a press from software at all.
+   * Whether the firmware will take a press from software.
    *
-   * Declared here because everything below asks it. A debug build newer than
-   * v3.0.2 has the console parser; anything else needs a finger on the key.
+   * ASKED, not inferred from a version, because the version is not there when
+   * it matters. `capabilities().consolePress` needs a version string and a
+   * LOCKED key does not send one - it answers `INITIALIZED` and nothing else.
+   * So a screen consulting the capability before unlocking is always told no,
+   * and unlocking is exactly what needs the answer. That deadlock is why this
+   * is a probe rather than a lookup.
+   *
+   * `device.consoleAnswers()` writes one inert byte and watches for the
+   * firmware's own line echo. It presses NOTHING, so it cannot spend a PIN
+   * attempt on a locked key - which the obvious probe can, and which cost a
+   * bench key once already.
+   *
+   * Null until it has been asked. A screen must not read "not yet" as "no".
    */
-  const canPress = Boolean(capabilities && capabilities.consolePress);
+  const [consoleAnswers, setConsoleAnswers] = useState<boolean | null>(null);
+  const canPress = consoleAnswers === true;
 
   const start = useCallback(async (): Promise<void> => {
     setBusy(true);
@@ -193,6 +206,16 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
       const {device: dev} = await getOnlyKey('usb');
       const result = await dev.connect();
       log('info', `OKCONNECT -> "${String(result.status ?? '').trim()}"`);
+
+      /*
+       * Asked once the device is answering, and BEFORE anything needs it.
+       * Unlocking is the first thing that will, and it cannot wait for a
+       * version that only arrives after unlocking.
+       */
+      const answers = await dev.consoleAnswers();
+      setConsoleAnswers(answers);
+      log('info', `console ${answers ? 'answers' : 'is write-only'}`);
+
       return result;
     } catch (error) {
       log('error', `OKCONNECT: ${String(error)}`);

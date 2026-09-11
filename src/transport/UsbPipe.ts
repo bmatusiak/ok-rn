@@ -68,6 +68,9 @@ class UsbPipeClient {
   /** Report width of the RawHID interfaces; what the debug panel displays. */
   private packet = 64;
 
+  /** What start() last returned, so a second start() can return it again. */
+  private lastResult: ConnectResult | null = null;
+
   private ensureSubscribed(): void {
     if (this.subscribed) {
       return;
@@ -93,6 +96,7 @@ class UsbPipeClient {
          */
         if (event.state === 'disconnected' || event.state === 'error') {
           this.openInterfaces = [];
+          this.lastResult = null;
         }
         for (const listener of this.statusListeners) listener(event);
       }),
@@ -115,6 +119,21 @@ class UsbPipeClient {
    */
   async start(): Promise<ConnectResult> {
     this.ensureSubscribed();
+
+    /*
+     * IDEMPOTENT. The native connect() closes whatever transport is active
+     * and builds a new one on every call - it has no notion of "already
+     * open". Two callers now open this pipe independently: useKey opens it
+     * whenever the hard key is selected (and a persisted override means that
+     * happens at launch), and the hardKey e2e suite opens it itself. Without
+     * this, the second start() tore down the first caller's interfaces and
+     * reader threads underneath it and rebuilt them - which the suite's own
+     * comment claimed could not happen.
+     */
+    if (this.lastResult && this.openInterfaces.length && this.isRunning()) {
+      return this.lastResult;
+    }
+
     NativeUsbHid.setTransport('usb');
 
     const granted = await NativeUsbHid.requestPermission(VENDOR_ID, PRODUCT_ID);
@@ -128,11 +147,13 @@ class UsbPipeClient {
     const result = await NativeUsbHid.connect(VENDOR_ID, PRODUCT_ID);
     this.openInterfaces = result.interfaces ?? [];
     this.packet = result.packetSize > 0 ? result.packetSize : 64;
+    this.lastResult = result;
     return result;
   }
 
   async stop(): Promise<void> {
     this.openInterfaces = [];
+    this.lastResult = null;
     await NativeUsbHid.disconnect();
   }
 

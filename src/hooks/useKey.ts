@@ -163,6 +163,40 @@ export function useKey({
     return 'embedded';
   }, [override, mode, attached]);
 
+  /**
+   * SELECTING THE HARD KEY OPENS IT. Nothing else was doing that.
+   *
+   * The soft key auto-starts, the hard key never did, and this hook only
+   * chose a handle - so picking Hard Key handed a screen a closed pipe
+   * reporting `stopped`, which looks exactly like a key that is not working.
+   *
+   * And switching AWAY releases it. While the app holds the interfaces the
+   * key cannot type into any other app on the phone, because claiming the
+   * keyboard detaches it from the kernel. Keeping that after the user has
+   * moved on would be rude as well as surprising.
+   */
+  const {start} = hard;
+
+  useEffect(() => {
+    if (backend !== 'usb') {
+      if (UsbPipe.isRunning()) void UsbPipe.stop();
+      return;
+    }
+    if (!UsbPipe.isRunning()) void start();
+
+    /*
+     * No cleanup that closes: the branch above already handles leaving, and
+     * closing here too would shut the pipe on any re-render that retriggered
+     * this.
+     *
+     * DEPEND ON `hard.start`, NOT ON `hard`. useHardKey returns a fresh object
+     * literal every render, so listing the whole handle re-runs this on EVERY
+     * render - which stops and starts the USB pipe in a loop and locks the app
+     * up hard enough that the screen stops painting. Measured, by doing it.
+     * `start` is a useCallback and stable.
+     */
+  }, [backend, start]);
+
   const active = backend === 'usb' ? hard : soft;
 
   return {
