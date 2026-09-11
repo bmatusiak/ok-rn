@@ -43,8 +43,25 @@ const path = require('path');
 
 const HERE = __dirname;
 /* versions -> scripts -> okemu -> android -> ok-rn -> the checkouts root. */
-const ROOT = path.resolve(HERE, '..', '..', '..', '..', '..');
-const PIN_FILE = path.join(ROOT, 'ok-versions.json');
+const APP = path.resolve(HERE, '..', '..', '..', '..');
+const ROOT = path.resolve(APP, '..');
+
+/**
+ * The pins, preferring the copy inside this repo.
+ *
+ * They started life at the checkouts root, beside the firmware checkouts
+ * they name commits in. That put a file this app depends on outside the
+ * only tree that is version-controlled with it: clone ok-rn alone and the
+ * matrix cannot say what v3.0.2 even means.
+ *
+ * So `ok-rn/ok-versions.json` wins when it exists, and the root copy stays
+ * as the fallback for a working tree that still has one there. Which was
+ * read is not a detail to guess at, so `PIN_FILE` is exported and the
+ * errors below name it.
+ */
+const APP_PIN_FILE = path.join(APP, 'ok-versions.json');
+const ROOT_PIN_FILE = path.join(ROOT, 'ok-versions.json');
+const PIN_FILE = fs.existsSync(APP_PIN_FILE) ? APP_PIN_FILE : ROOT_PIN_FILE;
 
 /**
  * How far a release has been taken, weakest first.
