@@ -2,6 +2,7 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
+import {buildInfo} from '../buildInfo';
 
 /*
  * EXPLICITLY 'embedded'. This hook IS the soft key - it boots the firmware
@@ -566,6 +567,13 @@ export function useOkEmu({log, autoStart = false}: Options) {
      * question of either. See useHardKey.canPress.
      */
     canPress: true as boolean | null,
+
+    /**
+     * WHICH MODEL this key is, from the BUILD: stage.js staged the firmware
+     * as a DUO or a Classic, and buildInfo carries that. A DUO types its PIN
+     * and has 24 slots in four profiles; the screens branch on this.
+     */
+    model: (buildInfo.model === 'duo' ? 'duo' : 'classic') as 'duo' | 'classic',
 
     /**
      * A hold of an exact length, for the library's slot and backup reads.

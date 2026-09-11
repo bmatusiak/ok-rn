@@ -263,9 +263,9 @@ function Shell() {
               }
             />
           ) : phase === 'setup' ? (
-            <SetupScreen onDone={() => setPhase('login')} />
+            <SetupScreen onDone={() => setPhase('login')} model={emu.model} />
           ) : phase === 'pin' ? (
-            <PinScreen onPress={emu.press} canPress={emu.canPress} onBack={() => setPhase('login')} />
+            <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} onBack={() => setPhase('login')} />
           ) : tab === 'This Key' ? (
             <KeyScreen emu={emu} keys={keys} />
           ) : tab === 'Slots' ? (

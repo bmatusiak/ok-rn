@@ -271,7 +271,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
             carry on loading keys.
           </Text>
         </Section>
-        <PinScreen onPress={emu.press} canPress={emu.canPress} />
+        <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} />
       </ScrollView>
     );
   }

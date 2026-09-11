@@ -5,6 +5,8 @@ import {Logo} from '../ui/Logo';
 import {Btn} from '../ui/components';
 import {device as okdevice} from 'node-onlykey-lib';
 import * as biometrics from '../biometrics';
+import {DuoPinForm} from '../ui/DuoPinForm';
+import {useActiveKey} from '../hooks/KeyContext';
 import {theme} from '../ui/theme';
 
 /**
@@ -43,10 +45,16 @@ export function PinScreen({
   onBack,
   busy = false,
   canPress = true,
+  model = 'classic',
 }: {
   onPress: (button: number) => Promise<void> | void;
   onBack?: () => void;
   busy?: boolean;
+  /**
+   * A DUO takes its PIN TYPED into the message body, not pressed; the
+   * keypad below is the wrong control for one. See DuoPinForm.
+   */
+  model?: 'classic' | 'duo';
   /**
    * Whether a tap here reaches the key at all.
    *
@@ -61,6 +69,26 @@ export function PinScreen({
 }) {
   const [count, setCount] = useState(0);
   const [working, setWorking] = useState(false);
+
+  /* The DUO path: the library's unlock() types the PIN for a DUO. */
+  const getKey = useActiveKey();
+  const [duoBusy, setDuoBusy] = useState(false);
+  const [duoError, setDuoError] = useState<string | null>(null);
+  const unlockTyped = useCallback(
+    async (pin: string) => {
+      setDuoBusy(true);
+      setDuoError(null);
+      try {
+        const {device} = await getKey();
+        await device.unlock(pin);
+      } catch (e) {
+        setDuoError(String((e as Error)?.message ?? e));
+      } finally {
+        setDuoBusy(false);
+      }
+    },
+    [getKey],
+  );
 
   /*
    * Presses are QUEUED, NOT DROPPED
@@ -229,7 +257,17 @@ export function PinScreen({
 
       <Text style={styles.title}>Locked</Text>
 
-      {canPress !== true ? (
+      {model === 'duo' ? (
+        <>
+          <DuoPinForm mode="unlock" busy={busy || duoBusy} onUnlock={unlockTyped} />
+          {duoError ? <Text style={styles.bioError}>{duoError}</Text> : null}
+          {onBack ? (
+            <View style={styles.footer}>
+              <Btn title="Back" onPress={onBack} />
+            </View>
+          ) : null}
+        </>
+      ) : canPress !== true ? (
         /*
          * NO KEYPAD, NO DOTS. The digits go in on the key itself, so there
          * is nothing here to count; the firmware announces UNLOCKED on its

@@ -18,7 +18,7 @@ web app are both meant to use. **One lib, any GUI.**
 | **PGP, age, vault** | Composite post-quantum PGP, X-Wing age identities, sealed credentials | Working on device |
 | **Bluetooth HID** | Phone types passwords into another machine as a keyboard | Working |
 | **FIDO2 BLE** | Phone as a roaming security key, CTAP2 over BLE to a desktop | Working; the firmware answers, the phone relays |
-| **USB HID** | Phone as USB **host** over OTG to a physical OnlyKey | Byte level only — see Known gaps |
+| **Hard key over USB** | Phone as USB **host** over OTG to a physical OnlyKey, as a full device session | Working; connect, unlock, slots, config mode, a signature made on the key — all measured |
 
 Design notes and constraints live in [`EXPLAINER/`](EXPLAINER/); per-bug
 write-ups are the `FINDING-*.md` files, indexed by [`FINDINGS.md`](FINDINGS.md).
@@ -122,9 +122,11 @@ checkouts are never written to.
 
 ### Developing without hardware
 
-An Android emulator runs under QEMU and cannot pass host USB endpoints into the
-guest, so the USB module has a second transport that speaks the same report
-stream over TCP:
+**Not needed until iOS work starts.** On Android the app talks to a real key
+over OTG, and the byte-level panel is a window on that same pipe. What follows
+is kept for the emulator case: an Android emulator runs under QEMU and cannot
+pass host USB endpoints into the guest, so the native USB module has a second
+transport that speaks the same report stream over TCP:
 
 ```bash
 npm run mock             # tools/hardware-emulator.js on :9000
@@ -218,34 +220,56 @@ State DOES persist across a restart: the e2e runner force-stops the app between
 runs and the device comes back provisioned, because `flash.bin` and
 `eeprom.bin` outlive the process.
 
-### USB HID — a physical OnlyKey over OTG
+### A hard key over USB — a physical OnlyKey over OTG
 
-Same handset, with a real OnlyKey attached:
+The same library plugins that drive the soft key drive a real one: the app
+claims the key's HID interfaces (`UsbPipe`, `plugins/transport/usb`), and
+everything above the byte pipe — session, device, crypto, every screen — is the
+same code. Measured on the bench key (a developer build, whose debug console
+reads commands; a production key has no fourth interface and is pressed with a
+finger):
 
-- enumeration finds it as `ONLYKEY - vid 0x1d50 pid 0x60fc`
-- the Android permission dialog fires and the grant returns through
-  `UsbPermissionBroker`
-- the transport claims **interface 1** and negotiates a **64-byte** report size
-- `CTAPHID_INIT` writes succeed, and **nothing answers**
+- four interfaces, each identified **by HID usage page**, not by position —
+  three are otherwise identical on the wire (`FINDING-usb-claims-one-interface-and-the-app-needs-three.md`)
+- the vendor interface answers `OKCONNECT`; the key's once-a-second status
+  broadcast drives the lock door
+- wipe, provision (the firmware's own OKSETPIN bracket) and unlock through the
+  console — `__e2e_tests__/16-hardKeyProvision.e2e.js`, named-only
+- a slot written and typed back over the **claimed keyboard interface**, so
+  what the key types goes nowhere on the phone but the app's capture pane
+- config mode entered and left, the vault's touch-free derive preference set,
+  a composite post-quantum PGP key loaded into RSA slot 1, and a signature
+  made **on the key** behind two button challenges —
+  `__e2e_tests__/17-hardKeyConfig.e2e.js`, named-only
 
-Interface 1 is the OnlyKey's own raw-HID protocol, not CTAPHID. This was
-measured before the library's interface handling existed, and has not been
-re-run since — see Known gaps.
+The two named-only suites change the key (wipe, preferences, RSA slot 1) and
+reboot it. They run only under `--only`, skip every test otherwise, and want
+the app pinned to the soft key while they run.
 
-Note the ABI: that phone is 32-bit ARM. An APK built without `armeabi-v7a`
-fails to install with `INSTALL_FAILED_NO_MATCHING_ABIS`.
+Keys are **compared, never merged**: one is active at a time, chosen on the
+This Key tab (auto or manual, with an override), and no screen blends readings
+from both. A hard key reports no LED and draws no keypad unless its console can
+press for it.
+
+Seeing what the phone is doing, from a terminal:
+
+```bash
+node tools/doctor.js --shot     # bench state on one screen, plus a screenshot
+node tools/logwatch.js --follow # the app's own log, one line per event
+node tools/tap.js Menu Slots    # drive one screen without a full run
+```
+
+The bench phone is arm64. An older 32-bit handset needs `armeabi-v7a` in the
+APK or it fails to install with `INSTALL_FAILED_NO_MATCHING_ABIS`.
 
 ## Known gaps
 
-- **USB is not a device session.** `src/transport/UsbHid.ts` satisfies none of
-  the six methods `node-onlykey-lib/src/transport/contract.js` requires, and its
-  only consumer is a byte-level view behind the Testing tab. A plugged-in key
-  cannot be driven as a device, which is also why the `CTAPHID_INIT` result
-  above has never been revisited.
 - **`rpId` is always empty on BLE request events.** A CBOR decoder exists in the
   library; it is not wired into the native event path.
 - **The DUO has no screens.** The library handles it — 24 slots, four profiles,
-  its own PIN encoding — and nothing in `src/` calls any of that.
+  its own PIN encoding (numerals 0-9, 7-16 of them, settled from the firmware) —
+  the matrix builds and sweeps a DUO emulator, and the screens still draw a
+  Classic.
 - **No foreground service.** The GATT server will be throttled by the OS during
   a long desktop session; the permissions are declared and the service is not
   written.

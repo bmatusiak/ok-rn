@@ -114,7 +114,7 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         showsVerticalScrollIndicator={false}>
         <KeySource keys={keys} />
         <View style={styles.locked}>
-          <PinScreen onPress={emu.press} canPress={emu.canPress} />
+          <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} />
         </View>
       </ScrollView>
     );
@@ -216,6 +216,7 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
             onHoldStart={emu.beginHold}
             onHoldEnd={emu.endHold}
             ticks={emu.pressTicks}
+            buttons={emu.capabilities?.buttons ?? (emu.model === 'duo' ? 3 : 6)}
           />
         </View>
       </Section>

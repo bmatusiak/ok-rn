@@ -27,6 +27,7 @@
 
 const {getOnlyKey} = require('../src/onlykey');
 const {device: okdevice} = require('node-onlykey-lib');
+const {waitForLedClear} = require('./helpers/ledSettled');
 
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
@@ -74,6 +75,8 @@ async function ready(log) {
   await device.setSlot('2a', {label: 'typed', password: SECRET});
   log(`slot 2a password: ${SECRET.length} chars`);
 
+  /* The write leaves the LED fading, and a press during the fade types nothing. */
+  await waitForLedClear(OkEmu, log);
   shared = {device, status: String(state.status)};
   return shared;
 }
@@ -202,7 +205,15 @@ module.exports = function keystrokeCapture({describe, it}) {
 
       assert.equal(read.button, 2, 'slot 2a is typed by button 2');
       assert.equal(read.band, 'tap', 'the a profile is a tap');
-      assert.equal(read.slot, 2, 'gen_press types slot 2 for button 2 in profile 1');
+      /*
+       * From the library, per model. The Classic adds 0 for the a side and a
+       * DUO interleaves a and b inside each three-button band; a literal here
+       * was a claim about one model that the DUO matrix row disproved.
+       */
+      assert.equal(
+        read.slot, okdevice.slots.slotNumber('2a', device.deviceType),
+        `button 2 tapped types slot 2a, which is slot ${okdevice.slots.slotNumber('2a', device.deviceType)} on this model`,
+      );
       assert.ok(
         read.segments.includes(SECRET),
         `expected ${JSON.stringify(SECRET)} among the fields readSlot returned`,
@@ -235,7 +246,10 @@ module.exports = function keystrokeCapture({describe, it}) {
 
       assert.equal(read.button, 2, 'the b profile is the SAME button, held');
       assert.equal(read.band, 'hold');
-      assert.equal(read.slot, 8, 'gen_hold adds 6 on a classic: button 2 -> slot 8');
+      assert.equal(
+        read.slot, okdevice.slots.slotNumber('2b', device.deviceType),
+        `button 2 held types slot 2b: +6 on a Classic (slot 8), interleaved on a DUO (slot 5)`,
+      );
       assert.ok(
         read.segments.includes(B_SECRET),
         'the hold typed something, but not what is in 2b',

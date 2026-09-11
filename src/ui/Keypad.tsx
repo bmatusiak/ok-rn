@@ -33,6 +33,7 @@ export function Keypad({
   onHoldEnd,
   ticks = null,
   disabled = false,
+  buttons = 6,
 }: {
   onPress: (button: number) => void;
   /** Arms a counted hold. Omit both to keep the pad taps-only. */
@@ -41,6 +42,13 @@ export function Keypad({
   /** The counted hold in progress, if any. */
   ticks?: {button: number; ticks: number} | null;
   disabled?: boolean;
+  /**
+   * How many buttons the key HAS. Six on a Classic, three on a DUO - the
+   * library's capabilities().buttons, or the model. This pad is the device's
+   * input surface, so drawing six for a three-button key offered three
+   * buttons the firmware would read as nothing.
+   */
+  buttons?: number;
 }) {
   const holdable = Boolean(onHoldStart && onHoldEnd);
 
@@ -53,10 +61,7 @@ export function Keypad({
    */
   return (
     <View style={styles.pad}>
-      {[
-        [1, 2, 3],
-        [4, 5, 6],
-      ].map(row => (
+      {(buttons <= 3 ? [[1, 2, 3]] : [[1, 2, 3], [4, 5, 6]]).map(row => (
         <View key={row[0]} style={styles.row}>
           {row.map(n => (
             <Pressable

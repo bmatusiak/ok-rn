@@ -68,9 +68,19 @@ const wanted = args.filter((a) => !a.startsWith('--'));
  */
 const WORKING_TREE = 'working-tree';
 
+/*
+ * THE DUO IS A BUILD, NOT A SETTING. stage.js reads OKEMU_MODEL while it
+ * stages the firmware, so a DUO emulator is a separate native build of the
+ * same working tree - 24 slots, 4 profiles, 3 buttons, its own storage slot.
+ * Nothing exercised it automatically until this entry: the suites already
+ * branch on the model the firmware reports (identity asserts 24/4/3 on a
+ * DUO), so the sweep's own pass/skip table says what a DUO cannot do.
+ */
+const WORKING_TREE_DUO = 'working-tree-duo';
+
 function plan() {
   if (wanted.length) return wanted;
-  return [WORKING_TREE, ...versions.list()];
+  return [WORKING_TREE, WORKING_TREE_DUO, ...versions.list()];
 }
 
 function run(cmd, argv, env) {
@@ -86,6 +96,7 @@ function run(cmd, argv, env) {
 /** gradle and the e2e runner, with this version's environment. */
 function envFor(version) {
   if (version === WORKING_TREE) return {};
+  if (version === WORKING_TREE_DUO) return { OKEMU_MODEL: 'duo' };
   return {
     OKEMU_VERSION: version,
     /*
@@ -103,9 +114,10 @@ function envFor(version) {
 
 function sweep(version) {
   const env = envFor(version);
-  const label = version === WORKING_TREE ? 'working tree' : version;
+  const label = version === WORKING_TREE ? 'working tree'
+    : version === WORKING_TREE_DUO ? 'working tree (DUO)' : version;
 
-  if (version !== WORKING_TREE) {
+  if (version !== WORKING_TREE && version !== WORKING_TREE_DUO) {
     let release;
     try {
       release = versions.load(version);

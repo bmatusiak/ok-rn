@@ -399,6 +399,14 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
 
     /** Whether a keypad is worth drawing at all. */
     canPress,
+
+    /**
+     * WHICH MODEL, from the letter the firmware appends to its version - which
+     * a LOCKED key does not send. So a locked hard DUO reads as a Classic
+     * until it is unlocked, and the door draws the wrong control for it: a
+     * named gap, since nothing in a locked key's status says which it is.
+     */
+    model: (identity?.model === 'duo' ? 'duo' : 'classic') as 'duo' | 'classic',
   };
 }
 

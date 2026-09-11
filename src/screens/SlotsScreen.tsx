@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn} from '../ui/components';
 import {SlotGrid} from '../ui/SlotGrid';
+import {DuoSlotGrid} from '../ui/DuoSlotGrid';
 import {theme} from '../ui/theme';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import {device as okdevice} from 'node-onlykey-lib';
@@ -85,15 +86,12 @@ export function SlotsScreen({
       ) : error ? (
         <Text style={styles.error}>{error}</Text>
       ) : (
-        <>
+        count > 12 ? (
+          /* A DUO: three buttons, four profiles, no picture yet. See DuoSlotGrid. */
+          <DuoSlotGrid labels={labels ?? new Array(count).fill(null)} onSelect={onOpen} />
+        ) : (
           <SlotGrid labels={labels ?? new Array(count).fill(null)} onSelect={onOpen} />
-          {count > 12 ? (
-            <Text style={styles.note}>
-              This key has {count} slots; the picture above shows the first 12. A
-              DUO's own layout is still to come.
-            </Text>
-          ) : null}
-        </>
+        )
       )}
 
       <Text style={styles.note}>

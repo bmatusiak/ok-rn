@@ -3,6 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import OkEmu from '../transport/OkEmu';
 import {useActiveKey} from '../hooks/KeyContext';
 import {Logo} from '../ui/Logo';
+import {DuoPinForm} from '../ui/DuoPinForm';
 import {Btn} from '../ui/components';
 import {Keypad, PinDots} from '../ui/Keypad';
 import {theme} from '../ui/theme';
@@ -74,7 +75,13 @@ const BLURB: Record<Kind, string> = {
     'Entering this PIN WIPES THE KEY — every slot, every private key — with no confirmation and nothing to undo.',
 };
 
-export function SetupScreen({onDone}: {onDone?: () => void}) {
+/**
+ * On a DUO the whole PIN set travels in one OKSETPIN body - primary, the
+ * (unused) secondary slot, self-destruct - each in a 16-byte slot behind a
+ * 0xFF that means SET (pin.encodeDuoPins). No bracket, no presses, no
+ * "enter it again" stage on the device: the form asks twice instead.
+ */
+export function SetupScreen({onDone, model = 'classic'}: {onDone?: () => void; model?: 'classic' | 'duo'}) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
 
@@ -145,6 +152,24 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
       }
     },
     [getKey, kind, advance],
+  );
+
+  const setupDuo = useCallback(
+    async ({pin: primary, selfDestruct}: {pin: string; selfDestruct: string}) => {
+      setStage('applying');
+      setSteps([]);
+      try {
+        const {device} = await getKey();
+        const reply = await device.duoPin([primary, '', selfDestruct], {set: true});
+        setSteps([`device: ${String(reply && (reply.text || reply)).trim().slice(0, 60)}`]);
+        setSet(['primary', ...(selfDestruct ? ['selfDestruct' as Kind] : [])]);
+        setStage('passphrase');
+      } catch (e) {
+        setError(String((e as Error)?.message ?? e));
+        setStage('failed');
+      }
+    },
+    [getKey],
   );
 
   const next = useCallback(() => {
@@ -292,6 +317,20 @@ export function SetupScreen({onDone}: {onDone?: () => void}) {
 
   const ready = entered.length >= MIN_PIN;
   const optional = kind !== 'primary';
+
+  if (model === 'duo') {
+    return (
+      <View style={styles.root}>
+        <View style={styles.centre}>
+          <Logo height={28} />
+          <Text style={styles.title}>Set up this DUO</Text>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {/* The applying/done/failed stages returned above, so this is never busy. */}
+          <DuoPinForm mode="setup" onSetup={setupDuo} />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.root}>

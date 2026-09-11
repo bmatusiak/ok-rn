@@ -437,7 +437,7 @@ export function BackupScreen({
                   <Text style={styles.note}>
                     The key locked itself. Enter your PIN to carry on.
                   </Text>
-                  <PinScreen onPress={emu.press} canPress={emu.canPress} />
+                  <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} />
                 </>
               ) : null}
             </>
