@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useRef, useState, useMemo} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
@@ -541,23 +541,34 @@ export function useOkEmu({log, autoStart = false}: Options) {
   }, [autoStart, start, connect]);
 
   /*
-   * SETTLING: the firmware DROPS every press while it is fading after an
-   * operation or holding a FIDO result - touch_sense_loop counts the press
-   * and the main loop throws it away (OnlyKey.ino:521-525), for up to twenty
-   * seconds after a ceremony (FINDING-presses-discarded-after-a-fido-ceremony).
-   * It says so with its LED: setcolor(45), yellow, for the whole window. The
-   * e2e helper waitForLedClear reads the same pixels the same way; this is
-   * that measurement handed to the screens, so a keypad can say "not yet"
-   * instead of looking broken. A hard key has no LED signal; useKey covers it
-   * with a timer from the ceremony it can see.
+   * SETTLING IS NOT READ FROM THE LED ANY MORE, and the reason is worth
+   * keeping: THE LED IS AN OUTPUT FOR A PERSON, NOT A STATE REPORT.
+   *
+   * This used to watch for yellow and tell the user "the key drops every
+   * press until the LED clears". The firmware does set yellow while it is
+   * dropping presses (OnlyKey.ino:522-525, when pending_operation is
+   * CTAP2_ERR_DATA_READY or DATA_WIPE). It also sets exactly the same yellow
+   * for at least five other things:
+   *
+   *   OnlyKey.ino:639     EVERY ordinary button press
+   *   okcore.cpp:7180     typing a slot at the keyboard
+   *   okcore.cpp:6318     starting a backup
+   *   OnlyKey.ino:759     a PIN digit appended in config mode
+   *   OnlyKey.ino:771,787 the same for the second and SD profiles
+   *
+   * So yellow does not imply dropping, and the banner appeared during
+   * perfectly normal use - telling someone their presses were being thrown
+   * away while the key was doing exactly what they asked. A colour is a
+   * summary the firmware paints for a human; inferring a state machine back
+   * out of it is reading the summary as the source.
+   *
+   * The honest signal is the one the hard key already used: the app knows
+   * when IT relayed a ceremony, and the firmware's window is a fixed twenty
+   * seconds from the end of one. useKey owns that timer and now applies it to
+   * both backends. `led` is still reported, and This Key still shows it -
+   * showing the colour is fine, deciding from it is not.
    */
-  const settling = useMemo(() => {
-    const pending = led.some(packed =>
-      ((packed >> 16) & 0xff) > 64 && ((packed >> 8) & 0xff) > 64 && (packed & 0xff) <= 64);
-    return pending
-      ? 'The key is busy — its LED is yellow while it finishes an operation, and it drops every press until the LED clears (up to 20 seconds).'
-      : null;
-  }, [led]);
+  const settling = null as string | null;
 
   return {
     state,

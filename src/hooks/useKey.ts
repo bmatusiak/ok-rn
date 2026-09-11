@@ -69,13 +69,19 @@ export function useKey({
   const hard = useHardKey({log: hardLog});
 
   /*
-   * SETTLING AFTER A CEREMONY, for the key that cannot show it. The firmware
-   * drops every press for up to twenty seconds after a FIDO2 ceremony,
-   * finished or not (FINDING-presses-discarded-after-a-fido-ceremony:
+   * SETTLING AFTER A CEREMONY, for BOTH keys now.
+   *
+   * The firmware drops every press for up to twenty seconds after a FIDO2
+   * ceremony, finished or not (FINDING-presses-discarded-after-a-fido-ceremony:
    * pending_operation is re-armed five seconds in and only fadeoffafter20sec
-   * clears it). The soft key reports the window from its LED; a hard key has
-   * no LED signal, so the one thing this hook can see - the ceremony it
-   * relayed ending - starts a timer of the firmware's own length.
+   * clears it).
+   *
+   * This used to apply to the hard key alone, because the soft key was
+   * reading the window off its LED - and that was wrong, because the firmware
+   * paints the same yellow for an ordinary press, for typing a slot and for
+   * starting a backup (see useOkEmu, where the inference used to live). The
+   * one thing this hook can actually see is the ceremony it relayed ending,
+   * and that is the same fact for either backend.
    */
   const CEREMONY_SETTLE_MS = 20000;
   const [ceremonyEndedAt, setCeremonyEndedAt] = useState<number | null>(null);
@@ -264,7 +270,11 @@ export function useKey({
    * would only overstate it there; the timer is for the hard key, which shows
    * nothing.
    */
-  const active = {...chosen, settling: chosen.settling ?? (backend === 'usb' ? ceremonySettling : null)};
+  /*
+   * Applied to whichever key is active, not just the USB one: the window is a
+   * property of the FIRMWARE, and both backends run the same firmware.
+   */
+  const active = {...chosen, settling: chosen.settling ?? ceremonySettling};
 
   return {
     /** The key every screen should read. Never a blend of the two. */

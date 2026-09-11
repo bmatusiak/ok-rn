@@ -125,7 +125,7 @@ async function ready(log) {
   }
 
   const caps = deviceLib.version.capabilities(String(state.status).trim());
-  shared = {device, caps, configMode: false, generated: null};
+  shared = {device, caps, configMode: false, generated: null, stored: null};
   return shared;
 }
 
@@ -188,6 +188,98 @@ module.exports = function pqcSlots({describe, it}) {
         assert.equal(key.subarray(1184).every(b => b === 0), false,
           'the X25519 half is all zeros - the read ended early');
         assert.equal(key.every(b => b === 0), false, 'the whole key is zeros');
+
+        s.stored = key;
+      });
+
+    it('A FILE ENCRYPTED TO IT IS OPENED BY THE DEVICE ITSELF',
+      async ({log, assert, skip}) => {
+        /*
+         * The end of the whole post-quantum slot story, and the first time a
+         * stored key has been USED rather than made and described.
+         *
+         * Encryption is host-side and needs no device: a recipient is public.
+         * Decryption is the part that cannot be faked - the file key is
+         * unwrapped with a shared secret that only the seed in flash can
+         * produce, so plaintext coming back out means the device really holds
+         * the private half of the key it reported.
+         *
+         * ## Why this is NOT the derived path with a number instead of a label
+         *
+         * The two send different things and get different things back:
+         *
+         *   label   ct_X only, 32 bytes  ->  64 back, and the HOST finishes
+         *           the ML-KEM half from the seed
+         *   slot    the WHOLE ciphertext, 1120  ->  32 back, which ARE the
+         *           shared secret; the DEVICE ran the combiner
+         *
+         * A client that sent ct_X here is refused on length
+         * (okcrypto.cpp:2069). A client that ALSO ran the ML-KEM half would
+         * not be refused by anything - it would simply produce the wrong
+         * secret and fail to open the file, with nothing saying why.
+         *
+         * ## Before config mode, deliberately
+         *
+         * Config mode answers eleven message types and silently drops the
+         * rest (okcore.cpp:347); OKDECRYPT is not among them, exactly as
+         * OKGETPUBKEY is not. So this runs while the device is still ordinary,
+         * against the key a PREVIOUS run generated.
+         */
+        const s = await ready(log);
+        if (!s.stored) {
+          skip('no stored key yet - the generation below fills the slot');
+        }
+
+        const {okcrypto} = await getOnlyKey();
+        const pqc = require('node-onlykey-lib/crypto').pqc;
+
+        const recipient = pqc.encodeRecipient(s.stored);
+        const secret = 'the device holds the only key that opens this';
+        const file = okcrypto.deviceAge.encrypt(secret, recipient);
+        log(`age file: ${file.length} bytes, encrypted with no device at all`);
+
+        const opened = await okcrypto.deviceAge.decryptWithSlot(file, SLOT, {
+          confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
+          timeoutMs: 60000,
+        });
+
+        const text = typeof opened === 'string'
+          ? opened
+          : new TextDecoder().decode(opened);
+        log(`opened: ${JSON.stringify(text)}`);
+        assert.equal(text, secret, 'the device did not open its own file');
+      });
+
+    it('and the same file opens from the IDENTITY string alone',
+      async ({log, assert, skip}) => {
+        /*
+         * What a person actually keeps is the identity, not a slot number.
+         * decryptWithIdentity decodes it, checks the fingerprint against the
+         * key the slot holds NOW, and only then spends a button press.
+         */
+        const s = await ready(log);
+        if (!s.stored) {
+          skip('no stored key yet');
+        }
+
+        const {okcrypto} = await getOnlyKey();
+        const pqc = require('node-onlykey-lib/crypto').pqc;
+
+        const identity = pqc.encodeSlotIdentity(SLOT, s.stored);
+        const secret = 'opened from an identity string';
+        const file = okcrypto.deviceAge.encrypt(
+          secret, pqc.encodeRecipient(s.stored));
+
+        const opened = await okcrypto.deviceAge.decryptWithIdentity(file, identity, {
+          confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
+          timeoutMs: 60000,
+        });
+
+        const text = typeof opened === 'string'
+          ? opened
+          : new TextDecoder().decode(opened);
+        assert.equal(text, secret);
+        log('the identity string was enough');
       });
 
     it('enters config mode, which a slot write needs', async ({log, assert, skip}) => {
