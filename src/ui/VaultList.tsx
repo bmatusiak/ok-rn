@@ -71,6 +71,8 @@ export function VaultList({
   const [working, setWorking] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importText, setImportText] = useState('');
+  /* Two taps to delete everything: the first arms, the second does it. */
+  const [armedForgetAll, setArmedForgetAll] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -198,6 +200,27 @@ export function VaultList({
     }
   }, [getKey, onError, onStatus, refresh]);
 
+  /**
+   * Delete every stored credential. The library's forgetAll() existed and
+   * nothing offered it; deleting twelve rows one at a time is not a control.
+   * Armed by one tap and done by the next, like the soft key's wipe.
+   */
+  const forgetAll = useCallback(async () => {
+    if (!armedForgetAll) {
+      setArmedForgetAll(true);
+      return;
+    }
+    setArmedForgetAll(false);
+    try {
+      const {okcrypto} = await getKey();
+      await okcrypto.deviceVault.forgetAll();
+      onStatus('Every stored credential deleted from this phone.');
+      await refresh();
+    } catch (e) {
+      onError(String((e as Error)?.message ?? e));
+    }
+  }, [armedForgetAll, getKey, onError, onStatus, refresh]);
+
   const exportAll = useCallback(async () => {
     try {
       const {okcrypto} = await getKey();
@@ -303,6 +326,15 @@ export function VaultList({
           }}
           disabled={busy}
         />
+        <Btn
+          title={armedForgetAll ? 'Really delete all' : 'Delete all'}
+          tone={armedForgetAll ? 'danger' : undefined}
+          onPress={forgetAll}
+          disabled={busy || !rows.length}
+        />
+        {armedForgetAll ? (
+          <Btn title="Keep them" onPress={() => setArmedForgetAll(false)} />
+        ) : null}
       </View>
 
       {importing ? (

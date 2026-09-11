@@ -87,11 +87,16 @@ const filter = has('--all')
   : new RegExp(argAfter('--filter', follow ? EVENTS_FILTER : DEFAULT_FILTER));
 
 /*
- * The app's pid, looked up once. If the app is not running the watcher still
- * runs - it may be about to start - but says so, and then matches on tag text
- * alone until a line from the app names its pid.
+ * pidof exits non-zero when nothing matches, and execFileSync turns that
+ * into a throw - which killed a watcher started in the second between a
+ * force-stop and the relaunch it was meant to watch. Measured, once.
  */
-let pid = adb(['shell', 'pidof', PACKAGE]).trim().split(/\s+/)[0] || null;
+let pid = null;
+try {
+  pid = adb(['shell', 'pidof', PACKAGE]).trim().split(/\s+/)[0] || null;
+} catch (_) {
+  pid = null;
+}
 if (!pid) {
   console.log(`logwatch: ${PACKAGE} is not running; watching by filter until it starts`);
 }

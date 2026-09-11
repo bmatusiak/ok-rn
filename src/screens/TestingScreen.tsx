@@ -6,6 +6,8 @@ import {theme} from '../ui/theme';
 import {E2EScreen} from './E2EScreen';
 import {UsbScreen} from './UsbScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
+import type {HardKeySession} from '../hooks/useHardKey';
+import {getOnlyKey} from '../onlykey';
 import type {UsbSession} from '../hooks/useUsbHid';
 import type {LogEntry} from '../hooks/useLog';
 
@@ -32,16 +34,43 @@ const TEST_PIN = '1234561';
  */
 export function TestingScreen({
   emu,
+  hard,
   hid,
   usbEntries,
   clearUsb,
 }: {
   emu: EmuSession;
+  /** The hard key, for the one bench operation this tab offers on it. */
+  hard: HardKeySession;
   hid: UsbSession;
   usbEntries: LogEntry[];
   clearUsb: () => void;
 }) {
   const [armed, setArmed] = useState(false);
+  const [armedHard, setArmedHard] = useState(false);
+  const [hardWipe, setHardWipe] = useState<string | null>(null);
+
+  /**
+   * The bench key's factory reset: the firmware's own "0C" through the
+   * console, which the library names (device.wipeUserspace). It wipes PIN,
+   * profiles and slots and reboots the key - what hardKeyProvision does
+   * before it re-provisions - so it is offered only for a developer key
+   * whose console answers, and only armed twice, like the soft key's.
+   */
+  const wipeHardKey = async () => {
+    if (!armedHard) {
+      setArmedHard(true);
+      return;
+    }
+    setArmedHard(false);
+    try {
+      const {device} = await getOnlyKey('usb');
+      await device.wipeUserspace();
+      setHardWipe('Wipe sent. The key reboots into an unprovisioned state; set it up again from This Key.');
+    } catch (e) {
+      setHardWipe(String((e as Error)?.message ?? e));
+    }
+  };
 
   return (
     <ScrollView
@@ -130,6 +159,32 @@ export function TestingScreen({
           ) : null}
         </View>
       </Section>
+
+      {hard.state === 'running' && hard.canPress ? (
+        <Section title="Wipe the Hard Key">
+          <Text style={styles.note}>
+            A developer key, whose console answers: this sends the firmware's
+            own wipe-userspace command (PIN, profiles, slots — not the
+            firmware) and the key reboots unprovisioned. The named-only
+            hardKeyProvision suite does the same before it sets the PIN again.
+          </Text>
+          <View style={styles.row}>
+            <View style={styles.cell}>
+              <Btn
+                title={armedHard ? 'Really wipe the hard key' : 'Wipe the hard key'}
+                tone={armedHard ? 'danger' : 'default'}
+                onPress={() => void wipeHardKey()}
+              />
+            </View>
+            {armedHard ? (
+              <View style={styles.cell}>
+                <Btn title="Cancel" onPress={() => setArmedHard(false)} />
+              </View>
+            ) : null}
+          </View>
+          {hardWipe ? <Text style={styles.note}>{hardWipe}</Text> : null}
+        </Section>
+      ) : null}
 
       <E2EScreen />
 

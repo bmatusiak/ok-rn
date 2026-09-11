@@ -192,7 +192,8 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
       throw new Error(unsupported('restart itself'));
     }
     const {device: dev} = await getOnlyKey('usb');
-    await dev.press('8');
+    /* The library names the command; this used to spell the digit itself. */
+    await dev.restart();
     log('info', '[usb] restart requested; the key will re-enumerate');
   }, [canPress, log]);
 
@@ -298,12 +299,33 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
    */
   const holdStartedAt = useRef<number | null>(null);
 
+  /*
+   * THE COUNTER THE SOFT KEY HAS, measured here on the finger. The emulator
+   * reports its own tick counter while a button is down; a hard key cannot
+   * report a press it has not been sent yet. But the number that will be
+   * sent is known - elapsed time over the firmware's tick - so it is shown
+   * as it climbs, and the two handles have the same shape: a screen reads
+   * `pressTicks` and the band it will land in, from either key.
+   */
+  const [pressTicks, setPressTicks] = useState<{button: number; ticks: number} | null>(null);
+  const ticker = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const ticksSoFar = (started: number) =>
+    Math.max(PRESS_TICKS.TAP, Math.min(PRESS_TICKS.GESTURE - 1,
+      Math.round((Date.now() - started) / MS_PER_TICK)));
+
   const beginHold = useCallback(
     async (button: number) => {
       if (!canPress) {
         throw new Error(unsupported(`hold button ${button}`));
       }
-      holdStartedAt.current = Date.now();
+      const started = Date.now();
+      holdStartedAt.current = started;
+      setPressTicks({button, ticks: PRESS_TICKS.TAP});
+      if (ticker.current) clearInterval(ticker.current);
+      ticker.current = setInterval(() => {
+        setPressTicks({button, ticks: ticksSoFar(started)});
+      }, MS_PER_TICK * 2);
     },
     [canPress],
   );
@@ -312,9 +334,13 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
     async (button: number) => {
       const started = holdStartedAt.current;
       holdStartedAt.current = null;
+      if (ticker.current) {
+        clearInterval(ticker.current);
+        ticker.current = null;
+      }
+      setPressTicks(null);
       if (started === null || !canPress) return;
-      const elapsedTicks = Math.round((Date.now() - started) / MS_PER_TICK);
-      const ticks = Math.max(PRESS_TICKS.TAP, Math.min(PRESS_TICKS.GESTURE - 1, elapsedTicks));
+      const ticks = ticksSoFar(started);
       const {device: dev} = await getOnlyKey('usb');
       await dev.press(`${button}#${ticks}`);
     },
@@ -394,8 +420,8 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
     holdTicks,
     provision,
 
-    /** No held state to poll: the firmware owns the duration. */
-    pressTicks: null,
+    /** The hold in progress, counted on the finger. See beginHold. */
+    pressTicks,
 
     /** Whether a keypad is worth drawing at all. */
     canPress,

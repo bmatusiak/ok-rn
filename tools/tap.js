@@ -33,7 +33,9 @@ async function main() {
   const args = process.argv.slice(2);
   /* Negative scroll swipes DOWN, for a control above the fold (Save, at the top of an editor). */
   const scroll = Number(argAfter('--scroll', 0));
-  const VALUED = new Set(['--scroll', '--below']);
+  /* --hold N long-presses each label for N ms - the key's gesture bands. */
+  const hold = Number(argAfter('--hold', 0));
+  const VALUED = new Set(['--scroll', '--below', '--hold']);
   const labels = args.filter((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1]));
 
   if (args.includes('--labels') || !labels.length) {
@@ -49,7 +51,8 @@ async function main() {
   const below = Number(argAfter('--below', 0));
 
   for (const label of labels) {
-    const spot = await tapText(label, {timeoutMs: 15000, trace, scroll, tapOffsetY: below});
+    const spot = await tapText(label, {timeoutMs: 15000, trace, scroll, tapOffsetY: below, holdMs: hold});
+    if (hold) trace(`  (held ${hold}ms)`);
     if (below) trace(`  (tapped ${below}px below, at ${spot.x},${spot.y + below})`);
     /* Let the tap land and the next screen draw before looking again. */
     await sleep(700);

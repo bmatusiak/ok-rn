@@ -1,5 +1,5 @@
-import React, {useCallback, useRef, useState} from 'react';
-import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
+import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {VaultList} from '../ui/VaultList';
@@ -39,6 +39,9 @@ import type {EmuSession} from '../hooks/useOkEmu';
 
 /** How long a copied secret stays on the clipboard. */
 const CLIPBOARD_TTL_MS = 45000;
+
+/** How often expired vault sessions are swept. The web app's figure. */
+const REAP_MS = 30000;
 
 /** Long enough to notice, short enough not to be left on screen. */
 const REVEAL_MS = 15000;
@@ -89,6 +92,38 @@ export function CryptoScreen({
   const [opened, setOpened] = useState<string | null>(null);
   /* Bumped after a save so the stored list re-reads. */
   const [vaultEpoch, setVaultEpoch] = useState(0);
+
+  /*
+   * SESSIONS EXPIRE ON A CLOCK, NOT ON THE NEXT USE. The library's vault
+   * refuses an expired entry when asked, but keeps the key material until
+   * something asks - it deliberately owns no timer (vault.js: a library
+   * interval would keep a host process alive). The web app reaps every
+   * 30 s; this does the same, and again when the app comes back to the
+   * foreground, since a phone in a pocket for an hour should come back with
+   * its 30-minute sessions gone. A reap that evicted something re-reads the
+   * list so the "session active" marker goes away.
+   */
+  useEffect(() => {
+    let alive = true;
+    const reap = async () => {
+      try {
+        const {okcrypto} = await getKey();
+        const gone = okcrypto.deviceVault.reap();
+        if (alive && gone.length) setVaultEpoch(n => n + 1);
+      } catch {
+        /* No key yet; nothing cached to expire. */
+      }
+    };
+    const timer = setInterval(reap, REAP_MS);
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active') void reap();
+    });
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      sub.remove();
+    };
+  }, [getKey]);
 
   /* age: an identity is derived, a file is text on the way in and out. */
   const [ageLabel, setAgeLabel] = useState('');

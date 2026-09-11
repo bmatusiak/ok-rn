@@ -115,10 +115,10 @@ export function useConfigMode(emu: Holder): ConfigMode {
     const probe = async () => {
       try {
         const {device} = await getKey();
-        await device.readLabels({timeoutMs: 2500});
-        if (!stopped) setReady(true);
+        /* The library's own probe: a label read, which config mode allows. */
+        if ((await device.configModeReady({timeoutMs: 2500})) && !stopped) setReady(true);
       } catch {
-        /* Still locked, or busy. Ask again. */
+        /* No key yet. Ask again. */
       }
     };
 

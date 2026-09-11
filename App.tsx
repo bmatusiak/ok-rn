@@ -3,6 +3,7 @@ import {Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
 import {Btn, StatusPill} from './src/ui/components';
+import OkEmu from './src/transport/OkEmu';
 import {Drawer} from './src/ui/Drawer';
 import {Logo} from './src/ui/Logo';
 import {theme} from './src/ui/theme';
@@ -235,6 +236,27 @@ function Shell() {
         ) : null}
 
         {/*
+          THE SOFT KEY HALTING IS SAID ON EVERY TAB, not only on This Key.
+
+          A two-second hold on button 3 is the firmware's lock gesture, and on
+          a real key it restarts the device; the emulator's thread only exits
+          through the reset trap and cannot be replaced in this process
+          (FINDING-lock-gesture-ends-the-soft-key.md). Every other tab kept
+          drawing its keypad over a firmware that was gone, and a tap there
+          did nothing with nothing said. The way back is an app restart, so
+          that is offered wherever the halt is seen.
+        */}
+        {keys.backend === 'embedded' && keys.soft.state === 'halted' ? (
+          <View style={styles.testing}>
+            <Text style={styles.testingText}>
+              The soft key has stopped — its firmware thread cannot be replaced
+              in this process. Nothing is lost.
+            </Text>
+            <Btn title="Restart the app" tone="primary" onPress={() => OkEmu.restartApp()} />
+          </View>
+        ) : null}
+
+        {/*
           Presence is asked for by the KEY, so the prompt lives above the views
           rather than inside one. A browser says "press the button on your
           security key"; the key has to say where, wherever you are looking.
@@ -329,6 +351,7 @@ function Shell() {
             */
             <TestingScreen
               emu={keys.soft}
+              hard={keys.hard}
               hid={hid}
               usbEntries={usbLog.entries}
               clearUsb={usbLog.clear}

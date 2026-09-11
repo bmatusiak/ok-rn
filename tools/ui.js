@@ -114,7 +114,7 @@ function swipeDown(xml) {
  * error names what WAS on screen, so a wrong screen, a renamed control and an
  * app that never loaded read differently.
  */
-async function tapText(label, {timeoutMs = 15000, trace = noop, scroll = 0, tapOffsetY = 0} = {}) {
+async function tapText(label, {timeoutMs = 15000, trace = noop, scroll = 0, tapOffsetY = 0, holdMs = 0} = {}) {
   const deadline = Date.now() + timeoutMs;
   const started = Date.now();
   let waited = false;
@@ -128,7 +128,13 @@ async function tapText(label, {timeoutMs = 15000, trace = noop, scroll = 0, tapO
       const took = Date.now() - started;
       trace(`tapped "${label}" at ${spot.x},${spot.y}`
         + (took > 1000 ? ` after ${(took / 1000).toFixed(1)}s` : ''));
-      adb(['shell', 'input', 'tap', String(spot.x), String(spot.y + tapOffsetY)]);
+      /* A hold is a swipe that goes nowhere: the same coordinates, for holdMs. */
+      if (holdMs > 0) {
+        adb(['shell', 'input', 'swipe', String(spot.x), String(spot.y + tapOffsetY),
+          String(spot.x), String(spot.y + tapOffsetY), String(holdMs)]);
+      } else {
+        adb(['shell', 'input', 'tap', String(spot.x), String(spot.y + tapOffsetY)]);
+      }
       return spot;
     }
 
