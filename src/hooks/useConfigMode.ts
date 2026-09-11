@@ -1,6 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {useActiveKey} from './KeyContext';
-import OkEmu from '../transport/OkEmu';
 
 /*
  * Getting the device into config mode, and knowing when it is there.
@@ -40,15 +39,21 @@ export type ConfigMode = {
   enter: () => Promise<void>;
 };
 
-/*
- * Takes no argument any more.
+/**
+ * Takes the HANDLE of the key it is on, for its hold.
  *
- * It used to take the device state, to watch for the lock that proves the hold
- * landed. The library does that now - device.enterConfigMode() confirms it by
- * probing rather than by watching a broadcast - so a parameter nothing reads
- * would be a parameter that could be passed wrongly with no effect.
+ * It took nothing for a while - the device state it once watched is the
+ * library's business now - and reached for OkEmu.holdTicks directly, so with
+ * a hard key selected the config-mode gesture went to the SOFT key: the same
+ * blend the slot editor, the backup screen and the BLE bridge had. The
+ * gesture band is reached on a hard key through its console (6#80), which is
+ * what its handle's holdTicks sends; the screen passes the handle it is on.
  */
-export function useConfigMode(): ConfigMode {
+type Holder = {
+  holdTicks: (button: number, ticks: number, opts?: {allowGesture?: boolean}) => Promise<void>;
+};
+
+export function useConfigMode(emu: Holder): ConfigMode {
   /* The ACTIVE key. This runs for whichever one is selected. */
   const getKey = useActiveKey();
 
@@ -79,7 +84,7 @@ export function useConfigMode(): ConfigMode {
        */
       await device.enterConfigMode({
         hold: (button: number, ticks: number) =>
-          OkEmu.holdTicks(button, ticks, {allowGesture: true}),
+          emu.holdTicks(button, ticks, {allowGesture: true}),
         attempts: 1,
         lockMs: LOCK_TIMEOUT_MS,
       });
@@ -93,7 +98,7 @@ export function useConfigMode(): ConfigMode {
     } finally {
       setEntering(false);
     }
-  }, [getKey]);
+  }, [emu, getKey]);
 
   /*
    * Discover the unlock, because the device will not announce it.

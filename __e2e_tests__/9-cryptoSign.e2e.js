@@ -357,7 +357,7 @@ module.exports = function cryptoSign({describe, it}) {
 
       const tap = serialTap();
       try {
-        const signature = await okcrypto.composite_sign(SLOT, payload, {
+        const signature = await okcrypto.sign(SLOT, payload, {
           timeoutMs: 25000,
           confirm: ({digits, isAnswered}) => {
             assert.equal(
@@ -413,7 +413,7 @@ module.exports = function cryptoSign({describe, it}) {
       }
 
       await delay(1500);
-      const again = await okcrypto.composite_sign(SLOT, shared.payload, {
+      const again = await okcrypto.sign(SLOT, shared.payload, {
         timeoutMs: 25000,
         confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
       });
@@ -444,7 +444,7 @@ module.exports = function cryptoSign({describe, it}) {
       await delay(6000);   /* let the previous attempt's 5s wipe timer pass */
       const payload = Uint8Array.from([0x11, 0x22, 0x33]);
       let pressed = null;
-      const signature = await okcrypto.composite_sign(SLOT, payload, {
+      const signature = await okcrypto.sign(SLOT, payload, {
         timeoutMs: 25000,
         confirm: async ({digits, isAnswered}) => {
           pressed = await pressChallenge(digits, log, isAnswered);
@@ -493,7 +493,7 @@ module.exports = function cryptoSign({describe, it}) {
       const tap = serialTap();
       let refused = null;
       try {
-        await okcrypto.composite_sign(SLOT, Uint8Array.from([0xaa, 0xbb, 0xcc]), {
+        await okcrypto.sign(SLOT, Uint8Array.from([0xaa, 0xbb, 0xcc]), {
           timeoutMs: 6000,
           confirm: null,          // nobody touches the device
         });

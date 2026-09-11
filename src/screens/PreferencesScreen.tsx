@@ -117,7 +117,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const config = useConfigMode();
+  const config = useConfigMode(emu);
   const locked = emu.device !== 'unlocked';
 
   useEffect(() => {
