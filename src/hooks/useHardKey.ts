@@ -85,6 +85,10 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
           setVersion(info.version ?? '');
         } else if (parsed.state === 'uninitialized') {
           setDevice('uninitialized');
+        } else if (parsed.state === 'bootloader') {
+          /* After the firmware-update kick; only sendFirmware makes sense now. */
+          setDevice('bootloader');
+          setIdentity(null);
         } else if (parsed.state === 'locked') {
           const info = device_.version.parseStatus(String(parsed.raw));
           setLockedModel(info.model === 'duo' ? 'duo' : 'classic');

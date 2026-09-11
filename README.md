@@ -93,7 +93,13 @@ place the answers mean anything: the firmware is C over JNI and does not exist
 in Node or in a Jest environment. `--only` takes suite function names and
 restores itself afterwards, so a full run is what happens by default.
 
-Set `ANDROID_SERIAL` when more than one device is attached.
+Set `ANDROID_SERIAL` when more than one device is attached - to the phone THE
+KEY IS IN, not the one that happens to be cabled to the PC. The bench phone
+for the hard key is a Pixel 6a on wireless adb (its port changes per
+session; `adb mdns services` finds it); a Samsung on the same adb was
+pinned by mistake for a morning and its stale USB history read as "the key
+fell off the bus" (`FINDING-doctor-said-attached-for-a-key-that-was-not-on-the-bus.md`,
+correction). `node tools/doctor.js` prints the serial next to its verdict.
 
 Firmware built with the DEBUG gate off — as it ships — is staged with
 `OKEMU_PRODUCTION=1`.
@@ -262,17 +268,50 @@ node tools/tap.js Menu Slots    # drive one screen without a full run
 The bench phone is arm64. An older 32-bit handset needs `armeabi-v7a` in the
 APK or it fails to install with `INSTALL_FAILED_NO_MATCHING_ABIS`.
 
+## Since the audit (2026-09-11)
+
+Everything the desktop and web apps offer that this app did not, from a
+side-by-side inventory of both, and the half-done things the FINDINGs named:
+
+- **Keys tab**: Signature / Decryption / Backup roles on a raw key, "also the
+  backup key" on a PGP one (`MODIFIER` bits the library had and the screen
+  never set); **OpenSSH import** - the library reads the openssh-key-v1
+  container itself (`node-onlykey-lib/src/device/openssh.js`, sshpk does not
+  run under Hermes) and `device.loadSshKey` loads one key into one slot.
+  cryptoSign verifies the device's signature against the fixture's public key.
+- **Settings**: change a PIN on a key that already has one (config mode, the
+  firmware's rule); a **Permissions** section that shows Bluetooth and
+  notification state and can ask again or open the system page.
+- **Messages**: look a recipient's public key up on Keybase, ProtonMail or a
+  URL - on the press only, never on its own (`src/keySearch.ts`).
+- **Crypto**: the vault reaps expired sessions every 30 s and on resume;
+  "delete everything" behind a confirm.
+- **Keypads** say when a press would be dropped: the soft key from its LED,
+  a hard key from a 20 s timer after a relayed FIDO ceremony.
+- **This Key**: the halt banner offers the restart from every tab; the hard
+  key counts ticks under a finger like the soft one; restart and wipe go
+  through the library; a locked hard DUO is drawn as a DUO (the firmware says
+  INITIALIZED-D once a second - untested on a hard DUO, the bench has a Classic).
+- **DUO screens**: 24 slots, the typed PIN form, model from the build.
+- **Security**: a foreground service with a notification while the GATT
+  server is up (`FidoGattService.kt`); `rpId` filled from the CTAP2 payload
+  with the library's CBOR decoder. The BLE path itself is only exercised by a
+  real paired desktop, which the bench has not.
+- **Firmware update**: library-first (`device.requestFirmwareUpdate`,
+  `device.sendFirmware`, tested against a fake bootloader) and a screen on
+  the Testing tab that fetches a signed file from its release URL and gates
+  the two irreversible steps behind a typed word. **Not yet run on a key** -
+  the bench key is a developer build nobody can re-image; a production key
+  is the last step.
+- **Tools**: `doctor.js` names the phone it read; `e2e.js` fails at once on a
+  wrong suite name; the hard-key suite skips, by name, when no key is attached.
+
 ## Known gaps
 
-- **`rpId` is always empty on BLE request events.** A CBOR decoder exists in the
-  library; it is not wired into the native event path.
-- **The DUO has no screens.** The library handles it — 24 slots, four profiles,
-  its own PIN encoding (numerals 0-9, 7-16 of them, settled from the firmware) —
-  the matrix builds and sweeps a DUO emulator, and the screens still draw a
-  Classic.
-- **No foreground service.** The GATT server will be throttled by the OS during
-  a long desktop session; the permissions are declared and the service is not
-  written.
-- **iOS has never been compiled** — see [`ios/README.md`](ios/README.md). Two of
+- **Firmware update has not touched hardware.** See above; the screen and the
+  library say so in their own text until a production key has taken one.
+- **The BLE security-key path** (`rpId`, the foreground service) is verified
+  by dumpsys and jest, not by a WebAuthn ceremony from a paired desktop.
+- **iOS has never been compiled** - see [`ios/README.md`](ios/README.md). Two of
   six native modules exist. Its USB path deliberately rejects, since CoreHID is
   Swift-only and needs entitlements.

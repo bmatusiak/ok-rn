@@ -14,7 +14,8 @@
  * be running perfectly while the device is locked and refuses everything, and a
  * hard key can be plugged in and claimed while sitting behind a PIN.
  */
-export type DeviceState = 'unknown' | 'uninitialized' | 'locked' | 'unlocked';
+/** 'bootloader' is a hard key that took a firmware-update kick and is waiting for blocks. */
+export type DeviceState = 'unknown' | 'uninitialized' | 'locked' | 'unlocked' | 'bootloader';
 
 /**
  * What the TRANSPORT is doing.

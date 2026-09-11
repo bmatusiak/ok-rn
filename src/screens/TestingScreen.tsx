@@ -5,6 +5,8 @@ import OkEmu from '../transport/OkEmu';
 import {theme} from '../ui/theme';
 import {E2EScreen} from './E2EScreen';
 import {UsbScreen} from './UsbScreen';
+import {FirmwareScreen} from './FirmwareScreen';
+import type {Backend} from '../hooks/keySession';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {HardKeySession} from '../hooks/useHardKey';
 import {getOnlyKey} from '../onlykey';
@@ -35,6 +37,8 @@ const TEST_PIN = '1234561';
 export function TestingScreen({
   emu,
   hard,
+  active,
+  backend,
   hid,
   usbEntries,
   clearUsb,
@@ -42,6 +46,9 @@ export function TestingScreen({
   emu: EmuSession;
   /** The hard key, for the one bench operation this tab offers on it. */
   hard: HardKeySession;
+  /** The ACTIVE key and which it is - the firmware screen acts on it, and only when it is the hard one. */
+  active: EmuSession;
+  backend: Backend;
   hid: UsbSession;
   usbEntries: LogEntry[];
   clearUsb: () => void;
@@ -185,6 +192,8 @@ export function TestingScreen({
           {hardWipe ? <Text style={styles.note}>{hardWipe}</Text> : null}
         </Section>
       ) : null}
+
+      {hard.state === 'running' ? <FirmwareScreen emu={active} backend={backend} /> : null}
 
       <E2EScreen />
 

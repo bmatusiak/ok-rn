@@ -39,7 +39,7 @@ type Options = {
  * running perfectly while the device is locked and refuses everything, which is
  * exactly the state that used to produce "nothing works and nothing says why".
  */
-export type DeviceState = 'unknown' | 'uninitialized' | 'locked' | 'unlocked';
+export type DeviceState = 'unknown' | 'uninitialized' | 'locked' | 'unlocked' | 'bootloader';
 
 export type EmuState =
   | 'unavailable'

@@ -352,6 +352,8 @@ function Shell() {
             <TestingScreen
               emu={keys.soft}
               hard={keys.hard}
+              active={keys.key}
+              backend={keys.backend}
               hid={hid}
               usbEntries={usbLog.entries}
               clearUsb={usbLog.clear}
