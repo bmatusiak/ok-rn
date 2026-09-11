@@ -73,6 +73,13 @@ TaskStop when the device work is done; do not leave two running.
   Metro took the port, the first kept the phone, every bundle took 77 s.]
 - Never edit `metro.config.js` to chase speed - it invalidates the transform
   cache and makes the next bundle a cold one. Revert with `git checkout`.
+- A NEW IMAGE in `assets/` needs Metro restarted before it will render. Its
+  asset registry is built at server start, so a `require` of a file added
+  since then draws nothing, silently, with no error in logcat. [Spent a
+  round of screenshots on a blank gap; proved it by pointing the same
+  `<Image>` at an asset Metro already knew, which rendered.] Restart it -
+  kill the one process, start one, `curl localhost:8081/status` - never
+  leave two.
 - Before killing anything, `doctor.js` lists strays. Metro's own jest-worker
   children are NOT strays; a jest-worker whose parent is a finished test run
   is. [Ten of those starved Metro for an afternoon.]
