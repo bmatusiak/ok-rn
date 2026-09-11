@@ -2,6 +2,7 @@ import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
+import {lookup, type Found, type Source} from '../keySearch';
 import {bytes as okbytes} from 'node-onlykey-lib';
 /*
  * The crypto subtree is NOT on the library's root export, on purpose - keeping
@@ -56,6 +57,15 @@ const KEY_LABEL: Record<Mode, string> = {
   verify: "Signer's public key",
 };
 
+/* Where a public key can be looked up - the web app's search page's three. */
+const SOURCES: Source[] = ['keybase', 'protonmail', 'url'];
+const SOURCE_LABEL: Record<Source, string> = {keybase: 'Keybase', protonmail: 'ProtonMail', url: 'URL'};
+const SOURCE_PLACEHOLDER: Record<Source, string> = {
+  keybase: 'username or name',
+  protonmail: 'address, or 0x + key id',
+  url: 'https://…/key.asc',
+};
+
 /** RSA slots 1-4 are where a composite key lives, as the reference CLI's setpqc puts it. */
 const RSA_SLOTS = ['1', '2', '3', '4'] as const;
 
@@ -88,6 +98,33 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
   const [input, setInput] = useState('');
   const [output, setOutput] = useState('');
   const [status, setStatus] = useState<string | null>(null);
+
+  /*
+   * ONLINE LOOKUP, and only on the press. The web app searches Keybase and
+   * ProtonMail for a recipient's key; this app is air-gapped by default, so
+   * the network is touched exactly when "Look up online" is pressed and
+   * never because a screen opened or a box changed (src/keySearch.ts). One
+   * match fills the key box; several are listed for the person to pick.
+   */
+  const [lookupSource, setLookupSource] = useState<Source>('keybase');
+  const [lookupQuery, setLookupQuery] = useState('');
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [lookupFound, setLookupFound] = useState<Found[] | null>(null);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const runLookup = useCallback(async () => {
+    setLookupBusy(true);
+    setLookupError(null);
+    setLookupFound(null);
+    try {
+      const found = await lookup(lookupSource, lookupQuery, url => fetch(url));
+      setLookupFound(found);
+      if (found.length === 1) setKeyText(found[0].armored);
+    } catch (e) {
+      setLookupError(String((e as Error)?.message ?? e));
+    } finally {
+      setLookupBusy(false);
+    }
+  }, [lookupSource, lookupQuery]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -381,6 +418,50 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
       </Section>
 
       <Section title={KEY_LABEL[mode]}>
+        {mode === 'encrypt' || mode === 'verify' ? (
+          <View style={styles.lookup}>
+            <Text style={styles.lookupHint}>
+              Paste the key below, or look it up online — only when you press
+              the button; this app never goes online on its own.
+            </Text>
+            <Segmented
+              value={SOURCE_LABEL[lookupSource]}
+              options={SOURCES.map(s => SOURCE_LABEL[s])}
+              onChange={label => setLookupSource(SOURCES.find(s => SOURCE_LABEL[s] === label) ?? 'keybase')}
+            />
+            <TextInput
+              style={styles.input}
+              value={lookupQuery}
+              onChangeText={setLookupQuery}
+              placeholder={SOURCE_PLACEHOLDER[lookupSource]}
+              placeholderTextColor={theme.textDim}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <Btn
+              title={lookupBusy ? 'Looking…' : 'Look up online'}
+              disabled={lookupBusy || !lookupQuery.trim()}
+              onPress={() => void runLookup()}
+            />
+            {lookupError ? <Text style={styles.lookupError}>{lookupError}</Text> : null}
+            {lookupFound && lookupFound.length === 0 ? (
+              <Text style={styles.lookupHint}>Nothing found there.</Text>
+            ) : null}
+            {lookupFound && lookupFound.length > 1
+              ? lookupFound.map(f => (
+                  <Btn
+                    key={f.where}
+                    title={`Use ${f.label}`}
+                    tone={keyText === f.armored ? 'primary' : 'default'}
+                    onPress={() => setKeyText(f.armored)}
+                  />
+                ))
+              : null}
+            {lookupFound && lookupFound.length === 1 ? (
+              <Text style={styles.lookupHint}>Filled in from {lookupFound[0].where}</Text>
+            ) : null}
+          </View>
+        ) : null}
         <TextInput
           style={[styles.input, styles.key]}
           value={keyText}
@@ -515,6 +596,9 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   key: {minHeight: 90, fontFamily: 'monospace', fontSize: 11},
+  lookup: {marginBottom: 10, gap: 8},
+  lookupHint: {color: theme.textDim, fontSize: 11, lineHeight: 16},
+  lookupError: {color: theme.warn, fontSize: 12, lineHeight: 17},
   body_input: {minHeight: 110},
 
   output: {
