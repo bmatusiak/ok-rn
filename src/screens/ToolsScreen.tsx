@@ -91,22 +91,31 @@ const ALREADY_HERE: Tool[] = [
   },
   {
     /*
-     * CAREFUL WITH THIS ONE. It has been wrong twice.
+     * CAREFUL WITH THIS ONE. It has now been wrong THREE times, in both
+     * directions, and the pattern is worth naming because it will happen
+     * again to whatever is half-built next.
      *
-     * It said key generation was blocked for a long time after it started
-     * working. Correcting that, I then said generation "runs on the phone" and
-     * pointed here at Messages - which was a second wrong claim an hour after
-     * the first, because generation runs in the TEST SUITE and no screen offers
-     * it. Messages does the message half, with a pasted key.
+     *   1. It said key generation was blocked, long after it worked.
+     *   2. Corrected to "runs on the phone", pointing at Messages - wrong
+     *      within the hour, because generation ran only in the test suite
+     *      and no screen offered it.
+     *   3. Corrected to "no screen yet, use the web page" - and it still
+     *      said that after Messages grew a Generate button AND a Load onto
+     *      the key button beside it. That sent people to a web page for
+     *      something the app in their hand does BETTER: the web page cannot
+     *      load the blob onto the device at all, and ends by printing a
+     *      command line for the user to run themselves.
      *
-     * So this says exactly what a person can reach, and names what they cannot.
+     * Every correction was written from what had been true a moment earlier.
+     * So the rule for this entry: open MessagesScreen.tsx and look for the
+     * buttons before editing this sentence.
      */
     label: 'PGP-PQC',
     detail:
       'Composite post-quantum PGP — Ed25519 with ML-DSA to sign, X25519 with ' +
-      'ML-KEM to encrypt. Messages reads and writes these with a key you paste. ' +
-      'Generating one runs on the phone but has no screen yet, so for now the ' +
-      'web page is where you make the key.',
+      'ML-KEM to encrypt. Messages generates one, loads it onto the key, and ' +
+      'signs and decrypts through the key afterwards. The web page cannot do ' +
+      'the loading — it prints a command line for you to run instead.',
     here: 'Messages',
     href: `${WEB_APP}/pgp-pqc`,
   },
