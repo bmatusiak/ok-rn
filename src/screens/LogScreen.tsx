@@ -1,7 +1,9 @@
-import React, {useState} from 'react';
-import {ScrollView, StyleSheet} from 'react-native';
+import React, {useMemo, useState} from 'react';
+import {ScrollView, StyleSheet, Text} from 'react-native';
 import {Btn, LogList, Section, Segmented} from '../ui/components';
+import {theme} from '../ui/theme';
 import type {LogEntry} from '../hooks/useLog';
+import {useBackend, useKeyName} from '../hooks/KeyContext';
 
 /*
  * NAMED FOR THE DEVICE, not for the layer.
@@ -23,6 +25,26 @@ export type LogBuffers = Record<
 >;
 
 /**
+ * THE CONSOLE is a view, not a fifth buffer.
+ *
+ * The firmware's debug console - what it prints on the SEREMU interface -
+ * already lands in the active key's buffer as `[fw]` lines, between the hex
+ * of every other interface. Reading it there means reading past the hex.
+ * This view is the same buffer with only those lines, the tag stripped,
+ * OLDEST FIRST, because a console is read top to bottom: the echo of a
+ * press comes after the press.
+ *
+ * Output only, deliberately. The console is written to by the library's
+ * press and probe paths, which know its grammar; a free-text box here would
+ * be a way to send `0C` (wipe) by accident, and nothing above the wire has
+ * a reason to want that.
+ */
+const VIEWS = [...SOURCES, 'Console'] as const;
+type View = (typeof VIEWS)[number];
+
+const FW_TAG = '[fw] ';
+
+/**
  * Every log, in one place.
  *
  * One source at a time rather than a merged stream, because the three buffers
@@ -33,8 +55,23 @@ export type LogBuffers = Record<
  * this screen.
  */
 export function LogScreen({buffers}: {buffers: LogBuffers}) {
-  const [source, setSource] = useState<Source>('Soft Key');
+  const [view, setView] = useState<View>('Soft Key');
+  const backend = useBackend();
+  const keyName = useKeyName();
+
+  /* The console is whichever key is active; the other sources are themselves. */
+  const source: Source = view === 'Console'
+    ? (backend === 'usb' ? 'Hard Key' : 'Soft Key')
+    : view;
   const active = buffers[source];
+
+  const consoleLines = useMemo(() => {
+    if (view !== 'Console') return [];
+    return active.entries
+      .filter(e => e.text.startsWith(FW_TAG))
+      .map(e => ({...e, text: e.text.slice(FW_TAG.length)}))
+      .reverse();
+  }, [active.entries, view]);
 
   return (
     <ScrollView
@@ -42,12 +79,26 @@ export function LogScreen({buffers}: {buffers: LogBuffers}) {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
       <Section
-        title={source}
+        title={view === 'Console' ? `Console — ${keyName}` : view}
         right={<Btn title="Clear" onPress={active.clear} />}>
-        <Segmented options={SOURCES} value={source} onChange={setSource} />
+        <Segmented options={VIEWS} value={view} onChange={setView} />
+        {view === 'Console' ? (
+          <Text style={styles.hint}>
+            What the {keyName}'s firmware prints on its debug console, oldest
+            first. Read-only: presses and probes write to it through the
+            library. Clear empties the {source} log, which this is a view of.
+          </Text>
+        ) : null}
       </Section>
-      <Section title="Traffic">
-        <LogList entries={active.entries} />
+      <Section title={view === 'Console' ? 'Output' : 'Traffic'}>
+        {view === 'Console' && consoleLines.length === 0 ? (
+          <Text style={styles.hint}>
+            Nothing yet. A production build prints here too; only a developer
+            build reads back.
+          </Text>
+        ) : (
+          <LogList entries={view === 'Console' ? consoleLines : active.entries} />
+        )}
       </Section>
     </ScrollView>
   );
@@ -56,4 +107,5 @@ export function LogScreen({buffers}: {buffers: LogBuffers}) {
 const styles = StyleSheet.create({
   root: {flex: 1},
   content: {paddingBottom: 4},
+  hint: {color: theme.textDim, fontSize: 12, lineHeight: 18, marginTop: 8},
 });
