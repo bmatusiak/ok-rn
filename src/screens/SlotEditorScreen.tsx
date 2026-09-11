@@ -16,6 +16,7 @@ import {Segmented} from '../ui/components';
 import type {EmuSession} from '../hooks/useOkEmu';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {useSecureScreen} from '../hooks/useSecureScreen';
+import {generatePassword} from '../passwordGenerator';
 
 /*
  * One slot, in full.

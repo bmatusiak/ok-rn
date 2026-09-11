@@ -114,6 +114,20 @@ export function SetupScreen({
 
   const [kind, setKind] = useState<Kind>(mode === 'change' ? (only ?? 'primary') : 'primary');
   const [stage, setStage] = useState<Stage>('choose');
+  /*
+   * JUST THE PRIMARY PIN, which is the desktop's "advanced setup" toggle
+   * inverted (app.html:68 hides the second-profile and self-destruct PINs
+   * unless it is ticked). This wizard always asked for all three, so
+   * setting up a key meant choosing, confirming and remembering three PINs
+   * before it could be used once - and two of them are for situations most
+   * people will never be in.
+   *
+   * Neither is lost by skipping: both can be set later from Settings, in
+   * config mode, which is the path a key that already has a PIN has to take
+   * anyway. Only in setup mode - a change-PIN visit asks for exactly the
+   * one kind it was sent for.
+   */
+  const [simple, setSimple] = useState(true);
   const [pin, setPin] = useState('');
   const [again, setAgain] = useState('');
   const [steps, setSteps] = useState<string[]>([]);
@@ -154,14 +168,14 @@ export function SetupScreen({
       setStage('done');
       return;
     }
-    const next = KINDS[KINDS.indexOf(from) + 1];
+    const next = simple ? undefined : KINDS[KINDS.indexOf(from) + 1];
     if (next) {
       setKind(next);
       setStage('choose');
     } else {
       setStage('passphrase');
     }
-  }, [mode]);
+  }, [mode, simple]);
 
   const apply = useCallback(
     async (digits: string) => {
@@ -378,6 +392,32 @@ export function SetupScreen({
         </Text>
         {stage === 'choose' ? (
           <Text style={styles.blurb}>{BLURB[kind]}</Text>
+        ) : null}
+
+        {stage === 'choose' && mode === 'setup' && kind === 'primary' ? (
+          <View style={styles.action}>
+            <View style={styles.cell}>
+              <Btn
+                title="Just this one"
+                tone={simple ? 'primary' : 'default'}
+                onPress={() => setSimple(true)}
+              />
+            </View>
+            <View style={styles.cell}>
+              <Btn
+                title="All three PINs"
+                tone={simple ? 'default' : 'primary'}
+                onPress={() => setSimple(false)}
+              />
+            </View>
+          </View>
+        ) : null}
+        {stage === 'choose' && mode === 'setup' && kind === 'primary' ? (
+          <Text style={styles.blurb}>
+            {simple
+              ? 'A second profile and a self-destruct PIN can be added later from Settings. Most keys never need either.'
+              : 'You will be asked for a second-profile PIN and a self-destruct PIN as well.'}
+          </Text>
         ) : null}
 
         <View style={styles.dots}>
