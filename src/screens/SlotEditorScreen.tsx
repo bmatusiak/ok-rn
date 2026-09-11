@@ -12,6 +12,7 @@ import {Btn} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useActiveKey} from '../hooks/KeyContext';
 import {useKeyboardLayout} from '../hooks/useKeyboardLayout';
+import {Segmented} from '../ui/components';
 import type {EmuSession} from '../hooks/useOkEmu';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {useSecureScreen} from '../hooks/useSecureScreen';
@@ -38,11 +39,6 @@ const GROUPS: {title: string; note?: string; fields: string[]}[] = [
   {
     title: 'Login',
     fields: ['label', 'url', 'username', 'password'],
-  },
-  {
-    title: 'Two-factor',
-    note: 'Entered after the password, if the slot has one.',
-    fields: ['tfaType', 'totpKey', 'yubikey'],
   },
   {
     title: 'Typing',
@@ -86,6 +82,30 @@ const REVEAL_MS = 15000;
 /** Fields never shown in the clear until someone asks. */
 const SECRET = new Set(['password', 'totpKey', 'yubikey']);
 
+/*
+ * THE FIELD TABLE IS THE LIBRARY'S. Each input takes its length and its
+ * keyboard from slotConfig.SLOT_FIELDS rather than from a second list here:
+ * a label is 16 characters and a URL 56 because the firmware says so, and a
+ * digit field wants a numeric keyboard because it is one digit.
+ */
+const SPEC = okdevice.slotConfig.FIELD_BY_NAME as Map<string, {encoding: string; maxLength?: number}>;
+const {ENCODING} = okdevice.slotConfig;
+
+/**
+ * Two-factor, as three shapes rather than three boxes.
+ *
+ * The reference apps show tfaType as free text where the device wants one of
+ * two exact strings, totpKey as raw hex where every authenticator hands out
+ * base32, and the Yubico credential as one box where it is three fields in
+ * two encodings - and the desktop app's base32 decoder turns a bad character
+ * into garbage hex silently. The library validates all three
+ * (device.totpFields, device.yubikeyFields), so this asks for what a person
+ * actually has and lets a bad secret fail BY NAME before anything is written.
+ */
+type TfaMode = 'none' | 'totp' | 'yubico';
+const TFA_MODES: readonly TfaMode[] = ['none', 'totp', 'yubico'] as const;
+const TFA_TITLE: Record<TfaMode, string> = {none: 'none', totp: 'TOTP', yubico: 'Yubico OTP'};
+
 const LABELS: Record<string, string> = {
   label: 'Label',
   url: 'URL',
@@ -103,6 +123,10 @@ const LABELS: Record<string, string> = {
   nextKey4: 'Before username',
   nextKey5: 'Before 2FA',
   typeSpeed: 'Typing speed',
+  totpSecret: 'TOTP secret (base32)',
+  yubiPublicId: 'Yubico public id (modhex)',
+  yubiPrivateId: 'Yubico private id (hex)',
+  yubiSecretKey: 'Yubico secret key (hex)',
 };
 
 type Values = Record<string, string>;
@@ -126,6 +150,9 @@ export function SlotEditorScreen({
   const {layout} = useKeyboardLayout();
 
   const [values, setValues] = useState<Values>({});
+  const [tfa, setTfa] = useState<TfaMode>('none');
+  const [totpSecret, setTotpSecret] = useState('');
+  const [yubi, setYubi] = useState({publicId: '', privateId: '', secretKey: ''});
   const [captured, setCaptured] = useState<string[] | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<null | 'reading' | 'saving'>(null);
@@ -226,23 +253,59 @@ export function SlotEditorScreen({
 
   const save = useCallback(async () => {
     const dirty = Object.entries(values).filter(([, v]) => v !== '');
-    if (!dirty.length) {
-      setStatus('Nothing to save.');
-      return;
-    }
     setBusy('saving');
     setError(null);
     setStatus(null);
     try {
       const {device} = await getKey();
-      const applied = await device.setSlot(slot.id, Object.fromEntries(dirty));
+      /*
+       * Encoded by the library, which THROWS on a bad base32 character or a
+       * Yubico field of the wrong length - before a byte reaches the key.
+       * The desktop app writes garbage hex in the same situation.
+       */
+      const toWrite: Record<string, unknown> = Object.fromEntries(dirty);
+      if (tfa === 'totp' && totpSecret.trim()) {
+        Object.assign(toWrite, device.totpFields(totpSecret));
+      } else if (tfa === 'yubico' && (yubi.publicId || yubi.privateId || yubi.secretKey)) {
+        Object.assign(toWrite, device.yubikeyFields(yubi));
+      }
+      if (!Object.keys(toWrite).length) {
+        setStatus('Nothing to save.');
+        return;
+      }
+      const applied = await device.setSlot(slot.id, toWrite);
       setStatus(`Saved ${applied.length} field(s).`);
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
       setBusy(null);
     }
-  }, [getKey, slot.id, values]);
+  }, [getKey, slot.id, tfa, totpSecret, values, yubi]);
+
+  /**
+   * Wipe ONE field, or the whole slot. The library has had per-field wipe
+   * (OKWIPESLOT with a field byte) since before this screen; the screen told
+   * people to wipe the whole slot instead.
+   */
+  const wipe = useCallback(
+    async (field: string | null) => {
+      setBusy('saving');
+      setError(null);
+      setStatus(null);
+      try {
+        const {device} = await getKey();
+        await device.wipeSlot(slot.id, field);
+        setStatus(field ? `${LABELS[field] ?? field} wiped on the key.` : `Slot ${slot.id} wiped on the key.`);
+        if (field) set(field, '');
+        else setValues({});
+      } catch (e) {
+        setError(String((e as Error)?.message ?? e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [getKey, slot.id],
+  );
 
   /**
    * Copy a captured value, without the system announcing it.
@@ -323,6 +386,7 @@ export function SlotEditorScreen({
           disabled={busy !== null}
           onPress={save}
         />
+        <Btn title="Wipe slot" tone="danger" disabled={busy !== null} onPress={() => wipe(null)} />
       </View>
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
@@ -350,14 +414,51 @@ export function SlotEditorScreen({
               revealed={revealed.has(name)}
               onToggle={() => toggleReveal(name)}
               onChange={text => set(name, text)}
+              onWipe={() => wipe(name)}
             />
           ))}
         </View>
       ))}
 
+      <View style={styles.group}>
+        <Text style={styles.groupTitle}>Two-factor</Text>
+        <Text style={styles.groupNote}>
+          Entered after the password, if the slot has one. A TOTP secret is the
+          base32 an authenticator app shows; a Yubico credential is the three
+          values from the personalisation tool.
+        </Text>
+        <Segmented
+          options={TFA_MODES.map(m => TFA_TITLE[m]) as readonly string[]}
+          value={TFA_TITLE[tfa]}
+          onChange={title => setTfa(TFA_MODES.find(m => TFA_TITLE[m] === title) ?? 'none')}
+        />
+        {tfa === 'totp' ? (
+          <Field
+            name="totpSecret"
+            value={totpSecret}
+            secret
+            revealed={revealed.has('totpSecret')}
+            onToggle={() => toggleReveal('totpSecret')}
+            onChange={setTotpSecret}
+            onWipe={() => wipe('totpKey')}
+          />
+        ) : null}
+        {tfa === 'yubico' ? (
+          <>
+            <Field name="yubiPublicId" value={yubi.publicId} secret={false} revealed
+              onToggle={() => {}} onChange={t => setYubi(y => ({...y, publicId: t}))} />
+            <Field name="yubiPrivateId" value={yubi.privateId} secret revealed={revealed.has('yubiPrivateId')}
+              onToggle={() => toggleReveal('yubiPrivateId')} onChange={t => setYubi(y => ({...y, privateId: t}))} />
+            <Field name="yubiSecretKey" value={yubi.secretKey} secret revealed={revealed.has('yubiSecretKey')}
+              onToggle={() => toggleReveal('yubiSecretKey')} onChange={t => setYubi(y => ({...y, secretKey: t}))}
+              onWipe={() => wipe('yubikey')} />
+          </>
+        ) : null}
+      </View>
+
       <Text style={styles.footer}>
-        A field left blank is not written. To clear one on the device, wipe the
-        slot instead.
+        A field left blank is not written. Wipe clears one field on the key;
+        Wipe slot clears all of them.
       </Text>
     </ScrollView>
   );
@@ -431,6 +532,7 @@ function Field({
   revealed,
   onToggle,
   onChange,
+  onWipe,
 }: {
   name: string;
   value: string;
@@ -438,10 +540,17 @@ function Field({
   revealed: boolean;
   onToggle: () => void;
   onChange: (text: string) => void;
+  /** Clears this one field on the key. Absent for inputs that are not a device field. */
+  onWipe?: () => void;
 }) {
+  const spec = SPEC.get(name);
+  const numeric = spec?.encoding === ENCODING.DIGIT || spec?.encoding === ENCODING.BYTE;
   return (
     <View style={styles.field}>
-      <Text style={styles.fieldLabel}>{LABELS[name] ?? name}</Text>
+      <Text style={styles.fieldLabel}>
+        {LABELS[name] ?? name}
+        {spec?.maxLength ? ` · up to ${spec.maxLength}` : ''}
+      </Text>
       <View style={styles.fieldRow}>
         <TextInput
           value={value}
@@ -449,10 +558,21 @@ function Field({
           secureTextEntry={secret && !revealed}
           autoCapitalize="none"
           autoCorrect={false}
+          maxLength={spec?.maxLength}
+          keyboardType={numeric ? 'number-pad' : 'default'}
           placeholder="—"
           placeholderTextColor={theme.textDim}
           style={styles.input}
         />
+        {onWipe ? (
+          <Pressable
+            onPress={onWipe}
+            accessibilityRole="button"
+            accessibilityLabel={`Wipe ${name}`}
+            style={({pressed}) => [styles.reveal, pressed && styles.revealPressed]}>
+            <Text style={styles.revealText}>Wipe</Text>
+          </Pressable>
+        ) : null}
         {secret ? (
           <Pressable
             onPress={onToggle}

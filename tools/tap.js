@@ -31,16 +31,26 @@ function argAfter(flag, fallback) {
 
 async function main() {
   const args = process.argv.slice(2);
+  /* Negative scroll swipes DOWN, for a control above the fold (Save, at the top of an editor). */
   const scroll = Number(argAfter('--scroll', 0));
-  const labels = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--scroll');
+  const VALUED = new Set(['--scroll', '--below']);
+  const labels = args.filter((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1]));
 
   if (args.includes('--labels') || !labels.length) {
     console.log(visibleLabels(dumpUi({trace}), 60));
     return;
   }
 
+  /*
+   * `--below N` taps N pixels under the label instead of on it: an input's
+   * only text is its placeholder, which several inputs share, while the
+   * label above it is unique. Applies to every label in this run.
+   */
+  const below = Number(argAfter('--below', 0));
+
   for (const label of labels) {
-    await tapText(label, {timeoutMs: 15000, trace, scroll});
+    const spot = await tapText(label, {timeoutMs: 15000, trace, scroll, tapOffsetY: below});
+    if (below) trace(`  (tapped ${below}px below, at ${spot.x},${spot.y + below})`);
     /* Let the tap land and the next screen draw before looking again. */
     await sleep(700);
   }

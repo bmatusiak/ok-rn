@@ -285,6 +285,15 @@ module.exports = function hardKey({describe, it}) {
       }
 
       const SECRET = 'Hw&3e2e';
+      /*
+       * FROM A CLEAN SLOT. setSlot writes the fields it is given and leaves
+       * the rest; a two-factor secret left on 1a by the editor made the key
+       * type a code straight after the password, one segment instead of two,
+       * and this test failed against a slot that was working exactly as
+       * configured. The library's whole-slot wipe is what makes the test
+       * about what IT wrote.
+       */
+      await device.wipeSlot('1a');
       await device.setSlot('1a', {label: 'hw-e2e', password: SECRET});
       log(`slot 1a written: label hw-e2e, ${SECRET.length}-char password`);
 
