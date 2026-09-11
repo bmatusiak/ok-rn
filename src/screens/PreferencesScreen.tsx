@@ -109,6 +109,8 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
     {
       name: string;
       label: string;
+      /* Only touchSense has one; every other preference floors at 0. */
+      min?: number;
       max: number;
       unit?: string;
       requires: string;
@@ -512,6 +514,7 @@ function PrefRow({
   pref: {
     name: string;
     label: string;
+    min?: number;
     max: number;
     unit?: string;
     note?: string;
@@ -528,7 +531,7 @@ function PrefRow({
       <Text style={styles.label}>
         {pref.label}
         <Text style={styles.range}>
-          {'  '}0–{pref.max}
+          {'  '}{pref.min ?? 0}–{pref.max}
           {pref.unit ? ` ${pref.unit}` : ''}
         </Text>
       </Text>

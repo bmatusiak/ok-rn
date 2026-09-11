@@ -392,6 +392,74 @@ module.exports = function cryptoSign({describe, it}) {
       }
     });
 
+    it('touch sensitivity is field 28, and the range in the table is the firmware own', async ({log, assert, skip}) => {
+      /*
+       * Runs inside the config-mode window the provisioning test opened -
+       * field 28 is gated on `configmode == true || !initcheck`
+       * (okcore.cpp:2106), the same gate as the derive preference above it,
+       * and config mode ends only at a restart. When the slot already held a
+       * key that test did not run, so neither can this one.
+       */
+      const {device, transport} = await ready(log);
+      if (!shared.provisioned) {
+        skip('config mode was not entered this run - the signing slot was already provisioned');
+      }
+
+      /*
+       * TOUCH SENSITIVITY, while the config-mode door is already open.
+       *
+       * Field 28, which the library's table said was unassigned until the
+       * firmware was read (okcore.cpp:2106). Two things are worth proving
+       * on a device and cannot be proven anywhere else: that the field id
+       * is the one the firmware writes, and that the RANGE in the table is
+       * the firmware's own. The second needs a frame the library would
+       * refuse to build, so it is built here by hand - the only way to
+       * hear "Error touchsense value out of range" is to send the value
+       * that provokes it.
+       */
+      const touchOk = await device.setPreference('touchSense', 50);
+      log(`touchSense 50: ${JSON.stringify(touchOk.response)}`);
+      assert.ok(
+        /Successfully set Touch Sensitivity/i.test(touchOk.response),
+        'field 28 did not answer the way the firmware touch-sensitivity case does',
+      );
+
+      /* The library refuses 1 before the wire, from the same table. */
+      let refusedByLib = null;
+      try {
+        await device.setPreference('touchSense', 1);
+      } catch (e) {
+        refusedByLib = String(e.message);
+      }
+      log(`library on 1: ${JSON.stringify(refusedByLib)}`);
+      assert.ok(
+        refusedByLib && /must be an integer 2\.\.100/.test(refusedByLib),
+        'the library built a frame for a value the firmware refuses',
+      );
+
+      /* And the firmware refuses it too, which is what makes the floor right. */
+      const refusal = await transport.request({
+        iface: IFACE.VENDOR,
+        data: protocol.okmsg.build({
+          msg: protocol.msg.MSG.OKSETSLOT,
+          slot: 0,
+          field: 28,
+          payload: [1],
+        }),
+        timeoutMs: 6000,
+        match: r => /touchsense|Success/i.test(protocol.okmsg.text(r)),
+      });
+      const said = protocol.okmsg.text(refusal).trim();
+      log(`touchSense 1 on the wire: ${JSON.stringify(said)}`);
+      assert.ok(
+        /out of range/i.test(said),
+        'the firmware accepted 1, so the floor of 2 in the table is wrong',
+      );
+
+      /* Leave it at a middling value rather than the one that provoked an error. */
+      await device.setPreference('touchSense', 20);
+    });
+
     it('signs when the challenge is answered', async ({log, assert}) => {
       const {okcrypto} = await ready(log);
       if (!shared.present) {
