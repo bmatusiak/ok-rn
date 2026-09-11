@@ -24,6 +24,18 @@ ten seconds.
 
 Set `ANDROID_SERIAL` when more than one device is listed; doctor says so.
 
+## Driving one screen: `node tools/tap.js`
+
+    node tools/tap.js Menu "This Key"        tap labels in turn, then doctor --shot
+    node tools/tap.js --scroll 3 "RUN TESTS" swipe up to find one below the fold
+    node tools/tap.js --labels               what is on screen, tapping nothing
+
+The runner's own tap with nothing around it, for checking a screen without
+running the whole suite (which ends in a bundle reload). A missing label is
+an error naming what IS there. Relaunch the app to pick up a source change
+with `adb shell am force-stop com.okrn; adb shell am start -n com.okrn/.MainActivity`,
+then `logwatch --until` for the line that proves the change loaded.
+
 ## Watching the phone while working: `node tools/logwatch.js`
 
 Only the app's own process, only matching lines, and it ENDS on its own -

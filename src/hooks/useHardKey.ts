@@ -99,6 +99,13 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
 
     const offStatus = UsbPipe.on('status', event => {
       log('info', `[usb] ${event.state}: ${event.message}`);
+      /*
+       * To logcat as well as the in-app log, like the soft key's [softkey]
+       * lines: the in-app buffer cannot be read from a terminal, and a
+       * key that went "stopped" with no line saying why was diagnosed by
+       * guesswork once. tools/logwatch.js watches for these.
+       */
+      console.log(`[hardkey] usb ${event.state}: ${event.message}`);
       if (event.state === 'connected') {
         setState('running');
       } else if (event.state === 'connecting') {
@@ -206,6 +213,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
       const {device: dev} = await getOnlyKey('usb');
       const result = await dev.connect();
       log('info', `OKCONNECT -> "${String(result.status ?? '').trim()}"`);
+      console.log(`[hardkey] OKCONNECT ok: ${JSON.stringify(String(result.status ?? '').trim())}`);
 
       /*
        * Asked once the device is answering, and BEFORE anything needs it.
@@ -215,6 +223,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
       const answers = await dev.consoleAnswers();
       setConsoleAnswers(answers);
       log('info', `console ${answers ? 'answers' : 'is write-only'}`);
+      console.log(`[hardkey] console ${answers ? 'answers' : 'is write-only'}`);
 
       return result;
     } catch (error) {

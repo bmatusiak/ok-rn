@@ -558,5 +558,13 @@ export function useOkEmu({log, autoStart = false}: Options) {
     endHold,
     pressTicks,
     send,
+
+    /**
+     * Always. The soft key has no buttons but the ones the app draws, so a
+     * keypad is the only way in. The hard key's answer is three-valued and
+     * probed; the two handles carry the same field so a screen asks one
+     * question of either. See useHardKey.canPress.
+     */
+    canPress: true as boolean | null,
   };
 }

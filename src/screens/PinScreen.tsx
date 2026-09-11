@@ -42,10 +42,22 @@ export function PinScreen({
   onPress,
   onBack,
   busy = false,
+  canPress = true,
 }: {
   onPress: (button: number) => Promise<void> | void;
   onBack?: () => void;
   busy?: boolean;
+  /**
+   * Whether a tap here reaches the key at all.
+   *
+   * A HARD KEY HAS ITS OWN BUTTONS, and the design rule is that the app does
+   * not draw a keypad for one unless the firmware's debug console can press
+   * for it. So this is three-valued, from useHardKey: true draws the pad,
+   * false says "use the key", and null - not yet asked - says so too rather
+   * than guessing either way. The soft key is always true; it has no buttons
+   * but these.
+   */
+  canPress?: boolean | null;
 }) {
   const [count, setCount] = useState(0);
   const [working, setWorking] = useState(false);
@@ -216,6 +228,34 @@ export function PinScreen({
       <Logo height={30} />
 
       <Text style={styles.title}>Locked</Text>
+
+      {canPress !== true ? (
+        /*
+         * NO KEYPAD, NO DOTS. The digits go in on the key itself, so there
+         * is nothing here to count; the firmware announces UNLOCKED on its
+         * own broadcast the moment the last one is right, and the shell
+         * follows that exactly as it does for a tap here. Biometric replay
+         * is hidden for the same reason: it works by pressing.
+         */
+        <>
+          <Text style={styles.hint}>
+            {canPress === null
+              ? 'Asking this key whether it takes presses from the app…'
+              : 'Enter your PIN on the key’s own buttons.'}
+          </Text>
+          <Text style={styles.note}>
+            This key checks after every press and unlocks itself when the
+            last digit is right; this screen follows. To start over, hold any
+            button for a few seconds or unplug and reattach it.
+          </Text>
+          {onBack ? (
+            <View style={styles.footer}>
+              <Btn title="Back" onPress={onBack} />
+            </View>
+          ) : null}
+        </>
+      ) : (
+      <>
       <Text style={styles.hint}>Enter your PIN on the keypad.</Text>
 
       {hasStoredPin ? (
@@ -251,6 +291,8 @@ export function PinScreen({
         The key checks after every press. Start over runs the buffer to its
         rollover, which is the only clean reset it has.
       </Text>
+      </>
+      )}
     </View>
   );
 }

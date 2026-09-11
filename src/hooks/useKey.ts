@@ -175,14 +175,30 @@ export function useKey({
    * keyboard detaches it from the kernel. Keeping that after the user has
    * moved on would be rude as well as surprising.
    */
-  const {start} = hard;
+  const {start, connect: connectHard, state: hardState, busy: hardBusy} = hard;
 
   useEffect(() => {
     if (backend !== 'usb') {
       if (UsbPipe.isRunning()) void UsbPipe.stop();
       return;
     }
-    if (!UsbPipe.isRunning()) void start();
+    /*
+     * OPEN, THEN ASK. connect() is what runs the console probe, and the
+     * probe is what decides whether a screen draws a keypad for this key -
+     * so a hard key that was opened but never connected left every lock
+     * screen at "asking…" forever. The soft key connects itself on start;
+     * this is the same courtesy.
+     *
+     * RE-OPENED WHEN IT STOPS, not only when it is selected. The e2e suite
+     * hands the key back to the phone when it finishes, and a key that is
+     * still the selected one then sat at "stopped" with a lock screen under
+     * it until the app was relaunched - measured, on the This Key tab. Only
+     * from 'stopped': an 'error' (unplugged, refused) is not retried in a
+     * loop, and 'starting' is already on its way.
+     */
+    if (hardState === 'stopped' && !hardBusy && !UsbPipe.isRunning()) {
+      void start().then(() => connectHard());
+    }
 
     /*
      * No cleanup that closes: the branch above already handles leaving, and
@@ -195,7 +211,7 @@ export function useKey({
      * up hard enough that the screen stops painting. Measured, by doing it.
      * `start` is a useCallback and stable.
      */
-  }, [backend, start]);
+  }, [backend, start, connectHard, hardState, hardBusy]);
 
   const active = backend === 'usb' ? hard : soft;
 

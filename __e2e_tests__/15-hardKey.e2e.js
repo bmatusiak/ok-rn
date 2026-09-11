@@ -233,6 +233,33 @@ module.exports = function hardKey({describe, it}) {
         );
       }
     });
+    it('the console is ASKED whether it answers, pressing nothing', async ({log, assert}) => {
+      assert.ok(shared && shared.result, 'the connect test did not run');
+
+      /*
+       * The measurement the lock screen keys on. capabilities() above could
+       * not answer - a locked key sends no version - so the app asks the
+       * console directly: one inert byte, wait for the firmware's own echo.
+       * This is device.consoleAnswers(), and it PRESSES NOTHING: a press on
+       * a locked key is a PIN attempt, and ten of those wipe it (FINDING
+       * #43). Either answer is a pass; what is asserted is that it answered
+       * within its own timeout and that a "yes" only comes with a debug
+       * interface to say it on.
+       */
+      const {device} = await getOnlyKey('usb');
+      const started = Date.now();
+      const answers = await device.consoleAnswers();
+      log(`console answers: ${answers} (${Date.now() - started}ms)`);
+      log(answers
+        ? 'a keypad may be drawn for this key; presses go through the console'
+        : 'no keypad for this key: its PIN goes in on its own buttons');
+
+      const found = shared.result.interfaces || [];
+      const hasDebug = found.some(i => i.iface === IFACE.SEREMU);
+      if (answers) {
+        assert.ok(hasDebug, 'the console answered on a key with no debug interface');
+      }
+    });
     it('and the key is handed back to the phone', async ({log, assert}) => {
       assert.ok(shared, 'no key was found');
       await resetOnlyKey('usb');

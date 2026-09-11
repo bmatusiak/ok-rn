@@ -114,7 +114,7 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         showsVerticalScrollIndicator={false}>
         <KeySource keys={keys} />
         <View style={styles.locked}>
-          <PinScreen onPress={emu.press} />
+          <PinScreen onPress={emu.press} canPress={emu.canPress} />
         </View>
       </ScrollView>
     );
@@ -194,7 +194,7 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         </View>
       </Section>
 
-      {keys.backend === 'usb' && !(emu as unknown as {canPress?: boolean}).canPress ? (
+      {emu.canPress !== true ? (
         <Section title="Buttons">
           <Text style={styles.hint}>
             This key has its own — six of them, under your finger. The app

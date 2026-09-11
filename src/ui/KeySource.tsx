@@ -37,8 +37,19 @@ export function KeySource({keys}: {keys: KeyControl}) {
 
       <Text style={styles.hint}>
         {backend === 'usb'
-          ? 'Reading a physical OnlyKey over USB. Its buttons are its own — the ' +
-            'app does not draw a keypad for one.'
+          ? /*
+             * Three answers, because the probe is three-valued and each one
+             * changes what the person should do with their finger.
+             */
+            keys.hard.canPress === true
+            ? 'Reading a physical OnlyKey over USB. This is a developer build ' +
+              'whose console takes presses from the app, so a keypad is drawn — ' +
+              'its own buttons work too.'
+            : keys.hard.canPress === false
+              ? 'Reading a physical OnlyKey over USB. Its buttons are its own — the ' +
+                'app does not draw a keypad for one.'
+              : 'Reading a physical OnlyKey over USB. Asking whether its console ' +
+                'takes presses from the app…'
           : 'Reading the soft key: the same firmware, running inside this app. ' +
             'It stays running while a hard key is in use, so switching back ' +
             'finds it where you left it.'}

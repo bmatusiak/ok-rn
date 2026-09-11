@@ -362,7 +362,8 @@ export function CryptoScreen({
             it for you — a presence check the software answers on your behalf is
             not a check.
           </Text>
-          <Keypad onPress={emu.press} />
+          {/* A hard key's buttons are on the key; a pad here could not reach them. */}
+          {emu.canPress === true ? <Keypad onPress={emu.press} /> : null}
         </Section>
       ) : null}
 
