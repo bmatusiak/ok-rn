@@ -102,9 +102,37 @@ function locate(staged) {
   return { source: 'unknown' };
 }
 
-function probe(name, pins, extra) {
+/** The first line of a pattern, so a note about one stays on one line. */
+function firstLine(text) {
+  return String(text).split(String.fromCharCode(10))[0];
+}
+
+/**
+ * @param absentPatterns  the release's declaration: `from` strings (or staged
+ *                file paths) it declares its tree does not contain
+ *
+ * DECLARED-ABSENT IS NOT A DIFFERENCE. stage.js lets a release say that a
+ * base patch has nothing to find at its pin - the 2019 beta line has no
+ * `factorysectoradr` in okcore.h and no `end_byte` span in ctap_parse.cpp,
+ * because the first arrived later and the second belongs to a fido2 library
+ * that release predates. The stager counts those and carries on; this probe
+ * did not read the field at all, so it reported v0.2-beta.8 as DIFF 8/10 for
+ * two patterns that are expected to be missing - a red line for a release
+ * that is in fact fully described. A probe that cries wolf about a declared
+ * fact is a probe nobody reads.
+ *
+ * The claim is CHECKED, in both directions, the way the stager checks it: a
+ * declared pattern that turns out to be PRESENT is a stale claim (the tree
+ * would be staged unpatched on the strength of it), and a declaration no
+ * patch looks for is a typo or a base patch that has since gone. Either is
+ * reported as a difference, because either means the version script is
+ * describing a tree that is not there.
+ */
+function probe(name, pins, extra, absentPatterns = []) {
   const rows = [];
-  let found = 0, missing = 0, absent = 0, fixed = 0;
+  let found = 0, missing = 0, absent = 0, fixed = 0, declared = 0;
+  const declaredAbsent = new Set(absentPatterns);
+  const seen = new Set();
 
   for (const patch of [...stage.PATCHES, ...extra]) {
     const at = locate(patch.file);
@@ -121,6 +149,11 @@ function probe(name, pins, extra) {
 
     const text = fileAt(at.repo, pins[at.repo], at.file);
     if (text === null) {
+      if (declaredAbsent.has(patch.file)) {
+        declared += patch.edits.length;
+        seen.add(patch.file);
+        continue;
+      }
       absent += patch.edits.length;
       rows.push({
         file: patch.file,
@@ -131,7 +164,21 @@ function probe(name, pins, extra) {
 
     for (const [from] of patch.edits) {
       const crlf = from.replace(/\r?\n/g, '\r\n');
-      if (text.includes(from) || text.includes(crlf)) found++;
+      const here = text.includes(from) || text.includes(crlf);
+      if (declaredAbsent.has(from)) {
+        seen.add(from);
+        if (here) {
+          missing++;
+          rows.push({
+            file: patch.file,
+            note: 'STALE CLAIM - declared absent but PRESENT: ' + firstLine(from),
+          });
+        } else {
+          declared++;
+        }
+        continue;
+      }
+      if (here) found++;
       else {
         missing++;
         rows.push({ file: patch.file, note: `pattern not found: ${from.slice(0, 64)}…` });
@@ -139,7 +186,17 @@ function probe(name, pins, extra) {
     }
   }
 
-  return { name, found, missing, absent, fixed, rows };
+  /* A declaration nothing looks for: a typo, or a base patch that has gone. */
+  for (const claim of declaredAbsent) {
+    if (seen.has(claim)) continue;
+    missing++;
+    rows.push({
+      file: '(absentPatterns)',
+      note: 'declared absent but no patch looks for it: ' + firstLine(claim),
+    });
+  }
+
+  return { name, found, missing, absent, declared, fixed, rows };
 }
 
 function main() {
@@ -199,12 +256,13 @@ function main() {
       continue;
     }
 
-    const r = probe(name, pins, extra);
+    const r = probe(name, pins, extra, script.absentPatterns);
     const pinned = r.found + r.missing + r.absent;
     const ok = r.missing === 0 && r.absent === 0;
     console.log(
       `${name.padEnd(8)} ${ok ? 'OK  ' : 'DIFF'} ` +
       `${r.found}/${pinned} version-pinned patterns match` +
+      (r.declared ? `  (+${r.declared} declared absent at this pin)` : '') +
       `  (+${r.fixed} toolchain patterns, version-independent)` +
       `  [${script.status}, ${extra.length} of its own]`);
 
@@ -216,7 +274,9 @@ function main() {
   console.log(
     '\nOK means every patch stage.js makes to the VERSION-PINNED sources still' +
     '\nfinds its pattern at that release, so it is a candidate for a real build.' +
-    '\nDIFF lists what differs; each line is one edit to generalise or to add.');
+    '\nDIFF lists what differs; each line is one edit to generalise or to add.' +
+    '\n"declared absent" is a pattern a version script says its tree predates;' +
+    '\nthose are expected, and a stale or unused declaration is itself a DIFF.');
 }
 
 if (require.main === module) main();
