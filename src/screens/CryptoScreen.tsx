@@ -2,6 +2,7 @@ import React, {useCallback, useRef, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
+import {VaultList} from '../ui/VaultList';
 import {theme} from '../ui/theme';
 import {bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
@@ -86,6 +87,8 @@ export function CryptoScreen({
   const [plaintext, setPlaintext] = useState('');
   const [blob, setBlob] = useState('');
   const [opened, setOpened] = useState<string | null>(null);
+  /* Bumped after a save so the stored list re-reads. */
+  const [vaultEpoch, setVaultEpoch] = useState(0);
 
   /* age: an identity is derived, a file is text on the way in and out. */
   const [ageLabel, setAgeLabel] = useState('');
@@ -195,6 +198,45 @@ export function CryptoScreen({
       onKeepAlive: async () => setWaiting(true),
     }),
     [],
+  );
+
+  /**
+   * Seal AND keep. The library's save() seals under the derived key and
+   * writes the blob to the phone's store; the list below reads it back
+   * without touching the device. VaultList.tsx was written for this and
+   * sat unimported until now.
+   */
+  const saveToVault = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      const {okcrypto} = await getKey();
+      await okcrypto.deviceVault.save(service.trim(), plaintext, vaultOpts());
+      setVaultEpoch(n => n + 1);
+      setStatus(`Sealed and stored as "${service.trim()}".`);
+      setPlaintext('');
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setWaiting(false);
+      setBusy(false);
+    }
+  }, [getKey, plaintext, service, vaultOpts]);
+
+  /** Open a STORED credential by name; the list owns the row, this owns the touch. */
+  const openStored = useCallback(
+    async (serviceId: string): Promise<string | null> => {
+      setBusy(true);
+      try {
+        const {okcrypto} = await getKey();
+        return await okcrypto.deviceVault.load(serviceId, vaultOpts());
+      } finally {
+        setWaiting(false);
+        setBusy(false);
+      }
+    },
+    [getKey, vaultOpts],
   );
 
   const seal = useCallback(async () => {
@@ -437,12 +479,19 @@ export function CryptoScreen({
           editable={!busy}
           style={styles.textarea}
         />
-        <Btn
-          title={busy ? 'Working…' : 'Seal'}
-          tone="primary"
-          disabled={busy || locked || !service.trim() || !plaintext}
-          onPress={seal}
-        />
+        <View style={styles.row}>
+          <Btn
+            title={busy ? 'Working…' : 'Seal'}
+            tone="primary"
+            disabled={busy || locked || !service.trim() || !plaintext}
+            onPress={seal}
+          />
+          <Btn
+            title="Seal and store"
+            disabled={busy || locked || !service.trim() || !plaintext}
+            onPress={saveToVault}
+          />
+        </View>
 
         <TextInput
           value={blob}
@@ -467,6 +516,21 @@ export function CryptoScreen({
             <Text style={styles.secret}>{opened}</Text>
           </>
         ) : null}
+      </Section>
+
+      <Section title={`Stored on this phone — ${keyName}`}>
+        <Text style={styles.body}>
+          Credentials sealed by this key and kept here. The list costs no
+          touch; copying a secret does, and the plaintext leaves only by the
+          clipboard.
+        </Text>
+        <VaultList
+          onOpen={openStored}
+          onError={setError}
+          onStatus={setStatus}
+          busy={busy}
+          reloadKey={vaultEpoch}
+        />
       </Section>
 
       <Section title="Encrypted files (age)">

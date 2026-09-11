@@ -4,6 +4,7 @@ import {Btn} from '../ui/components';
 import {SlotGrid} from '../ui/SlotGrid';
 import {theme} from '../ui/theme';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
+import {device as okdevice} from 'node-onlykey-lib';
 
 /*
  * Slots, as the device's own shape rather than as a list.
@@ -29,6 +30,14 @@ export function SlotsScreen({
   const keyName = useKeyName();
 
   const [labels, setLabels] = useState<(string | null)[] | null>(null);
+  /*
+   * HOW MANY SLOTS is a fact about the model, and the library knows it:
+   * a Classic has 12, a DUO 24. This screen said 12 in a literal, which
+   * drew a DUO as a Classic and hid half its slots without a word. The
+   * grid itself still draws the Classic picture; a DUO gets the honest
+   * note below until its own layout exists.
+   */
+  const [count, setCount] = useState<number>(okdevice.slots.SLOT_COUNT[okdevice.slots.DEVICE_TYPE.CLASSIC]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -37,6 +46,7 @@ export function SlotsScreen({
     setError(null);
     try {
       const {device} = await getKey();
+      setCount(okdevice.slots.SLOT_COUNT[device.deviceType] ?? count);
       const {labels: got} = await device.readLabels({timeoutMs: 10000});
       setLabels(got);
     } catch (e) {
@@ -75,7 +85,15 @@ export function SlotsScreen({
       ) : error ? (
         <Text style={styles.error}>{error}</Text>
       ) : (
-        <SlotGrid labels={labels ?? new Array(12).fill(null)} onSelect={onOpen} />
+        <>
+          <SlotGrid labels={labels ?? new Array(count).fill(null)} onSelect={onOpen} />
+          {count > 12 ? (
+            <Text style={styles.note}>
+              This key has {count} slots; the picture above shows the first 12. A
+              DUO's own layout is still to come.
+            </Text>
+          ) : null}
+        </>
       )}
 
       <Text style={styles.note}>
