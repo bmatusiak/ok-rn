@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useRef, useState, useMemo} from 'react';
 import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
@@ -540,6 +540,25 @@ export function useOkEmu({log, autoStart = false}: Options) {
     })();
   }, [autoStart, start, connect]);
 
+  /*
+   * SETTLING: the firmware DROPS every press while it is fading after an
+   * operation or holding a FIDO result - touch_sense_loop counts the press
+   * and the main loop throws it away (OnlyKey.ino:521-525), for up to twenty
+   * seconds after a ceremony (FINDING-presses-discarded-after-a-fido-ceremony).
+   * It says so with its LED: setcolor(45), yellow, for the whole window. The
+   * e2e helper waitForLedClear reads the same pixels the same way; this is
+   * that measurement handed to the screens, so a keypad can say "not yet"
+   * instead of looking broken. A hard key has no LED signal; useKey covers it
+   * with a timer from the ceremony it can see.
+   */
+  const settling = useMemo(() => {
+    const pending = led.some(packed =>
+      ((packed >> 16) & 0xff) > 64 && ((packed >> 8) & 0xff) > 64 && (packed & 0xff) <= 64);
+    return pending
+      ? 'The key is busy — its LED is yellow while it finishes an operation, and it drops every press until the LED clears (up to 20 seconds).'
+      : null;
+  }, [led]);
+
   return {
     state,
     device,
@@ -548,6 +567,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
     capabilities,
     storageDir,
     led,
+    settling,
     busy,
     start,
     stop,

@@ -58,12 +58,43 @@ const POLL_MS = 2000;
 export function useKey({
   softLog,
   hardLog,
+  fidoPending = null,
 }: {
   softLog: (level: LogLevel, text: string) => void;
   hardLog: (level: LogLevel, text: string) => void;
+  /** The FIDO ceremony in progress, if any - its end starts the settling timer. */
+  fidoPending?: unknown;
 }) {
   const soft = useOkEmu({log: softLog, autoStart: true});
   const hard = useHardKey({log: hardLog});
+
+  /*
+   * SETTLING AFTER A CEREMONY, for the key that cannot show it. The firmware
+   * drops every press for up to twenty seconds after a FIDO2 ceremony,
+   * finished or not (FINDING-presses-discarded-after-a-fido-ceremony:
+   * pending_operation is re-armed five seconds in and only fadeoffafter20sec
+   * clears it). The soft key reports the window from its LED; a hard key has
+   * no LED signal, so the one thing this hook can see - the ceremony it
+   * relayed ending - starts a timer of the firmware's own length.
+   */
+  const CEREMONY_SETTLE_MS = 20000;
+  const [ceremonyEndedAt, setCeremonyEndedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const hadPending = useRef(false);
+  useEffect(() => {
+    const has = fidoPending !== null && fidoPending !== undefined;
+    if (hadPending.current && !has) setCeremonyEndedAt(Date.now());
+    hadPending.current = has;
+  }, [fidoPending]);
+  const settleUntil = ceremonyEndedAt === null ? 0 : ceremonyEndedAt + CEREMONY_SETTLE_MS;
+  useEffect(() => {
+    if (settleUntil <= Date.now()) return;
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, [settleUntil]);
+  const ceremonySettling = settleUntil > now
+    ? `The key is settling after a security-key ceremony and drops every press for up to 20 seconds (${Math.ceil((settleUntil - now) / 1000)} s to go).`
+    : null;
 
   const [mode, setModeState] = useState<KeyMode>('manual');
   const [override, setOverrideState] = useState<Backend | null>(null);
@@ -227,7 +258,13 @@ export function useKey({
      */
   }, [backend, start, connectHard, hardState, hardBusy]);
 
-  const active = backend === 'usb' ? hard : soft;
+  const chosen = backend === 'usb' ? hard : soft;
+  /*
+   * The soft key's LED is exact - yellow for the whole window - so the timer
+   * would only overstate it there; the timer is for the hard key, which shows
+   * nothing.
+   */
+  const active = {...chosen, settling: chosen.settling ?? (backend === 'usb' ? ceremonySettling : null)};
 
   return {
     /** The key every screen should read. Never a blend of the two. */

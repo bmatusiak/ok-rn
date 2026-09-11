@@ -62,6 +62,26 @@ const SLOT = 101;
 const KEY_TYPE = 1 | 0x40;          // CURVE.ED25519 | MODIFIER.SIGNATURE
 const KEY = new Uint8Array(32).map((_, i) => (i * 11 + 5) & 0xff);
 
+/*
+ * An OpenSSH key, loaded beside it while config mode is open anyway.
+ *
+ * A THROWAWAY ssh-keygen -t ed25519 fixture (the same one the library's
+ * keys.ssh.test.js checks against its .pub), so the device's signature can
+ * be VERIFIED here against a public key the firmware never saw - the raw
+ * key above only proves that something was signed. Slot 103 so it disturbs
+ * neither the signing slot nor the PGP convention's 101/102.
+ */
+const SSH_SLOT = 103;
+const SSH_KEY = `-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACCK/qwnyc6jZLTBE8LPJ7MC2tpyjtAsUTJy+HPdlcMjTgAAAJBZLVmQWS1Z
+kAAAAAtzc2gtZWQyNTUxOQAAACCK/qwnyc6jZLTBE8LPJ7MC2tpyjtAsUTJy+HPdlcMjTg
+AAAEBTBSBVEFDFQtEzzQNibjTjaUbUDYHtpNarNFQJFDw94Ir+rCfJzqNktMETws8nswLa
+2nKO0CxRMnL4c92VwyNOAAAAB2ZpeHR1cmUBAgMEBQY=
+-----END OPENSSH PRIVATE KEY-----`;
+/** ssh-ed25519 public key of the fixture, the 32 bytes after the type string. */
+const SSH_PUB_HEX = '8afeac27c9cea364b4c113c2cf27b302dada728ed02c513272f873dd95c3234e';
+
 
 /**
  * Wait for the device to SAY something on the vendor interface.
@@ -133,22 +153,22 @@ function serialTap() {
  * signature would tell us the same thing at the cost of three button presses
  * and a five-second wipe timer.
  */
-async function probeKey(transport, log) {
+async function probeKey(transport, log, slot = SLOT) {
   const {MSG} = protocol.msg;
   try {
     const reply = await transport.request({
       iface: IFACE.VENDOR,
-      data: protocol.okmsg.build({msg: MSG.OKGETPUBKEY, slot: SLOT}),
+      data: protocol.okmsg.build({msg: MSG.OKGETPUBKEY, slot}),
       timeoutMs: 4000,
       match: r => protocol.okmsg.parseState(r).state !== 'unlocked'
         && protocol.okmsg.parseState(r).state !== 'locked',
     });
     const text = protocol.okmsg.text(reply);
     if (/no ECC Private Key/i.test(text)) {
-      log(`slot ${SLOT}: empty (${text.trim()})`);
+      log(`slot ${slot}: empty (${text.trim()})`);
       return false;
     }
-    log(`slot ${SLOT}: holds a key (${reply.length} bytes back)`);
+    log(`slot ${slot}: holds a key (${reply.length} bytes back)`);
     return true;
   } catch (e) {
     log(`probe failed: ${e.message}`);
@@ -194,11 +214,28 @@ async function ready(log) {
   if (!OkEmu.isRunning()) await OkEmu.start();
 
   const {device, okcrypto, transport} = await getOnlyKey();
-  const state = await device.connect();
+  let state = await device.connect();
   log(`device: ${String(state.status).trim()}`);
 
-  shared = {device, okcrypto, transport, status: String(state.status), present: false};
+  /*
+   * Unlock here rather than assert it. In the full run an earlier suite has
+   * unlocked the soft key; run with --only on a fresh process the key is
+   * locked, and the first test's assertion was the least of it: the config
+   * mode gesture in the second test is a button-6 hold, which on a LOCKED
+   * key is the digit 6 in the PIN buffer, so the 1234561 that followed was
+   * eight digits and "did not unlock within 20000ms" (measured 2026-09-11,
+   * --only cryptoSign, PIN confirmed fine on the This Key keypad).
+   */
+  if (!/UNLOCKED/i.test(String(state.status))) {
+    log('locked at suite start: entering the PIN first');
+    await device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
+    state = await device.connect();
+    log(`device after unlock: ${String(state.status).trim()}`);
+  }
+
+  shared = {device, okcrypto, transport, status: String(state.status), present: false, sshPresent: false};
   shared.present = await probeKey(transport, log);
+  shared.sshPresent = await probeKey(transport, log, SSH_SLOT);
   return shared;
 }
 
@@ -329,6 +366,21 @@ module.exports = function cryptoSign({describe, it}) {
           ack.off();
         }
 
+        /*
+         * The SSH key, through the plugin's parser rather than raw bytes:
+         * device.loadSshKey is what the Keys tab's SSH mode calls, so this is
+         * the app's path end to end, with the same acknowledgement wait.
+         */
+        const sshAck = vendorSays(/Successfully set ECC Key/);
+        try {
+          const applied = await device.loadSshKey(SSH_KEY, {slot: SSH_SLOT, signature: true});
+          log(`loadSshKey returned: ${JSON.stringify(applied)}`);
+          const said = await sshAck.done;
+          log(`device answered: ${JSON.stringify(said.slice(-40))}`);
+        } finally {
+          sshAck.off();
+        }
+
         shared.provisioned = true;
         log(
           'PROVISIONED. Signing cannot be proven in this firmware lifetime: ' +
@@ -394,6 +446,42 @@ module.exports = function cryptoSign({describe, it}) {
       } finally {
         tap.off();
       }
+    });
+
+    it('an OpenSSH key loaded beside it signs, and the signature verifies', async ({log, assert}) => {
+      /*
+       * The one signature in this suite checked against a PUBLIC KEY. The
+       * raw slot's test can only say "64 bytes, not zeros"; this fixture's
+       * public half is known, so Ed25519 verification of what the device
+       * returned proves the parser landed on the right 32 bytes AND that
+       * the firmware signed the payload as given (okcrypto.cpp:697 signs
+       * large_buffer, not a digest of it).
+       */
+      const {okcrypto} = await ready(log);
+      if (!shared.sshPresent) {
+        assert.ok(shared.provisioned, 'no SSH key in slot ' + SSH_SLOT + ', and provisioning did not run either');
+        log('deferred to the next invocation - the device is in config mode');
+        return;
+      }
+      const {ed25519} = require('@noble/curves/ed25519.js');
+      const {fromHex} = require('node-onlykey-lib').bytes;
+
+      const payload = new Uint8Array(32).map((_, i) => (i * 5 + 2) & 0xff);
+      const expected = protocol.challenge.challengeDigits(payload);
+      log(`challenge should be ${expected.join('-')}`);
+      await delay(1500);
+
+      const signature = await okcrypto.sign(SSH_SLOT, payload, {
+        timeoutMs: 25000,
+        confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
+      });
+      log(`signature: ${signature.length} bytes`);
+      assert.equal(signature.length, 64, 'an Ed25519 signature is 64 bytes');
+      assert.ok(
+        ed25519.verify(Uint8Array.from(signature), payload, fromHex(SSH_PUB_HEX)),
+        'the signature does not verify against the public key ssh-keygen wrote for this fixture',
+      );
+      log('verified against the fixture public key');
     });
 
     it('signing the same bytes twice gives the same signature', async ({log, assert}) => {
@@ -466,6 +554,49 @@ module.exports = function cryptoSign({describe, it}) {
      * integrityctr1 != integrityctr2 (okcore.cpp:535). Walking away from a
      * challenge is not free.
      */
+    it('a key loaded as signature-only refuses to decrypt', async ({log, assert}) => {
+      /*
+       * The role bits are not decoration in either direction. KEY_TYPE above
+       * carries SIGNATURE (0x40) and not DECRYPTION (0x20), and okcrypto.cpp
+       * gates OKDECRYPT on feature bit 5 with "Error key not set as
+       * decryption key" before it looks at the payload or asks for a press
+       * (okcrypto.cpp:380-410, the ECC branch). So this needs no press and
+       * no touch-free preference: the refusal is the answer, in text, and
+       * the plugin rejects with it. The Keys tab's role toggles produce this
+       * same byte, which is why it is pinned here and not in a screen test.
+       */
+      const {okcrypto} = await ready(log);
+      if (!shared.present) {
+        log('skipped: no key in the slot');
+        assert.ok(true);
+        return;
+      }
+
+      /*
+       * BEFORE the no-press test, not after it. That test leaves a challenge
+       * nobody answered, and CRYPTO_AUTH stays set until the firmware's 20 s
+       * user timer fades it off (okcore.cpp:175, fadeoffafter20sec); until
+       * then OKDECRYPT takes okcore.cpp:552's else-branch and says "Error
+       * device locked" - a refusal, but not the one under test, and the LED
+       * shows nothing a wait could key on. Measured on this test's first two
+       * runs. Here the previous signature completed, so nothing is pending.
+       */
+      await delay(1500);
+      let refused = null;
+      try {
+        const point = new Uint8Array(32).map((_, i) => (i * 7 + 3) & 0xff);
+        await okcrypto.decrypt(SLOT, point, {timeoutMs: 6000, confirm: null});
+      } catch (error) {
+        refused = String(error.message);
+      }
+      log(`refusal: ${refused}`);
+      assert.ok(refused, 'the device decrypted with a slot that has no decryption role');
+      assert.ok(
+        /not set as decryption key/i.test(refused),
+        'refused, but not for the role: the message should name the missing decryption bit',
+      );
+    });
+
     it('nothing is signed without a press at all', async ({log, assert}) => {
       /*
        * What confirmation actually guarantees here, stated as the thing that

@@ -1,8 +1,12 @@
 # Every button press is silently discarded for 20 seconds after a FIDO2 ceremony
 
 **Severity:** medium — no data loss, but the key looks broken and says nothing
-**Status:** open — upstream firmware behaviour; worked around in the e2e suite,
-not yet surfaced in the app
+**Status:** open upstream — firmware behaviour, not patched (read-only). Worked
+around in the e2e suite, and since 2026-09-11 surfaced in the app: the soft
+key reports the window from its LED (yellow = pending, the same pixels
+`waitForLedClear` reads) and a hard key, which has no LED signal, gets a 20 s
+timer from the ceremony the app relayed; both keypads show the note
+(`useOkEmu.settling`, `useKey`, `PinScreen`, `KeyScreen`)
 **Applies to:** upstream — `OnlyKey.ino:521-525`, `okcore.cpp:5973-6031`
 
 ## What happens

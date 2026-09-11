@@ -177,9 +177,27 @@ function metroAndStrays() {
 
 function onlykeyRow() {
   const out = adb(['shell', 'dumpsys', 'usb']);
-  const host = out.indexOf('host_manager');
-  const section = host >= 0 ? out.slice(host) : out;
-  const attached = /product_name=ONLYKEY|vendor_id=7504|1d50/i.test(section);
+  /*
+   * host_manager is a HISTORY, not a list: every connect (mode=0) and
+   * disconnect (mode=-1) by device address, oldest first - and it is
+   * followed by settings_manager, which keeps the permission filter of every
+   * device ever granted, product_name=ONLYKEY forever. The first version
+   * matched that filter and said "attached" for a key whose last event was
+   * a disconnect, while the suite said "usb devices visible: 0"
+   * (FINDING-doctor-said-attached-for-a-key-that-was-not-on-the-bus). So:
+   * replay the history and ask whether the key's address is still up.
+   */
+  const start = out.indexOf('host_manager={');
+  const end = start >= 0 ? out.indexOf('port_manager={', start) : -1;
+  const section = start >= 0 ? out.slice(start, end > start ? end : undefined) : '';
+  const up = new Map();
+  const entry = /device_address=(\S+)\s+mode=(-?\d+)\s+timestamp=\d+(?:\s+manufacturer=(\d+))?/g;
+  let m;
+  while ((m = entry.exec(section))) {
+    if (m[2] === '0') up.set(m[1], m[3] === '7504');
+    else up.delete(m[1]);
+  }
+  const attached = [...up.values()].some(Boolean);
   return attached ? 'attached (host mode)' : 'not on the bus';
 }
 

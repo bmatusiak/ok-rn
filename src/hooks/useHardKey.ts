@@ -41,6 +41,14 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
   const [device, setDevice] = useState<DeviceState>('unknown');
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState('');
+  /*
+   * The model a LOCKED key admits to. A DUO's once-a-second status while
+   * locked is "INITIALIZED-D" (OnlyKey.ino sendInitialized, the desktop's
+   * OnlyKeyComm.js:1022 reads the same), and the library's parseStatus
+   * already turns it into MODEL.DUO; a Classic sends a bare "INITIALIZED".
+   * Kept separately from `identity`, which is the fuller unlocked reply.
+   */
+  const [lockedModel, setLockedModel] = useState<'duo' | 'classic' | null>(null);
   const [identity, setIdentity] = useState<ReturnType<
     typeof device_.version.parseStatus
   > | null>(null);
@@ -78,6 +86,8 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
         } else if (parsed.state === 'uninitialized') {
           setDevice('uninitialized');
         } else if (parsed.state === 'locked') {
+          const info = device_.version.parseStatus(String(parsed.raw));
+          setLockedModel(info.model === 'duo' ? 'duo' : 'classic');
           /*
            * The same grace window the soft key uses, and for the same reason: a
            * report already in flight can land just after the one-off UNLOCKED,
@@ -121,6 +131,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
         setState('stopped');
         setDevice('unknown');
         setIdentity(null);
+        setLockedModel(null);
         setCapabilities(null);
         setVersion('');
         setConsoleAnswers(null);
@@ -392,6 +403,8 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
     version,
     identity,
     capabilities,
+    /* No LED signal from a hard key (see the table above); useKey's timer stands in. */
+    settling: null as string | null,
     busy,
 
     /* Absent on a hard key. See the header - each is a fact, not a gap. */
@@ -427,12 +440,17 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
     canPress,
 
     /**
-     * WHICH MODEL, from the letter the firmware appends to its version - which
-     * a LOCKED key does not send. So a locked hard DUO reads as a Classic
-     * until it is unlocked, and the door draws the wrong control for it: a
-     * named gap, since nothing in a locked key's status says which it is.
+     * WHICH MODEL. Unlocked, from the letter the firmware appends to its
+     * version; locked, from the "-D" a DUO appends to INITIALIZED. This used
+     * to read only the first and so drew a Classic keypad for every locked
+     * hard key, DUO included, on the assumption that a locked key says
+     * nothing about its model - wrong, the firmware's sendInitialized does.
+     * Untested on a hard DUO (the bench has a Classic); the parse is the
+     * library's, covered by its tests, and a bare INITIALIZED still reads
+     * as Classic here exactly as before.
      */
-    model: (identity?.model === 'duo' ? 'duo' : 'classic') as 'duo' | 'classic',
+    model: (identity?.model === 'duo' || (!identity && lockedModel === 'duo')
+      ? 'duo' : 'classic') as 'duo' | 'classic',
   };
 }
 

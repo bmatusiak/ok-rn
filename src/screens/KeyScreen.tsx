@@ -114,7 +114,7 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         showsVerticalScrollIndicator={false}>
         <KeySource keys={keys} />
         <View style={styles.locked}>
-          <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} />
+          <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
         </View>
       </ScrollView>
     );
@@ -210,6 +210,7 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
           up to 20 types the slot, past 20 types its b profile. It releases
           itself at 71, before the band that takes a backup.
         </Text>
+        {emu.settling ? <Text style={styles.settling}>{emu.settling}</Text> : null}
         <View style={styles.pad}>
           <Keypad
             onPress={emu.press}
@@ -272,6 +273,7 @@ const styles = StyleSheet.create({
   kv: {marginTop: 6},
   spinner: {marginVertical: 18},
   hint: {color: theme.textDim, fontSize: 11, lineHeight: 16, marginTop: 10},
+  settling: {color: theme.warn, fontSize: 12, lineHeight: 17, marginTop: 10},
   error: {color: theme.error, fontSize: 12, lineHeight: 17, marginTop: 6},
 
   slot: {

@@ -101,6 +101,12 @@ the runner's, and a red run was committed as green that way once. Use
 `set -o pipefail` in the shell, or read the verdict from
 `tools/.last-e2e.json` (`doctor.js` prints it) before committing.
 
+No edits to `src/`, `App.tsx`, `__e2e_tests__/` or `node-onlykey-lib/`
+while a run is in flight: Metro watches all of them and reloads the app
+mid-suite. A full run edited underneath lost its hard key and left the soft
+key in config mode for the suites that followed (2026-09-11). Research,
+docs, tools and the skill are safe to touch; source waits for the verdict.
+
 A suite that must never run unnamed (`hardKeyProvision` wipes the key)
 arms itself in its first test and every later test skips when unarmed -
 `skip()` ends one test, not the suite.

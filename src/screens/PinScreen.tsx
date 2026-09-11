@@ -46,7 +46,10 @@ export function PinScreen({
   busy = false,
   canPress = true,
   model = 'classic',
+  settling = null,
 }: {
+  /** Why a press would be dropped right now (useKey / useOkEmu.settling), or null. */
+  settling?: string | null;
   onPress: (button: number) => Promise<void> | void;
   onBack?: () => void;
   busy?: boolean;
@@ -312,6 +315,7 @@ export function PinScreen({
         <PinDots count={count} max={MAX_PIN} />
       </View>
 
+      {settling ? <Text style={styles.settling}>{settling}</Text> : null}
       <View style={styles.pad}>
         <Keypad onPress={press} disabled={busy} />
       </View>
@@ -343,6 +347,14 @@ const styles = StyleSheet.create({
   dots: {marginTop: 22, marginBottom: 26},
   pad: {width: '100%', maxWidth: 320},
   footer: {flexDirection: 'row', gap: 10, marginTop: 22, width: '100%', maxWidth: 320},
+  settling: {
+    color: theme.warn,
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: 'center',
+    marginBottom: 12,
+    maxWidth: 320,
+  },
   note: {
     color: theme.textDim,
     fontSize: 11,

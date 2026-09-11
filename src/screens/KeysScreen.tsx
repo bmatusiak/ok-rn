@@ -35,7 +35,7 @@ const RSA_SLOTS = [1, 2, 3, 4];
 const ECC_SLOTS = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
 
 /* Segmented renders the value, so these read as labels. */
-const MODES = ['PGP', 'Raw hex'] as const;
+const MODES = ['PGP', 'SSH', 'Raw hex'] as const;
 type Mode = (typeof MODES)[number];
 
 /**
@@ -92,7 +92,25 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
   const [passphrase, setPassphrase] = useState('');
   const [armored, setArmored] = useState('');
   const [hex, setHex] = useState('');
+  const [ssh, setSsh] = useState('');
   const [keyType, setKeyType] = useState<string>(RAW_TYPES[0].name);
+
+  /*
+   * WHAT THE KEY IS FOR. The firmware keeps three bits in the type byte -
+   * backup (0x80), signature (0x40), decryption (0x20), the library's
+   * MODIFIER - and a key written without them is stored but refused for
+   * the operation it was meant for: the signing suite loads Ed25519 as
+   * `1 | 0x40` for exactly that reason. The desktop shows the three as
+   * checkboxes; this did not, so every raw key it wrote had no role. Both
+   * roles on by default, because a key with neither is a key that does
+   * nothing; backup off, because marking a key as the backup key is a
+   * decision with consequences on the Backup tab.
+   */
+  const [roles, setRoles] = useState({backup: false, signature: true, decryption: true});
+  /* The PGP path assigns roles itself (decryption to 101, signing to 102); backup is the choice. */
+  const [pgpBackup, setPgpBackup] = useState(false);
+  const toggleRole = (name: 'backup' | 'signature' | 'decryption') =>
+    setRoles(r => ({...r, [name]: !r[name]}));
   const [yubi, setYubi] = useState({publicId: '', privateId: '', secretKey: ''});
   const [yubiErrors, setYubiErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -131,7 +149,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
       }
 
       const {device} = await getKey();
-      const applied = await device.loadPgpKey(key);
+      const applied = await device.loadPgpKey(key, {backup: pgpBackup});
       setLoaded(true);
       setStatus(
         `Loaded ${applied
@@ -143,7 +161,37 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     } finally {
       setBusy(null);
     }
-  }, [getKey, armored, passphrase]);
+  }, [getKey, armored, passphrase, pgpBackup]);
+
+  /*
+   * SSH, the desktop Keys panel's other import. The desktop parses with
+   * sshpk, which does not run under Hermes; the library now reads the
+   * OpenSSH container itself (device/openssh.js) and feeds the converter
+   * that was written for sshpk's output. One key, one slot, the roles the
+   * raw loader offers - an SSH key has no subkeys to assign by convention.
+   */
+  const loadSsh = useCallback(async () => {
+    setBusy('ssh');
+    setError(null);
+    setStatus(null);
+    try {
+      const {device} = await getKey();
+      const applied = await device.loadSshKey(ssh.trim(), {
+        slot,
+        backup: roles.backup,
+        signature: roles.signature,
+        decryption: roles.decryption,
+      });
+      setLoaded(true);
+      setStatus(
+        `Loaded the ${applied.keyType} key${applied.comment ? ` "${applied.comment}"` : ''} into slot ${applied.slot}.`,
+      );
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [getKey, ssh, slot, roles]);
 
   const loadHex = useCallback(async () => {
     setBusy('hex');
@@ -178,7 +226,11 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
        */
       const chosen = RAW_TYPES.find(t => t.name === keyType) ?? RAW_TYPES[0];
       const isRsaSlot = slot < 100;
-      const type = isRsaSlot ? bytes.length / 128 : chosen.type;
+      const {MODIFIER} = okdevice.keys;
+      const type = (isRsaSlot ? bytes.length / 128 : chosen.type)
+        | (roles.backup ? MODIFIER.BACKUP : 0)
+        | (roles.signature ? MODIFIER.SIGNATURE : 0)
+        | (roles.decryption ? MODIFIER.DECRYPTION : 0);
 
       if (!isRsaSlot && bytes.length !== chosen.bytes) {
         setError(
@@ -209,7 +261,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     } finally {
       setBusy(null);
     }
-  }, [getKey, hex, slot]);
+  }, [getKey, hex, slot, roles]);
 
   /*
    * Validated BEFORE anything is sent, and every problem is reported at once.
@@ -271,7 +323,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
             carry on loading keys.
           </Text>
         </Section>
-        <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} />
+        <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
       </ScrollView>
     );
   }
@@ -362,10 +414,56 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
               style={[styles.input, styles.textarea]}
             />
             <Btn
+              title={pgpBackup ? 'Also the backup key' : 'Not the backup key'}
+              tone={pgpBackup ? 'primary' : 'default'}
+              onPress={() => setPgpBackup(v => !v)}
+            />
+            <Text style={styles.note}>
+              Signing and decryption subkeys go to their usual slots on their
+              own; whether this key also decrypts backups is the choice.
+            </Text>
+            <Btn
               title={busy === 'pgp' ? 'Loading…' : 'Load PGP key'}
               tone="primary"
               disabled={busy !== null || !config.ready || !armored.trim()}
               onPress={loadPgp}
+            />
+          </>
+        ) : mode === 'SSH' ? (
+          <>
+            <Text style={styles.note}>
+              An OpenSSH private key — the "BEGIN OPENSSH PRIVATE KEY" block
+              ssh-keygen writes — Ed25519, P-256 or RSA. One key, one slot:
+              pick it below (an ECC key goes to 101 and up, RSA to 1–4). A
+              passphrase-protected key has to be opened first, with
+              ssh-keygen -p -N "" — the app cannot.
+            </Text>
+            <SlotPicker slot={slot} onChange={setSlot} />
+            <Text style={styles.label}>Used for</Text>
+            <View style={styles.chips}>
+              <Btn title="Signature" tone={roles.signature ? 'primary' : 'default'} onPress={() => toggleRole('signature')} />
+              <Btn title="Decryption" tone={roles.decryption ? 'primary' : 'default'} onPress={() => toggleRole('decryption')} />
+              <Btn title="Backup key" tone={roles.backup ? 'primary' : 'default'} onPress={() => toggleRole('backup')} />
+            </View>
+            <Text style={styles.note}>
+              ssh-agent signs with it; Signature is what an SSH key is for.
+            </Text>
+            <Text style={styles.label}>Key</Text>
+            <TextInput
+              value={ssh}
+              onChangeText={setSsh}
+              multiline
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              placeholderTextColor={theme.textDim}
+              style={[styles.input, styles.textarea]}
+            />
+            <Btn
+              title={busy === 'ssh' ? 'Loading…' : 'Load SSH key'}
+              tone="primary"
+              disabled={busy !== null || !config.ready || !ssh.trim()}
+              onPress={loadSsh}
             />
           </>
         ) : (
@@ -375,6 +473,17 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
               pick. No parsing, no checking beyond the length.
             </Text>
             <SlotPicker slot={slot} onChange={setSlot} />
+            <Text style={styles.label}>Used for</Text>
+            <View style={styles.chips}>
+              <Btn title="Signature" tone={roles.signature ? 'primary' : 'default'} onPress={() => toggleRole('signature')} />
+              <Btn title="Decryption" tone={roles.decryption ? 'primary' : 'default'} onPress={() => toggleRole('decryption')} />
+              <Btn title="Backup key" tone={roles.backup ? 'primary' : 'default'} onPress={() => toggleRole('backup')} />
+            </View>
+            <Text style={styles.note}>
+              The key refuses an operation its type byte does not allow, so a
+              key loaded without a role is stored and useless. Backup marks it
+              as the key that decrypts a backup, which the Backup tab explains.
+            </Text>
             {slot >= 100 ? (
               <>
                 <Text style={styles.label}>Key type</Text>

@@ -103,11 +103,11 @@ function Shell() {
    * is what makes them comparable: attach a real key, look at it, unplug, and
    * the emulated one is still where it was rather than freshly booted.
    */
-  const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log});
+  const fido = useFidoGatt({log: fidoLog.log});
+  const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log, fidoPending: fido.pending});
   const emu = keys.key;
   /* What the active key types, heard from every tab. See useKeystrokes. */
   const typed = useKeystrokes(keys.backend);
-  const fido = useFidoGatt({log: fidoLog.log});
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
 
@@ -287,7 +287,7 @@ function Shell() {
           ) : phase === 'setup' ? (
             <SetupScreen onDone={() => setPhase('login')} model={emu.model} />
           ) : phase === 'pin' ? (
-            <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} onBack={() => setPhase('login')} />
+            <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} onBack={() => setPhase('login')} />
           ) : tab === 'This Key' ? (
             <KeyScreen emu={emu} keys={keys} />
           ) : tab === 'Slots' ? (

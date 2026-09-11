@@ -195,7 +195,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
             carry on.
           </Text>
         </Section>
-        <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} />
+        <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
       </ScrollView>
     );
   }
