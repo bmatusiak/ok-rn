@@ -3,7 +3,7 @@ import {ActivityIndicator, ScrollView, StyleSheet, Text, View} from 'react-nativ
 import {Btn} from '../ui/components';
 import {SlotGrid} from '../ui/SlotGrid';
 import {theme} from '../ui/theme';
-import {useActiveKey} from '../hooks/KeyContext';
+import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 
 /*
  * Slots, as the device's own shape rather than as a list.
@@ -25,6 +25,8 @@ export function SlotsScreen({
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
+  /* Named in every panel that states a fact about it. See useKeyName. */
+  const keyName = useKeyName();
 
   const [labels, setLabels] = useState<(string | null)[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +61,7 @@ export function SlotsScreen({
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
-        <Text style={styles.title}>Slots</Text>
+        <Text style={styles.title}>{`Slots — ${keyName}`}</Text>
         <Btn title={loading ? '…' : 'Refresh'} disabled={loading} onPress={refresh} />
       </View>
 

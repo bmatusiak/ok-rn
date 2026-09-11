@@ -5,7 +5,7 @@ import FidoGatt, {
 } from '../transport/FidoGatt';
 import OkEmu from '../transport/OkEmu';
 import {startFidoBridge} from '../fidoBridge';
-import {useActiveKey} from './KeyContext';
+import {useActiveKey, useBackend} from './KeyContext';
 import type {LogLevel} from './useLog';
 
 type Options = {
@@ -21,6 +21,7 @@ export type FidoSession = ReturnType<typeof useFidoGatt>;
 export function useFidoGatt({log}: Options) {
   /* The ACTIVE key answers the browser, not whichever this file assumed. */
   const getKey = useActiveKey();
+  const backend = useBackend();
 
   /*
    * Seeded from the native side rather than assumed idle. The GATT server
@@ -119,12 +120,34 @@ export function useFidoGatt({log}: Options) {
    */
   const confirm = useCallback(async () => {
     try {
-      await OkEmu.pressButton(1);
+      /*
+       * THE ACTIVE KEY'S BUTTON, not the soft key's. This pressed the
+       * emulator directly, which with a hard key selected pressed a device
+       * the ceremony was not waiting on - the bridge relays the hard key's
+       * CTAP traffic (getKey is the active one) while the confirm went to
+       * the other. Two devices, never blended.
+       *
+       * The soft key keeps the native press: it works on a production build
+       * of the emulator too, where the console does not read. A hard key is
+       * pressed through its console, and only when that console answers -
+       * asked with a probe that presses nothing - otherwise the answer is a
+       * finger, and saying so beats writing into silence.
+       */
+      if (backend === 'usb') {
+        const {device} = await getKey();
+        if (!(await device.consoleAnswers())) {
+          log('info', 'this key does not take presses from the app - press any button on it');
+          return;
+        }
+        await device.press('1');
+      } else {
+        await OkEmu.pressButton(1);
+      }
       log('tx', 'button pressed');
     } catch (error) {
       log('error', 'confirm: ' + String(error));
     }
-  }, [log]);
+  }, [backend, getKey, log]);
 
   return {state, mtu, supported, pending, presenceNeeded, start, stop, confirm};
 }

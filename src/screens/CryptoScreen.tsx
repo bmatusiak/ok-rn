@@ -4,7 +4,7 @@ import {Btn, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
 import {bytes as okbytes} from 'node-onlykey-lib';
-import {useActiveKey} from '../hooks/KeyContext';
+import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {useSecureScreen} from '../hooks/useSecureScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -65,6 +65,8 @@ export function CryptoScreen({
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
+  /* Named in every panel that states a fact about it. See useKeyName. */
+  const keyName = useKeyName();
 
   useSecureScreen(blockScreenshots);
 
@@ -324,7 +326,7 @@ export function CryptoScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Section title="Derived secrets">
+      <Section title={`Derived secrets — ${keyName}`}>
         <Text style={styles.body}>
           The key computes a secret from a label and a private key that never
           leaves it. Nothing is stored: the same label always gives the same
@@ -390,7 +392,7 @@ export function CryptoScreen({
         </Section>
       ) : null}
 
-      <Section title="Vault">
+      <Section title={`Vault — ${keyName}`}>
         <Text style={styles.body}>
           Seal a note under a key the device derives for a service name. The key
           is never stored anywhere — not on the phone and not on the key — so a

@@ -3,7 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {device as okdevice} from 'node-onlykey-lib';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
-import {useActiveKey} from '../hooks/KeyContext';
+import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import * as biometrics from '../biometrics';
 import {useConfigMode} from '../hooks/useConfigMode';
 import {PinScreen} from './PinScreen';
@@ -37,6 +37,8 @@ function layoutOptions() {
 export function PreferencesScreen({emu}: {emu: EmuSession}) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
+  /* Named in every panel that states a fact about it. See useKeyName. */
+  const keyName = useKeyName();
 
   const [bioStatus, setBioStatus] = useState<biometrics.BiometricStatus>('unavailable');
   const [bioStored, setBioStored] = useState(false);
@@ -197,7 +199,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Section title="Preferences">
+      <Section title={`Preferences — ${keyName}`}>
         <Text style={styles.body}>
           The key does not report its settings, so this screen changes them
           without being able to show what they are now. A field left blank is

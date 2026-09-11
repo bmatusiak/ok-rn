@@ -3,7 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice} from 'node-onlykey-lib';
-import {useActiveKey} from '../hooks/KeyContext';
+import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import {PinScreen} from './PinScreen';
 import {useConfigMode} from '../hooks/useConfigMode';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -84,6 +84,8 @@ function describeType(name: string): string {
 export function KeysScreen({emu}: {emu: EmuSession}) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
+  /* Named in every panel that states a fact about it. See useKeyName. */
+  const keyName = useKeyName();
 
   const [mode, setMode] = useState<Mode>('PGP');
   const [slot, setSlot] = useState<number>(101);
@@ -279,7 +281,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Section title="Keys">
+      <Section title={`Keys — ${keyName}`}>
         <Text style={styles.body}>
           Private keys for signing and decryption, used by OnlyKey Agent and the
           web app. They are written to the device and never read back.

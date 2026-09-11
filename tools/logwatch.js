@@ -96,7 +96,15 @@ if (!pid) {
   console.log(`logwatch: ${PACKAGE} is not running; watching by filter until it starts`);
 }
 
-const args = [...(serial ? ['-s', serial] : []), 'logcat', '-v', 'threadtime', '-T', '1'];
+/*
+ * How far back to start. `--until` twice missed a marker that had landed in
+ * the second between a tap and this process attaching - the app connects
+ * faster than node starts - so a bounded look begins a little way into the
+ * past, where a marker that JUST happened is still found. Follow mode starts
+ * at now: a notification for something that already happened is noise.
+ */
+const recent = Number(argAfter('--recent', follow ? 1 : 200));
+const args = [...(serial ? ['-s', serial] : []), 'logcat', '-v', 'threadtime', '-T', String(recent)];
 const child = spawn(ADB, args, {stdio: ['ignore', 'pipe', 'pipe']});
 
 const started = Date.now();

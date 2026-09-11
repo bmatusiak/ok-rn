@@ -1,7 +1,7 @@
 import React, {createContext, useCallback, useContext, useMemo} from 'react';
 
 import {getOnlyKey, type OnlyKeyApp} from '../onlykey';
-import type {Backend} from './keySession';
+import {BACKEND_NAME, type Backend} from './keySession';
 
 /**
  * WHICH KEY THE REST OF THE APP IS TALKING TO.
@@ -50,6 +50,19 @@ export function KeyBackendProvider({
 /** Which key is active. For a component that needs to SAY so. */
 export function useBackend(): Backend {
   return useContext(KeyBackendContext);
+}
+
+/**
+ * The active key's NAME, for a panel title.
+ *
+ * A PANEL DESCRIBING DEVICE STATE MUST NAME THE DEVICE. "12 slots, 3
+ * configured" is a different fact about each key, and the header that says
+ * which one is active scrolls away. The naming pass found this on the
+ * Testing tab first; this is the one place the name comes from, so a panel
+ * cannot spell it differently from the header.
+ */
+export function useKeyName(): string {
+  return BACKEND_NAME[useContext(KeyBackendContext)];
 }
 
 /**

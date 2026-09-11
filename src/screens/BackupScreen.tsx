@@ -2,7 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
-import {useActiveKey} from '../hooks/KeyContext';
+import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import {device as okdevice} from 'node-onlykey-lib';
 import OkEmu from '../transport/OkEmu';
 import NativeShare from '../../specs/NativeShare';
@@ -46,6 +46,8 @@ export function BackupScreen({
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
+  /* Named in every panel that states a fact about it. See useKeyName. */
+  const keyName = useKeyName();
 
   useSecureScreen(blockScreenshots);
 
@@ -299,7 +301,7 @@ export function BackupScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Section title="Backup">
+      <Section title={`Backup — ${keyName}`}>
         <Text style={styles.body}>
           The key types its backup rather than sending it, so this asks it to
           type and reads what it types. It contains everything the key holds —

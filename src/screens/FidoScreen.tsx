@@ -1,6 +1,7 @@
 import React from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, Section, StatusPill} from '../ui/components';
+import {useKeyName} from '../hooks/KeyContext';
 import {theme} from '../ui/theme';
 import type {FidoSession} from '../hooks/useFidoGatt';
 
@@ -19,6 +20,8 @@ export function FidoScreen({
 }: {
   fido: FidoSession;
 }) {
+  /* The bridge relays whichever key is active; the panel says which. */
+  const keyName = useKeyName();
   const running = fido.state === 'advertising' || fido.state === 'connected';
 
   return (
@@ -27,7 +30,7 @@ export function FidoScreen({
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <Section title="Authenticator" right={<StatusPill state={fido.state} />}>
+      <Section title={`Authenticator — ${keyName}`} right={<StatusPill state={fido.state} />}>
         <Text style={styles.hint}>
           Advertises the FIDO BLE service 0xFFFD so a desktop browser can use this phone as a
           roaming security key over CTAP2. See EXPLAINER/z.md.
