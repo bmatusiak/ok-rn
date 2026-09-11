@@ -9,6 +9,12 @@ Every rule here is paid for. The incident that bought it is in brackets.
 
 ## First, always: `node tools/doctor.js`
 
+With more than one device on adb (a second phone, or the bench phone twice
+over USB and wireless) every tool fails with "more than one device", and a
+lost `adb reverse` shows up as a red box about loadJSBundleFromAssets. Set
+`ANDROID_SERIAL=R5CW31M0WCB` (the bench Samsung) in the shell first, and
+re-run `adb reverse tcp:8081 tcp:8081` if the app cannot reach Metro.
+
 One screen: device, foreground app, Metro, stray processes, whether a key is
 on the bus, the suite filter, the last verdict. Run it at the start of a
 session, before any e2e run, and THE MOMENT anything "sits". Read-only, under
