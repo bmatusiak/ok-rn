@@ -8,6 +8,8 @@ import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
 import * as biometrics from '../biometrics';
 import {useConfigMode} from '../hooks/useConfigMode';
 import {PinScreen} from './PinScreen';
+import {SetupScreen} from './SetupScreen';
+import OkEmu from '../transport/OkEmu';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 const {keystrokes} = okdevice;
@@ -118,6 +120,22 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
   const [error, setError] = useState<string | null>(null);
 
   const config = useConfigMode(emu);
+
+  /*
+   * CHANGE PINS, which the desktop offers on an initialized key and this app
+   * did not. The firmware accepts OKPIN on such a key only in config mode
+   * (okcore.cpp:362-374), so the section walks the same door the Keys tab
+   * does: enter config mode (the key locks), PIN again, then the setup
+   * bracket for the one PIN chosen, then a restart to leave config mode.
+   */
+  type PinKind = 'primary' | 'secondary' | 'selfDestruct';
+  const [changing, setChanging] = useState<PinKind | null>(null);
+  const [changed, setChanged] = useState(false);
+  const restartKey = useCallback(() => {
+    /* The soft key's firmware cannot restart in place; the app can. */
+    if (backend === 'usb') void emu.restart();
+    else void OkEmu.restartApp();
+  }, [backend, emu]);
   const locked = emu.device !== 'unlocked';
 
   useEffect(() => {
@@ -182,6 +200,21 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
     );
   }
 
+  if (changing) {
+    return (
+      <SetupScreen
+        mode="change"
+        only={changing}
+        model={emu.model}
+        onDone={() => {
+          setChanging(null);
+          setChanged(true);
+        }}
+        onRestart={restartKey}
+      />
+    );
+  }
+
   const groups = [
     {
       title: 'Settings',
@@ -211,6 +244,50 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      <Section title={`Change PINs — ${keyName}`}>
+        {!config.entered ? (
+          <>
+            <Text style={styles.body}>
+              A PIN on a key that already has one can only be changed in config
+              mode, which locks the key: hold button 6 (the app does this),
+              enter the current PIN again, choose the new one, then restart the
+              key. Until the restart it will not sign or type anything.
+            </Text>
+            <Btn
+              title={config.entering ? 'Holding…' : 'Enter config mode'}
+              tone="primary"
+              disabled={config.entering || locked}
+              onPress={config.enter}
+            />
+            {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
+            {config.error ? <Text style={styles.error}>{config.error}</Text> : null}
+          </>
+        ) : changed ? (
+          <>
+            <Text style={styles.body}>
+              The PIN is set. The key is still in config mode, and only reads
+              its PIN when it boots — restart it to finish.
+            </Text>
+            <Btn title={backend === 'usb' ? 'Restart the key' : 'Restart the app'} tone="primary" onPress={restartKey} />
+          </>
+        ) : (
+          <>
+            <Text style={styles.body}>In config mode. Which PIN?</Text>
+            <View style={styles.chips}>
+              {emu.model === 'duo' ? (
+                <Btn title="Set or change the DUO's PINs" tone="primary" onPress={() => setChanging('primary')} />
+              ) : (
+                <>
+                  <Btn title="Primary" tone="primary" onPress={() => setChanging('primary')} />
+                  <Btn title="Second profile" onPress={() => setChanging('secondary')} />
+                  <Btn title="Self-destruct" onPress={() => setChanging('selfDestruct')} />
+                </>
+              )}
+            </View>
+          </>
+        )}
+      </Section>
+
       <Section title={`Preferences — ${keyName}`}>
         <Text style={styles.body}>
           The key does not report its settings, so this screen changes them

@@ -81,11 +81,38 @@ const BLURB: Record<Kind, string> = {
  * 0xFF that means SET (pin.encodeDuoPins). No bracket, no presses, no
  * "enter it again" stage on the device: the form asks twice instead.
  */
-export function SetupScreen({onDone, model = 'classic'}: {onDone?: () => void; model?: 'classic' | 'duo'}) {
+/**
+ * CHANGE MODE: one PIN on a key that already has one.
+ *
+ * The desktop offers Change Primary / Secondary / Self-Destruct PIN on an
+ * initialized key; this screen only ever appeared on a blank one. The
+ * firmware takes OKPIN on an initialized key only in config mode
+ * (okcore.cpp:362-374, `!initcheck || configmode`), so the caller walks
+ * that door first - PreferencesScreen does, with useConfigMode - and this
+ * screen then runs the same bracket for the one kind asked for and stops:
+ * no other kinds, no passphrase stage. Config mode ends only at a restart,
+ * which the done view offers through `onRestart` (the app for the soft
+ * key, the device for a hard one).
+ */
+export function SetupScreen({
+  onDone,
+  model = 'classic',
+  mode = 'setup',
+  only,
+  onRestart,
+}: {
+  onDone?: () => void;
+  model?: 'classic' | 'duo';
+  mode?: 'setup' | 'change';
+  /** In change mode, which PIN. */
+  only?: Kind;
+  /** In change mode, how to restart this key so config mode ends. */
+  onRestart?: () => void;
+}) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
 
-  const [kind, setKind] = useState<Kind>('primary');
+  const [kind, setKind] = useState<Kind>(mode === 'change' ? (only ?? 'primary') : 'primary');
   const [stage, setStage] = useState<Stage>('choose');
   const [pin, setPin] = useState('');
   const [again, setAgain] = useState('');
@@ -122,6 +149,11 @@ export function SetupScreen({onDone, model = 'classic'}: {onDone?: () => void; m
     setSteps([]);
     setError(null);
 
+    /* One PIN was asked for; the rest of the wizard is not this visit. */
+    if (mode === 'change') {
+      setStage('done');
+      return;
+    }
     const next = KINDS[KINDS.indexOf(from) + 1];
     if (next) {
       setKind(next);
@@ -129,7 +161,7 @@ export function SetupScreen({onDone, model = 'classic'}: {onDone?: () => void; m
     } else {
       setStage('passphrase');
     }
-  }, []);
+  }, [mode]);
 
   const apply = useCallback(
     async (digits: string) => {
@@ -163,13 +195,13 @@ export function SetupScreen({onDone, model = 'classic'}: {onDone?: () => void; m
         const reply = await device.duoPin([primary, '', selfDestruct], {set: true});
         setSteps([`device: ${String(reply && (reply.text || reply)).trim().slice(0, 60)}`]);
         setSet(['primary', ...(selfDestruct ? ['selfDestruct' as Kind] : [])]);
-        setStage('passphrase');
+        setStage(mode === 'change' ? 'done' : 'passphrase');
       } catch (e) {
         setError(String((e as Error)?.message ?? e));
         setStage('failed');
       }
     },
-    [getKey],
+    [getKey, mode],
   );
 
   const next = useCallback(() => {
@@ -289,15 +321,15 @@ export function SetupScreen({onDone, model = 'classic'}: {onDone?: () => void; m
                 : `${set.length} PINs are set: ${set.join(', ')}.`}
             </Text>
             <Text style={styles.hint}>
-              The key only reads its PIN when it boots, and its firmware cannot
-              be restarted in this process — so the app has to start again
-              before the new PIN means anything.
+              {mode === 'change'
+                ? 'The key is in config mode until it restarts, and only reads its PIN when it boots — restart it to finish.'
+                : 'The key only reads its PIN when it boots, and its firmware cannot be restarted in this process — so the app has to start again before the new PIN means anything.'}
             </Text>
             <View style={styles.action}>
               <Btn
-                title="Restart the app"
+                title={mode === 'change' && onRestart ? 'Restart the key' : 'Restart the app'}
                 tone="primary"
-                onPress={() => OkEmu.restartApp()}
+                onPress={() => (mode === 'change' && onRestart ? onRestart() : OkEmu.restartApp())}
               />
             </View>
           </>
