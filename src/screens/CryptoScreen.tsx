@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section} from '../ui/components';
+import {missingNote, supports} from '../firmwareFeatures';
 import {Keypad} from '../ui/Keypad';
 import {VaultList} from '../ui/VaultList';
 import {theme} from '../ui/theme';
@@ -135,6 +136,8 @@ export function CryptoScreen({
 
   const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locked = emu.device !== 'unlocked';
+  /* Faded when the key's firmware has no post-quantum support - firmwareFeatures.ts. */
+  const pqc = supports(emu.capabilities, 'postQuantum');
 
   const reveal = useCallback(() => {
     setRevealed(true);
@@ -568,7 +571,8 @@ export function CryptoScreen({
         />
       </Section>
 
-      <Section title="Encrypted files (age)">
+      <Section title="Encrypted files (age)" faded={!pqc}>
+        {pqc ? null : <Text style={styles.note}>{missingNote('postQuantum')}</Text>}
         <Text style={styles.body}>
           An age identity split between this key and the host: the X25519 half
           never leaves the key, and the post-quantum half travels as a seed the
@@ -593,7 +597,7 @@ export function CryptoScreen({
         <Btn
           title={busy ? 'Working…' : 'Get the recipient'}
           tone="primary"
-          disabled={busy || locked || !ageLabel.trim()}
+          disabled={busy || locked || !pqc || !ageLabel.trim()}
           onPress={ageIdentity}
         />
 
@@ -635,7 +639,7 @@ export function CryptoScreen({
             />
             <Btn
               title={busy ? 'Working…' : 'Encrypt'}
-              disabled={busy || !ageText}
+              disabled={busy || !pqc || !ageText}
               onPress={ageEncrypt}
             />
           </>
@@ -654,7 +658,7 @@ export function CryptoScreen({
         />
         <Btn
           title={busy ? 'Working…' : 'Decrypt'}
-          disabled={busy || locked || !ageLabel.trim() || !ageFile.trim()}
+          disabled={busy || locked || !pqc || !ageLabel.trim() || !ageFile.trim()}
           onPress={ageDecrypt}
         />
 

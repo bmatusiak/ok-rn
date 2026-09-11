@@ -25,14 +25,31 @@ export function Section({
   right,
   children,
   style,
+  faded,
 }: {
   title: string;
   right?: React.ReactNode;
   children?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
+  /**
+   * The firmware on the attached key does not have what this section does.
+   *
+   * FADED, NOT HIDDEN, and that is the long-standing rule here rather than a
+   * choice made for these two screens. A section that vanishes teaches
+   * nothing: the person wonders whether they are on the wrong tab, whether
+   * the app is broken, or whether the feature was removed. A faded one that
+   * says which firmware it needs answers the question on the screen where it
+   * was asked.
+   *
+   * The caller is expected to disable its controls as well. Fading alone
+   * leaves a button that looks inert and is not, and pressing it reaches the
+   * device, where a missing feature answers with a refusal or with silence -
+   * which is the worst of the three outcomes to have to interpret.
+   */
+  faded?: boolean;
 }) {
   return (
-    <View style={[styles.section, style]}>
+    <View style={[styles.section, faded && styles.sectionFaded, style]}>
       <View style={styles.sectionHead}>
         <Text style={styles.sectionTitle}>{title}</Text>
         {right}
@@ -167,6 +184,7 @@ const styles = StyleSheet.create({
   dot: {width: 7, height: 7, borderRadius: 4},
   pillText: {fontSize: 12, fontWeight: '600'},
 
+  sectionFaded: {opacity: 0.45},
   section: {
     backgroundColor: theme.surface,
     borderRadius: 12,

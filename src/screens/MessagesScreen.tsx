@@ -1,6 +1,7 @@
 import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
+import {missingNote, supports} from '../firmwareFeatures';
 import {theme} from '../ui/theme';
 import {lookup, type Found, type Source} from '../keySearch';
 import {splitPublicKeys, summarizeKey, type KeySummary} from '../armoredKeys';
@@ -164,6 +165,14 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
   }, [lookupSource, lookupQuery]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /*
+   * Faded when the attached key's firmware has no post-quantum support, which
+   * is EVERY released firmware - see src/firmwareFeatures.ts. Only the
+   * composite-key section is gated: the rest of this screen is ordinary PGP
+   * with keys the phone holds, and that works on any key at all.
+   */
+  const pqc = supports(emu.capabilities, 'postQuantum');
 
   /*
    * A file picked to encrypt, kept as BYTES.
@@ -413,18 +422,23 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
         </Text>
       </Section>
 
-      <Section title={`Composite key on the device — ${keyName}`}>
+      <Section title={`Composite key on the device — ${keyName}`} faded={!pqc}>
+        {pqc ? null : <Text style={styles.hint}>{missingNote('postQuantum')}</Text>}
         <Text style={styles.hint}>
           A post-quantum composite key (ML-DSA-65 + Ed25519, ML-KEM-768 +
           X25519) made here and kept on the key. Decrypting and signing then
           happen on the key, one button challenge per half.
         </Text>
         <View style={styles.row}>
-          <Btn title={busy ? 'Working…' : 'Generate'} onPress={generate} disabled={busy} />
+          <Btn
+            title={busy ? 'Working…' : 'Generate'}
+            onPress={generate}
+            disabled={busy || !pqc}
+          />
           <Btn
             title="Load onto the key"
             tone="primary"
-            disabled={busy || !blobRef.current}
+            disabled={busy || !pqc || !blobRef.current}
             onPress={load}
           />
         </View>
@@ -439,6 +453,7 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
         <Btn
           title={onDevice ? 'Using the key on the device for decrypt and sign' : 'Use the key on the device for decrypt and sign'}
           tone={onDevice ? 'primary' : undefined}
+          disabled={!pqc}
           onPress={() => setOnDevice(v => !v)}
         />
         {onDevice ? (
