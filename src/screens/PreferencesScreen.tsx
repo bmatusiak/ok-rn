@@ -3,7 +3,8 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {device as okdevice} from 'node-onlykey-lib';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
-import {useActiveKey, useKeyName} from '../hooks/KeyContext';
+import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
+import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
 import * as biometrics from '../biometrics';
 import {useConfigMode} from '../hooks/useConfigMode';
 import {PinScreen} from './PinScreen';
@@ -39,6 +40,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
   const getKey = useActiveKey();
   /* Named in every panel that states a fact about it. See useKeyName. */
   const keyName = useKeyName();
+  const backend = useBackend();
 
   const [bioStatus, setBioStatus] = useState<biometrics.BiometricStatus>('unavailable');
   const [bioStored, setBioStored] = useState(false);
@@ -146,13 +148,23 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
         const {device} = await getKey();
         const result = await device.setPreference(name, Number(raw));
         setStatus(`${name}: ${result.response}`);
+        /*
+         * REMEMBERED, because it cannot be read back. The key takes the
+         * layout and never reports it, so the decoder that reads what the
+         * key types has to be told by whoever last wrote it - per key, since
+         * the soft and hard keys are different devices. See useKeyboardLayout.
+         */
+        if (name === 'keyboardLayout') {
+          const layoutName = layoutNameForId(Number(raw));
+          if (layoutName) await rememberLayout(backend, layoutName);
+        }
       } catch (e) {
         setError(String((e as Error)?.message ?? e));
       } finally {
         setBusy(null);
       }
     },
-    [getKey, values],
+    [backend, getKey, values],
   );
 
   /* Config mode locks the key, so the PIN has to go back in. */

@@ -269,6 +269,7 @@ function Shell() {
             openSlot ? (
               <SlotEditorScreen
                 slot={openSlot}
+                emu={emu}
                 onBack={() => setOpenSlot(null)}
                 /*
                  * FLAG_SECURE blanks adb screenshots as well as a bystander

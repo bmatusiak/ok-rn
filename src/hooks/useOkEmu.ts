@@ -566,5 +566,16 @@ export function useOkEmu({log, autoStart = false}: Options) {
      * question of either. See useHardKey.canPress.
      */
     canPress: true as boolean | null,
+
+    /**
+     * A hold of an exact length, for the library's slot and backup reads.
+     *
+     * On the HANDLE rather than reached for as OkEmu.holdTicks, because the
+     * slot editor and the backup screen did exactly that and pressed the
+     * emulator with a hard key selected - the same blend the BLE bridge had.
+     * Both handles carry this, so a screen presses whichever key it is on.
+     */
+    holdTicks: (button: number, ticks: number, opts?: {allowGesture?: boolean}) =>
+      OkEmu.holdTicks(button, ticks, opts),
   };
 }

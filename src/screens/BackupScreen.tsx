@@ -4,7 +4,7 @@ import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import {device as okdevice} from 'node-onlykey-lib';
-import OkEmu from '../transport/OkEmu';
+import {useKeyboardLayout} from '../hooks/useKeyboardLayout';
 import NativeShare from '../../specs/NativeShare';
 import {useSecureScreen} from '../hooks/useSecureScreen';
 import {useConfigMode} from '../hooks/useConfigMode';
@@ -46,6 +46,8 @@ export function BackupScreen({
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
+  /* What the key types in, remembered per key. See useKeyboardLayout. */
+  const {layout} = useKeyboardLayout();
   /* Named in every panel that states a fact about it. See useKeyName. */
   const keyName = useKeyName();
 
@@ -115,7 +117,9 @@ export function BackupScreen({
          * config-mode gesture. A hold this screen picked itself would be a
          * backup on one key and a typed slot on another.
          */
-        trigger: () => OkEmu.holdTicks(backup.button, backup.ticks, {allowGesture: true}),
+        /* The ACTIVE key's hold, not the emulator's. See useOkEmu.holdTicks. */
+        trigger: () => emu.holdTicks(backup.button, backup.ticks, {allowGesture: true}),
+        layout,
         timeoutMs: 120000,
         onProgress: ({characters}: {characters: number}) => setProgress(characters),
       });

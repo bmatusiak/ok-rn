@@ -260,6 +260,47 @@ module.exports = function hardKey({describe, it}) {
         assert.ok(hasDebug, 'the console answered on a key with no debug interface');
       }
     });
+    it('types a slot over the CLAIMED keyboard interface, and the phone reads it back', async ({log, assert, skip}) => {
+      assert.ok(shared && shared.result, 'the connect test did not run');
+      const {device} = await getOnlyKey('usb');
+
+      /*
+       * The measurement the whole keyboard capture rests on. Claiming
+       * interface 0 detaches the key from the kernel's HID driver, so what
+       * the key types reaches THIS app as 8-byte reports and nowhere else;
+       * the library's readSlot presses the button (through the console,
+       * which this suite has established answers) and decodes the reports
+       * with the same tables the soft key's capture uses.
+       *
+       * Needs an unlocked key: a locked one treats the press as a PIN digit.
+       * The hardKeyProvision suite leaves the bench key unlocked with a
+       * known PIN; anything else is a skip with the reason, not a press.
+       */
+      const status = String(device.status || '').trim();
+      if (!/UNLOCKED/i.test(status)) {
+        skip(`the key is ${status || 'silent'}, not unlocked; a press now would be a PIN digit`);
+      }
+      if (!(await device.consoleAnswers())) {
+        skip('this key does not read its console, so nothing here can press its button');
+      }
+
+      const SECRET = 'Hw&3e2e';
+      await device.setSlot('1a', {label: 'hw-e2e', password: SECRET});
+      log(`slot 1a written: label hw-e2e, ${SECRET.length}-char password`);
+
+      const read = await device.readSlot('1a', {
+        press: (button, ticks) => device.press(`${button}#${ticks}`),
+        timeoutMs: 15000,
+      });
+      log(`readSlot: button ${read.button}, ${read.band}, ${read.reports} reports`);
+      log(`segments: ${JSON.stringify(read.segments)}`);
+
+      assert.ok(read.reports > 0, 'the key typed nothing the phone could see');
+      assert.ok(
+        read.segments.includes(SECRET),
+        `expected ${JSON.stringify(SECRET)} among what the key typed`,
+      );
+    });
     it('and the key is handed back to the phone', async ({log, assert}) => {
       assert.ok(shared, 'no key was found');
       await resetOnlyKey('usb');

@@ -11,7 +11,8 @@ import {device as okdevice} from 'node-onlykey-lib';
 import {Btn} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useActiveKey} from '../hooks/KeyContext';
-import OkEmu from '../transport/OkEmu';
+import {useKeyboardLayout} from '../hooks/useKeyboardLayout';
+import type {EmuSession} from '../hooks/useOkEmu';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {useSecureScreen} from '../hooks/useSecureScreen';
 
@@ -108,16 +109,21 @@ type Values = Record<string, string>;
 
 export function SlotEditorScreen({
   slot,
+  emu,
   onBack,
   blockScreenshots = true,
 }: {
   slot: {id: string; index: number};
+  /** The active key's handle - what presses the button for a read. */
+  emu: EmuSession;
   onBack: () => void;
   /** Off in testing mode, where adb screenshots are the verification. */
   blockScreenshots?: boolean;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
+  /* What the key types in, remembered per key. See useKeyboardLayout. */
+  const {layout} = useKeyboardLayout();
 
   const [values, setValues] = useState<Values>({});
   const [captured, setCaptured] = useState<string[] | null>(null);
@@ -195,7 +201,9 @@ export function SlotEditorScreen({
     try {
       const {device} = await getKey();
       const read = await device.readSlot(slot.id, {
-        press: (button: number, ticks: number) => OkEmu.holdTicks(button, ticks),
+        /* The ACTIVE key's hold, not the emulator's. See useOkEmu.holdTicks. */
+        press: (button: number, ticks: number) => emu.holdTicks(button, ticks),
+        layout,
       });
 
       if (!read.reports) {

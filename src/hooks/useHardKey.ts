@@ -305,6 +305,26 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
   const endHold = useCallback(async () => {}, []);
 
   /**
+   * A hold of an exact length: `N#<ticks>` on the console.
+   *
+   * What readSlot() and captureBackup() need, and the same call the soft
+   * key's handle offers, so a screen reading a slot presses whichever key it
+   * is on. The console replays the whole press itself, so this resolves when
+   * the line is written rather than when the hold ends - the library waits
+   * on the typed reports, not on this.
+   */
+  const holdTicks = useCallback(
+    async (button: number, ticks: number) => {
+      if (!canPress) {
+        throw new Error(unsupported(`hold button ${button}`));
+      }
+      const {device: dev} = await getOnlyKey('usb');
+      await dev.press(`${button}#${ticks}`);
+    },
+    [canPress],
+  );
+
+  /**
    * Set a PIN.
    *
    * The library owns the bracket. It needs the debug console on any firmware
@@ -354,6 +374,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
     press,
     beginHold,
     endHold,
+    holdTicks,
     provision,
 
     /** No held state to poll: the firmware owns the duration. */
