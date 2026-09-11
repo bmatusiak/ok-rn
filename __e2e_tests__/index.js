@@ -21,5 +21,6 @@ module.exports = [
     require('./14b-pqcSlots.e2e.js'),
     require('./15-hardKey.e2e.js'),
     require('./16-hardKeyProvision.e2e.js'),
-    require('./17-hardKeyConfig.e2e.js')
+    require('./17-hardKeyConfig.e2e.js'),
+    require('./18-hardKeyFido.e2e.js')
 ];
