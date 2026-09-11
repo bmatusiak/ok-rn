@@ -106,6 +106,13 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
   const [armored, setArmored] = useState('');
   const [hex, setHex] = useState('');
   const [ssh, setSsh] = useState('');
+  /*
+   * The name the device keeps for the slot, which nothing has ever written:
+   * python-onlykey can read key names and never sets one, and the desktop
+   * app has no control for either. Optional, so an empty box writes no name
+   * at all rather than an empty one.
+   */
+  const [keyName2, setKeyName2] = useState('');
   const [keyType, setKeyType] = useState<string>(RAW_TYPES[0].name);
 
   /*
@@ -194,6 +201,8 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         backup: roles.backup,
         signature: roles.signature,
         decryption: roles.decryption,
+        /* Null lets the key name itself from its own ssh-keygen comment. */
+        label: keyName2.trim() || null,
       });
       setLoaded(true);
       setStatus(
@@ -204,7 +213,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     } finally {
       setBusy(null);
     }
-  }, [getKey, ssh, slot, roles]);
+  }, [getKey, ssh, slot, roles, keyName2]);
 
   const loadHex = useCallback(async () => {
     setBusy('hex');
@@ -254,7 +263,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         return;
       }
 
-      const result = await device.loadKey(slot, {type, key: bytes});
+      const result = await device.loadKey(slot, {type, key: bytes}, {label: keyName2.trim() || null});
       setLoaded(true);
 
       /*
@@ -274,7 +283,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     } finally {
       setBusy(null);
     }
-  }, [getKey, hex, slot, roles]);
+  }, [getKey, hex, slot, roles, keyName2]);
 
   /*
    * Validated BEFORE anything is sent, and every problem is reported at once.
@@ -311,20 +320,54 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     }
   }, [getKey, yubi]);
 
+  /*
+   * WHAT IS LOADED, which this screen could not say.
+   *
+   * The firmware keeps a second label list for keys, read with the same
+   * message and a different slot byte, and nothing in this app or the
+   * library asked for it - so a key could be written and the screen would
+   * go on looking exactly as it had. python-onlykey has printed it as
+   * `getkeylabels` all along; the desktop app has no control for it either.
+   *
+   * Only slots that are NAMED are shown. A label is not proof of a key -
+   * they live in different places on the device, which is why wiping one
+   * used to leave the other - so the list says "named", and the count says
+   * how many of the twenty answered.
+   */
+  const [keyRows, setKeyRows] = useState<
+    {slot: number; kind: string; label: string | null}[] | null
+  >(null);
+  const [keysError, setKeysError] = useState<string | null>(null);
+  const refreshKeys = useCallback(async () => {
+    setBusy('labels');
+    setKeysError(null);
+    try {
+      const {device} = await getKey();
+      const {keys} = await device.readKeyLabels();
+      setKeyRows(keys);
+    } catch (e) {
+      setKeysError(String((e as Error)?.message ?? e));
+      setKeyRows(null);
+    } finally {
+      setBusy(null);
+    }
+  }, [getKey]);
+
   const wipe = useCallback(async () => {
     setBusy('wipe');
     setError(null);
     setStatus(null);
     try {
       const {device} = await getKey();
-      await device.wipeKey(slot);
-      setStatus(`Wiped slot ${slot}.`);
+      const result = await device.wipeKey(slot);
+      setStatus(`Wiped slot ${slot}. The device said: ${result.response}`);
+      if (keyRows) void refreshKeys();
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
       setBusy(null);
     }
-  }, [getKey, slot]);
+  }, [getKey, slot, keyRows, refreshKeys]);
 
   /* Config mode locks the key; the PIN has to go back in before anything else. */
   if (config.entered && !config.ready) {
@@ -351,6 +394,49 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
           Private keys for signing and decryption, used by OnlyKey Agent and the
           web app. They are written to the device and never read back.
         </Text>
+      </Section>
+
+      <Section title="Loaded keys">
+        <Text style={styles.note}>
+          The names the device holds for its key slots. A name is not proof of
+          a key — the firmware keeps the two apart — so this says which slots
+          are named, not which hold key material.
+        </Text>
+        <Btn
+          title={busy === 'labels' ? 'Reading…' : keyRows ? 'Read again' : 'Read the key names'}
+          disabled={busy !== null || locked}
+          onPress={() => void refreshKeys()}
+        />
+        {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
+        {keysError ? <Text style={styles.error}>{keysError}</Text> : null}
+        {keyRows
+          ? (() => {
+              const named = keyRows.filter(k => k.label);
+              if (!named.length) {
+                return (
+                  <Text style={styles.note}>
+                    All {keyRows.length} key slots answered, and none of them is
+                    named.
+                  </Text>
+                );
+              }
+              return (
+                <>
+                  {named.map(k => (
+                    <View key={k.slot} style={styles.keyRow}>
+                      <Text style={styles.keySlot}>
+                        {k.kind === 'rsa' ? `RSA ${k.slot}` : `ECC ${k.slot}`}
+                      </Text>
+                      <Text style={styles.keyLabel}>{k.label}</Text>
+                    </View>
+                  ))}
+                  <Text style={styles.note}>
+                    {named.length} named of {keyRows.length} key slots.
+                  </Text>
+                </>
+              );
+            })()
+          : null}
       </Section>
 
       {/* Above the form, because a message under three screens of fields is a
@@ -461,6 +547,17 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
             <Text style={styles.note}>
               ssh-agent signs with it; Signature is what an SSH key is for.
             </Text>
+            <Text style={styles.label}>Name for this slot (optional)</Text>
+            <TextInput
+              value={keyName2}
+              onChangeText={setKeyName2}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={16}
+              placeholder="taken from the key's own comment"
+              placeholderTextColor={theme.textDim}
+              style={styles.input}
+            />
             <Text style={styles.label}>Key</Text>
             <TextInput
               value={ssh}
@@ -510,6 +607,22 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
                 </Text>
               </>
             ) : null}
+            <Text style={styles.label}>Name for this slot (optional)</Text>
+            <TextInput
+              value={keyName2}
+              onChangeText={setKeyName2}
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={16}
+              placeholder="up to 16 characters"
+              placeholderTextColor={theme.textDim}
+              style={styles.input}
+            />
+            <Text style={styles.note}>
+              The device keeps a name per key slot and nothing has ever
+              written one — not this app, not the desktop app, not the Python
+              client. Leave it empty and the slot stays unnamed, as it is now.
+            </Text>
             <Text style={styles.label}>Key bytes</Text>
             <TextInput
               value={hex}
@@ -646,4 +759,7 @@ const styles = StyleSheet.create({
 
   picker: {gap: 8},
   chips: {flexDirection: 'row', flexWrap: 'wrap', gap: 6},
+  keyRow: {flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6},
+  keySlot: {color: theme.textDim, fontSize: 12, minWidth: 74, fontFamily: 'monospace'},
+  keyLabel: {color: theme.text, fontSize: 13, flexShrink: 1},
 });

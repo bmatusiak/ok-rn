@@ -159,8 +159,10 @@ function serialTap() {
  * had - so the probe is now one call, and the method has a caller.
  */
 async function probeKey(device, log, slot = SLOT) {
+  const started = Date.now();
   try {
     const key = await device.getPublicKey(slot, {bytes: 32, timeoutMs: 4000});
+    if (Date.now() - started > 4000) log(`  (slot ${slot} needed the resend)`);
     log(`slot ${slot}: holds a key (${key.length} bytes back)`);
     return true;
   } catch (e) {
@@ -371,6 +373,12 @@ module.exports = function cryptoSign({describe, it}) {
          */
         const sshAck = vendorSays(/Successfully set ECC Key/);
         try {
+          /*
+           * Named as it is written. The fixture's ssh-keygen comment is
+           * "fixture", and loadSshKey uses the comment when no label is
+           * given - so this also proves the name a key carries reaches the
+           * device without the caller typing one.
+           */
           const applied = await device.loadSshKey(SSH_KEY, {slot: SSH_SLOT, signature: true});
           log(`loadSshKey returned: ${JSON.stringify(applied)}`);
           const said = await sshAck.done;
@@ -488,6 +496,33 @@ module.exports = function cryptoSign({describe, it}) {
         'the device public key is not the one belonging to the scalar this suite wrote',
       );
 
+      /*
+       * TWO EMPTY SLOTS IN A ROW, which is the shape that goes unanswered.
+       *
+       * A read straight after a read is SOMETIMES never answered, and only
+       * when the first one hit an empty slot - which replies with
+       * hidprint's error sentence rather than with key bytes. Three runs in
+       * four on the bench, 2026-09-11; a 60 ms settle alone did not prevent
+       * it, and getPublicKey now resends once when the device says nothing.
+       * It never happened on slots that hold keys, which is why it stayed
+       * hidden. See the second half of
+       * FINDING-slot-write-after-a-label-read-is-lost.md, including what
+       * that finding does NOT claim about the cause.
+       */
+      for (const empty of [105, 106]) {
+        let said = null;
+        try {
+          await device.getPublicKey(empty, {bytes: 32, timeoutMs: 4000});
+        } catch (e) {
+          said = String(e.message);
+        }
+        log(`slot ${empty}: ${JSON.stringify(said)}`);
+        assert.ok(
+          said && /no ECC Private Key/i.test(said),
+          `slot ${empty} did not answer; a read straight after another one was lost`,
+        );
+      }
+
       /* 116 is empty but IN RANGE; 117 is the first reserved slot. */
       let atTop = null;
       try {
@@ -526,6 +561,73 @@ module.exports = function cryptoSign({describe, it}) {
         reserved && /did not answer OKGETPUBKEY/i.test(reserved),
         'a slot past the end answered something; okcrypto_getpubkey was expected to drop it',
       );
+    });
+
+    it('a key slot can be named, read back, and the name goes with the key', async ({log, assert, skip}) => {
+      /*
+       * The KEY label list - OKGETLABELS with slot byte 'k' - which nothing
+       * in this library could read and no screen could show, so a key could
+       * be written and the app would look exactly as it had.
+       *
+       * It also pins the half of wipeKey that was missing. The firmware
+       * keeps a key and its label in different places: wipe_private()
+       * clears the key and never touches the label (okcore.cpp:5191-5208),
+       * so a wiped slot went on naming a key that was gone. The label write
+       * needs config mode like any other OKSETSLOT, so this runs in the
+       * window the provisioning test opened.
+       *
+       * Slot 104 rather than the signing slot: naming and wiping the slot
+       * the rest of the suite depends on would make the failure land
+       * somewhere else.
+       */
+      const {device} = await ready(log);
+      if (!shared.provisioned) {
+        skip('config mode was not entered this run - the signing slot was already provisioned');
+      }
+
+      const LABELLED = 104;
+      const NAME = 'e2e-label';
+
+      /* The label lives at its own index: ECC 104 -> 104 - 72 = 32. */
+      await device.setSlot(32, {label: NAME});
+
+      const after = await device.readKeyLabels();
+      log(`named slots: ${JSON.stringify(
+        after.keys.filter(k => k.label).map(k => `${k.slot}:${k.label}`))}`);
+      assert.equal(after.keys.length, 20, 'the key label list is twenty rows');
+      const row = after.keys.find(k => k.slot === LABELLED);
+      assert.ok(row, `slot ${LABELLED} is not in the key label list`);
+      assert.equal(row.label, NAME, 'the label read back is not the one written');
+      assert.equal(row.kind, 'ecc');
+
+      /*
+       * The SSH key named itself. loadSshKey passes the key's own
+       * ssh-keygen comment when the caller gives no label, so slot 103
+       * should be carrying "fixture" without anything having typed it.
+       */
+      const sshRow = after.keys.find(k => k.slot === SSH_SLOT);
+      assert.ok(sshRow, `slot ${SSH_SLOT} is missing from the key label list`);
+      assert.equal(
+        sshRow.label, 'fixture',
+        'the SSH key did not name its own slot from its comment',
+      );
+
+      /* RSA 1 is in the same list, at index 25, and is a different kind. */
+      const rsa = after.keys.find(k => k.slot === 1);
+      assert.ok(rsa, 'RSA slot 1 is missing from the key label list');
+      assert.equal(rsa.kind, 'rsa');
+
+      /* A wipe clears the name as well, which is what Python does and this did not. */
+      const wiped = await device.wipeKey(LABELLED);
+      log(`wipe said: ${JSON.stringify(wiped.response)}, label: ${JSON.stringify(wiped.label)}`);
+      assert.ok(
+        /^Success/i.test(wiped.response),
+        'the wipe was not acknowledged, which is what it used to not wait for',
+      );
+
+      const again = await device.readKeyLabels();
+      const cleared = again.keys.find(k => k.slot === LABELLED);
+      assert.equal(cleared.label, '', 'the label outlived the key it named');
     });
 
     it('signs when the challenge is answered', async ({log, assert}) => {

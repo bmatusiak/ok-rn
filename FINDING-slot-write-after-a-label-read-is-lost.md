@@ -89,3 +89,44 @@ as writing it once would.
 than hidden. With the retry alone and no settle, two of six runs took a second
 attempt and cost a full timeout — which is why not creating the window is worth
 doing as well.
+
+## A read straight after a read, sometimes (2026-09-11)
+
+`device.getPublicKey` arrived with no settle, and a read issued immediately
+after another one is sometimes never answered.
+
+Measured on the Pixel bench, soft key, the `cryptoSign` suite's two startup
+probes. They ask slot 101 and then slot 103, back to back. Across four runs:
+
+| slot 101 at probe time | slot 103 |
+|---|---|
+| holds a key | answered |
+| holds a key | answered |
+| **empty** (answers with an error sentence) | **no answer, timed out** |
+| **empty** | **no answer, timed out** |
+| **empty**, with a 60 ms settle in place | **no answer, timed out** |
+| **empty**, with settle and retry | answered, retry not needed |
+
+So: it only ever happened when the FIRST read hit an empty slot — which
+answers with `hidprint`'s "Error no ECC Private Key set in this slot"
+rather than with key bytes — and it is **intermittent**, not deterministic.
+The last run above answered on the first attempt with nothing but luck
+different. A 60 ms settle alone did not prevent it.
+
+**What is NOT established.** Whether this is the same dead window this
+finding describes. The shape matches — a read, then a write the firmware
+never looks at — and the error path differs from the key path only in going
+through `hidprint`, but nothing here traced the firmware far enough to say
+so. Calling it the same cause would be a story, not a measurement.
+
+**What was done.** `getPublicKey` settles 60 ms before returning, on the
+refusal path as well as the success path, and resends once if the device
+says nothing at all. A read is idempotent, so a resend cannot do half a
+thing, and an unanswered read is unknown rather than failed — the rule
+`sendField` and `loadKey` already follow for writes. Only silence is
+retried; a refusal, an error and a key all count as answers.
+
+**Still open:** the underlying silence. It is now survived rather than
+understood, and the retry will hide it from here on, so if the cause
+matters later it needs a bus capture of the empty-slot reply with the next
+frame beside it — the way the original measurement above was made.
