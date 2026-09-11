@@ -18,6 +18,7 @@ module.exports = [
     require('./12-identity.e2e.js'),
     require('./13-deriveParity.e2e.js'),
     require('./14-biometrics.e2e.js'),
+    require('./14b-pqcSlots.e2e.js'),
     require('./15-hardKey.e2e.js'),
     require('./16-hardKeyProvision.e2e.js'),
     require('./17-hardKeyConfig.e2e.js')
