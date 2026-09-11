@@ -1,70 +1,108 @@
-import {bytes as okbytes, protocol} from 'node-onlykey-lib';
-import {useCallback, useEffect, useState} from 'react';
-import UsbHid, {
-  ONLYKEY_PRODUCT_ID,
-  ONLYKEY_VENDOR_ID,
-  type ConnectionState,
-  type Transport,
-  type UsbDeviceInfo,
-} from '../transport/UsbHid';
+import {bytes as okbytes, protocol, transport as oktransport} from 'node-onlykey-lib';
+import {useCallback, useEffect, useRef, useState} from 'react';
+
+import UsbPipe, {VENDOR_ID, PRODUCT_ID} from '../transport/UsbPipe';
+import type {UsbDeviceInfo, UsbInterfaceInfo} from '../transport/UsbPipe';
+import type {StatusEvent} from '../../specs/NativeUsbHid';
 import type {LogLevel} from './useLog';
 
-const {CTAPHID, BROADCAST_CID, cidNumber} = protocol.ctaphid;
+const {CTAPHID, BROADCAST_CID, cidNumber, Assembler, frame: encodeFrames} = protocol.ctaphid;
+const {IFACE, DIR, usb} = oktransport;
 
+/**
+ * The byte-level USB panel's session - ON THE SHARED PIPE.
+ *
+ * This used to sit on its own transport (`UsbHid.ts`), which held a second
+ * subscription to the native module and did its own CTAPHID reassembly. Two
+ * owners of one native connection is how the panel and the hard key could
+ * each believe the other's state: the panel's Connect rebuilt the transport
+ * the library was talking through, and the library's disconnect left the
+ * panel showing "connected". Now there is one pipe, `UsbPipe`, and this is a
+ * window onto it: every report it carries, on every interface, in both
+ * directions, plus a raw write and one framed request for poking the device
+ * by hand.
+ *
+ * ## What went with the old transport
+ *
+ * - The transport selector (auto / usb / tcp). The TCP mock is not needed
+ *   until iOS work starts, and the shared pipe opens USB; a selector that
+ *   the pipe overrides on every start would be a control that does nothing.
+ * - The duplicate CTAPHID assembler that subscribed PER MESSAGE and dropped
+ *   a reply that arrived after a keepalive burst. One assembler lives here
+ *   for the life of the panel, fed from the stream, and a request waits on
+ *   what it reassembles rather than on its own short-lived listener.
+ *
+ * ## What is new
+ *
+ * An INTERFACE for the raw write. The old panel wrote everything to the
+ * security-key interface; the device has four, three of them identical on
+ * the wire except for their usage page, and the vendor and debug ones are
+ * what a person poking a key by hand actually wants (FINDING #40). The
+ * choice is drawn from what the pipe found, so an interface a production key
+ * does not carry is not offered.
+ */
 type Options = {
   log: (level: LogLevel, text: string) => void;
 };
 
 export type UsbSession = ReturnType<typeof useUsbHid>;
 
+export type ConnectionState = StatusEvent['state'] | 'idle';
+
+/** Names for the raw-write selector; the library's own, so they cannot drift. */
+export const IFACE_NAMES = [IFACE.KEYBOARD, IFACE.FIDO, IFACE.VENDOR, IFACE.SEREMU]
+  .map(i => ({iface: i, name: String(usb.describe(i)?.name ?? i)}));
+
 export function useUsbHid({log}: Options) {
-  const [state, setState] = useState<ConnectionState>('idle');
-  const [transport, setTransportState] = useState<Transport>('auto');
+  const [state, setState] = useState<ConnectionState>(
+    UsbPipe.isRunning() ? 'connected' : 'idle',
+  );
   const [devices, setDevices] = useState<UsbDeviceInfo[]>([]);
-  const [packetSize, setPacketSize] = useState(64);
+  const [interfaces, setInterfaces] = useState<UsbInterfaceInfo[]>(UsbPipe.interfaces());
   const [busy, setBusy] = useState(false);
+  const [iface, setIface] = useState<number>(IFACE.VENDOR);
+
+  /* One assembler for the security-key interface, for as long as the panel lives. */
+  const assembler = useRef(new Assembler());
+  const pendingInit = useRef<{nonce: Uint8Array; resolve: (ok: boolean) => void} | null>(null);
 
   useEffect(() => {
-    const offStatus = UsbHid.on('status', event => {
+    const offStatus = UsbPipe.on('status', event => {
       setState(event.state);
+      setInterfaces(UsbPipe.interfaces());
       const detail = event.message ? ' - ' + event.message : '';
       log(event.state === 'error' ? 'error' : 'info', '[' + event.transport + '] ' + event.state + detail);
     });
 
-    const offPacket = UsbHid.on('packet', bytes => {
-      log('rx', okbytes.formatHex(okbytes.toHex(bytes)));
-    });
+    const offStream = UsbPipe.on('stream', event => {
+      const name = usb.describe(event.iface)?.name ?? String(event.iface);
+      /* Device to host is OUT in this library. See UsbPipe's header. */
+      const inbound = event.dir === DIR.OUT;
+      log(inbound ? 'rx' : 'tx', `${name} ${okbytes.formatHex(okbytes.toHex(event.bytes))}`);
 
-    const offMessage = UsbHid.on('message', frame => {
-      log(
-        'rx',
-        'MSG cid=0x' + cidNumber(frame.cid).toString(16) +
-          ' cmd=0x' + frame.cmd.toString(16) +
-          ' len=' + frame.payload.length,
-      );
-    });
+      if (!inbound || event.iface !== IFACE.FIDO) return;
+      const frame = assembler.current.push(event.bytes);
+      if (!frame) return;
+      log('rx', 'MSG cid=0x' + cidNumber(frame.cid).toString(16)
+        + ' cmd=0x' + frame.cmd.toString(16) + ' len=' + frame.payload.length);
 
-    setTransportState(UsbHid.getTransport());
+      const waiting = pendingInit.current;
+      if (waiting && frame.cmd === CTAPHID.INIT) {
+        pendingInit.current = null;
+        const echoed = frame.payload.subarray(0, 8);
+        waiting.resolve(okbytes.toHex(echoed) === okbytes.toHex(waiting.nonce));
+      }
+    });
 
     return () => {
       offStatus();
-      offPacket();
-      offMessage();
+      offStream();
     };
   }, [log]);
 
-  const setTransport = useCallback(
-    (next: Transport) => {
-      UsbHid.setTransport(next);
-      setTransportState(next);
-      log('info', 'transport -> ' + next);
-    },
-    [log],
-  );
-
   const refreshDevices = useCallback(async () => {
     try {
-      const found = await UsbHid.listDevices();
+      const found = await UsbPipe.listDevices();
       setDevices(found);
       log('info', found.length ? 'found ' + found.length + ' USB device(s)' : 'no USB devices');
     } catch (error) {
@@ -72,81 +110,79 @@ export function useUsbHid({log}: Options) {
     }
   }, [log]);
 
-  const connect = useCallback(
-    async (vendorId = ONLYKEY_VENDOR_ID, productId = ONLYKEY_PRODUCT_ID) => {
-      setBusy(true);
-      try {
-        const granted = await UsbHid.requestPermission(vendorId, productId);
-        if (!granted) {
-          log('error', 'USB permission denied');
-          return;
-        }
-        const result = await UsbHid.connect(vendorId, productId);
-        setPacketSize(result.packetSize);
-        log('info', 'connected via ' + result.transport + ', packetSize=' + result.packetSize);
-      } catch (error) {
-        log('error', 'connect: ' + String(error));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [log],
-  );
+  /**
+   * Open the pipe - or find it already open. UsbPipe.start() is idempotent,
+   * so this cannot rebuild a connection the hard key is using; it reports
+   * what is there.
+   */
+  const connect = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await UsbPipe.start();
+      setInterfaces(result.interfaces ?? []);
+      setState('connected');
+      log('info', `connected via ${result.transport}, ${result.interfaces?.length ?? 0} interfaces,`
+        + ` vid=0x${VENDOR_ID.toString(16)} pid=0x${PRODUCT_ID.toString(16)}`);
+    } catch (error) {
+      log('error', 'connect: ' + String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [log]);
 
   const disconnect = useCallback(async () => {
     try {
-      await UsbHid.disconnect();
+      await UsbPipe.stop();
+      setState('disconnected');
+      setInterfaces([]);
     } catch (error) {
       log('error', 'disconnect: ' + String(error));
     }
   }, [log]);
 
   /**
-   * CTAPHID_INIT with an 8-byte nonce - the standard "is anyone there?" probe.
+   * One CTAPHID_INIT on the broadcast channel, checked against our nonce.
    *
-   * The reply is checked to ECHO THE NONCE. The broadcast channel is shared, so
-   * any device on the bus can answer, and an INIT reply that is not carrying
-   * our nonce is somebody else's - taking its channel id would then talk to the
-   * wrong device. This copy of the probe had never checked; the library's does,
-   * and this now says so on screen either way.
+   * The reply is matched by the standing assembler above, not by a listener
+   * attached for this call: the old per-message subscription was attached
+   * after the write had started and missed a reply that landed behind a
+   * keepalive burst, which read as a device that did not answer.
    */
   const sendPing = useCallback(async () => {
     const nonce = new Uint8Array(8);
-    for (let i = 0; i < nonce.length; i++) {
-      nonce[i] = Math.floor(Math.random() * 256);
-    }
+    for (let i = 0; i < nonce.length; i++) nonce[i] = Math.floor(Math.random() * 256);
 
-    const off = UsbHid.on('message', frame => {
-      if (frame.cmd !== CTAPHID.INIT) {
-        return;
-      }
-      const echoed = frame.payload.subarray(0, 8);
-      if (okbytes.toHex(echoed) === okbytes.toHex(nonce)) {
-        log('info', 'INIT reply echoes our nonce; channel is ours');
-      } else {
-        log(
-          'error',
-          "INIT reply carries a nonce that is not ours (" +
-            okbytes.formatHex(echoed) +
-            '); ignoring the channel it offered',
-        );
-      }
-      off();
+    const answered = new Promise<boolean>(resolve => {
+      pendingInit.current = {nonce, resolve};
+      setTimeout(() => {
+        if (pendingInit.current && pendingInit.current.nonce === nonce) {
+          pendingInit.current = null;
+          resolve(false);
+        }
+      }, 3000);
     });
 
     try {
       log('tx', 'CTAPHID_INIT nonce=' + okbytes.formatHex(nonce));
-      await UsbHid.sendMessage({
-        cid: BROADCAST_CID,
-        cmd: CTAPHID.INIT,
-        payload: nonce,
-      });
+      const packets = encodeFrames(BROADCAST_CID, CTAPHID.INIT, nonce, UsbPipe.getPacketSize());
+      for (const packet of packets) await UsbPipe.write(IFACE.FIDO, packet);
+      log(await answered ? 'info' : 'error',
+        await answered
+          ? 'INIT reply echoes our nonce; channel is ours'
+          : 'no INIT reply carrying our nonce within 3s');
     } catch (error) {
-      off();
+      pendingInit.current = null;
       log('error', 'sendMessage: ' + String(error));
     }
   }, [log]);
 
+  /**
+   * Raw bytes to the CHOSEN interface, padded to that interface's report.
+   *
+   * Reports are fixed-width and the widths differ: 64 on the RawHID
+   * interfaces, 32 out on the debug console, nothing out on the keyboard.
+   * Padding to the wrong width is a write the device half-reads.
+   */
   const sendRaw = useCallback(
     async (hexInput: string) => {
       try {
@@ -155,29 +191,31 @@ export function useUsbHid({log}: Options) {
           log('error', 'raw write needs an even number of hex digits');
           return;
         }
-        const bytes = new Uint8Array(clean.length / 2);
-        for (let i = 0; i < bytes.length; i++) {
-          bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+        const info = UsbPipe.interfaces().find(i => i.iface === iface);
+        const width = info?.packetSizeOut || UsbPipe.getPacketSize();
+        if (info && info.packetSizeOut === 0) {
+          log('error', `${usb.describe(iface)?.name ?? iface} has no host-to-device endpoint`);
+          return;
         }
-        // HID reports are fixed-width; short payloads are zero-padded.
-        const padded = new Uint8Array(packetSize);
-        padded.set(bytes.subarray(0, packetSize));
-        log('tx', okbytes.formatHex(okbytes.toHex(padded)));
-        await UsbHid.writeRaw(padded);
+        const bytes = okbytes.fromHex(clean);
+        const padded = new Uint8Array(width);
+        padded.set(bytes.subarray(0, width));
+        await UsbPipe.write(iface, padded);
       } catch (error) {
         log('error', 'write: ' + String(error));
       }
     },
-    [log, packetSize],
+    [iface, log],
   );
 
   return {
     state,
-    transport,
     devices,
-    packetSize,
+    interfaces,
+    packetSize: UsbPipe.getPacketSize(),
     busy,
-    setTransport,
+    iface,
+    setIface,
     refreshDevices,
     connect,
     disconnect,

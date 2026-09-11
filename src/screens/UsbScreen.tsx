@@ -2,12 +2,18 @@ import React, {useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, KeyValue, LogList, Section, Segmented, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
-import type {UsbSession} from '../hooks/useUsbHid';
+import {IFACE_NAMES, type UsbSession} from '../hooks/useUsbHid';
 import type {LogEntry} from '../hooks/useLog';
-import type {Transport} from '../transport/UsbHid';
 
-const TRANSPORTS: readonly Transport[] = ['auto', 'usb', 'tcp'] as const;
-
+/**
+ * The byte-level view of the hard key: what is on the wire, and a way to put
+ * bytes on it by hand.
+ *
+ * A window onto the SHARED pipe, not a second connection - see useUsbHid for
+ * why that mattered. Connect here opens the same pipe the hard key uses, or
+ * finds it open; Disconnect closes it for everyone, which is what the
+ * button says.
+ */
 export function UsbScreen({
   hid,
   entries,
@@ -18,8 +24,18 @@ export function UsbScreen({
   clear: () => void;
 }) {
   const [raw, setRaw] = useState('00ff0001');
-
   const connected = hid.state === 'connected';
+
+  /*
+   * Only interfaces the device CARRIES are offered once it is open. A
+   * production key has three; offering the debug console on one would be
+   * offering a write into nothing.
+   */
+  const offered = hid.interfaces.length
+    ? IFACE_NAMES.filter(n => hid.interfaces.some(i => i.iface === n.iface))
+    : IFACE_NAMES;
+  const names = offered.map(n => n.name);
+  const current = IFACE_NAMES.find(n => n.iface === hid.iface)?.name ?? names[0];
 
   return (
     <ScrollView
@@ -30,15 +46,24 @@ export function UsbScreen({
       <Section
         title="Hard Key transport"
         right={<StatusPill state={hid.state} />}>
-        <Segmented options={TRANSPORTS} value={hid.transport} onChange={hid.setTransport} />
         <Text style={styles.hint}>
-          auto picks the TCP mock on an emulator debug build and UsbManager everywhere else.
-          Start the mock with: npm run mock
+          The same USB pipe the hard key is read through. Everything it carries,
+          on every interface, appears below; Disconnect releases it for the
+          whole app.
         </Text>
         <View style={styles.kvBlock}>
           <KeyValue label="report size" value={String(hid.packetSize) + ' bytes'} />
           <KeyValue label="devices seen" value={String(hid.devices.length)} />
+          <KeyValue label="interfaces open" value={String(hid.interfaces.length)} />
         </View>
+        {hid.interfaces.map(i => (
+          <Text key={i.iface} style={styles.device}>
+            {IFACE_NAMES.find(n => n.iface === i.iface)?.name ?? i.iface}
+            {' '}· bInterfaceNumber {i.interfaceNumber} · usage 0x
+            {i.usagePage.toString(16)}/0x{i.usage.toString(16)}
+            {' '}· in {i.packetSizeIn} out {i.packetSizeOut} · by {i.identifiedBy}
+          </Text>
+        ))}
       </Section>
 
       <Section title="Connection">
@@ -69,7 +94,16 @@ export function UsbScreen({
       </Section>
 
       <Section title="Send">
-        <View style={styles.row}>
+        <Text style={styles.hint}>Which interface a raw write goes to.</Text>
+        <Segmented
+          options={names}
+          value={current}
+          onChange={name => {
+            const hit = IFACE_NAMES.find(n => n.name === name);
+            if (hit) hid.setIface(hit.iface);
+          }}
+        />
+        <View style={[styles.row, styles.kvBlock]}>
           <View style={styles.cell}>
             <Btn title="CTAPHID_INIT" disabled={!connected} onPress={hid.sendPing} />
           </View>
