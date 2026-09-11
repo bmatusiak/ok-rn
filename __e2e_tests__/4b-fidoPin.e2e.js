@@ -236,6 +236,22 @@ module.exports = function fidoPin({describe, it}) {
       const token = await fido.getPinToken(other, {timeoutMs: 10000});
       assert.equal(token.length, 16, 'the new PIN did not produce a token');
 
+      /*
+       * A BEAT BETWEEN THE TWO CHANGES, seen once and not explained.
+       *
+       * Running them back to back, the second answered
+       * CTAP1_ERR_INVALID_COMMAND - not a PIN error, not a policy error, the
+       * code for a command the authenticator does not recognise, for a
+       * clientPin it had just executed. It left the key on the alternate PIN,
+       * which authenticate() then recovered at the cost of one attempt.
+       *
+       * A changePin writes flash (ctap_update_pin -> authenticator_write_state)
+       * and a second one lands while that is settling, so a pause is the
+       * cheap guess. It is a GUESS: one occurrence, no diagnosis, and the
+       * next one to see it should say so rather than assume this fixed it.
+       */
+      await delay(750);
+
       await fido.changePin(other, FIDO_PIN, {timeoutMs: 10000});
       current = FIDO_PIN;
       const back = await fido.getPinToken(FIDO_PIN, {timeoutMs: 10000});
