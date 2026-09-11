@@ -54,3 +54,24 @@ whole hub, and nothing in software re-enumerates a USB device the phone no
 longer sees - it needs to be unplugged and plugged back in at the phone.
 Until that happens every hard-key suite skips or fails honestly, and the
 73 that passed in the same run are the soft key's.
+
+## Correction, later the same day
+
+The key was never off the bus. It was in the OTHER phone.
+
+Two phones were on adb from 01:26: a Samsung (`R5CW31M0WCB`, USB and
+wireless) and a Pixel 6a (`bluejay`, wireless). Every hard-key run that
+passed earlier had used the only phone adb listed - the Pixel - and when the
+second one appeared, every tool got pinned to the Samsung by serial on the
+assumption that the USB-attached phone was the bench phone. It was not. The
+Samsung's `dumpsys usb` history, read as "the hub dropped at 01:25", is
+stamped by the Samsung's own clock and describes a hub unplugged from it
+about three and a half days earlier; the "same moment" was a coincidence of
+reading it at 01:26.
+
+The doctor fix above stands on its own: the tool did say "attached" for a
+phone whose port was empty, from a stale permission record. What it did not
+do, and now does, is name the phone it read. The rule that follows: when
+adb lists more than one device, the serial has to be the phone the KEY is
+in, and the way to know is the user or the port state, not which cable
+happens to reach the PC.

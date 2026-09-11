@@ -12,8 +12,12 @@ Every rule here is paid for. The incident that bought it is in brackets.
 With more than one device on adb (a second phone, or the bench phone twice
 over USB and wireless) every tool fails with "more than one device", and a
 lost `adb reverse` shows up as a red box about loadJSBundleFromAssets. Set
-`ANDROID_SERIAL=R5CW31M0WCB` (the bench Samsung) in the shell first, and
-re-run `adb reverse tcp:8081 tcp:8081` if the app cannot reach Metro.
+`ANDROID_SERIAL` to the phone THE KEY IS IN - the bench phone is the Pixel 6a
+(`bluejay`, wireless adb; ask the user for its current ip:port), not the
+Samsung that happens to be cabled to the PC - and re-run
+`adb reverse tcp:8081 tcp:8081` if the app cannot reach Metro. Pinning the
+wrong phone read as "the key fell off the bus" for a whole morning
+(FINDING-doctor-said-attached-for-a-key-that-was-not-on-the-bus, correction).
 
 One screen: device, foreground app, Metro, stray processes, whether a key is
 on the bus, the suite filter, the last verdict. Run it at the start of a

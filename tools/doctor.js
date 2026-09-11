@@ -198,7 +198,9 @@ function onlykeyRow() {
     else up.delete(m[1]);
   }
   const attached = [...up.values()].some(Boolean);
-  return attached ? 'attached (host mode)' : 'not on the bus';
+  /* Name the phone: with two on adb, 'not on the bus' has meant 'wrong phone'. */
+  const which = serial ? ` (${serial})` : '';
+  return (attached ? 'attached (host mode)' : 'not on the bus') + which;
 }
 
 /* ---- the suite ---------------------------------------------------------- */
