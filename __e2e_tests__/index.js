@@ -6,6 +6,7 @@ module.exports = [
     require('./2c-pressLine.e2e.js'),
     require('./3-deviceFlow.e2e.js'),
     require('./4-ctapFlow.e2e.js'),
+    require('./4b-fidoPin.e2e.js'),
     require('./5-presence.e2e.js'),
     require('./6-bridge.e2e.js'),
     require('./7-pressBands.e2e.js'),
