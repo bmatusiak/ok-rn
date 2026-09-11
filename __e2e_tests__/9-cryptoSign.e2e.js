@@ -152,26 +152,24 @@ function serialTap() {
  * "Error no ECC Private Key set in this slot" (okcore.cpp:5243-5245). A trial
  * signature would tell us the same thing at the cost of three button presses
  * and a five-second wipe timer.
+ *
+ * This built the frame by hand for as long as OKGETPUBKEY was in the message
+ * table and called by nothing. `device.getPublicKey` is that frame, the same
+ * empty-slot rule, and the multi-report collection a hand-rolled probe never
+ * had - so the probe is now one call, and the method has a caller.
  */
-async function probeKey(transport, log, slot = SLOT) {
-  const {MSG} = protocol.msg;
+async function probeKey(device, log, slot = SLOT) {
   try {
-    const reply = await transport.request({
-      iface: IFACE.VENDOR,
-      data: protocol.okmsg.build({msg: MSG.OKGETPUBKEY, slot}),
-      timeoutMs: 4000,
-      match: r => protocol.okmsg.parseState(r).state !== 'unlocked'
-        && protocol.okmsg.parseState(r).state !== 'locked',
-    });
-    const text = protocol.okmsg.text(reply);
-    if (/no ECC Private Key/i.test(text)) {
-      log(`slot ${slot}: empty (${text.trim()})`);
-      return false;
-    }
-    log(`slot ${slot}: holds a key (${reply.length} bytes back)`);
+    const key = await device.getPublicKey(slot, {bytes: 32, timeoutMs: 4000});
+    log(`slot ${slot}: holds a key (${key.length} bytes back)`);
     return true;
   } catch (e) {
-    log(`probe failed: ${e.message}`);
+    const said = String(e.message);
+    if (/no ECC Private Key|no RSA Private Key/i.test(said)) {
+      log(`slot ${slot}: empty (${said})`);
+    } else {
+      log(`probe failed: ${said}`);
+    }
     return false;
   }
 }
@@ -234,8 +232,8 @@ async function ready(log) {
   }
 
   shared = {device, okcrypto, transport, status: String(state.status), present: false, sshPresent: false};
-  shared.present = await probeKey(transport, log);
-  shared.sshPresent = await probeKey(transport, log, SSH_SLOT);
+  shared.present = await probeKey(device, log);
+  shared.sshPresent = await probeKey(device, log, SSH_SLOT);
   return shared;
 }
 
@@ -458,6 +456,76 @@ module.exports = function cryptoSign({describe, it}) {
 
       /* Leave it at a middling value rather than the one that provoked an error. */
       await device.setPreference('touchSense', 20);
+    });
+
+    it('the public key of the slot it just wrote matches the private key it sent', async ({log, assert, skip}) => {
+      /*
+       * OKGETPUBKEY, which sat in the message table with no caller. Two
+       * things fall out of it that nothing else in this suite could check:
+       *
+       * 1. The device kept the key it was given. Every other test here
+       *    proves a signature verifies, which is the same claim from the
+       *    other end; this one reads the public half straight back and
+       *    compares it with the public key of the raw scalar the test sent.
+       * 2. Slot 116 is a real slot. The app offered 101-110 until the
+       *    firmware was read (okcore.cpp:458-469 refuses 117-132 BY NAME,
+       *    so 101-116 are the host slots); an out-of-range slot answers
+       *    a slot past the end answers NOTHING AT ALL, and the two are told
+       *    apart here.
+       */
+      const {device} = await ready(log);
+      if (!shared.present) {
+        skip('no key in the slot');
+      }
+
+      const {ed25519} = require('@noble/curves/ed25519.js');
+      const {toHex} = require('node-onlykey-lib').bytes;
+
+      const pub = await device.getPublicKey(SLOT, {bytes: 32});
+      log(`slot ${SLOT} public key: ${toHex(pub)}`);
+      assert.equal(
+        toHex(pub), toHex(ed25519.getPublicKey(KEY)),
+        'the device public key is not the one belonging to the scalar this suite wrote',
+      );
+
+      /* 116 is empty but IN RANGE; 117 is the first reserved slot. */
+      let atTop = null;
+      try {
+        await device.getPublicKey(116, {bytes: 32, timeoutMs: 4000});
+      } catch (e) {
+        atTop = String(e.message);
+      }
+      log(`slot 116: ${JSON.stringify(atTop)}`);
+      assert.ok(
+        atTop && /no ECC Private Key/i.test(atTop),
+        'slot 116 did not answer as an empty user slot, so the picker is wrong to offer it',
+      );
+
+      /*
+       * A SLOT PAST THE END IS SILENCE, not an error, and that is worth
+       * pinning because it is easy to assume otherwise.
+       * okcrypto_getpubkey (okcrypto.cpp:274-292) is a chain of four `if`s
+       * with NO final else: RSA below 5, ECC below 117, then the two
+       * reserved derivation slots. A slot that matches none of them falls
+       * off the end and the function returns having printed nothing.
+       * "Error invalid ECC slot" (okcore.cpp:5229) exists but is
+       * unreachable from here - it comes from okcore_flashget_ECC, which
+       * this path only calls when the slot is already below 117.
+       *
+       * So a host asking about a slot it should not ask about waits for a
+       * timeout. getPublicKey has one, and this is the test that says why.
+       */
+      let reserved = null;
+      try {
+        await device.getPublicKey(133, {bytes: 32, timeoutMs: 4000});
+      } catch (e) {
+        reserved = String(e.message);
+      }
+      log(`slot 133: ${JSON.stringify(reserved)}`);
+      assert.ok(
+        reserved && /did not answer OKGETPUBKEY/i.test(reserved),
+        'a slot past the end answered something; okcrypto_getpubkey was expected to drop it',
+      );
     });
 
     it('signs when the challenge is answered', async ({log, assert}) => {

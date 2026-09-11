@@ -30,9 +30,22 @@ import type {EmuSession} from '../hooks/useOkEmu';
  * it - which is what happens if you stop before the restart.
  */
 
-/** Where the firmware will accept a key. RSA 1-4, ECC 101-110. */
+/**
+ * Where the firmware will accept a key from a host: RSA 1-4, ECC 101-116.
+ *
+ * This stopped at 110 and six usable slots were unreachable. The firmware
+ * takes 101-116 and refuses 117-132 by name - "Error cannot set key in
+ * reserved slot (117-132)", okcore.cpp:458-469, which also explains what
+ * the reserved range is for (the default backup key at 131, the derived
+ * keys at 128/132, all set by other paths). The desktop app offers all
+ * sixteen (app.html:1180-1195); the desktop rewrite made the same cut to
+ * 110 that this did.
+ */
 const RSA_SLOTS = [1, 2, 3, 4];
-const ECC_SLOTS = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
+const ECC_SLOTS = [
+  101, 102, 103, 104, 105, 106, 107, 108,
+  109, 110, 111, 112, 113, 114, 115, 116,
+];
 
 /* Segmented renders the value, so these read as labels. */
 const MODES = ['PGP', 'SSH', 'Raw hex'] as const;
@@ -598,7 +611,7 @@ function SlotPicker({slot, onChange}: {slot: number; onChange: (n: number) => vo
         ))}
       </View>
       <Text style={styles.note}>
-        1–4 are RSA, 101–110 are ECC.
+        1–4 are RSA, 101–116 are ECC.
       </Text>
     </View>
   );
