@@ -35,7 +35,14 @@ async function main() {
   const scroll = Number(argAfter('--scroll', 0));
   /* --hold N long-presses each label for N ms - the key's gesture bands. */
   const hold = Number(argAfter('--hold', 0));
-  const VALUED = new Set(['--scroll', '--below', '--hold']);
+  /*
+   * --gap N taps the labels N ms apart from ONE dump, instead of a fresh dump
+   * (about two seconds) before each. A PIN is entered at finger speed; a
+   * two-second gap between digits is not a finger, and the firmware behaved
+   * differently at it (FINDING-the-door-keypad-lost-five-of-seven-presses...).
+   */
+  const gap = Number(argAfter('--gap', 0));
+  const VALUED = new Set(['--scroll', '--below', '--hold', '--gap']);
   const labels = args.filter((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1]));
 
   if (args.includes('--labels') || !labels.length) {
@@ -49,6 +56,20 @@ async function main() {
    * label above it is unique. Applies to every label in this run.
    */
   const below = Number(argAfter('--below', 0));
+
+  if (gap > 0) {
+    const {findByText} = require('./ui');
+    const {adb} = require('./adb');
+    const xml = dumpUi({trace});
+    for (const label of labels) {
+      const spot = findByText(xml, label);
+      if (!spot) throw new Error(`could not find "${label}" in the dump: ${visibleLabels(xml, 20)}`);
+      adb(['shell', 'input', 'tap', String(spot.x), String(spot.y + below)]);
+      trace(`tapped "${label}" at ${spot.x},${spot.y + below}`);
+      await sleep(gap);
+    }
+    return;
+  }
 
   for (const label of labels) {
     const spot = await tapText(label, {timeoutMs: 15000, trace, scroll, tapOffsetY: below, holdMs: hold});
