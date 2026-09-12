@@ -300,9 +300,12 @@ side-by-side inventory of both, and the half-done things the FINDINGs named:
 - **Firmware update**: library-first (`device.requestFirmwareUpdate`,
   `device.sendFirmware`, tested against a fake bootloader) and a screen on
   the Testing tab that fetches a signed file from its release URL and gates
-  the two irreversible steps behind a typed word. **Not yet run on a key** -
-  the bench key is a developer build nobody can re-image; a production key
-  is the last step.
+  the two irreversible steps behind a typed word. **Not yet run on a key**, and
+  the reason is the bootloader rather than caution: a production bootloader
+  takes SIGNED firmware only, and a developer bootloader refuses signed
+  firmware and takes only an unsigned build from the Docker firmware builder.
+  The bench key is a developer key, so nothing in `signed_firmware/` can go
+  onto it. A production key is the last step.
 - **Tools**: `doctor.js` names the phone it read; `e2e.js` fails at once on a
   wrong suite name; the hard-key suite skips, by name, when no key is attached.
 

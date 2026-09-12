@@ -20,10 +20,25 @@ import type {EmuSession} from '../hooks/useOkEmu';
  * NOT YET RUN ON A KEY. Every step below is the library's
  * (device.requestFirmwareUpdate, device.sendFirmware; src/device/firmware.js
  * in node-onlykey-lib), tested against a fake bootloader and the desktop's
- * byte layout, and never against a physical key: the bench key is a
- * developer build nobody can re-image, and this is the one operation that
- * can brick one. This paragraph goes when a production key has taken an
- * update through it.
+ * byte layout, and never against a physical key. This paragraph goes when a
+ * production key has taken an update through it.
+ *
+ * THERE ARE TWO BOOTLOADERS, AND THEY ACCEPT OPPOSITE THINGS.
+ *
+ *   production  takes SIGNED firmware only. That signature is the whole
+ *               protection against somebody installing malicious firmware on
+ *               a user's key, which is why nobody here can produce one.
+ *   developer   REFUSES signed firmware. The only thing it takes is an
+ *               unsigned build, made with the Docker firmware builder.
+ *
+ * So a developer key cannot be updated from this screen at all - not as a
+ * policy, but because its bootloader will not have what this screen can offer.
+ * Every file in `signed_firmware/` is a signed production release. The bench
+ * key is a developer key, which is why the update path has never been run on
+ * hardware here, and why running it needs the production key instead.
+ *
+ * The screen says so when a developer key is attached rather than letting
+ * somebody type the word and watch the bootloader refuse it.
  *
  * THREE WAYS IN, and the first is the one that matters. A release BUNDLED in
  * the app works with the phone in airplane mode, which is the whole premise of
@@ -53,6 +68,20 @@ type Source = (typeof SOURCES)[number];
 
 export function FirmwareScreen({emu, backend}: {emu: EmuSession; backend: 'embedded' | 'usb'}) {
   const isHard = backend === 'usb';
+
+  /*
+   * A DEVELOPER KEY CANNOT TAKE ANYTHING THIS SCREEN OFFERS.
+   *
+   * Its bootloader refuses signed firmware, and signed production releases are
+   * the only thing here. Read from the build rather than asked: a debug build
+   * is a developer key, and `debugConsole` is exactly that - derived from the
+   * -test / -prod keyword in the version string (version.js).
+   *
+   * Null is UNKNOWN and is left alone. A firmware older than the keyword says
+   * nothing about its bootloader, and refusing on a guess would block the one
+   * device somebody might legitimately be trying to update.
+   */
+  const developerKey = isHard && emu.capabilities?.debugConsole === true;
   const config = useConfigMode(emu);
 
   const [source, setSource] = useState<Source>('Bundled');
@@ -218,6 +247,15 @@ export function FirmwareScreen({emu, backend}: {emu: EmuSession; backend: 'embed
           screen acts on whichever key is active.
         </Text>
       ) : null}
+      {developerKey ? (
+        <Text style={styles.error}>
+          This is a DEVELOPER key, and its bootloader refuses signed firmware.
+          Everything this screen can offer is a signed production release, so
+          there is nothing here it will accept. A developer key takes only an
+          unsigned build from the Docker firmware builder. Updating a
+          production key is what this screen is for.
+        </Text>
+      ) : null}
       <Text style={styles.note}>
         1. Choose the signed firmware. 2. In config mode, ask the key to reboot
         into its bootloader. 3. When it comes back saying BOOTLOADER, send the
@@ -324,13 +362,13 @@ export function FirmwareScreen({emu, backend}: {emu: EmuSession; backend: 'embed
       <Btn
         title={busy === 'reboot' ? 'Asking…' : 'Reboot the key into its bootloader'}
         tone="danger"
-        disabled={busy !== null || !isHard || !confirmed || !text || !config.ready || inBootloader}
+        disabled={busy !== null || !isHard || developerKey || !confirmed || !text || !config.ready || inBootloader}
         onPress={() => void reboot()}
       />
       <Btn
         title={busy === 'send' ? 'Sending…' : 'Send the firmware'}
         tone="danger"
-        disabled={busy !== null || !isHard || !confirmed || !text || !inBootloader}
+        disabled={busy !== null || !isHard || developerKey || !confirmed || !text || !inBootloader}
         onPress={() => void send()}
       />
       <Text style={styles.note}>
