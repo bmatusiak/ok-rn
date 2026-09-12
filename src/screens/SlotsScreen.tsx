@@ -38,6 +38,7 @@ export function SlotsScreen({
    * grid itself still draws the Classic picture; a DUO gets the honest
    * note below until its own layout exists.
    */
+  const [deviceType, setDeviceType] = useState<string>(okdevice.slots.DEVICE_TYPE.CLASSIC);
   const [count, setCount] = useState<number>(okdevice.slots.SLOT_COUNT[okdevice.slots.DEVICE_TYPE.CLASSIC]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -47,6 +48,11 @@ export function SlotsScreen({
     setError(null);
     try {
       const {device} = await getKey();
+      /*
+       * Kept so the grid resolves ids the same way the write path does. Both
+       * come from the session, so an override on Advanced reaches both.
+       */
+      setDeviceType(device.deviceType);
       setCount(okdevice.slots.SLOT_COUNT[device.deviceType] ?? count);
       const {labels: got} = await device.readLabels({timeoutMs: 10000});
       setLabels(got);
@@ -86,9 +92,13 @@ export function SlotsScreen({
       ) : error ? (
         <Text style={styles.error}>{error}</Text>
       ) : (
-        count > 12 ? (
-          /* A DUO: three buttons, four profiles, no picture yet. See DuoSlotGrid. */
-          <DuoSlotGrid labels={labels ?? new Array(count).fill(null)} onSelect={onOpen} />
+        deviceType === okdevice.slots.DEVICE_TYPE.DUO ? (
+          /* A DUO: three buttons, four profiles, and its own photo. See DuoSlotGrid. */
+          <DuoSlotGrid
+            labels={labels ?? new Array(count).fill(null)}
+            onSelect={onOpen}
+            deviceType={deviceType}
+          />
         ) : (
           <SlotGrid labels={labels ?? new Array(count).fill(null)} onSelect={onOpen} />
         )

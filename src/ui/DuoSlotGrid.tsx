@@ -48,11 +48,26 @@ export function DuoSlotGrid({
   labels,
   onSelect,
   selected = null,
+  deviceType,
 }: {
   /** Indexed by slot number 1..24, as readLabels returns them. */
   labels: (string | null)[];
   onSelect: (slot: {id: string; index: number}) => void;
   selected?: number | null;
+  /**
+   * The SESSION's type, not a constant.
+   *
+   * This used to pass DEVICE_TYPE.DUO here, which is right for a grid that
+   * only draws for a DUO and wrong for the reason that matters: every write
+   * path resolves an id through the session's type (device.slotNumber ->
+   * currentType), so a hard-coded one is a SECOND answer to the same
+   * question. Detection has been wrong before - a DUO read as classic wrote
+   * the wrong slot - and Advanced now offers an override precisely so a
+   * person can correct it. An override the grid ignores would put the label
+   * of one slot on the row that writes to another, which is worse than
+   * either answer alone.
+   */
+  deviceType: string;
 }) {
   const [profile, setProfile] = useState<Profile>('1');
   const p = Number(profile) - 1;
@@ -83,7 +98,7 @@ export function DuoSlotGrid({
               </Text>
               {(['a', 'b'] as const).map(side => {
                 const id = `${n}${side}`;
-                const index = okdevice.slots.slotNumber(id, okdevice.slots.DEVICE_TYPE.DUO);
+                const index = okdevice.slots.slotNumber(id, deviceType);
                 const label = labels[index - 1];
                 return (
                   <Pressable

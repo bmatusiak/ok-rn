@@ -35,8 +35,16 @@ import {generatePassword} from '../passwordGenerator';
  * why the button says "read" rather than "refresh".
  */
 
-/** Fields worth showing together, in the order someone fills them in. */
-const GROUPS: {title: string; note?: string; fields: string[]}[] = [
+type Group = {title: string; note?: string; fields: string[]};
+
+/**
+ * Fields worth showing together, in the order someone fills them in.
+ *
+ * Curated rather than taken from the library's table, because SLOT_FIELDS is
+ * in WIRE order - nextKey4 before nextKey1, the password between two delays -
+ * and nobody fills a form in that order.
+ */
+const CURATED: Group[] = [
   {
     title: 'Login',
     fields: ['label', 'url', 'username', 'password'],
@@ -53,6 +61,45 @@ const GROUPS: {title: string; note?: string; fields: string[]}[] = [
     ],
   },
 ];
+
+/**
+ * Handled by the two-factor section below, as shapes rather than raw boxes.
+ *
+ * Named here so the catch-all does not offer a second, worse editor for the
+ * same three fields - a hex box for a secret every authenticator hands out
+ * in base32, which is the mistake the section exists to avoid.
+ */
+export const TFA_FIELDS = ['tfaType', 'totpKey', 'yubikey'];
+
+/**
+ * The curated groups, plus WHATEVER THE TABLE HAS THAT THEY DO NOT CLAIM.
+ *
+ * A hand-written list of names is a second copy of the field table, and a
+ * second copy goes stale silently: a field added to SLOT_FIELDS would be
+ * written by the library, read back by this screen, and have nowhere to
+ * appear. It would look like the field did not exist.
+ *
+ * Empty today, and __tests__/slotEditorGroups.test.ts is what says so - it
+ * fails when the table grows, naming the field, so the choice of where to put
+ * it is made deliberately rather than by forgetting.
+ */
+export const GROUPS: Group[] = (() => {
+  const claimed = new Set([...CURATED.flatMap(g => g.fields), ...TFA_FIELDS]);
+  const rest = (okdevice.slotConfig.SLOT_FIELDS as {name: string}[])
+    .map(f => f.name)
+    .filter(name => !claimed.has(name));
+  if (!rest.length) return CURATED;
+  return [
+    ...CURATED,
+    {
+      title: 'Other',
+      note:
+        'Fields the key accepts that this screen has no better place for '
+        + 'yet. They are written exactly as typed.',
+      fields: rest,
+    },
+  ];
+})();
 
 /**
  * How long a copied secret stays on the clipboard.

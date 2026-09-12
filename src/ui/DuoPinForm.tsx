@@ -49,6 +49,17 @@ export function DuoPinForm({
       if (!found.length) onUnlock?.(pin);
       return;
     }
+    /*
+     * THE PURE FUNCTION, not device.validateDuoPins, and on purpose.
+     *
+     * The plugin re-exports this one unchanged - `validateDuoPins:
+     * pin.validateDuoPins` - so routing through it would reach the same code
+     * by way of an async key handle, in a submit handler that is synchronous
+     * and has no other reason to touch the device. Where the plugin ADDS
+     * something the plugin is the right call: slotNumber resolves an id
+     * against the session's detected type, and DuoSlotGrid goes through it
+     * for exactly that reason. This one adds nothing.
+     */
     const result = okdevice.pin.validateDuoPins({
       pin, pinConfirm, selfDestruct: sd, selfDestructConfirm: sdConfirm,
     });
