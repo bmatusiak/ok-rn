@@ -1,4 +1,4 @@
-# v2.1.2 stores a PIN through its own bracket and then refuses it
+# v2.1.2, as we stage it, stores a PIN through its own bracket and then refuses it
 
 v2.1.2 was `blocked` for the life of this project because its pinned commit
 was not in the local checkout. Unblocking it (see
@@ -79,23 +79,49 @@ matters here: the emulator's HAL reports 1000 idle and 6000 held
 (`ok_hal.cpp:690`), which clears 1040 and 1240 alike. The press-detection
 ladder and its button assignments are byte-identical between the two pins.
 
-## So what is left
+## So what is left, and it is probably OURS
 
-The PIN is stored by one path and evaluated by another, inside a single
-build, and they disagree. `pass_keypress` (OnlyKey.ino) appends each press and
-calls `password.profile1hashevaluate()`; provisioning writes the hash through
-the setup bracket. Something between those two moved in the
-2.1.0 → 2.1.2 delta, which is 1278 changed lines in `okcore.cpp` alone and
-includes `de9b78e "Testing 24 hmac slots (#23)"` - a change to how slots are
-laid out, and therefore a candidate for having moved what the hash is stored
-beside.
+The first version of this finding concluded that the PIN is stored by one path
+and evaluated by another inside one build, and left it as a defect in the
+release. **That was stated far too confidently.** The user asked whether
+v2.1.2 was ever signed at all, which is exactly the right question, and the
+answer settles the direction:
 
-**Not chased further, deliberately.** This is one release of nine, it was
-unreachable until today, nothing depends on it, and the remaining work is
-production-readiness rather than archaeology. The next measurement, for
-whoever picks it up, is a `Serial.println` of the stored hash at set time and
-at evaluate time in a throwaway `.stage` copy - which says whether the two
-disagree on the hash or on where it lives.
+```
+Signed_OnlyKey_2_1_0_STD  declares  v2.1.0-prod
+Signed_OnlyKey_2_1_1_STD  declares  v2.1.1-prod
+Signed_OnlyKey_2_1_2_STD  declares  v2.1.2-prod
+```
+
+read out of the bundled signed images' own string tables. **v2.1.2 shipped.**
+A released firmware that cannot be unlocked would have been caught by the
+first person who installed it, so the release is almost certainly fine and
+this is our emulation of it.
+
+Which makes the two live candidates:
+
+1. **The staging.** `stage.js` applies eighteen shared literal patches, drops
+   thirty-one bare-metal files, overlays nine core files and rebases
+   fifty-seven system-block registers. v2.1.2 takes all of that with NO
+   version-specific patches - the only 2.x release that needs none - and
+   "needs no patches" and "needs one nobody has found yet" look identical from
+   here. v2.1.0 and v2.1.1 each carry their own, which is the difference
+   between them and this.
+2. **The pin.** `12eb5b0` is the upstream `v2.1.2-prod` tag in `libraries`,
+   but the signed image was built from a pair of commits, and only the
+   `libraries` half is verified by that tag. `OnlyKey-Firmware@bbb910a` is
+   pinned by the same convention and has not been checked against the signed
+   image at all.
+
+The next measurement is cheap and says which: `Serial.println` the stored hash
+at set time and at evaluate time, in a throwaway `.stage` copy. If they
+disagree on the VALUE, something in our patching corrupts the write. If they
+disagree on WHERE, a layout offset moved - `de9b78e "Testing 24 hmac slots"`
+is in this delta and is the obvious suspect.
+
+**Not chased further, deliberately.** One release of nine, unreachable until
+today, nothing depends on it, and the remaining work is production-readiness
+rather than archaeology.
 
 ## Status
 
