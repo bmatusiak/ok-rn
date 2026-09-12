@@ -123,6 +123,61 @@ is in this delta and is the obvious suspect.
 today, nothing depends on it, and the remaining work is production-readiness
 rather than archaeology.
 
+## The console, captured in full, and what it shows
+
+The harness keeps only a short console tail on failure, so the lines that
+matter scrolled off every time. A throwaway suite tapped SEREMU across one
+whole PIN entry on the debug build. It has been deleted; this is what it said.
+
+**The guess side is provably correct.** Every press appends, in order, and the
+firmware names each one:
+
+```
+| password appended with 1 … 6
+| GUESSED PROFILE 1 PIN
+| 31 32 33 34 35 36 31          <- "1234561", exactly the PIN
+```
+
+**The two hashes simply differ.** `password.cpp` prints both sides:
+
+```
+| Guessed Hash/PublicKey:     78 99 FA 96 25 CA D0 71 …
+| Stored PIN Hash/PublicKey:  8E 9E 8B 72 58 DB 59 82 …
+| Stored 2nd PIN Hash:        F4 8E DF 95 C4 4D B8 9E …
+```
+
+Neither profile matches, and the guess is right, so **the stored hash is not
+the hash of 1234561**. Something at SET time hashed a different buffer.
+
+**Nothing is being randomised.** The hash mixes the guess, a nonce from flash,
+a mask from EEPROM and the chip ID from ROM - and an emulator getting the ROM
+read wrong would produce exactly this symptom. It is not that. Two runs across
+an app restart print byte-identical values:
+
+```
+NONCE HASH    8E BD FC A3 CF 59 DE 8C …   both runs
+Stored hash   8E 9E 8B 72 58 DB 59 82 …   both runs
+```
+
+So the ID, the nonce and the stored hash are all stable, and the set side
+stored a stable hash of the wrong thing.
+
+**The anomaly to chase.** The evaluation fires while the firmware's own
+counter says six keys, and the buffer it hashes already holds seven bytes:
+
+```
+| Number of keys entered for this passcode = 6
+| GUESSED PROFILE 1 PIN
+| 31 32 33 34 35 36 31                     <- seven
+```
+
+The buffer is one character ahead of the count. Provisioning drives the same
+buffer through the same presses, and both of its entries agreed WITH EACH
+OTHER - which is what an off-by-one produces: consistently wrong, and
+self-consistent, so the bracket reports success. That is the next thing to
+look at, and it sits in `pass_keypress` and `pressDigits` rather than anywhere
+exotic.
+
 ## Status
 
 `v2.1.2.js` is `boots`, which is exactly what was watched happen: it stages,
