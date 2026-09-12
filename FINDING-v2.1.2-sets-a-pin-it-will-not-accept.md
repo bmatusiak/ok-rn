@@ -162,21 +162,34 @@ Stored hash   8E 9E 8B 72 58 DB 59 82 …   both runs
 So the ID, the nonce and the stored hash are all stable, and the set side
 stored a stable hash of the wrong thing.
 
-**The anomaly to chase.** The evaluation fires while the firmware's own
-counter says six keys, and the buffer it hashes already holds seven bytes:
+**The presses are not going to the unlock path at all.** This supersedes a
+wrong reading of the same capture, which took the buffer being one character
+ahead of the key counter as an off-by-one in the PIN buffer. It is not. The
+two lines come from different code paths.
 
-```
-| Number of keys entered for this passcode = 6
-| GUESSED PROFILE 1 PIN
-| 31 32 33 34 35 36 31                     <- seven
-```
+`password appended with N` is printed at `OnlyKey.ino:728`, inside
+`else if (pin_set<=3)`, and that branch **appends and returns** - it never
+reaches the hash comparison below it. The unlock path's own print lives
+further down the same function. So every press in that capture was being fed
+to the PIN-SETTING state machine, not to a guess.
 
-The buffer is one character ahead of the count. Provisioning drives the same
-buffer through the same presses, and both of its entries agreed WITH EACH
-OTHER - which is what an off-by-one produces: consistently wrong, and
-self-consistent, so the bracket reports success. That is the next thing to
-look at, and it sits in `pass_keypress` and `pressDigits` rather than anywhere
-exotic.
+`pin_set` is a plain `int` initialised to 0 at `okcore.cpp:157`, and it is RAM
+- every boot starts at zero, and `pin_set==0` falls through to the unlock
+logic. For those presses to land where they did, the device had re-entered
+setup, while its status broadcast was saying INITIALIZED the whole time.
+
+So `initialized` in RAM and what the device reports on the wire disagree on
+this release. That is emulator-side state rather than firmware behaviour, and
+it explains every symptom at once: a PIN bracket that completes (it really is
+setting a PIN), a device that reports INITIALIZED (the broadcast reads the
+other variable), and an unlock that never happens (the presses never reach the
+comparison).
+
+**The next measurement** is one print of `initialized`, `initcheck` and
+`pin_set` at the top of that branch, on a device that has just booted. It says
+in one line which of the three is wrong. The hash mismatch recorded above is a
+consequence, not the cause: the stored hash is stable and correct, and the
+"guess" it was compared against was never a guess.
 
 ## Status
 
