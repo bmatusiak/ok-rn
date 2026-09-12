@@ -177,10 +177,10 @@ module.exports = function ctapFlow({describe, it}) {
        * built to do. Whether the library should speak the older origin to an
        * older firmware is an open question - the two derive DIFFERENT KEYS -
        * and it is recorded in the finding rather than decided here.
-       * ok-rn/FINDING-the-vendor-tunnel-never-worked-on-a-release.md
+       * ok-rn/FINDING-the-vendor-path-is-origin-gated-and-no-release-accepts-ours.md
        */
       const {transport, device: dev} = await unlocked(log);
-      if (dev && dev.capabilities && dev.capabilities.vendorTunnel === false) {
+      if (dev && dev.capabilities && dev.capabilities.vendorOrigin === false) {
         skip('this firmware accepts apps.crp.to only; the tunnel speaks onlyagent.app');
       }
       const {host} = await getOnlyKey().then(app => ({host: app}));

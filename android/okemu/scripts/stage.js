@@ -855,6 +855,35 @@ function materialiseVersion(release) {
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 
+/**
+ * Copy one file, retrying a Windows lock.
+ *
+ * EBUSY here is not a broken build, it is another process holding the file for
+ * a moment - a watcher, an indexer, an antivirus scan of a tree that was just
+ * rewritten. It has taken down a matrix sweep twice: once staging v2.1.2 and
+ * once mid-sweep on `.stage/core/kinetis.h`, both reported as
+ * "okemu: scripts/stage.js failed" with no hint that waiting would have fixed
+ * it. Both times the very next attempt succeeded.
+ *
+ * So: a few short retries, then give up with the original error. Synchronous
+ * on purpose - everything around it is, and a sweep that pauses 300ms is
+ * cheaper than one that dies at version four of eleven.
+ */
+function copyFileRetrying(src, dst, attempts = 5) {
+  for (let i = 1; ; i++) {
+    try {
+      fs.copyFileSync(src, dst);
+      return;
+    } catch (e) {
+      const transient = e && (e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'EACCES');
+      if (!transient || i >= attempts) throw e;
+      /* Busy-wait: this script has no event loop to await on. */
+      const until = Date.now() + 60 * i;
+      while (Date.now() < until) { /* hold */ }
+    }
+  }
+}
+
 function copyDir(src, dst) {
   fs.mkdirSync(dst, { recursive: true });
   for (const ent of fs.readdirSync(src, { withFileTypes: true })) {
@@ -862,7 +891,7 @@ function copyDir(src, dst) {
     const s = path.join(src, ent.name);
     const d = path.join(dst, ent.name);
     if (ent.isDirectory()) copyDir(s, d);
-    else fs.copyFileSync(s, d);
+    else copyFileRetrying(s, d);
   }
 }
 
@@ -1252,7 +1281,7 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel) {
  * information, not a failure. What it catches is the other case: a pinned
  * version whose digest moved while nothing in this repository did.
  */
-function checkExpectation(release, stats) {
+function checkExpectation(release, stats, debugOn) {
   /* The working tree is not pinned to anything, so nothing about it is fixed. */
   if (!release.pins) return;
 
@@ -1262,13 +1291,30 @@ function checkExpectation(release, stats) {
    * comparing then would report a change on every deliberate override - a
    * warning that fires whenever it is asked to would be a warning nobody reads.
    */
-  if (WANT_DEBUG !== null) {
+  /*
+   * COMPARE WHEN THE BUILD IS THE ONE THAT SHIPS, however it got there.
+   *
+   * A recorded digest describes the release as it ships, and a release ships
+   * as a production build - the signed images all declare -prod. So the
+   * question is not "was a gate forced" but "did the gate end up OFF".
+   *
+   * This used to refuse whenever WANT_DEBUG was set either way, which was
+   * right while the matrix forced DEBUG ON and wrong the moment it started
+   * building releases as they ship: every sweep then skipped every digest
+   * check, silently, and the one thing the digest exists to catch - a pin
+   * moving under a script - stopped being checked at all.
+   *
+   * Forcing DEBUG ON still skips. That tree is four files different from the
+   * one the digest was recorded for, so a mismatch would be information
+   * nobody asked for.
+   */
+  if (debugOn) {
     console.log(
-      `stage: digest not compared - the DEBUG gate was forced ` +
-      `${WANT_DEBUG ? 'ON' : 'OFF'}, and ${release.version}'s recorded digest ` +
-      `is for the build as it ships`);
+      `stage: digest not compared - this is a DEBUG build, and ` +
+      `${release.version}'s recorded digest is for the build as it ships`);
     return;
   }
+
   if (!release.expect || !release.expect.digest) {
     {
       console.log(
@@ -1394,7 +1440,7 @@ function main() {
   let overlaid = 0;
   for (const f of fs.readdirSync(FW)) {
     if (/\.(c|h)$/.test(f)) {
-      fs.copyFileSync(path.join(FW, f), path.join(STAGE_CORE, f));
+      copyFileRetrying(path.join(FW, f), path.join(STAGE_CORE, f));
       overlaid++;
     }
   }
@@ -1404,7 +1450,7 @@ function main() {
   if (fs.existsSync(OVERRIDE)) {
     for (const f of fs.readdirSync(OVERRIDE)) {
       if (/\.(c|cpp|h)$/.test(f)) {
-        fs.copyFileSync(path.join(OVERRIDE, f), path.join(STAGE_CORE, f));
+        copyFileRetrying(path.join(OVERRIDE, f), path.join(STAGE_CORE, f));
         overrides++;
       }
     }
@@ -1550,7 +1596,7 @@ function main() {
   storage slot:                              ${release.slot || '(the default)'}`
   );
 
-  checkExpectation(release, stats);
+  checkExpectation(release, stats, debugOn);
 }
 
 /*

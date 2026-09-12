@@ -36,6 +36,7 @@
 
 const {getOnlyKey} = require('../src/onlykey');
 
+const {buildInfo} = require('../src/buildInfo');
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 const {IFACE, PRESS_TICKS} = OkEmuModule;
@@ -173,9 +174,34 @@ async function bandFor(ticks, log) {
   }
 }
 
+/*
+ * FOUR OF THESE READ THE FIRMWARE'S OWN PRINT, and two do not.
+ *
+ * `bandFor` counts "Slot Number N" out of the SEREMU tap, and process_slot()
+ * prints that behind #ifdef DEBUG. On a production build - which is what a
+ * release IS, and what the matrix builds by default - nothing arrives and
+ * every count is zero, which reads as "the firmware processed no slot" when
+ * the truth is that nothing was watching.
+ *
+ * Asked of the staged build rather than the device: stage.js writes
+ * `production` into src/generated/firmware.json from the gate it applied, and
+ * that answer does not depend on the device being unlocked or on a version
+ * string being in the broadcast.
+ *
+ * The band arithmetic and the press timer need no console and still run, so a
+ * production sweep keeps the two assertions that are about the bands
+ * themselves rather than about what the firmware said.
+ */
+function noConsole(skip) {
+  if (buildInfo.production) {
+    skip('staged as production: process_slot prints nothing, so a slot read has no witness');
+  }
+}
+
 module.exports = function pressBands({describe, it}) {
   describe(pressBands.name, () => {
-    it('a counted tap reads the a slot', async ({log, assert}) => {
+    it('a counted tap reads the a slot', async ({log, assert, skip}) => {
+      noConsole(skip);
       const {status} = await provisioned(log);
       assert.ok(/UNLOCKED/i.test(status), 'the device is locked; bands are not observable');
 
@@ -190,7 +216,8 @@ module.exports = function pressBands({describe, it}) {
       );
     });
 
-    it('a counted hold reads the b slot', async ({log, assert}) => {
+    it('a counted hold reads the b slot', async ({log, assert, skip}) => {
+      noConsole(skip);
       await provisioned(log);
 
       const {length, hits, said} = await bandFor(PRESS_TICKS.HOLD, log);
@@ -204,7 +231,8 @@ module.exports = function pressBands({describe, it}) {
       );
     });
 
-    it('back-to-back taps stay separate presses', async ({log, assert}) => {
+    it('back-to-back taps stay separate presses', async ({log, assert, skip}) => {
+      noConsole(skip);
       /*
        * The one that turns a fast finger into a gesture.
        *
@@ -316,7 +344,8 @@ module.exports = function pressBands({describe, it}) {
       await delay(2500);   /* let the slot finish typing before the next suite */
     });
 
-    it("sweep: where the band edge actually lands", async ({log, assert}) => {
+    it("sweep: where the band edge actually lands", async ({log, assert, skip}) => {
+      noConsole(skip);
       /*
        * Diagnostic, kept because it is the only place the mapping from ticks
        * to observed behaviour is written down as a measurement rather than

@@ -1,4 +1,4 @@
-# The vendor tunnel has never worked on a released firmware
+# This library cannot reach the vendor path on any released firmware
 
 ## What happened
 
@@ -49,6 +49,34 @@ So the origin does not match, `ok_extension.cpp:364` sets
 `CTAP2_ERR_EXTENSION_NOT_SUPPORTED` with the comment "APPID doesn't match",
 and the tunnel gets neither an answer nor a device-authored error.
 
+## It is not the tunnel. It is the whole vendor path
+
+The tunnel was only where it surfaced first. `ok_extension.cpp:137` wraps
+EVERY branch of the OnlyKey extension in the same call:
+
+```c
+    if (webcryptcheck(_appid, client_handle)) {
+```
+
+OKCONNECT, the derives, the tunnel - all of it is inside that `if`. When the
+origin does not match, the branch is skipped and the device answers nothing at
+all. Once the tunnel test was made to skip and the sweep ran on, v3.0.4's
+`derive` suite failed seven tests, every one of them with "the device did not
+answer this derive": the public key, the same-label determinism, the different
+-label check, the shared secret, its stability, X-Wing, the age file.
+
+So on a RELEASED OnlyKey, `okcrypto.derivePublicKey` and everything built on
+it - derived passwords, the vault, age identities - go unanswered through this
+library. That includes the app's Crypto tab against a real production key.
+
+**The official web app is unaffected**, which is why nobody has hit this: it
+is served from `apps.crp.to` and matches. The origin this library chose is the
+new agent site's, and `ctap.js:36-41` says as much - the browser client never
+sets an rpId at all and falls back to its page origin, while a library driving
+CTAP2 directly has to state one.
+
+The bench key is a developer build, so it has trusted every origin all along.
+
 ## Why nobody saw it
 
 The matrix forced `OKEMU_DEBUG=1` on every pinned release, because a
@@ -63,11 +91,15 @@ cheating. This is the sharpest instance of that in the repository.
 
 ## Fixed: the test now refuses itself by name
 
-A new capability, `vendorTunnel`, alongside the two boundaries corrected in
+A new capability, `vendorOrigin`, alongside the two boundaries corrected in
 the same session. True for the development line - a `-test` build at 3.0.4 or
 later, which is where `onlyagent.app` was staged - and false for every
-release. `ctapFlow` skips on it rather than failing, and says which origin the
-firmware would have accepted.
+release. `ctapFlow`'s tunnel test and every test in `derive` skip on it rather
+than failing, and say which origin the firmware would have accepted.
+
+That is a real coverage gap on releases, and it should be read as one: the
+matrix now reports that it cannot exercise the derive path on any shipped
+firmware, rather than reporting a pass it did not earn.
 
 Nothing is assumed forward. A future release that ships a5b731f will need this
 raised, deliberately, once there is one to measure - the same rule that the
@@ -92,8 +124,15 @@ trade is the user's to make, not this file's.
 
 The open question, recorded rather than decided: **should the library speak
 `apps.crp.to` to a firmware that does not know `onlyagent.app`, accepting that
-the two produce different keys, or should the vendor tunnel simply be
+the two produce different keys, or should the vendor path simply be
 unavailable on released firmware until one ships that accepts the origin?**
+
+It is a bigger question than it looked when this only concerned the tunnel.
+Unavailable means no derived passwords, no vault and no age identities against
+any OnlyKey a user owns today. Speaking `apps.crp.to` means every key derived
+through a release differs from the same label derived through the development
+line, silently, with the failure appearing much later as a file that will not
+open.
 
 ## Measured
 

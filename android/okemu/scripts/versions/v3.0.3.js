@@ -90,6 +90,15 @@ module.exports = {
    */
   debugOffPatches: [shared.okconnectBufferGuardWithChallengeMode],
 
-  /* From a plain stage.js, no gate override. First recorded for this release. */
-  expect: { digest: '92f76e0d0f07' },
+  /*
+   * The release AS IT SHIPS, which is a production build.
+   *
+   * First recorded from a plain stage.js, which for these two leaves the
+   * DEBUG gate ON - their committed sources carry it, unlike v3.0.2's. That
+   * digest described a tree nobody receives: the signed image declares
+   * -prod, so the release was built with the gate off. Re-recorded from
+   * OKEMU_PRODUCTION=1, and the check now compares whenever the gate ends
+   * up off however it got there.
+   */
+  expect: { digest: '7c78b00dc10b' },
 };

@@ -100,10 +100,28 @@ async function connected(log) {
   return shared;
 }
 
+/*
+ * THE SAME ORIGIN GATE AS 10-derive. ok_extension.cpp:137 wraps the whole
+ * OnlyKey extension in `if (webcryptcheck(_appid, client_handle))`, and no
+ * RELEASE accepts the origin this library speaks - so a derive gets no answer
+ * at all, which surfaces as "the device did not answer this derive".
+ *
+ * A debug build trusts every origin before comparing, which is why this
+ * passed on releases for as long as the matrix forced that gate on.
+ * ok-rn/FINDING-the-vendor-path-is-origin-gated-and-no-release-accepts-ours.md
+ */
+function needsVendorOrigin(skip) {
+  const caps = shared && shared.device && shared.device.capabilities;
+  if (caps && caps.vendorOrigin === false) {
+    skip('this firmware accepts apps.crp.to only; this library derives under onlyagent.app');
+  }
+}
+
 module.exports = function deriveParity({describe, it}) {
   describe(deriveParity.name, () => {
-    it('the shared secret matches one computed independently', async ({log, assert}) => {
+    it('the shared secret matches one computed independently', async ({log, assert, skip}) => {
       const {okcrypto} = await connected(log);
+      needsVendorOrigin(skip);
 
       const pub = await okcrypto.derivePublicKey(LABEL, {
         keytype: P256R1,
@@ -145,13 +163,14 @@ module.exports = function deriveParity({describe, it}) {
       );
     });
 
-    it('a second host key gives a second secret, both correct', async ({log, assert}) => {
+    it('a second host key gives a second secret, both correct', async ({log, assert, skip}) => {
       /*
        * One agreement could be luck in a way a second cannot: a framing bug that
        * happened to line up for one point will not line up for another, and a
        * cached answer would show as the same secret twice.
        */
       const {okcrypto} = await connected(log);
+      needsVendorOrigin(skip);
 
       const pub = await okcrypto.derivePublicKey(LABEL, {
         keytype: P256R1,
