@@ -162,34 +162,57 @@ Stored hash   8E 9E 8B 72 58 DB 59 82 …   both runs
 So the ID, the nonce and the stored hash are all stable, and the set side
 stored a stable hash of the wrong thing.
 
-**The presses are not going to the unlock path at all.** This supersedes a
-wrong reading of the same capture, which took the buffer being one character
-ahead of the key counter as an off-by-one in the PIN buffer. It is not. The
-two lines come from different code paths.
+**The PIN's own derived value is sitting in the SELF-DESTRUCT slot.** This is
+the strongest thing in this file and it is a measurement, not a reading. In
+the same capture:
 
-`password appended with N` is printed at `OnlyKey.ino:728`, inside
-`else if (pin_set<=3)`, and that branch **appends and returns** - it never
-reaches the hash comparison below it. The unlock path's own print lives
-further down the same function. So every press in that capture was being fed
-to the PIN-SETTING state machine, not to a guess.
+```
+| Public key of PIN hash:  9 4A D 26 4B E3 3A 5F 68 5C 88 89 B0 F3 DD 3F …
+| SD PIN Hash:             9 4A D 26 4B E3 3A 5F 68 5C 88 89 B0 F3 DD 3F …
+```
 
-`pin_set` is a plain `int` initialised to 0 at `okcore.cpp:157`, and it is RAM
-- every boot starts at zero, and `pin_set==0` falls through to the unlock
-logic. For those presses to land where they did, the device had re-entered
-setup, while its status broadcast was saying INITIALIZED the whole time.
+The first is `profilekey` in `profile1hashevaluate` - Curve25519 over the hash
+of our PIN. The second is `byteprint(sdhash, 32)`: the STORED self-destruct
+hash, read from flash. They are byte-identical, so the value that should be
+the stored PROFILE 1 hash is in the SELF-DESTRUCT slot.
 
-So `initialized` in RAM and what the device reports on the wire disagree on
-this release. That is emulator-side state rather than firmware behaviour, and
-it explains every symptom at once: a PIN bracket that completes (it really is
-setting a PIN), a device that reports INITIALIZED (the broadcast reads the
-other variable), and an unlock that never happens (the presses never reach the
-comparison).
+That accounts for every symptom at once, including the one that had no
+explanation before - why entering the PIN neither unlocks nor wipes.
+`sdhashevaluate` derives its comparison differently (a plain SHA-256, no
+Curve25519 step, password.cpp:421), so the value sitting there does not match
+the self-destruct check either. The PIN lands in a slot where nothing will
+ever match it.
 
-**The next measurement** is one print of `initialized`, `initcheck` and
-`pin_set` at the top of that branch, on a device that has just booted. It says
-in one line which of the three is wrong. The hash mismatch recorded above is a
-consequence, not the cause: the stored hash is stable and correct, and the
-"guess" it was compared against was never a guess.
+## Three explanations that were wrong, recorded so nobody re-walks them
+
+Each cost a build and a run, and each is ruled out:
+
+1. **An off-by-one in the PIN buffer.** The evaluation appears to fire while
+   the key counter says six with seven bytes in the buffer. It is not an
+   off-by-one: `append` happens first, the evaluate runs, and the counter is
+   printed afterwards on the failure path (`OnlyKey.ino:931-939`), so the
+   block belongs to the seventh press. The firmware is behaving as written.
+2. **The presses landing in the PIN-SETTING state machine.** There are TWO
+   `password appended with` prints, at line 733 (setup) and line 935 (unlock).
+   The one that fires is 935. The presses reach the unlock path.
+3. **`recv_buffer[5]` steering OKPIN into the setup wizard.** This release
+   really does branch there - `if (recv_buffer[5] >= '0')
+   okcore_quick_setup(SETUP_MANUAL); else set_primary_pin(...)` - and a bare
+   OKPIN that tripped it would run all three PIN brackets. It does not: the
+   library builds `ff ff ff ff e1 00 …`, so byte 5 is 0 and the firmware takes
+   `set_primary_pin`.
+
+## The next measurement
+
+Where `set_primary_pin` actually writes, on this release, in our emulator.
+`okcore_flashset_pinhashpublic` and its self-destruct counterpart are the two
+addresses to print, once each, at write time. If they collide, this is our
+flash mapping. If they do not, the release routes the write somewhere this
+file has not looked yet.
+
+**Not chased further.** One release of nine, unreachable until today, nothing
+depends on it, and three wrong turns is enough signal that it wants a fresh
+pair of eyes rather than another guess.
 
 ## Status
 
