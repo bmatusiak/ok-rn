@@ -16,6 +16,29 @@ const shared = require('./_shared');
  * byte buffer beside it - and since the PIN hash goes through that path, a
  * CORRECT PIN read back as wrong. It is invisible on a 32-bit handset, which
  * is what the bench device happens to be.
+ *
+ * ## THIS PIN IS THE FIRST OF ITS RANGE, WHERE EVERY OTHER IS THE LAST
+ *
+ * Three commits declare 3.0.2 - `5d7ce7a` "testing 3.0.2" (2022-08-31),
+ * `e80e7c6` and `5495501` (both 2022-10-25) - and this points at the first,
+ * the one that OPENS the cycle. v3.0.0, v3.0.1, v3.0.3 and v3.0.4 all point at
+ * the last, which is the rule versions/index.js describes.
+ *
+ * It is left alone deliberately, for two reasons that both have to hold:
+ *
+ *   * The two later commits cannot change what this matrix measures. e80e7c6
+ *     wraps `U2Finit()` and the challenge-button derivation in
+ *     `#ifdef STD_VERSION`, which alters the TRAVEL build and leaves STD as it
+ *     was; 5495501 undefines FACTORYKEYS on non-STD only. On the classic STD
+ *     build staged here they are the same code, and the signed release image
+ *     cannot tell them apart either - see versions/index.js.
+ *   * Moving it would discard something real for something tidy. This entry is
+ *     'tested' against a full run, with a recorded digest, and repinning drops
+ *     both until another sweep restores them.
+ *
+ * So the inconsistency is written down rather than rediscovered. If the pin is
+ * ever moved, it goes to libraries@5495501 with OnlyKey-Firmware@1907b3d, and
+ * the digest below has to be re-recorded after a clean sweep, not before.
  */
 module.exports = {
   version: 'v3.0.2',

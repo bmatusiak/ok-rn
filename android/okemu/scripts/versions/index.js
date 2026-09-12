@@ -36,6 +36,50 @@
  *
  * Adding a release is copying the nearest neighbour, changing `version`,
  * setting `status: 'untried'`, and emptying `notes`.
+ *
+ * ## How the pins were chosen, and why that is a convention rather than a fact
+ *
+ * NOBODY RECORDED THEM AT RELEASE TIME. There are no tags in either checkout,
+ * and no release note names a commit, so every pin here was worked out
+ * afterwards. The rule used is: the LAST commit that declares that version.
+ *
+ * Declares is meant literally. `libraries/onlykey/onlykey.h` carries
+ * OKversionmaj/min/pat, so reading the header at every commit gives the range
+ * of commits that called themselves v3.0.1, v3.0.2 and so on, and the pin is
+ * the end of that range - the state the cycle finished in. It is what 3.0.0,
+ * 3.0.1, 3.0.3 and 3.0.4 point at. v3.0.2 is the exception and says so in its
+ * own file.
+ *
+ * The three oldest releases predate those macros entirely, so the header
+ * cannot confirm them at all; their pins are the last code commit before the
+ * next version's work began, which is a weaker argument and is the honest
+ * state of them.
+ *
+ * ## What was tried to do better, and why it did not work
+ *
+ * `ok-rn/signed_firmware/` holds the signed release images, and they are
+ * readable: word-swap the block data and the firmware's string table appears.
+ * Every image declares its own version, which confirms the `file` column in
+ * ok-versions.json - but a version string only narrows a release to the range
+ * above, which is what we already had.
+ *
+ * Two ways past that, both closed:
+ *
+ *   * REBUILD AND COMPARE. `arduino-1.6.5-r5-teensy_127/` is a Docker build of
+ *     the pinned Arduino 1.6.5 + Teensyduino 1.27 whose compiler is a Linux
+ *     ELF. The development machine has no Docker, no working WSL and cannot
+ *     take a Linux toolchain. node-onlykey-emulator builds here, but an x86
+ *     addon cannot byte-match a Teensy image.
+ *   * COMPARE STRING TABLES. A commit that added or removed a literal would
+ *     show up in the image. None of the in-range candidates does anything a
+ *     production image keeps - they touch DEBUG prints, which -prod compiles
+ *     out, or guards around non-STD builds.
+ *
+ * Which leaves the useful conclusion: for the CLASSIC STD build this matrix
+ * stages, the candidates inside a version's range are the same code. The pin
+ * is a convention, the convention cannot be confirmed from the release, and
+ * on what is actually measured here it does not change the answer. Written
+ * down so the next person spends the afternoon on something else.
  */
 
 const fs = require('fs');

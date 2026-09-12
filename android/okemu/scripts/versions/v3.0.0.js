@@ -6,6 +6,17 @@ const shared = require('./_shared');
  * matrix: node-onlykey-lib/src/device/version.js draws its capability boundary
  * between the 2.1 and 3.0 generations, so this release and v2.1.2 are the pair
  * that decides whether those branches are right.
+ *
+ * IT WAS NEVER SIGNED. 3.0.0 went out as an unsigned beta and was skipped for
+ * production, so there is no `Signed_OnlyKey_3_0_0_STD` and there is not going
+ * to be one. `ok-versions.json` carries no `file` for this row because of that,
+ * and it is the only row without one.
+ *
+ * Which makes this the one pin nothing outside the source tree can corroborate.
+ * Every other release has an image that states its own version, so the pin is
+ * at least known to be inside the right range (see versions/index.js). Here the
+ * commit range is the whole of the evidence, and the only thing measured
+ * against this release is what this matrix measures itself.
  */
 module.exports = {
   version: 'v3.0.0',

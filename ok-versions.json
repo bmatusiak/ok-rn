@@ -21,8 +21,7 @@
     },
     "v3.0.0":{
         "libraries":"5515974",
-        "OnlyKey-Firmware":"dc24867",
-        "file": "Signed_OnlyKey_3_0_0_STD"
+        "OnlyKey-Firmware":"dc24867"
     },
     "v2.1.2":{
         "libraries":"8f74eac",

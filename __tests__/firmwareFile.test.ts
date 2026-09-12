@@ -125,3 +125,31 @@ test('nothing to compare is not a complaint', () => {
   expect(nameVersionMismatch('Signed_OnlyKey_Beta8_STD_Color.txt', 'v0.2-beta.8c')).toBeNull();
   expect(nameVersionMismatch('Signed_OnlyKey_3_0_4_STD.txt', null)).toBeNull();
 });
+
+/* ----------------------------- the pin list against the bundled folder */
+
+test('every release file named by a pin is bundled', () => {
+  const pins = require('../ok-versions.json') as Record<string, {file?: string}>;
+  const have = new Set(fs.readdirSync(DIR));
+
+  const absent: string[] = [];
+  for (const entry of Object.values(pins)) {
+    if (!entry.file) continue;
+    const name = `${entry.file}.txt`;
+    if (!have.has(name)) absent.push(name);
+  }
+  expect(absent).toEqual([]);
+});
+
+test('v3.0.0 names no file, because it was never signed', () => {
+  /*
+   * 3.0.0 went out as an unsigned beta and was skipped for production, so
+   * there is no Signed_OnlyKey_3_0_0_STD and there is not going to be one. The
+   * row carries no `file` for that reason - asserted rather than left as an
+   * absence, so nobody helpfully adds one back.
+   */
+  const pins = require('../ok-versions.json') as Record<string, {file?: string}>;
+  expect(pins['v3.0.0'].file).toBeUndefined();
+  const named = Object.values(pins).filter(e => e.file).length;
+  expect(named).toBe(Object.keys(pins).length - 1);
+});
