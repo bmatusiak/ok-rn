@@ -72,6 +72,35 @@ export interface Spec extends TurboModule {
    *   anything.
    */
   pickTextFile(mimeType: string): Promise<PickedFile>;
+
+  /**
+   * The names of the files bundled under one asset directory.
+   *
+   * Assets are the only place a file can be shipped INSIDE the app, which is
+   * what a signed firmware release wants: the update has to work with the
+   * phone in airplane mode, and a picker still needs somebody to have put the
+   * file on the phone first.
+   *
+   * Metro is not an alternative. It cannot `require` a text file, and turning
+   * each release into a JS module would put a megabyte of hex per version into
+   * the bundle that every screen loads.
+   *
+   * Sorted, and empty when the directory does not exist - a build with no
+   * releases bundled is a real configuration, not an error.
+   *
+   * @param dir asset-relative, e.g. 'signed_firmware'
+   */
+  listAssets(dir: string): Promise<string[]>;
+
+  /**
+   * Read one bundled file as text.
+   *
+   * @param path asset-relative, e.g. 'signed_firmware/Signed_OnlyKey_3_0_4_STD.txt'
+   * @returns its text. Rejects if there is no such asset, because unlike a
+   *   cancelled picker there is no innocent reason to ask for one that is not
+   *   there - the name came from listAssets.
+   */
+  readAsset(path: string): Promise<string>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('NativeShare');

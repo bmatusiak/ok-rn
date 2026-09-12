@@ -165,6 +165,55 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * What is bundled under one asset directory.
+   *
+   * `AssetManager.list` answers null for a path that is not a directory and an
+   * empty array for one that is empty; both come back as an empty list, because
+   * a build with no releases bundled is a configuration rather than a failure
+   * and a screen should show "nothing bundled" instead of an error.
+   */
+  override fun listAssets(dir: String, promise: Promise) {
+    try {
+      val names = reactApplicationContext.assets.list(dir) ?: emptyArray()
+      val out = Arguments.createArray()
+      for (name in names.sorted()) out.pushString(name)
+      promise.resolve(out)
+    } catch (e: Exception) {
+      promise.reject(ERR, e.message ?: "could not list assets in $dir", e)
+    }
+  }
+
+  /**
+   * One bundled file, as text.
+   *
+   * Bounded the same way a picked file is, and for the same reason: the content
+   * crosses the bridge as a single string. An asset cannot be mis-picked, but
+   * the limit costs nothing and keeps the two paths honest with each other.
+   */
+  override fun readAsset(path: String, promise: Promise) {
+    try {
+      val text = reactApplicationContext.assets.open(path).use { input ->
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        while (true) {
+          val n = input.read(buf)
+          if (n < 0) break
+          if (out.size() + n > MAX_BYTES) {
+            throw IllegalArgumentException(
+              "$path is larger than ${MAX_BYTES / 1024} KB",
+            )
+          }
+          out.write(buf, 0, n)
+        }
+        String(out.toByteArray(), Charsets.UTF_8)
+      }
+      promise.resolve(text)
+    } catch (e: Exception) {
+      promise.reject(ERR, e.message ?: "could not read the bundled file $path", e)
+    }
+  }
+
   override fun pickTextFile(mimeType: String, promise: Promise) {
     try {
       val activity = getCurrentActivity()
@@ -235,7 +284,8 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
         if (n < 0) break
         if (out.size() + n > MAX_BYTES) {
           throw IllegalArgumentException(
-            "that file is larger than ${MAX_BYTES / 1024} KB, so it is not a backup",
+            "that file is larger than ${MAX_BYTES / 1024} KB, so it is neither a " +
+              "backup nor a signed firmware file",
           )
         }
         out.write(buf, 0, n)
@@ -260,7 +310,10 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
     /** Distinguishes our result from any other activity the app started. */
     const val PICK_FILE_REQUEST = 0x0C51
 
-    /** 4 MB. A backup is kilobytes; this only rules out an obvious mis-pick. */
+    /**
+     * 4 MB. A backup is kilobytes and a signed firmware release about 430 KB;
+     * this only rules out an obvious mis-pick, such as a video.
+     */
     const val MAX_BYTES = 4 * 1024 * 1024
   }
 }

@@ -72,12 +72,53 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+/*
+ * Signed firmware releases, staged from the repo folder into the asset tree.
+ *
+ * See the sourceSets note in `android {}` for why this is a copy rather than a
+ * source-set root. The task is wired to preBuild so it runs before assets are
+ * merged, and it is incremental - a build with no new release does nothing.
+ */
+def signedFirmwareAssets = file("$buildDir/signedFirmwareAssets")
+
+tasks.register('stageSignedFirmware', Copy) {
+    from "$rootDir/../signed_firmware"
+    into new File(signedFirmwareAssets, 'signed_firmware')
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace "com.okrn"
+
+    /*
+     * The signed firmware releases are bundled straight out of the repo folder.
+     *
+     * ONE SOURCE, not a copy anybody maintains: `ok-rn/signed_firmware/` is
+     * both what a person commits and what ends up in the APK, so a release
+     * dropped in is in the next build. The app reads them through
+     * NativeShare.listAssets/readAsset, because Metro cannot require a text
+     * file and a megabyte of hex per version has no business in the JS bundle
+     * every screen loads.
+     *
+     * It goes through a staging directory rather than being added to
+     * assets.srcDirs directly, because a source set root becomes the TOP of
+     * the asset tree: pointing at the folder would scatter the releases beside
+     * React Native's own assets with no directory to list. Staging puts them
+     * back under `signed_firmware/`, which is the name the app asks for.
+     *
+     * This is what makes an update work in airplane mode. The URL field and the
+     * document picker both still exist; neither of them works on a phone that
+     * has never been online and has no file manager on it.
+     */
+    sourceSets {
+        main {
+            assets.srcDirs += [signedFirmwareAssets]
+        }
+    }
+
     defaultConfig {
         applicationId "com.okrn"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -132,3 +173,11 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+/*
+ * Stage the releases before anything merges assets.
+ *
+ * preBuild is the hook every variant's asset merge already depends on, so one
+ * line covers debug and release without naming either.
+ */
+preBuild.dependsOn stageSignedFirmware
