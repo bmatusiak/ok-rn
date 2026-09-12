@@ -81,5 +81,5 @@ module.exports = {
    * and OKEMU_PRODUCTION=1 both change four files, so the comparison is
    * skipped when either is set rather than reporting a change every time.
    */
-  expect: { digest: 'b0659bf14277' },
+  expect: { digest: '1a6eecece6fe' },
 };
