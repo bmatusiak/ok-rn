@@ -2,7 +2,7 @@ import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
-import {device as okdevice} from 'node-onlykey-lib';
+import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import {PinScreen} from './PinScreen';
 import {useConfigMode} from '../hooks/useConfigMode';
@@ -71,6 +71,32 @@ const RAW_TYPES = okdevice.keys.RAW_KEY_TYPES;
  * formatting choice.
  */
 const GENERATED_TYPES = okdevice.keys.GENERATED_KEY_TYPES;
+
+/**
+ * How many bytes to read back, by what the slot holds.
+ *
+ * THE READER HAS TO KNOW. The reply is consecutive 64-byte reports with no
+ * length, no tag and no terminator anywhere in it (okcrypto.cpp), so the only
+ * thing that ends the read is a count the caller supplies. Ask for too few
+ * and the key is truncated silently; too many and it waits out its timeout.
+ *
+ * So this is a choice a person makes, not something the app can infer - the
+ * device does not say what type a slot holds, and a name is not proof of one.
+ */
+const PUB_KEY_SIZES = [
+  {name: 'ECC (32)', bytes: 32, keyType: 0},
+  {name: 'ECC point (64)', bytes: 64, keyType: 0},
+  {
+    name: 'ML-KEM-768',
+    bytes: okdevice.keys.PUBLIC_KEY_BYTES[okdevice.keys.KEY_TYPE.MLKEM768],
+    keyType: okdevice.keys.KEY_TYPE.MLKEM768,
+  },
+  {
+    name: 'X-Wing',
+    bytes: okdevice.keys.PUBLIC_KEY_BYTES[okdevice.keys.KEY_TYPE.XWING],
+    keyType: okdevice.keys.KEY_TYPE.XWING,
+  },
+];
 
 /**
  * The global Yubico credential's three fields.
@@ -169,6 +195,20 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
   const [genType, setGenType] = useState<string>(GENERATED_TYPES[0].name);
   const [genSlot, setGenSlot] = useState<number>(110);
   const [genChallenge, setGenChallenge] = useState<number[] | null>(null);
+  const [pubSlot, setPubSlot] = useState<number>(101);
+  const [pubKind, setPubKind] = useState<string>(PUB_KEY_SIZES[0].name);
+  const [pubKey, setPubKey] = useState<{slot: number; hex: string; b64: string} | null>(null);
+  /*
+   * This section reports its OWN outcome, next to its own button.
+   *
+   * The screen-wide error line renders at the very bottom of a long
+   * ScrollView. Pressing Read at the top and having the answer appear several
+   * screens below is indistinguishable from nothing happening - which is
+   * exactly how it read while this was being checked: the request went out,
+   * the device answered "Error no ECC Private Key set in this slot", and the
+   * screen looked inert.
+   */
+  const [pubNote, setPubNote] = useState<string | null>(null);
   const [generated, setGenerated] = useState<{
     slot: number; recipient: string; identity: string;
   } | null>(null);
@@ -395,6 +435,45 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
   }, [getKey, slot, keyRows, refreshKeys]);
 
   /**
+   * Read the PUBLIC half of whatever is in a slot.
+   *
+   * The one operation on this screen that gives something away rather than
+   * putting something in, and the reason a person wants it: to hand the
+   * public half of a key they loaded to somebody who needs to encrypt to it
+   * or verify with it. There was no way to get it out of the app at all.
+   *
+   * An empty slot answers with a sentence rather than silence
+   * ("Error no ECC Private Key set in this slot", okcore.cpp:5243-5245), so
+   * this is also how to find out whether a slot holds anything.
+   */
+  const readPublic = useCallback(async () => {
+    setBusy('pubkey');
+    setError(null);
+    setStatus(null);
+    setPubKey(null);
+    setPubNote(null);
+    try {
+      const kind = PUB_KEY_SIZES.find(k => k.name === pubKind) ?? PUB_KEY_SIZES[0];
+      const {device} = await getKey();
+      const key = await device.getPublicKey(pubSlot, {
+        bytes: kind.bytes,
+        keyType: kind.keyType,
+        timeoutMs: 15000,
+      });
+      setPubKey({
+        slot: pubSlot,
+        hex: okbytes.toHex(key),
+        b64: okbytes.toBase64(key),
+      });
+      setPubNote(`Slot ${pubSlot} returned ${key.length} bytes.`);
+    } catch (e) {
+      setPubNote(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [getKey, pubSlot, pubKind]);
+
+  /**
    * Ask the DEVICE to make a post-quantum key, and show what it can be
    * addressed by.
    *
@@ -415,8 +494,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
     setGenerated(null);
     try {
       const chosen = GENERATED_TYPES.find(t => t.name === genType) ?? GENERATED_TYPES[0];
-      const {device} = await getKey();
-      const pqcLib = require('node-onlykey-lib/crypto').pqc;
+      const {device, okcrypto} = await getKey();
 
       const publicKey = await device.generateKey(genSlot, chosen.type, {
         confirm: ({digits}: {digits: number[]}) => {
@@ -425,16 +503,24 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         timeoutMs: 60000,
       });
 
+      /*
+       * ENCODED BY THE LIBRARY, not here.
+       *
+       * This screen used to call encodeRecipient and encodeSlotIdentity
+       * inline, which is a second copy of a decision the library already
+       * makes - in particular WHICH identity form to write. The versioned one
+       * carries a fingerprint of this exact key, so a slot generated again
+       * can be told apart from the key a file was encrypted to; a screen that
+       * built its own could quietly pick the other form.
+       *
+       * slotIdentity re-reads the slot to build it, which also proves the key
+       * reached flash before anything is printed as usable.
+       */
+      const id = await okcrypto.deviceAge.slotIdentity(genSlot, {timeoutMs: 15000});
       setGenerated({
         slot: genSlot,
-        recipient: pqcLib.encodeRecipient(publicKey),
-        /*
-         * The versioned identity, which carries a fingerprint of this exact
-         * key. A slot can be generated again, and without the fingerprint a
-         * file encrypted to the old key fails with "no identity matched",
-         * which points at nothing.
-         */
-        identity: pqcLib.encodeSlotIdentity(genSlot, publicKey),
+        recipient: id.recipientString,
+        identity: id.identityString,
       });
       setStatus(
         `Generated a ${chosen.name} key in slot ${genSlot}. ` +
@@ -691,6 +777,25 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
                 <Text style={styles.note}>
                   {describeType(keyType)}
                 </Text>
+                {/*
+                  HMAC-SHA1 ARRIVED IN THE 3.0 LINE. KEYTYPE_HMACSHA1 is in
+                  okcore.h at v3.0.0, v3.0.1 and v3.0.2 and NOT at v2.1.0 or
+                  v2.1.1 - measured, not assumed. Older firmware takes the
+                  write and stores a key it has no code to use, which is the
+                  quiet kind of wrong: nothing fails until something asks the
+                  key for an HMAC and gets nothing back.
+
+                  Said here rather than faded, because the choice sits inside
+                  a picker: greying one option out of four leaves no room to
+                  explain why, and this needs the why.
+                */}
+                {RAW_TYPES.find(t => t.name === keyType)?.hmacOnly &&
+                !supports(emu.capabilities, 'hmacSha1') ? (
+                  <Text style={styles.warn}>
+                    This firmware predates HMAC-SHA1 (it arrived in 3.0.0). It
+                    will accept the write and store a key it cannot use.
+                  </Text>
+                ) : null}
               </>
             ) : null}
             <Text style={styles.label}>Name for this slot (optional)</Text>
@@ -766,6 +871,45 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
           disabled={busy !== null || !config.ready}
           onPress={writeYubi}
         />
+      </Section>
+
+      <Section title="Read a public key">
+        <Text style={styles.body}>
+          The public half of whatever is in a slot, to hand to someone who
+          needs to encrypt to it or check a signature from it. Nothing secret
+          leaves the key, and no button press is needed.
+        </Text>
+        <Text style={styles.note}>
+          The reply carries no length, so the size has to be chosen: ask for
+          too few bytes and the key comes back truncated without complaint.
+          An empty slot answers with a sentence, so this also tells you
+          whether a slot holds anything at all.
+        </Text>
+
+        <Segmented
+          options={PUB_KEY_SIZES.map(k => k.name)}
+          value={pubKind}
+          onChange={setPubKind}
+        />
+        <SlotPicker slot={pubSlot} onChange={setPubSlot} />
+
+        <Btn
+          title={busy === 'pubkey' ? 'Reading\u2026' : `Read slot ${pubSlot}`}
+          tone="primary"
+          disabled={busy !== null || locked}
+          onPress={readPublic}
+        />
+        {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
+        {pubNote ? <Text style={styles.note}>{pubNote}</Text> : null}
+
+        {pubKey ? (
+          <>
+            <Text style={styles.note}>Slot {pubKey.slot}, hex:</Text>
+            <Text style={styles.mono} selectable>{pubKey.hex}</Text>
+            <Text style={styles.note}>base64:</Text>
+            <Text style={styles.mono} selectable>{pubKey.b64}</Text>
+          </>
+        ) : null}
       </Section>
 
       <Section title="Generate a post-quantum key" faded={!pqc}>
@@ -893,6 +1037,7 @@ function SlotPicker({
 }
 
 const styles = StyleSheet.create({
+  warn: {color: theme.warn, fontSize: 12, lineHeight: 18, marginTop: 8},
   /* Under the field it belongs to, not in the page-wide error line. */
   fieldError: {color: theme.error, fontSize: 11, lineHeight: 16, marginTop: 4},
   root: {flex: 1},

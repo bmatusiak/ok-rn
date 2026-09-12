@@ -31,7 +31,6 @@ import {BackupScreen} from './src/screens/BackupScreen';
 import {BluetoothScreen} from './src/screens/BluetoothScreen';
 import {CryptoScreen} from './src/screens/CryptoScreen';
 import {MessagesScreen} from './src/screens/MessagesScreen';
-import {ToolsScreen} from './src/screens/ToolsScreen';
 import {PreferencesScreen} from './src/screens/PreferencesScreen';
 import {PasskeysScreen} from './src/screens/PasskeysScreen';
 import {LogScreen} from './src/screens/LogScreen';
@@ -58,7 +57,6 @@ const TABS = [
   'Backup',
   'Crypto',
   'Messages',
-  'Tools',
   'Settings',
   'Advanced',
   'Passkeys',
@@ -341,8 +339,6 @@ function Shell() {
             <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} />
           ) : tab === 'Messages' ? (
             <MessagesScreen emu={emu} />
-          ) : tab === 'Tools' ? (
-            <ToolsScreen onOpenTab={next => setTab(next as Tab)} />
           ) : tab === 'Settings' ? (
             <PreferencesScreen emu={emu} />
           ) : tab === 'Passkeys' ? (

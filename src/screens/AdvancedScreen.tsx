@@ -18,7 +18,7 @@
  * library and could be reached from a test suite and nowhere else.
  */
 import React, {useCallback, useEffect, useState} from 'react';
-import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {Linking, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice} from 'node-onlykey-lib';
@@ -29,6 +29,33 @@ import type {HardKeySession} from '../hooks/useHardKey';
 
 /** Typed before the key is wiped. Not a dialog; see this file's header. */
 const WIPE_WORD = 'WIPE THIS KEY';
+
+/**
+ * The two things the Tools tab had that this app cannot do for you.
+ *
+ * That tab was a board of links to the web app, and it went away because
+ * almost every link pointed at a page for something this app now does itself
+ * - sending somebody to a browser for that is worse than not offering it,
+ * since the page cannot reach this key anyway: it talks to a device over
+ * WebAuthn, and here the device is the phone.
+ *
+ * These two are different. They are setup guides for agents that run ON A
+ * COMPUTER, using the key over USB, and no amount of app can perform them
+ * from a phone. They are the whole reason the tab is not simply deleted.
+ */
+const DOCS = 'https://docs.crp.to';
+const AGENTS = [
+  {
+    label: 'OnlyKey GPG Agent',
+    detail: 'Use the key as an OpenPGP smartcard on a computer.',
+    href: `${DOCS}/gpgagentquickstart.html`,
+  },
+  {
+    label: 'OnlyKey SSH Agent',
+    detail: 'Sign SSH logins with a key that never leaves the device.',
+    href: `${DOCS}/sshagentquickstart.html`,
+  },
+];
 
 const DEVICE_TYPES = Object.values(okdevice.slots.DEVICE_TYPE) as string[];
 
@@ -274,6 +301,28 @@ export function AdvancedScreen({
         )}
       </Section>
 
+      <Section title="On a computer">
+        <Text style={styles.note}>
+          Guides for the agents that run on a desktop with the key plugged
+          into it. Nothing here happens on the phone.
+        </Text>
+        {AGENTS.map(tool => (
+          <View key={tool.label} style={styles.tool}>
+            <Text style={styles.toolLabel}>{tool.label}</Text>
+            <Text style={styles.note}>{tool.detail}</Text>
+            <Btn
+              title="Open the guide"
+              onPress={() => {
+                setError(null);
+                Linking.openURL(tool.href).catch(e =>
+                  setError(String((e as Error)?.message ?? e)),
+                );
+              }}
+            />
+          </View>
+        ))}
+      </Section>
+
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </ScrollView>
@@ -289,6 +338,8 @@ const styles = StyleSheet.create({
   status: {color: theme.ok, fontSize: 13, lineHeight: 20, marginTop: 8},
   error: {color: theme.error, fontSize: 13, lineHeight: 20, marginTop: 8},
   row: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8},
+  tool: {marginTop: 12},
+  toolLabel: {color: theme.text, fontSize: 14, fontWeight: '700'},
   input: {
     backgroundColor: theme.surfaceAlt,
     borderRadius: 8,
