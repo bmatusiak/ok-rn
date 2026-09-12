@@ -174,7 +174,14 @@ export function VaultList({
     async (row: Row, policy: Policy) => {
       try {
         const {okcrypto} = await getKey();
-        okcrypto.deviceVault.setPolicy(row.serviceId, policy);
+        /*
+         * AWAITED, because the call now writes the policy to the STORED record
+         * as well as the live cache. It used to set only the live one, so the
+         * refresh below read the policy the credential was saved with and the
+         * control snapped back to it while the status line said otherwise.
+         * ok-rn/FINDING-a-vault-policy-change-was-never-stored.md
+         */
+        await okcrypto.deviceVault.setPolicy(row.serviceId, policy);
         /*
          * TIGHTENING TO "always" EVICTS the cached key immediately - the
          * library's behaviour, not this screen's - so the session marker has to
