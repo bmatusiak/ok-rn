@@ -158,13 +158,22 @@ module.exports = function provision({describe, it}) {
         }
 
         /*
-         * The six steps are the evidence. "setPin resolved" is not: the bracket
-         * is six waits, and one of them silently satisfied by the wrong prompt
-         * would leave a device whose PIN is not what we think it is - which
-         * presents, one suite later, as an unlock that never happens.
+         * The seven steps are the evidence. "setPin resolved" is not: the
+         * bracket is a run of waits, and one of them silently satisfied by the
+         * wrong prompt would leave a device whose PIN is not what we think it
+         * is - which presents, one suite later, as an unlock that never
+         * happens.
+         *
+         * THE SEVENTH IS WHY THIS COMMENT WAS PROPHETIC. It was six, and the
+         * sixth was "Both PINs Match" - which the firmware prints at the TOP
+         * of its commit block, before the nonce, two Curve25519 evaluations
+         * and a flash sector write. Returning there let the next suite press
+         * buttons into the buffer still being hashed, and v2.1.2 stored the
+         * hash of a longer string than the PIN. The seventh waits for
+         * "Successfully set PIN".
          */
         log(`steps: ${steps.join(', ')}`);
-        assert.equal(steps.length, 6, 'the PIN bracket did not run to completion');
+        assert.equal(steps.length, 7, 'the PIN bracket did not run to completion');
       }
 
 
