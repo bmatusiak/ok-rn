@@ -306,12 +306,93 @@ side-by-side inventory of both, and the half-done things the FINDINGs named:
 - **Tools**: `doctor.js` names the phone it read; `e2e.js` fails at once on a
   wrong suite name; the hard-key suite skips, by name, when no key is attached.
 
+## The kitchen sink (2026-09-11)
+
+The library is the one implementation of the protocol and this app is its only
+GUI, so a capability the library has and no screen reaches is a capability
+nobody has. An inventory found twelve `device` methods, eighteen `okcrypto`
+ones, three `FidoAdmin` ones and thirteen `capabilities()` fields that only
+tests could reach. Two ordinary questions found the worst of it - "how does
+the FIDO2 PIN get set the first time?" and "can I change it?" - where the
+honest answer was "the library can, the app cannot".
+
+The tab bar after this: This Key, Slots, Keys, Bluetooth, Backup, Crypto,
+Messages, Settings, Advanced, Passkeys, Log, plus Testing when enabled.
+
+- **Passkeys** sets a FIDO2 PIN and changes one, with the remaining attempts
+  beside the field and the last attempt refused without `allowLastAttempt`.
+  `getInfo` is rendered in full. Set and change were verified on the bench key,
+  and a real WebAuthn registration over Bluetooth followed - a 239-byte
+  `makeCredential` with `rk` and `credProtect` from a desktop browser.
+- **Bluetooth** is one tab. The BLE keyboard and the BLE security key were on
+  separate tabs called Keyboard and Security; both are the phone acting as a
+  Bluetooth peripheral, and a person looking for either was looking for the
+  radio.
+- **Advanced** holds the irreversible and the developer-only, with the typed
+  words kept and no testing mode needed: firmware update, factory wipe, the
+  debug console with `consoleAnswers()`, the device-type override beside the
+  detected type. The Tools tab is gone - it was links to web pages for things
+  this app now does, and the page cannot reach this key anyway. Its two
+  desktop-agent guides moved here, because those genuinely happen on a
+  computer.
+- **Crypto** signs and decrypts with a key held in a slot, picks the curve a
+  label derives under (a label derives a DIFFERENT key on each), and opens an
+  age file from an identity string. A real 64-byte signature came back from
+  slot 101 through the screen. Live use found what review had not: the
+  challenge appeared here while the keypad that answers it was on another tab,
+  so "press them for me" is now on the section.
+- **Keys** reads the public half out of a slot, hex and base64, with the size
+  chosen because the reply carries none.
+- **This Key** lists every `capabilities()` field, and tracks config mode for
+  as long as the session lives. Config mode ends at a reboot and at nothing
+  else: `OKCONNECT` answers UNLOCKED from inside it. So the library clears the
+  flag on `restart()` and `wipeUserspace()` and NOT on `connect()`, a USB
+  detach drops the session, and the banner says what the app did rather than
+  claiming to have detected anything.
+- **Backup** reads a file before arming the button that overwrites the key.
+  The restore always verified its own digest chain, so nothing damaged could
+  reach the key; what was missing was finding out without pressing a
+  destructive control. It also names a firmware file pasted by mistake, which
+  is one wrong paste away now that Advanced can flash one.
+- **Faded, not hidden.** A feature the attached firmware does not have is
+  drawn at low opacity with a line saying why, and "unknown is not absent" -
+  a null capability report fades nothing. Measured on a real release: built
+  v3.0.2 and watched the post-quantum section fade, while its suite refused
+  itself with "this firmware predates post-quantum support - no release has
+  it". **No released firmware has post-quantum support**; it is in the
+  development line the bench keys run.
+
+Four bugs the work found, each with its own FINDING:
+
+- The CTAP2 status table was shifted, so three errors were reported under the
+  wrong names, and a comment claimed to have corrected a value that was right.
+- A collector ate the previous reply's reports, so a slot-label listing was
+  read as key bytes.
+- Config mode refuses a public-key read in silence - the allow-list is eleven
+  messages and everything else is dropped to a console nobody reads.
+- The BLE bridge relayed to the wrong key: a hook above the provider read the
+  context default rather than the active key.
+
+And two more since:
+
+- A vault policy change was never stored, so the control snapped back - and,
+  worse, a credential stored under `always` had its key cached again after a
+  restart.
+- The 2019 beta seeded its RNG from an address that was a reading:
+  `RNG.stir((uint8_t *)analog1, ...)` where `&analog1` was meant, ten times
+  - twice in setup and eight more in the loop that runs forever. It reads
+  mapped flash on a Teensy and segfaults on a phone. Patched, and the release
+  now boots, provisions and answers.
+
 ## Known gaps
 
 - **Firmware update has not touched hardware.** See above; the screen and the
   library say so in their own text until a production key has taken one.
-- **The BLE security-key path** (`rpId`, the foreground service) is verified
-  by dumpsys and jest, not by a WebAuthn ceremony from a paired desktop.
+- **The BLE security-key path** has now carried a real ceremony: a desktop
+  browser registered a passkey over Bluetooth, and the key answered with a
+  239-byte `makeCredential`. What is still untested is the rest of the
+  ceremony vocabulary - assertions, credential management over the radio, and
+  anything a second paired host would do.
 - **iOS has never been compiled** - see [`ios/README.md`](ios/README.md). Two of
   six native modules exist. Its USB path deliberately rejects, since CoreHID is
   Swift-only and needs entitlements.
