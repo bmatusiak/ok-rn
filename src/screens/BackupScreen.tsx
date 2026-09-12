@@ -9,6 +9,8 @@ import NativeShare from '../../specs/NativeShare';
 import {useSecureScreen} from '../hooks/useSecureScreen';
 import {useConfigMode} from '../hooks/useConfigMode';
 import {PinScreen} from './PinScreen';
+import {summarizeBackup} from '../backupFile';
+import type {BackupSummary} from '../backupFile';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 /*
@@ -35,6 +37,7 @@ import type {EmuSession} from '../hooks/useOkEmu';
  * offers both, in two separate wizard steps.
  */
 const BACKUP_SOURCES = ['Passphrase', 'PGP key'] as const;
+
 type BackupSource = (typeof BACKUP_SOURCES)[number];
 
 export function BackupScreen({
@@ -59,6 +62,7 @@ export function BackupScreen({
   const [progress, setProgress] = useState(0);
   const [restoreText, setRestoreText] = useState('');
   const [restoreFrom, setRestoreFrom] = useState<string | null>(null);
+  const [checked, setChecked] = useState<BackupSummary | null>(null);
   const [passphrase, setPassphrase] = useState('');
   const [backupSource, setBackupSource] = useState<BackupSource>('Passphrase');
   const [backupArmored, setBackupArmored] = useState('');
@@ -283,6 +287,19 @@ export function BackupScreen({
     }
   }, []);
 
+  /**
+   * Read the file WITHOUT sending it anywhere.
+   *
+   * summarizeBackup is pure and carries the reasoning; this is the state
+   * around it. The verdict is cleared whenever the text changes, so what is
+   * on screen is always a verdict about the text that is on screen.
+   */
+  const check = useCallback(() => {
+    setError(null);
+    setStatus(null);
+    setChecked(summarizeBackup(restoreText));
+  }, [restoreText]);
+
   const restore = useCallback(async () => {
     setBusy('restore');
     setError(null);
@@ -459,9 +476,9 @@ export function BackupScreen({
 
       <Section title="Restore">
         <Text style={styles.body}>
-          Choose a backup file, or paste one, to write it back. It is verified
-          before a single byte is sent, so a damaged file fails with nothing
-          changed.
+          Choose a backup file, or paste one, to write it back. Read it first:
+          nothing is sent until the file has passed, and a damaged one is
+          refused with nothing changed either way.
         </Text>
         <Btn
           title={busy === 'pick' ? 'Opening…' : 'Choose a file'}
@@ -480,6 +497,8 @@ export function BackupScreen({
             setRestoreText(t);
             /* Edited by hand, so it is no longer what the file said. */
             if (restoreFrom) setRestoreFrom(null);
+            /* And no longer the text that was read, so the verdict goes. */
+            setChecked(null);
           }}
           multiline
           autoCapitalize="none"
@@ -489,13 +508,55 @@ export function BackupScreen({
           style={styles.textarea}
         />
         <Btn
+          title="Read this file"
+          disabled={busy !== null || !restoreText.trim()}
+          onPress={check}
+        />
+
+        {checked ? (
+          <>
+            <Text style={checked.ok ? styles.status : styles.error}>
+              {checked.ok
+                ? `${checked.lines} lines, ${checked.bytes} bytes, and the `
+                  + 'digest chain checks out.'
+                : `Not restorable: ${checked.reason}`}
+            </Text>
+            {checked.ok ? null : (
+              <Text style={styles.note}>
+                Which line broke is not knowable. There is one expected value,
+                at the end, and each step folds in the one before it — so
+                a mismatch says the file is not the file that was captured,
+                and nothing finer.
+              </Text>
+            )}
+            {checked.expected && checked.digest && !checked.ok ? (
+              <>
+                <Text style={styles.note}>the file says:</Text>
+                <Text style={styles.digest} selectable>{checked.expected}</Text>
+                <Text style={styles.note}>its bytes compute:</Text>
+                <Text style={styles.digest} selectable>{checked.digest}</Text>
+              </>
+            ) : null}
+          </>
+        ) : null}
+
+        {/*
+         * ARMED BY THE CHECK, not by there being text in the box. The restore
+         * verifies for itself and always did, so this gate protects nothing on
+         * the key - it puts the failure on a button that is not coloured like
+         * an overwrite, and makes pressing the one that is a deliberate second
+         * act rather than the first thing to hand.
+         */}
+        <Btn
           title={busy === 'restore' ? 'Restoring…' : 'Restore'}
           tone="danger"
-          disabled={busy !== null || locked || !restoreText.trim()}
+          disabled={busy !== null || locked || !checked?.ok}
           onPress={restore}
         />
         <Text style={styles.note}>
-          A restore replaces what is on the key.
+          {checked?.ok
+            ? 'A restore replaces what is on the key.'
+            : 'Read the file first. A restore replaces what is on the key.'}
         </Text>
       </Section>
     </ScrollView>
