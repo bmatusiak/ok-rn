@@ -169,19 +169,20 @@ module.exports = function ctapFlow({describe, it}) {
        * hid that completely. webcryptcheck() returns 2 - "trust all origins
        * for debug firmware" - before comparing anything, so this passed on
        * every release for as long as the matrix forced the gate on. Built as
-       * it ships, the comparison runs, `stored_apprpid` is "apps.crp.to", the
-       * tunnel sends "onlyagent.app", and the device answers
-       * CTAP2_ERR_EXTENSION_NOT_SUPPORTED.
+       * it ships, the comparison runs against `stored_apprpid` and a tunnel
+       * speaking anything else gets CTAP2_ERR_EXTENSION_NOT_SUPPORTED. That
+       * is what this test did, once, on firmware behaving correctly.
        *
-       * Skipped rather than failed: the firmware is doing exactly what it was
-       * built to do. Whether the library should speak the older origin to an
-       * older firmware is an open question - the two derive DIFFERENT KEYS -
-       * and it is recorded in the finding rather than decided here.
-       * ok-rn/FINDING-the-vendor-path-is-origin-gated-and-no-release-accepts-ours.md
+       * `stored_apprpid` is byte-identical "apps.crp.to" at all nine pins
+       * from 2019 to HEAD, and the tunnel now sends it, so this guard reads
+       * true everywhere. It stays because an origin is an input to every
+       * derived key - a firmware that stops treating ours as first-party
+       * should skip this test by name rather than fail it.
+       * ok-rn/FINDING-the-vendor-path-is-origin-gated.md
        */
       const {transport, device: dev} = await unlocked(log);
       if (dev && dev.capabilities && dev.capabilities.vendorOrigin === false) {
-        skip('this firmware accepts apps.crp.to only; the tunnel speaks onlyagent.app');
+        skip('this firmware does not accept the origin the tunnel speaks');
       }
       const {host} = await getOnlyKey().then(app => ({host: app}));
       const ctap = new CtapHid(transport);

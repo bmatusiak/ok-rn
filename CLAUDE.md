@@ -97,17 +97,43 @@ firmware versions
     npm run e2e:matrix                            # build and run EVERY release
     node android/okemu/scripts/stage.js --list    # what OKEMU_VERSION accepts
     node android/okemu/scripts/version-probe.js   # do the patches still match?
-    OKEMU_VERSION=v3.0.2 OKEMU_DEBUG=1 npm run android
+    OKEMU_VERSION=v3.0.2 npm run android            # as it ships
+    OKEMU_VERSION=v3.0.2 OKEMU_DEBUG=1 npm run android   # with the console
 
 one stage script per release lives in `android/okemu/scripts/versions/`, and it
 is where that release's own patches and its measured status go. status is a
 ladder - blocked, untried, stages, builds, boots, tested - and each rung is
 something somebody watched happen. see that directory's README.
 
-a RELEASE SHIPS WITH THE DEBUG GATE OFF and cannot be given a PIN at all, so
-every pinned version needs `OKEMU_DEBUG=1`. `OKEMU_STD=1` is the same lever for
-the standard-vs-travel edition; v2.1.1's commit is the travel one and its script
-declares `gates: {std: true}` so nobody has to remember.
+PRODUCTION IS THE REAL TEST. the matrix builds each pinned release as it ships
+- the DEBUG gate off - because a debug build opens a serial console the product
+does not have, and anything a suite proves through that console is proved
+through a channel no user has. a release cannot be given a first PIN that way,
+so matrix.js does one debug build to set it and goes straight back; flash and
+eeprom are files, so that happens once per version ever.
+
+`OKEMU_DEBUG=1` by hand is right when you need the console. know what it
+changes: `webcryptcheck()` returns "trust all origins for debug firmware"
+BEFORE comparing anything, so the whole FIDO2 vendor path answers on a debug
+build regardless of origin, and a real one compares. that hid a genuine bug for
+thirteen green sweeps - the library was sending an origin no release treats as
+first-party, so every derive went unanswered on released firmware. it now sends
+`apps.crp.to`, which every pin from 2019 to HEAD accepts. see
+`FINDING-the-vendor-path-is-origin-gated.md`.
+
+the origin is not an access check. it is hashed into the derivation, so it
+picks WHICH KEYS you get: a third-party site asks under its own hostname and
+gets keys only it can ask for. a caller says so with
+`plugins.config = { okcrypto: { rpIds: [...] } }`; this app does not, because
+it is the OnlyKey app and asks as first-party.
+
+a suite that needs the console must ask `buildInfo.production`, not the device:
+capabilities().debugConsole comes from the version keyword, and a LOCKED device
+broadcasts no version, which is exactly when those suites run.
+
+`OKEMU_STD=1` is the same lever for the standard-vs-travel edition; v2.1.1's
+commit is the travel one and its script declares `gates: {std: true}` so nobody
+has to remember. the keyboard layouts follow the DEBUG gate automatically.
 
 a fresh version needs THREE runs: one to set the PIN (the device reports its old
 state until it boots again), one where cryptoSign takes config mode for the

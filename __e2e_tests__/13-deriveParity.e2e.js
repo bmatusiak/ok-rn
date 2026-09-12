@@ -102,18 +102,21 @@ async function connected(log) {
 
 /*
  * THE SAME ORIGIN GATE AS 10-derive. ok_extension.cpp:137 wraps the whole
- * OnlyKey extension in `if (webcryptcheck(_appid, client_handle))`, and no
- * RELEASE accepts the origin this library speaks - so a derive gets no answer
- * at all, which surfaces as "the device did not answer this derive".
+ * OnlyKey extension in `if (webcryptcheck(_appid, client_handle))`, and a
+ * firmware that does not recognise the request's origin answers nothing at
+ * all - which surfaces as "the device did not answer this derive".
  *
- * A debug build trusts every origin before comparing, which is why this
- * passed on releases for as long as the matrix forced that gate on.
- * ok-rn/FINDING-the-vendor-path-is-origin-gated-and-no-release-accepts-ours.md
+ * The library now sends the origin every firmware from 2019 to HEAD treats as
+ * first-party, so this reads true and skips nothing. Kept for the same reason
+ * as its twin: an origin that moves again should stop this suite by name,
+ * because it would not merely lose access - it would derive a different key
+ * for the same label and the parity check would fail as a crypto mismatch.
+ * ok-rn/FINDING-the-vendor-path-is-origin-gated.md
  */
 function needsVendorOrigin(skip) {
   const caps = shared && shared.device && shared.device.capabilities;
   if (caps && caps.vendorOrigin === false) {
-    skip('this firmware accepts apps.crp.to only; this library derives under onlyagent.app');
+    skip('this firmware does not accept the origin this library derives under');
   }
 }
 

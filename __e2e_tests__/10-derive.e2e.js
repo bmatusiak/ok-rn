@@ -223,24 +223,31 @@ async function connected(log) {
  *
  * ok_extension.cpp:137 wraps the whole OnlyKey extension - OKCONNECT, the
  * derives, the tunnel - in `if (webcryptcheck(_appid, client_handle))`, and
- * webcryptcheck compares the request's rpId against "apps.crp.to". This
- * library speaks "onlyagent.app", which no RELEASE accepts: the firmware that
- * does arrived in libraries@a5b731f in 2026 and has never shipped. When the
+ * webcryptcheck compares the request's rpId against `stored_apprpid`. When the
  * origin does not match, the branch is skipped and the device answers
  * nothing - which surfaces here as "the device did not answer this derive".
  *
  * A debug build returns "trust all origins" before comparing, so this suite
- * passed on every release for as long as the matrix forced that gate on.
+ * passed on every release for as long as the matrix forced that gate on. Under
+ * the production default it failed, on firmware that was behaving correctly,
+ * because the library was sending an origin no release has ever carried.
  *
- * capabilities().vendorOrigin carries it, and the whole suite steps aside on
- * a firmware that cannot answer. That is a real coverage gap on releases and
- * it is the product's behaviour, not the test's fault.
- * ok-rn/FINDING-the-vendor-path-is-origin-gated-and-no-release-accepts-ours.md
+ * It sends `apps.crp.to` now - byte-identical in `stored_apprpid` at all nine
+ * pins from 2019 to HEAD - so this guard reads true everywhere and skips
+ * nothing. It stays because it is the thing that broke: if the origin moves
+ * again, this suite steps aside by name instead of reporting nine derives that
+ * the device never heard.
+ *
+ * THE ORIGIN IS ALSO PART OF WHAT IS DERIVED, and that is deliberate. A site
+ * asking with its own hostname gets its own keys from the same slot - the
+ * firmware has a mode for exactly that. So every expectation below is bound to
+ * the origin the library sends, not just permitted by it.
+ * ok-rn/FINDING-the-vendor-path-is-origin-gated.md
  */
 function needsVendorOrigin(skip) {
   const caps = shared && shared.device && shared.device.capabilities;
   if (caps && caps.vendorOrigin === false) {
-    skip('this firmware accepts apps.crp.to only; this library derives under onlyagent.app');
+    skip('this firmware does not accept the origin this library derives under');
   }
 }
 

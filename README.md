@@ -101,8 +101,10 @@ pinned by mistake for a morning and its stale USB history read as "the key
 fell off the bus" (`FINDING-doctor-said-attached-for-a-key-that-was-not-on-the-bus.md`,
 correction). `node tools/doctor.js` prints the serial next to its verdict.
 
-Firmware built with the DEBUG gate off — as it ships — is staged with
-`OKEMU_PRODUCTION=1`.
+The matrix builds each pinned release **as it ships** — the DEBUG gate off —
+because a debug build opens a serial console the product does not have, and a
+suite that proves something through that console proves it through a channel no
+user has. `OKEMU_DEBUG=1` forces the other one, and provisioning needs it.
 
 ### Building a released firmware version
 
@@ -116,9 +118,27 @@ node android/okemu/scripts/version-probe.js    # do the patches still match?
 OKEMU_VERSION=v3.0.2 OKEMU_DEBUG=1 npm run android
 ```
 
-A release ships with the DEBUG gate off and **cannot be given a PIN at all**
-without it, so pinned versions are staged with `OKEMU_DEBUG=1`. `OKEMU_STD=1` is
-the same lever for the standard-versus-travel edition.
+**Pinned versions build as production, which is what they ship as.** A release
+cannot be given a first PIN that way — the bracket is a conversation held
+entirely in `Serial.println` — so `matrix.js` does one debug build to set the
+PIN and goes straight back. Flash and EEPROM are files and outlive the APK, so
+that happens once per version, ever.
+
+Building a release with `OKEMU_DEBUG=1` by hand is still the right move when you
+need the console to see what the firmware is doing. Just know what it changes:
+`webcryptcheck()` returns "trust all origins for debug firmware" before
+comparing anything, so the whole FIDO2 vendor path answers on a debug build no
+matter which origin asked, while a real one compares. That hid a genuine bug
+through thirteen green sweeps — the library was sending an origin no release
+treats as first-party, so every derive went unanswered on released firmware
+(`FINDING-the-vendor-path-is-origin-gated.md`). Two suites that read the serial
+console to decide a verdict still refuse themselves on a production build, and
+those skips are the honest report.
+
+`OKEMU_STD=1` is the same lever for the standard-versus-travel edition, and the
+keyboard layouts follow the DEBUG gate automatically — a production build
+compiles all 26, a debug one keeps US English, which is the flash-overlap fix
+the working tree needs.
 
 Each release has its own stage script in `android/okemu/scripts/versions/`,
 holding the patches that release needs and how far it has actually been taken:
