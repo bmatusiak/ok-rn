@@ -70,9 +70,14 @@ export function E2EScreen() {
   const [armed, setArmed] = useState(false);
 
   if (armed) {
+    /*
+     * Read at run time, not at module load, so tools/e2e.js can write it and
+     * have Metro serve the new value without the screen caching the old one.
+     */
+    const options: {bail?: boolean} = require('../../__e2e_tests__/runOptions.js');
     return (
       <View style={[styles.wrap, styles.armed]}>
-        <MonikerView tests={selected()} />
+        <MonikerView tests={selected()} bail={options.bail === true} />
       </View>
     );
   }

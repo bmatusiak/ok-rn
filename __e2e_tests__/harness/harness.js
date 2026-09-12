@@ -67,6 +67,8 @@ async function run(context = {}) {
         testFilter,
         onTestStart,
         onTestEnd,
+        // VENDORED: stop after the suite a failure happened in - see below.
+        bail = false,
     } = context;
 
     const log = (context.log && typeof context.log === 'function')
@@ -75,6 +77,11 @@ async function run(context = {}) {
 
     for (const suite of suites) {
         const suiteRes = { name: suite.name, tests: [] };
+        /*
+         * VENDORED: whether anything in THIS suite failed. Reset per suite,
+         * because bail stops between suites and not inside one.
+         */
+        let suiteFailed = false;
         log(`suite: ${suite.name}`);
         for (const t of suite.tests) {
             if (typeof testFilter === 'function' && !testFilter(t.name, suite.name)) {
@@ -122,6 +129,7 @@ async function run(context = {}) {
                     testRes.error = e && (e.stack || e.message || String(e));
                     try { if (context.onTestUpdate) context.onTestUpdate({ suiteName: suite.name, testName: t.name, status: 'failed', error: testRes.error }); } catch (_e) { }
                     results.failed++;
+                    suiteFailed = true;
                     log(`  ✗ ${t.name} -> ${testRes.error}`);
                 }
             }
@@ -131,6 +139,36 @@ async function run(context = {}) {
             suiteRes.tests.push(testRes);
         }
         results.suites.push(suiteRes);
+
+        /*
+         * VENDORED: BAIL, AND IT STOPS BETWEEN SUITES RATHER THAN INSIDE ONE.
+         *
+         * One real failure usually produces dozens of meaningless ones, and
+         * they are not free. A v2.1.2 sweep failed a single unlock and then
+         * reported 120 failures, every one of them a timeout paid in full - and
+         * the repeated attempts exhausted the device's PIN attempts for the
+         * session, so everything after answered "password attempts for this
+         * session exceeded". The cascade did not merely waste minutes; it
+         * destroyed the state the rest of the run needed.
+         *
+         * The suite still finishes. Two reasons, and both matter:
+         *
+         *   * A suite's LAST test is often its teardown - the one that hands
+         *     the key back or releases the USB interface. Stopping on the
+         *     failing test would skip it and leave the device claimed.
+         *   * A failure in the middle of a suite is where the gaps show. The
+         *     tests after it in the same suite are the ones that say how far
+         *     the damage goes, and they cost seconds rather than minutes.
+         *
+         * `bailedAfter` names the suite so the report can say the run stopped
+         * early. A bailed run always has failures, so it can never be mistaken
+         * for a short pass.
+         */
+        if (bail && suiteFailed) {
+            results.bailedAfter = suite.name;
+            log(`bail: stopping after ${suite.name} - it had failures`);
+            break;
+        }
     }
 
     return results;

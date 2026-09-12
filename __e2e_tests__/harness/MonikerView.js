@@ -28,7 +28,15 @@ const monikerConfig = (() => {
 // overrides it.
 const TEST_TIMEOUT_MS = Number(monikerConfig.testTimeoutMs) || 120000;
 
-function MonikerView(props = { tests: [] }) {
+/*
+ * VENDORED: the default names every prop, because it is also the TYPE.
+ *
+ * This file is plain JS and the app is TypeScript, so tsc infers MonikerView's
+ * props from this object literal. A prop missing here is a compile error at the
+ * call site saying the property does not exist - which is how `bail` announced
+ * itself the first time it was passed in.
+ */
+function MonikerView(props = { tests: [], bail: false }) {
     const [running, setRunning] = useState(false);
     const [results, setResults] = useState(null);
     // Prepopulate test list from harness so UI can display tests before running
@@ -67,7 +75,16 @@ function MonikerView(props = { tests: [] }) {
         globalThis._testRan = true;
         setRunning(true);
         setResults(null);
-        try { log('TESTS STARTING'); } catch (_) { }
+        /*
+         * VENDORED: bail is announced only when it is ON.
+         *
+         * A run that stops early looks like a small suite in the log, and the
+         * line that explains why has to be at the TOP - by the time the verdict
+         * says "Bailed", somebody reading from the start has already wondered
+         * where the rest went. Silent by default so an ordinary run reads
+         * exactly as it always did.
+         */
+        try { log('TESTS STARTING' + (props.bail === true ? ' (bail: stopping after the first suite that fails)' : '')); } catch (_) { }
         // reset testList to pending
         setTestList(prev => prev.map(s => ({ ...s, tests: s.tests.map(t => ({ ...t, status: 'pending', ok: null, error: null })) })));
         const onTestUpdate = ({ suiteName, testName, status, error }) => {
@@ -112,7 +129,8 @@ function MonikerView(props = { tests: [] }) {
         };
 
         try {
-            const res = await harness.run({ render: renderComponent, log, onTestUpdate, onTestStart: onTestStartTiming, onTestEnd: onTestEndTiming, config: monikerConfig, timeoutMs: TEST_TIMEOUT_MS });
+            // VENDORED: bail comes in as a prop - see __e2e_tests__/runOptions.js.
+            const res = await harness.run({ render: renderComponent, log, onTestUpdate, onTestStart: onTestStartTiming, onTestEnd: onTestEndTiming, config: monikerConfig, timeoutMs: TEST_TIMEOUT_MS, bail: props.bail });
             setResults(res);
             const stopTime = Date.now();
             const totalDurationMs = stopTime - allStart;
@@ -123,7 +141,8 @@ function MonikerView(props = { tests: [] }) {
                 // VENDORED: Skipped is in the verdict line, which tools/e2e.js
                 // parses. It is only printed when there ARE skips, so an
                 // ordinary run reads exactly as it always did.
-                try { log('TEST COMPLETE |', `Passed: ${res.passed} Failed: ${res.failed}${res.skipped ? ` Skipped: ${res.skipped}` : ''} ${totalDurationMs ? `(${formatDuration(totalDurationMs)})` : ''}`); } catch (_) { }
+                // VENDORED: a bailed run says so, so a short failing run is not read as the whole suite.
+                try { log('TEST COMPLETE |', `Passed: ${res.passed} Failed: ${res.failed}${res.skipped ? ` Skipped: ${res.skipped}` : ''}${res.bailedAfter ? ` Bailed: ${res.bailedAfter}` : ''} ${totalDurationMs ? `(${formatDuration(totalDurationMs)})` : ''}`); } catch (_) { }
             }, 5000);
         } catch (e) {
             log('harness.run threw', e);

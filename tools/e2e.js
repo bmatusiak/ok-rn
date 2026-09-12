@@ -187,6 +187,52 @@ function applyOnly(names) {
   return restore;
 }
 
+/**
+ * Stop after the first suite that fails. ON BY DEFAULT; `--no-bail` turns it off.
+ *
+ * One real failure usually produces dozens of cascade ones, and on this suite
+ * they are not free: a v2.1.2 sweep failed a single unlock and then reported
+ * 120 failures, each paying a full timeout, with the repeated attempts
+ * exhausting the device's PIN attempts so that everything afterwards answered
+ * "password attempts for this session exceeded". Waiting that out told nobody
+ * anything the first failure had not.
+ *
+ * The failing suite still finishes - see harness/harness.js for why that
+ * boundary and not the test.
+ *
+ * `--no-bail` is for the case where the whole picture is the question: what an
+ * old firmware can and cannot do, rather than whether it is green.
+ */
+const OPTIONS_FILE = path.join(__dirname, '..', '__e2e_tests__', 'runOptions.js');
+const BAIL_DEFAULT = true;
+
+/**
+ * Set bail for one run, and hand back the undo.
+ *
+ * Restored exactly like the --only filter, for the same reason and with the
+ * same caveat: a run killed from outside leaves the file written, so the
+ * restore puts back the DEFAULT rather than whatever was there before.
+ */
+function applyOptions(bail) {
+  const original = fs.readFileSync(OPTIONS_FILE, 'utf8');
+  const FLAG = /module\.exports = \{bail: (?:true|false)\};/;
+  const wanted = `module.exports = {bail: ${bail}};`;
+  const clean = original.replace(FLAG, `module.exports = {bail: ${BAIL_DEFAULT}};`);
+  const restore = () => fs.writeFileSync(OPTIONS_FILE, clean);
+
+  if (bail === BAIL_DEFAULT) {
+    if (clean !== original) {
+      console.log(`e2e: a stale bail setting was left behind; reset to bail=${BAIL_DEFAULT}`);
+      restore();
+    }
+    return () => {};
+  }
+
+  fs.writeFileSync(OPTIONS_FILE, original.replace(FLAG, wanted));
+  console.log('e2e: --no-bail - running every suite even after one fails');
+  return restore;
+}
+
 async function main() {
   const keepRunning = process.argv.includes('--no-restart');
 
@@ -375,7 +421,7 @@ async function main() {
   }
   console.log('');
 
-  const verdict = /Passed:\s*(\d+)\s*Failed:\s*(\d+)(?:\s*Skipped:\s*(\d+))?/.exec(log);
+  const verdict = /Passed:\s*(\d+)\s*Failed:\s*(\d+)(?:\s*Skipped:\s*(\d+))?(?:\s*Bailed:\s*(\S+))?/.exec(log);
   if (!verdict) {
     throw new Error('the suite finished but printed no verdict');
   }
@@ -389,10 +435,20 @@ async function main() {
    * matrix sweep comes to look uniform when the devices are not.
    */
   const skipped = verdict[3] === undefined ? 0 : Number(verdict[3]);
+  /*
+   * The suite --bail stopped after, if it did. Named rather than flagged,
+   * because the useful question after a bailed run is which suite to hand to
+   * --only next, and the answer is right there.
+   *
+   * Reported even though a bailed run always has failures: the counts on their
+   * own would make a truncated run look like a small one.
+   */
+  const bailedAfter = verdict[4];
 
   console.log(
     `\n${failed === 0 ? 'PASS' : 'FAIL'}  passed=${passed} failed=${failed}` +
-    (skipped ? ` skipped=${skipped}` : ''),
+    (skipped ? ` skipped=${skipped}` : '') +
+    (bailedAfter ? ` (bailed after ${bailedAfter}; later suites did not run)` : ''),
   );
   /*
    * The verdict, written where tools/matrix.js can read it.
@@ -443,7 +499,14 @@ async function main() {
   process.exit(failed === 0 ? 0 : 1);
 }
 
-const restore = applyOnly(readOnlyArg());
+const restoreOnly = applyOnly(readOnlyArg());
+const restoreOptions = applyOptions(!process.argv.includes('--no-bail'));
+
+/* Both generated files go back together, wherever the run ends. */
+const restore = () => {
+  restoreOnly();
+  restoreOptions();
+};
 
 /*
  * process.exit() skips a pending finally, and this script exits that way on
