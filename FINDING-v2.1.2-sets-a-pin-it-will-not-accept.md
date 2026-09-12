@@ -202,9 +202,52 @@ Each cost a build and a run, and each is ruled out:
    library builds `ff ff ff ff e1 00 …`, so byte 5 is 0 and the firmware takes
    `set_primary_pin`.
 
+## A real bug was found chasing this, and it was NOT the cause
+
+`setPin` was returning before the device had finished storing the PIN.
+"Both PINs Match" is printed at the TOP of the firmware's commit block, and
+what follows is a fresh nonce2 into EEPROM, a nonce into flash on first use,
+two Curve25519 evaluations and a 254-byte sector rewrite - with the hash taken
+from `password.guess` at that moment. The bracket stopped at that line, so
+anything the caller did next went into the buffer being hashed.
+
+Measured, with the console tapped across one provisioning and the unlock that
+followed:
+
+```
+===== SETTING THE PIN =====
+Both PINs Match                 <- setPin returned here
+===== ENTERING THE PIN =====
+Generating NONCE                <- still committing, while we pressed
+Storing public key of PIN hash =
+Successfully set PIN
+```
+
+Fixed in `node-onlykey-lib` with a seventh bracket step that waits for
+"Successfully set PIN" and sends nothing. The ordering is now correct -
+`Successfully set PIN` lands before the enter phase - and every release from
+v2.1.1 through HEAD prints that line, so it is the same wait everywhere.
+
+**v2.1.2 still does not unlock.** The guessed and stored hashes still differ
+after a clean provision with the corrected bracket. So this was a genuine bug
+sitting in front of the one being chased, and not the one being chased.
+
 ## The next measurement
 
-Where `set_primary_pin` actually writes, on this release, in our emulator.
+Whether the NONCE SURVIVES THE RESTART. The hash mixes a nonce written to
+flash at set time, and both it and the PIN hash are written by separate
+read-modify-write passes over the same 254-byte region. If the second pass
+does not see the first, the stored PIN hash is correct for a nonce that no
+longer exists - which produces exactly this symptom and would be our flash
+layer rather than the firmware.
+
+The test is one capture of `Generating NONCE` at set time against `NONCE HASH`
+at check time, across an app restart, on one provisioned slot. Both lines
+already exist in a debug build; the throwaway suite needs to press the PIN
+WITHOUT calling setPin, which is where this stopped.
+
+After that, where `set_primary_pin` actually writes, on this release, in our
+emulator.
 `okcore_flashset_pinhashpublic` and its self-destruct counterpart are the two
 addresses to print, once each, at write time. If they collide, this is our
 flash mapping. If they do not, the release routes the write somewhere this
