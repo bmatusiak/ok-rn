@@ -33,6 +33,7 @@ import {ToolsScreen} from './src/screens/ToolsScreen';
 import {PreferencesScreen} from './src/screens/PreferencesScreen';
 import {PasskeysScreen} from './src/screens/PasskeysScreen';
 import {LogScreen} from './src/screens/LogScreen';
+import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
 
 /*
@@ -57,6 +58,7 @@ const TABS = [
   'Messages',
   'Tools',
   'Settings',
+  'Advanced',
   'Passkeys',
   'Log',
 ] as const;
@@ -322,6 +324,8 @@ function Shell() {
             <PreferencesScreen emu={emu} />
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} />
+          ) : tab === 'Advanced' ? (
+            <AdvancedScreen emu={keys.key} hard={keys.hard} />
           ) : tab === 'Log' ? (
             <LogScreen
               /*

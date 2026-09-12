@@ -5,7 +5,6 @@ import OkEmu from '../transport/OkEmu';
 import {theme} from '../ui/theme';
 import {E2EScreen} from './E2EScreen';
 import {UsbScreen} from './UsbScreen';
-import {FirmwareScreen} from './FirmwareScreen';
 import type {Backend} from '../hooks/keySession';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {HardKeySession} from '../hooks/useHardKey';
@@ -193,7 +192,12 @@ export function TestingScreen({
         </Section>
       ) : null}
 
-      {hard.state === 'running' ? <FirmwareScreen emu={active} backend={backend} /> : null}
+      {/*
+        The firmware updater MOVED to the Advanced tab. It was here because
+        this tab was where gated things went; it belongs where a person can
+        find it, behind its own typed word rather than behind a developer
+        switch. See AdvancedScreen.
+      */}
 
       <E2EScreen />
 
