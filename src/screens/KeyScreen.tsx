@@ -228,6 +228,41 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
     };
   }, [getKey]);
 
+  /**
+   * What the LIBRARY has proven against firmware, which is a different
+   * question from what THIS KEY can do.
+   *
+   * `okcrypto.deviceOperations` is a table of operations that have been run
+   * against real firmware and checked - the composite PGP pair, the P-256
+   * derive checked against a host-computed ECDH, X-Wing's split-custody round
+   * trip. It is a property of the library's evidence, not of the device on the
+   * bus, and it does not change when a different key is plugged in.
+   *
+   * SO IT GETS ITS OWN SECTION rather than more rows on the capability table
+   * above. Merging them would make a claim about the library look like a
+   * property of the key in hand, a few lines below sections that fade
+   * precisely because this key cannot do something - which is the confusion
+   * the fading rule exists to prevent.
+   *
+   * Read once, not polled: it is a constant in the plugin, and a value that
+   * cannot change does not need a timer the way config mode does.
+   */
+  const [operations, setOperations] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const {okcrypto} = await getKey();
+        if (alive) setOperations(okcrypto.deviceOperations);
+      } catch {
+        /* No key yet. The section simply does not appear. */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [getKey]);
+
   const restartKey = useCallback(async () => {
     try {
       const {device} = await getKey();
@@ -320,6 +355,33 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
               <KeyValue key={row.label} label={row.label} value={row.value} />
             ))}
           </View>
+        </Section>
+      ) : null}
+
+      {operations ? (
+        <Section title="What the library has proven">
+          <Text style={styles.hint}>
+            Not about this key. These are the crypto operations the library has
+            run against real firmware and checked the answer to — the composite
+            PGP pair, a derived secret compared with an ECDH computed on the
+            host, X-Wing's split-custody round trip. The list above says what
+            the key in your hand can do; this says what has been demonstrated
+            at all.
+          </Text>
+          <View style={styles.rows}>
+            {Object.entries(operations)
+              .filter(([name]) => name !== 'reason')
+              .map(([name, value]) => (
+                <KeyValue
+                  key={name}
+                  label={name}
+                  value={value === true ? 'proven' : value === false ? 'no' : String(value)}
+                />
+              ))}
+          </View>
+          {typeof operations.reason === 'string' && operations.reason ? (
+            <Text style={styles.hint}>{operations.reason}</Text>
+          ) : null}
         </Section>
       ) : null}
 
