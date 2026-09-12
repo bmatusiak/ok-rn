@@ -1,6 +1,6 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
-import {Btn, Section} from '../ui/components';
+import {Btn, Section, Segmented} from '../ui/components';
 import {missingNote, supports} from '../firmwareFeatures';
 import {Keypad} from '../ui/Keypad';
 import {VaultList} from '../ui/VaultList';
@@ -37,6 +37,25 @@ import type {EmuSession} from '../hooks/useOkEmu';
  * derivation to keep the two apart (ok_extension.cpp:245). Turning it on is
  * offered under Settings, where it belongs.
  */
+
+/**
+ * Which curve the device derives with.
+ *
+ * The screen always asked for P-256, which is the reference client's default
+ * and one of four the firmware implements. A LABEL DERIVES A DIFFERENT KEY ON
+ * EACH CURVE - same site, same key, different secret - so this is not a
+ * formatting choice: a password derived under one and looked up under another
+ * is simply wrong, with both looking equally plausible.
+ *
+ * Named from okcrypto.KEYTYPE rather than restated, because that table is the
+ * one the wire uses. Note it is NOT keys.KEY_TYPE, which numbers slot key
+ * types differently and where 5 means something else entirely.
+ */
+const KEY_TYPES = [
+  {name: 'NIST P-256', type: 1},
+  {name: 'secp256k1', type: 2},
+  {name: 'Curve25519', type: 3},
+];
 
 /** How long a copied secret stays on the clipboard. */
 const CLIPBOARD_TTL_MS = 45000;
@@ -78,6 +97,17 @@ export function CryptoScreen({
   const [label, setLabel] = useState('');
   const [secret, setSecret] = useState<string | null>(null);
   const [derivedFor, setDerivedFor] = useState<string | null>(null);
+  const [curve, setCurve] = useState<string>(KEY_TYPES[0].name);
+
+  /* Signing and decrypting with a key held in a slot. */
+  const [opSlot, setOpSlot] = useState(101);
+  const [opInput, setOpInput] = useState('');
+  const [opResult, setOpResult] = useState<string | null>(null);
+  const [opNote, setOpNote] = useState<string | null>(null);
+  const [opChallenge, setOpChallenge] = useState<number[] | null>(null);
+
+  /* Opening an age file with the identity a person kept. */
+  const [identityInput, setIdentityInput] = useState('');
   const [waiting, setWaiting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [revealed, setRevealed] = useState(false);
@@ -167,32 +197,31 @@ export function CryptoScreen({
        */
       const onKeepAlive = async () => setWaiting(true);
 
-      const pub = await okcrypto.derivePublicKey(site, {
-        requirePress: true,
-        timeoutMs: 60000,
-        onKeepAlive,
-      });
-      setWaiting(false);
-
-      const shared = await okcrypto.deriveSharedSecret(site, pub.publicKey, {
-        requirePress: true,
-        timeoutMs: 60000,
-        onKeepAlive,
-      });
-      setWaiting(false);
-
       /*
-       * .secret, not .publicKey. The response carries BOTH - the public key and
-       * then the 32-byte secret - and the public one is not the password.
+       * ONE CALL, AND THE ENCODING IS THE LIBRARY'S.
        *
-       * Rendered as BASE64URL, not hex. The password the other clients show is
-       * a JWK `k` member (build_AESGCM, onlykey-3rd-party.js:95), and RFC 7517
-       * says that is unpadded base64url of the raw key. Showing hex gave a
-       * different password for the same site with nothing to indicate it - both
-       * strings look like a perfectly good password, and only one of them logs
-       * you in. Cross-checked against WebCrypto's own JWK export.
+       * This used to do the two round trips here and then base64url the
+       * result itself. Both halves are decisions the library already makes:
+       * deriveSharedSecretFor knows that the first step fetches a public key
+       * and the second derives against it, and derivePassword knows the
+       * answer is base64url - because the password every other client shows
+       * is a JWK `k` member (build_AESGCM, onlykey-3rd-party.js:95), and
+       * RFC 7517 says that is unpadded base64url of the raw key.
+       *
+       * Rendering it as hex here once gave a DIFFERENT password for the same
+       * site than the web and desktop apps, with nothing to indicate it: both
+       * strings look like a perfectly good password and only one logs you in.
+       * A second copy of that encoding is a second chance to get it wrong.
        */
-      setSecret(okbytes.toBase64Url(shared.secret));
+      const password = await okcrypto.derivePassword(site, {
+        keytype: KEY_TYPES.find(k => k.name === curve)?.type,
+        requirePress: true,
+        timeoutMs: 60000,
+        onKeepAlive,
+      });
+      setWaiting(false);
+
+      setSecret(password);
       setDerivedFor(site);
       setStatus(`Derived from "${site}". The key will give the same answer next time.`);
     } catch (e) {
@@ -224,6 +253,95 @@ export function CryptoScreen({
       setError(String((e as Error)?.message ?? e));
     }
   }, [secret]);
+
+  /**
+   * Sign or decrypt with the key in a SLOT.
+   *
+   * The other half of what this device does. Everything else on this screen
+   * derives a key from a label - reproducible, stored nowhere. These use a key
+   * that was LOADED into a slot and stays there, which is what a PGP or SSH
+   * key on this device is.
+   *
+   * Both raise a three-button challenge over the payload: the firmware
+   * computes the digits from a hash of exactly the bytes being operated on
+   * (done_process_packets, okcore.cpp), so the numbers on screen are a
+   * commitment to what is about to be signed - not a generic "are you sure".
+   */
+  /**
+   * Press the challenge on the person's behalf, where the key takes presses.
+   *
+   * WITHOUT THIS THE SECTION IS UNUSABLE. The digits appear here, and the
+   * keypad that can answer them is on another tab - so a person is told to
+   * press 6-4-6, has to leave the screen to do it, and the twenty-second
+   * wipe timer runs while they navigate. Messages already had this control
+   * for the same reason; this section needed it and did not have it, which
+   * only became obvious when a real challenge appeared during a live test.
+   */
+  const pressChallenge = useCallback(async () => {
+    if (!opChallenge) return;
+    for (const digit of opChallenge) await emu.press(digit);
+  }, [opChallenge, emu]);
+
+  const slotOperation = useCallback(async (kind: 'sign' | 'decrypt') => {
+    setBusy(true);
+    setOpNote(null);
+    setOpResult(null);
+    try {
+      const {okcrypto} = await getKey();
+      const payload = okbytes.fromHex(opInput.trim().replace(/\s+/g, ''));
+      if (!payload.length) throw new Error('nothing to send - paste some hex');
+
+      const answer = await okcrypto[kind](opSlot, payload, {
+        confirm: ({digits}: {digits: number[]}) => setOpChallenge(digits),
+        timeoutMs: 60000,
+      });
+      setOpResult(okbytes.toHex(answer));
+      setOpNote(`${answer.length} bytes back from slot ${opSlot}.`);
+    } catch (e) {
+      setOpNote(String((e as Error)?.message ?? e));
+    } finally {
+      setOpChallenge(null);
+      setBusy(false);
+    }
+  }, [getKey, opSlot, opInput]);
+
+  /**
+   * Open an age file with an IDENTITY STRING, whichever kind it is.
+   *
+   * What a person actually keeps is the identity, not a label or a slot
+   * number. decryptWithIdentity decodes it and routes itself: a derived
+   * identity goes down the label path, a slot identity to the slot - and when
+   * the identity carries a fingerprint it checks that the slot still holds
+   * the key it was made for BEFORE spending a button press, so a regenerated
+   * slot says so instead of failing as "no identity matched".
+   */
+  const openWithIdentity = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    setAgePlain(null);
+    try {
+      const {okcrypto} = await getKey();
+      const file = okbytes.fromBase64(ageFile.trim());
+      const opened = await okcrypto.deviceAge.decryptWithIdentity(
+        file,
+        identityInput.trim(),
+        {
+          confirm: ({digits}: {digits: number[]}) => setOpChallenge(digits),
+          timeoutMs: 60000,
+        },
+      );
+      setAgePlain(
+        typeof opened === 'string' ? opened : fromUtf8(opened),
+      );
+      setStatus('Opened with the identity.');
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setOpChallenge(null);
+      setBusy(false);
+    }
+  }, [getKey, ageFile, identityInput]);
 
   /*
    * Both vault calls derive the key if it is not cached, and deriving needs
@@ -428,6 +546,17 @@ export function CryptoScreen({
           editable={!busy}
           style={styles.input}
         />
+        <Text style={styles.note}>Curve</Text>
+        <Segmented
+          options={KEY_TYPES.map(k => k.name)}
+          value={curve}
+          onChange={setCurve}
+        />
+        <Text style={styles.note}>
+          A label derives a DIFFERENT key on each curve. The same site read
+          under another one gives a different secret, and both look equally
+          plausible.
+        </Text>
         <Btn
           title={busy ? 'Deriving…' : 'Derive'}
           tone="primary"
@@ -571,6 +700,68 @@ export function CryptoScreen({
         />
       </Section>
 
+      <Section title={`Use a key in a slot — ${keyName}`}>
+        <Text style={styles.body}>
+          Sign or decrypt with a key that was LOADED into a slot, rather than
+          one derived from a label. This is what a PGP or SSH key on the device
+          is, and the operation happens inside the key.
+        </Text>
+        <Text style={styles.note}>
+          Input and output are hex. The key raises a three-button challenge
+          computed from a hash of exactly these bytes, so the digits it shows
+          are a commitment to what is about to be signed.
+        </Text>
+
+        <TextInput
+          value={String(opSlot)}
+          onChangeText={t => setOpSlot(Number(t.replace(/[^0-9]/g, '')) || 0)}
+          keyboardType="number-pad"
+          placeholder="slot (101-116, or 1-4 for RSA)"
+          placeholderTextColor={theme.textDim}
+          editable={!busy}
+          style={styles.input}
+        />
+
+        <TextInput
+          value={opInput}
+          onChangeText={setOpInput}
+          multiline
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="hex to sign or decrypt"
+          placeholderTextColor={theme.textDim}
+          editable={!busy}
+          style={styles.textarea}
+        />
+
+        <View style={styles.row}>
+          <Btn
+            title={busy ? 'Working…' : 'Sign'}
+            tone="primary"
+            disabled={busy || locked || !opInput.trim()}
+            onPress={() => void slotOperation('sign')}
+          />
+          <Btn
+            title={busy ? 'Working…' : 'Decrypt'}
+            disabled={busy || locked || !opInput.trim()}
+            onPress={() => void slotOperation('decrypt')}
+          />
+        </View>
+
+        {opChallenge ? (
+          <>
+            <Text style={styles.status}>
+              The key is waiting: press {opChallenge.join(' - ')} on it.
+            </Text>
+            {emu.canPress === true ? (
+              <Btn title="Press them for me" onPress={() => void pressChallenge()} />
+            ) : null}
+          </>
+        ) : null}
+        {opNote ? <Text style={styles.note}>{opNote}</Text> : null}
+        {opResult ? <Text style={styles.secret} selectable>{opResult}</Text> : null}
+      </Section>
+
       <Section title="Encrypted files (age)" faded={!pqc}>
         {pqc ? null : <Text style={styles.note}>{missingNote('postQuantum')}</Text>}
         <Text style={styles.body}>
@@ -660,6 +851,29 @@ export function CryptoScreen({
           title={busy ? 'Working…' : 'Decrypt'}
           disabled={busy || locked || !pqc || !ageLabel.trim() || !ageFile.trim()}
           onPress={ageDecrypt}
+        />
+
+        <Text style={styles.note}>
+          Or open it with the IDENTITY you kept, which is what a key generated
+          on the Keys tab gives you. It names the key to use, so no label is
+          needed, and if that slot has been generated again since it says so
+          rather than failing as "no identity matched".
+        </Text>
+        <TextInput
+          value={identityInput}
+          onChangeText={setIdentityInput}
+          multiline
+          autoCapitalize="characters"
+          autoCorrect={false}
+          placeholder="AGE-PLUGIN-ONLYKEY-1..."
+          placeholderTextColor={theme.textDim}
+          editable={!busy}
+          style={styles.textarea}
+        />
+        <Btn
+          title={busy ? 'Working…' : 'Open with this identity'}
+          disabled={busy || locked || !pqc || !identityInput.trim() || !ageFile.trim()}
+          onPress={openWithIdentity}
         />
 
         {agePlain !== null ? (
