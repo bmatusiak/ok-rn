@@ -5,11 +5,15 @@ import FidoGatt, {
 } from '../transport/FidoGatt';
 import OkEmu from '../transport/OkEmu';
 import {startFidoBridge} from '../fidoBridge';
-import {useActiveKey, useBackend} from './KeyContext';
+import type {OnlyKeyApp} from '../onlykey';
 import type {LogLevel} from './useLog';
 
 type Options = {
   log: (level: LogLevel, text: string) => void;
+  /** The ACTIVE key, resolved per call - see the note in useFidoGatt. */
+  getKey: () => Promise<OnlyKeyApp>;
+  /** Which backend that is, for the one decision that differs between them. */
+  getBackend: () => string;
 };
 
 export type FidoSession = ReturnType<typeof useFidoGatt>;
@@ -18,10 +22,24 @@ export type FidoSession = ReturnType<typeof useFidoGatt>;
  * The BLE authenticator session. Call this ONCE, at app scope - it owns the
  * GATT server's lifetime and the bridge that answers requests.
  */
-export function useFidoGatt({log}: Options) {
-  /* The ACTIVE key answers the browser, not whichever this file assumed. */
-  const getKey = useActiveKey();
-  const backend = useBackend();
+export function useFidoGatt({log, getKey, getBackend}: Options) {
+  /*
+   * THE KEY GETTER IS PASSED IN, and it has to be.
+   *
+   * This used to call useActiveKey(), with a comment saying "the ACTIVE key
+   * answers the browser". It did not. This hook is created in App BEFORE
+   * KeyBackendProvider wraps the tree - it must be, because useKey() needs
+   * fido.pending and the provider is fed from useKey's own backend - so the
+   * context read returned the DEFAULT, 'embedded', for the life of the app.
+   *
+   * The effect was invisible until someone tried it: every Bluetooth WebAuthn
+   * ceremony was relayed to the SOFT key no matter which key was selected.
+   * With the soft key locked or in config mode it answered nothing, the
+   * browser sat on "talking to key" until it gave up, and the app cheerfully
+   * showed "Forwarding to the firmware" the whole time. Found by the user on
+   * a Pixel; it was never a Pixel problem.
+   * See FINDING-the-ble-bridge-relayed-to-the-wrong-key.md.
+   */
 
   /*
    * Seeded from the native side rather than assumed idle. The GATT server
@@ -133,7 +151,13 @@ export function useFidoGatt({log}: Options) {
        * asked with a probe that presses nothing - otherwise the answer is a
        * finger, and saying so beats writing into silence.
        */
-      if (backend === 'usb') {
+      /*
+       * Asked at press time, not captured. Same reason as getKey above: this
+       * hook lives outside the provider, and a value read once would pin the
+       * confirm button to the soft key for the life of the app - so pressing
+       * Confirm for a HARD key ceremony pressed the soft key instead.
+       */
+      if (getBackend() === 'usb') {
         const {device} = await getKey();
         if (!(await device.consoleAnswers())) {
           log('info', 'this key does not take presses from the app - press any button on it');
@@ -147,7 +171,7 @@ export function useFidoGatt({log}: Options) {
     } catch (error) {
       log('error', 'confirm: ' + String(error));
     }
-  }, [backend, getKey, log]);
+  }, [getBackend, getKey, log]);
 
   return {state, mtu, supported, pending, presenceNeeded, start, stop, confirm};
 }

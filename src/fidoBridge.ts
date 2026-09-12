@@ -77,6 +77,8 @@ type Options = {
  */
 export function startFidoBridge({log, onPending, onPresence, getKey}: Options): () => void {
   let bridge: ReturnType<typeof protocol.bridge.createCtapBridge> | null = null;
+  /* Which transport the cached bridge was built on - see ensureBridge. */
+  let boundTo: unknown = null;
 
   /*
    * Built on first use, not here.
@@ -84,12 +86,23 @@ export function startFidoBridge({log, onPending, onPresence, getKey}: Options): 
    * getKey() boots the firmware and composes the Rectify app, which is not
    * something to do while a screen is mounting - and a bridge is useless until
    * a central actually connects, which may never happen.
+   *
+   * REBUILT WHEN THE KEY CHANGES. The cache used to be `if (bridge) return
+   * bridge`, which bound the relay to whichever key was active when the FIRST
+   * request arrived and kept it there. Switching keys afterwards moved
+   * everything else in the app and left the browser talking to the old one.
+   *
+   * Compared by the transport OBJECT rather than a backend name: getKey()
+   * returns one app per backend and caches it, so identity is exactly the
+   * question being asked - is this the same device session as last time.
    */
   async function ensureBridge() {
-    if (bridge) {
+    const {transport} = await getKey();
+    if (bridge && boundTo === transport) {
       return bridge;
     }
-    const {transport} = await getKey();
+    if (bridge) log('info', '[bridge] the active key changed; rebinding');
+    boundTo = transport;
     bridge = protocol.bridge.createCtapBridge(transport, {
       log: (level: string, message: string) =>
         log(level === 'error' ? 'error' : 'info', `[bridge] ${message}`),

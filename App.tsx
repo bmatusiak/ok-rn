@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
@@ -14,6 +14,8 @@ import {useKeystrokes} from './src/hooks/useKeystrokes';
 import {KeyBackendProvider} from './src/hooks/KeyContext';
 import {useUsbHid} from './src/hooks/useUsbHid';
 import {useFidoGatt} from './src/hooks/useFidoGatt';
+import {getOnlyKey} from './src/onlykey';
+import type {Backend} from './src/hooks/keySession';
 import {useTestingMode} from './src/hooks/useTestingMode';
 import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 
@@ -105,8 +107,29 @@ function Shell() {
    * is what makes them comparable: attach a real key, look at it, unplug, and
    * the emulated one is still where it was rather than freshly booted.
    */
-  const fido = useFidoGatt({log: fidoLog.log});
+  /*
+   * THE BRIDGE'S VIEW OF WHICH KEY IS ACTIVE, through refs.
+   *
+   * useFidoGatt has to be created here, above KeyBackendProvider, because
+   * useKey() below needs fido.pending and the provider is fed from useKey's
+   * own backend. That ordering is why the hook cannot read the key from
+   * context - it did, silently got the default, and relayed every Bluetooth
+   * WebAuthn ceremony to the soft key whatever was selected.
+   *
+   * A ref closes the loop without reordering anything: the getters are stable,
+   * so nothing re-subscribes, and they read the CURRENT value at the moment a
+   * browser actually asks.
+   */
+  const backendRef = useRef<Backend>('embedded');
+  const getActiveKey = useCallback(() => getOnlyKey(backendRef.current), []);
+  const getActiveBackend = useCallback(() => backendRef.current as string, []);
+  const fido = useFidoGatt({
+    log: fidoLog.log,
+    getKey: getActiveKey,
+    getBackend: getActiveBackend,
+  });
   const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log, fidoPending: fido.pending});
+  backendRef.current = keys.backend;
   const emu = keys.key;
   /* What the active key types, heard from every tab. See useKeystrokes. */
   const typed = useKeystrokes(keys.backend);

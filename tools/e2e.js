@@ -412,6 +412,34 @@ async function main() {
     /* Reporting is not worth failing a run over. */
   }
 
+  /*
+   * LEAVE THE KEY USABLE. A run must not hand the phone back broken.
+   *
+   * 14b-pqcSlots ends in CONFIG MODE and cannot do otherwise: generating a
+   * post-quantum key requires it, and the emulator has no in-process reset -
+   * the firmware's CPU_RESTART writes AIRCR and OkEmu.restart() says so.
+   * Config mode answers eleven message types and silently drops the rest
+   * (okcore.cpp:347), so a person picking up the phone afterwards finds a
+   * keypad that appears not to work and a Bluetooth security key that never
+   * answers, with nothing on screen explaining either.
+   *
+   * That cost the user twice in one evening before anyone connected the two.
+   * A force-stop here is the power cycle that ends config mode, and it costs
+   * a second at the end of a four-minute run.
+   *
+   * --no-restart still means what it says: the caller wants the app left
+   * exactly as the run left it, usually to read state from a failure.
+   */
+  if (!keepRunning) {
+    try {
+      adb(['shell', 'am', 'force-stop', PACKAGE]);
+      adb(['shell', 'am', 'start', '-n', ACTIVITY]);
+      trace('restarted the app so the key is not left in config mode');
+    } catch (_) {
+      /* Tidying up is not worth changing a verdict over. */
+    }
+  }
+
   process.exit(failed === 0 ? 0 : 1);
 }
 
