@@ -56,6 +56,15 @@ export type EmuState =
  * The broadcast runs at 1 Hz and the racing report lands in milliseconds, so
  * anything in this window is the race and anything past it is real.
  */
+/*
+ * How long after the last digit to ask the device whether it unlocked.
+ *
+ * Long enough that a person typing a seven-digit PIN does not provoke six
+ * pointless questions, short enough that nobody is left looking at a keypad
+ * that has already done its job.
+ */
+const PIN_SETTLE_MS = 1200;
+
 const UNLOCK_GRACE_MS = 1500;
 
 const IFACE_NAME: Record<number, string> = {
@@ -410,10 +419,20 @@ export function useOkEmu({log, autoStart = false}: Options) {
    * Presence does not need it either - the challenge is checked before any
    * duration band is consulted (OnlyKey.ino:807).
    */
+  /*
+   * When the last button was pressed, so an unlock can be CONFIRMED BY ASKING.
+   *
+   * See the effect below. A ref rather than state: every digit would
+   * re-render the keypad for nothing.
+   */
+  const lastPressAt = useRef(0);
+
   const press = useCallback(
     async (button: number) => {
       try {
         await OkEmu.holdTicks(button, PRESS_TICKS.TAP);
+        lastPressAt.current = Date.now();
+        setPressTick(t => t + 1);
         log('info', `button ${button} (${PRESS_TICKS.TAP} ticks)`);
       } catch (error) {
         log('error', `button ${button}: ${String(error)}`);
@@ -421,6 +440,61 @@ export function useOkEmu({log, autoStart = false}: Options) {
     },
     [log],
   );
+
+  /*
+   * AFTER A PIN, ASK. Do not only listen.
+   *
+   * The whole state machine above is built on the fact that the device
+   * announces what it is without being asked - and it does, EXCEPT for one
+   * case that leaves a person stuck at a keypad that cannot work:
+   *
+   * Entering config mode sets `unlocked = false` and re-arms the once-a-second
+   * INITIALIZED broadcast (OnlyKey.ino:914-925). Unlocking out of config mode
+   * then takes the CONFIG_MODE branch of set_time (okcore.cpp:1362-1367),
+   * which hidprints UNLOCKED to a caller that ASKED and broadcasts nothing.
+   * So the key really is unlocked and the app never hears about it: the PIN
+   * is correct, the keypad stays, and typing it again only fills the buffer.
+   *
+   * Reported by the user, who had a correct PIN and ten digits of buffer
+   * against a key the post-quantum suite had left in config mode.
+   *
+   * The fix is not a cleverer inference - it is a question. OKCONNECT is one
+   * of the eleven messages config mode still answers (okcore.cpp:347), and it
+   * reports UNLOCKED in both branches. So after the presses stop, ask once.
+   *
+   * Note this does NOT try to detect config mode itself. The wire says
+   * UNLOCKED either way and only a DEBUG console says CONFIG_MODE, so
+   * claiming to know would be an inference from silence - the same mistake
+   * as reading state off the LED.
+   */
+  const [pressTick, setPressTick] = useState(0);
+  useEffect(() => {
+    if (device !== 'locked' || !lastPressAt.current) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      /* Another digit landed while we waited; that press schedules its own. */
+      if (cancelled || Date.now() - lastPressAt.current < PIN_SETTLE_MS) return;
+      try {
+        const app = await getOnlyKey('embedded');
+        const state = await app.device.connect();
+        const status = String(state?.status ?? '').trim();
+        if (cancelled || !/UNLOCKED/i.test(status)) return;
+        log('info', `asked after the PIN: ${status}`);
+        unlockedAt.current = Date.now();
+        setDevice('unlocked');
+        const info = device_.version.parseStatus(status);
+        setIdentity(info);
+        setCapabilities(device_.version.capabilities(info));
+        setVersion(info.version ?? '');
+      } catch {
+        /* Still locked, or busy. The broadcast remains the primary signal. */
+      }
+    }, PIN_SETTLE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [device, pressTick, log]);
 
   /*
    * A held press, with the count the firmware is actually seeing.

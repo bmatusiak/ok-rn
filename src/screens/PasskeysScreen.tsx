@@ -43,7 +43,7 @@ import {useKeyName} from '../hooks/KeyContext';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 const {credmgmt} = protocol;
-const {RESET_CONFIRMATION} = deviceLib.fido;
+const {RESET_CONFIRMATION, INFO} = deviceLib.fido;
 
 /** Below this, the screen stops offering to spend an attempt on its own. */
 const SAFE_FLOOR = 2;
@@ -53,6 +53,40 @@ type Site = {
   name: string;
   credentials: any[];
 };
+
+/** getInfo, as lines a person can read. Hex for the AAGUID, which is bytes. */
+function describeInfo(info: Map<number, any>): {label: string; value: string}[] {
+  const hex = (b: Uint8Array) =>
+    Array.from(b).map(x => x.toString(16).padStart(2, '0')).join('');
+  const options = info.get(INFO.OPTIONS);
+  const out: {label: string; value: string}[] = [];
+
+  const versions = info.get(INFO.VERSIONS);
+  if (Array.isArray(versions)) out.push({label: 'Versions', value: versions.join(', ')});
+
+  const extensions = info.get(INFO.EXTENSIONS);
+  if (Array.isArray(extensions) && extensions.length) {
+    out.push({label: 'Extensions', value: extensions.join(', ')});
+  }
+
+  const aaguid = info.get(INFO.AAGUID);
+  if (aaguid) out.push({label: 'AAGUID', value: hex(aaguid)});
+
+  if (options instanceof Map) {
+    for (const [name, value] of options) {
+      out.push({label: name, value: value === true ? 'yes' : value === false ? 'no' : String(value)});
+    }
+  }
+
+  const max = info.get(INFO.MAX_MSG_SIZE);
+  if (max !== undefined) out.push({label: 'Max message', value: `${max} bytes`});
+
+  const protocols = info.get(INFO.PIN_PROTOCOLS);
+  if (Array.isArray(protocols)) {
+    out.push({label: 'PIN protocols', value: protocols.join(', ')});
+  }
+  return out;
+}
 
 export function PasskeysScreen({emu}: {emu: EmuSession}) {
   const keyName = useKeyName();
@@ -66,6 +100,9 @@ export function PasskeysScreen({emu}: {emu: EmuSession}) {
   const [sites, setSites] = useState<Site[] | null>(null);
   const [counts, setCounts] = useState<{stored: number; remaining: number} | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [info, setInfo] = useState<Map<number, any> | null>(null);
   const [resetWord, setResetWord] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -85,6 +122,11 @@ export function PasskeysScreen({emu}: {emu: EmuSession}) {
       if (!admin) return;
       const state = await admin.pinState({timeoutMs: 10000});
       setPinSet(state.set);
+      /*
+       * pinState already fetched getInfo to read the clientPin option, so the
+       * whole map comes back with it - showing it costs nothing extra.
+       */
+      setInfo(state.info ?? null);
       /*
        * getRetries takes no PIN, needs no touch and moves no counter. It is
        * the cheapest true thing this screen can say, so it is said first and
@@ -128,6 +170,78 @@ export function PasskeysScreen({emu}: {emu: EmuSession}) {
       setBusy(null);
     }
   }, [fido, pin, retries]);
+
+  /**
+   * Set a PIN on a key that has none.
+   *
+   * NO ATTEMPT IS AT RISK HERE. There is no current PIN to be wrong about,
+   * and the firmware refuses a second setPin outright (CTAP2_ERR_NOT_ALLOWED,
+   * ctap.cpp:2255) rather than treating it as a guess.
+   *
+   * What IS at risk is the rest of the key's FIDO2 life: from here on, eight
+   * wrong entries of whatever is typed below lock it permanently. Hence the
+   * confirm field - a typo that becomes the PIN is a key nobody can
+   * authenticate to, and only a reset that destroys every passkey clears it.
+   */
+  const setNewPinOnKey = useCallback(async () => {
+    reset();
+    if (newPin !== confirmPin) {
+      setError('The two PINs do not match.');
+      return;
+    }
+    setBusy('setPin');
+    try {
+      if (!fido) throw new Error('no security-key channel; connect first');
+      await fido.setPin(newPin, {timeoutMs: 10000});
+      setPinSet(true);
+      setNewPin('');
+      setConfirmPin('');
+      setStatus('The key now has a security-key PIN. Use it below.');
+      setRetries(await fido.getRetries({timeoutMs: 10000}));
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [fido, newPin, confirmPin]);
+
+  /**
+   * Change the PIN, proving the current one. THIS SPENDS AN ATTEMPT IF WRONG.
+   *
+   * Unlike setPin, the device verifies the current PIN, so a mistyped one is
+   * a guess and costs one of the eight. The remaining count is beside the
+   * field and the last one is refused unless the person has been told.
+   */
+  const changeThePin = useCallback(async () => {
+    reset();
+    if (newPin !== confirmPin) {
+      setError('The two new PINs do not match.');
+      return;
+    }
+    setBusy('changePin');
+    try {
+      if (!fido) throw new Error('no security-key channel; connect first');
+      await fido.changePin(pin, newPin, {
+        timeoutMs: 10000,
+        allowLastAttempt: retries !== null && retries <= SAFE_FLOOR,
+      });
+      setPin('');
+      setNewPin('');
+      setConfirmPin('');
+      /* The old token was minted under the old PIN; it is no longer any use. */
+      setToken(null);
+      setSites(null);
+      setStatus('The PIN was changed. Use the new one below.');
+      setRetries(await fido.getRetries({timeoutMs: 10000}));
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+      try {
+        if (fido) setRetries(await fido.getRetries({timeoutMs: 10000}));
+      } catch { /* the count is a nicety; the error above is not */ }
+    } finally {
+      setBusy(null);
+    }
+  }, [fido, pin, newPin, confirmPin, retries]);
 
   const refresh = useCallback(async () => {
     reset();
@@ -230,7 +344,7 @@ export function PasskeysScreen({emu}: {emu: EmuSession}) {
       </Section>
 
       {fido && pinSet ? (
-        <Section title="The PIN">
+        <Section title="Unlock with the PIN">
           <Text style={styles.note}>
             This is the security-key PIN, not the one that unlocks the key
             itself. They are different PINs and this one is far less forgiving.
@@ -257,6 +371,111 @@ export function PasskeysScreen({emu}: {emu: EmuSession}) {
             disabled={working || pin.length < 4}
             onPress={unlockFido}
           />
+        </Section>
+      ) : null}
+
+      {fido && pinSet === false ? (
+        <Section title="Set a security-key PIN">
+          <Text style={styles.body}>
+            This key has none, so nothing can list or manage its passkeys.
+            Setting one costs no attempts — there is no current PIN to be
+            wrong about.
+          </Text>
+          <Text style={styles.warn}>
+            Choose carefully. From here on, eight wrong entries lock the
+            security-key side permanently, and the only way back is a reset
+            that erases every passkey on the key.
+          </Text>
+          <TextInput
+            style={styles.input}
+            value={newPin}
+            onChangeText={setNewPin}
+            placeholder="new security-key PIN (4 characters or more)"
+            placeholderTextColor={theme.textDim}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <TextInput
+            style={styles.input}
+            value={confirmPin}
+            onChangeText={setConfirmPin}
+            placeholder="the same PIN again"
+            placeholderTextColor={theme.textDim}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Text style={styles.note}>
+            Any text, 4 to 63 bytes — it is typed here and sent encrypted,
+            never pressed on the key, so it is not limited to the six buttons
+            the unlock PIN uses.
+          </Text>
+          <Btn
+            title={busy === 'setPin' ? 'Setting…' : 'Set this PIN'}
+            tone="primary"
+            disabled={working || newPin.length < 4 || confirmPin.length < 4}
+            onPress={setNewPinOnKey}
+          />
+        </Section>
+      ) : null}
+
+      {fido && pinSet ? (
+        <Section title="Change the security-key PIN">
+          <Text style={styles.note}>
+            The current PIN is checked, so getting it wrong SPENDS ONE of the
+            attempts above. The new one replaces it everywhere at once.
+          </Text>
+          <TextInput
+            style={styles.input}
+            value={pin}
+            onChangeText={setPin}
+            placeholder="current security-key PIN"
+            placeholderTextColor={theme.textDim}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <TextInput
+            style={styles.input}
+            value={newPin}
+            onChangeText={setNewPin}
+            placeholder="new PIN"
+            placeholderTextColor={theme.textDim}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <TextInput
+            style={styles.input}
+            value={confirmPin}
+            onChangeText={setConfirmPin}
+            placeholder="the new PIN again"
+            placeholderTextColor={theme.textDim}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Btn
+            title={busy === 'changePin' ? 'Changing…' : 'Change it'}
+            disabled={working || pin.length < 4 || newPin.length < 4 || confirmPin.length < 4}
+            onPress={changeThePin}
+          />
+        </Section>
+      ) : null}
+
+      {info ? (
+        <Section title="What this authenticator says it is">
+          <Text style={styles.note}>
+            Straight from the key's own getInfo, which is the first thing any
+            browser asks it. Read once when connecting; it costs nothing.
+          </Text>
+          {describeInfo(info).map(row => (
+            <View key={row.label} style={styles.infoRow}>
+              <Text style={styles.infoLabel}>{row.label}</Text>
+              <Text style={styles.infoValue}>{row.value}</Text>
+            </View>
+          ))}
         </Section>
       ) : null}
 
@@ -377,6 +596,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
+  infoRow: {flexDirection: 'row', justifyContent: 'space-between', marginTop: 6},
+  infoLabel: {color: theme.textDim, fontSize: 12},
+  infoValue: {color: theme.text, fontFamily: theme.mono, fontSize: 12},
   site: {marginTop: 12},
   siteName: {color: theme.text, fontSize: 14, fontWeight: '700'},
   cred: {marginTop: 8, paddingLeft: 10},
