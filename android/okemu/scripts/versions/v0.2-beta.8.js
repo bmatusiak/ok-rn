@@ -31,11 +31,85 @@ const shared = require('./_shared');
  * it names, add the one patch that fixes it, run again. Each rung is
  * something somebody watched happen.
  */
+/*
+ * THE SKETCH SEEDS ITS RNG FROM AN ADDRESS THAT IS A READING.
+ *
+ *   unsigned int analog1 = analogRead(ANALOGPIN1);
+ *   RNG.stir((uint8_t *)analog1, sizeof(analog1), sizeof(analog1)*2);
+ *
+ * `analog1` is the sample, not a buffer. The cast turns a number between 0
+ * and 1023 into a pointer and stir() reads four bytes from it. On a Teensy
+ * that address is inside mapped flash, so it returns the same four bytes of
+ * the device's own program image every boot - the seeding is wrong in a way
+ * that still produces plausible output, which is why it shipped. On Android
+ * the page is unmapped and the firmware thread dies in setup().
+ *
+ * The two fault addresses this was seen at, 0xe7 and 0x2e4, are 231 and 740.
+ * They differ between runs because they are ADC samples, and that is what
+ * identified the cast rather than the unrebased hardware register the notes
+ * first suspected.
+ *
+ * Fixed by the firmware itself in OnlyKey-Firmware@926b052 (2020-05-22), the
+ * commit that renamed the sketch: `RNG.stir((uint8_t *)&analog1, 2, 4)`. The
+ * length drops to 2 because the reading is 16-bit after
+ * analogReadResolution(16), and the entropy credit halves with it. This
+ * patch takes only the ADDRESS, leaving the length and the credit as the
+ * beta had them - the crash is the cast, and rewriting the rest would be
+ * this repository deciding how much entropy a 2019 release was entitled to
+ * claim.
+ *
+ * Version-local, not shared: no other release in the matrix contains the
+ * line. See ok-rn/FINDING-the-beta-seeded-its-rng-from-an-address-that-was-a-number.md
+ */
+const rngStirsAnAddressNotAValue = {
+  /* Staged under the canonical name, whatever the release called it. */
+  file: 'sketch/OnlyKey.ino',
+  edits: [
+    ['RNG.stir((uint8_t *)analog1, sizeof(analog1), sizeof(analog1)*2);',
+     'RNG.stir((uint8_t *)&analog1, sizeof(analog1), sizeof(analog1)*2);'],
+    ['RNG.stir((uint8_t *)analog2, sizeof(analog2), sizeof(analog2)*2);',
+     'RNG.stir((uint8_t *)&analog2, sizeof(analog2), sizeof(analog2)*2);'],
+  ],
+};
+
+/*
+ * THE SAME CAST, EIGHT MORE TIMES, IN THE LOOP THAT RUNS FOREVER.
+ *
+ * rngloop() stirs every touch pad and both analog pins into the pool on
+ * every pass, and every one of them casts the READING to a pointer. The
+ * sketch's two in setup() are only where it is reached first; this is where
+ * it would have kept happening.
+ *
+ * Same fix, same reason, and the same upstream: today's okcore.cpp writes
+ * `RNG.stir((uint8_t *)&analog1, 2, 2)`. Address only - the lengths and
+ * credits stay as the beta had them.
+ */
+const rngloopStirsAddressesNotValues = {
+  file: 'libraries/onlykey/okcore.cpp',
+  edits: [
+    ['RNG.stir((uint8_t *)analog1, sizeof(analog1), sizeof(analog1) * 4);',
+     'RNG.stir((uint8_t *)&analog1, sizeof(analog1), sizeof(analog1) * 4);'],
+    ['RNG.stir((uint8_t *)touchread1, sizeof(touchread1), sizeof(touchread1));',
+     'RNG.stir((uint8_t *)&touchread1, sizeof(touchread1), sizeof(touchread1));'],
+    ['RNG.stir((uint8_t *)touchread2, sizeof(touchread2), sizeof(touchread2));',
+     'RNG.stir((uint8_t *)&touchread2, sizeof(touchread2), sizeof(touchread2));'],
+    ['RNG.stir((uint8_t *)touchread3, sizeof(touchread3), sizeof(touchread3));',
+     'RNG.stir((uint8_t *)&touchread3, sizeof(touchread3), sizeof(touchread3));'],
+    ['RNG.stir((uint8_t *)touchread4, sizeof(touchread4), sizeof(touchread4));',
+     'RNG.stir((uint8_t *)&touchread4, sizeof(touchread4), sizeof(touchread4));'],
+    ['RNG.stir((uint8_t *)touchread5, sizeof(touchread5), sizeof(touchread5));',
+     'RNG.stir((uint8_t *)&touchread5, sizeof(touchread5), sizeof(touchread5));'],
+    ['RNG.stir((uint8_t *)touchread6, sizeof(touchread6), sizeof(touchread6));',
+     'RNG.stir((uint8_t *)&touchread6, sizeof(touchread6), sizeof(touchread6));'],
+    ['RNG.stir((uint8_t *)analog2, sizeof(analog2), sizeof(analog2) * 4);',
+     'RNG.stir((uint8_t *)&analog2, sizeof(analog2), sizeof(analog2) * 4);'],
+  ],
+};
+
 module.exports = {
   version: 'v0.2-beta.8',
   pins: { libraries: '307ba86', 'OnlyKey-Firmware': '697c4c0' },
   sketch: { dir: 'OnlyKey_Beta', file: 'OnlyKey_Beta.ino' },
-  status: 'builds',
   /*
    * Base patches whose patterns this 2019 tree does not contain. Declared
    * rather than silently skipped, and stage.js throws if one of them turns
@@ -51,20 +125,38 @@ module.exports = {
     '#define factorysectoradr 0x5800',
     'uint32_t length = (uint32_t)end_byte - (uint32_t)start_byte;',
   ],
+  status: 'boots',
   notes: [
-    'BUILDS, DOES NOT BOOT. The .so links and the app loads it; the firmware',
-    'thread then dies immediately:',
+    'BOOTS, PROVISIONS, DOES NOT UNLOCK. The .so links, the firmware thread',
+    'runs, OKCONNECT completes, the PIN bracket sets a PIN and the next boot',
+    'reports INITIALIZED. All six buttons arrive as themselves. Unlocking with',
+    'that PIN then times out at 20 s, and the main loop stops answering',
+    'afterwards ("button 1 still owes 10 of 10 ticks").',
     '',
-    '  F libc: Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR),',
-    '          fault addr 0x2e4 in tid ... (okemu-firmware)',
+    'WHAT THE CRASH WAS. The firmware thread used to die in setup() before',
+    'any of that:',
     '',
-    'A read of 0x2e4 is a small absolute address - the shape of a hardware',
-    'register this tree touches that the emulator has not rebased, rather',
-    'than a wild pointer. rewriteSystemBlock() moves the Cortex-M block at',
-    '0xE0000000 and the flash constants in okcore.h are rebased by a base',
-    'patch; something below both is still dereferenced where it lies. The',
-    'next step is a backtrace with symbols - the four frames are all inside',
-    'libokemu.so - not another guess.',
+    '  F libc: Fatal signal 11 (SIGSEGV), fault addr 0xe7 in (okemu-firmware)',
+    '    #00 RNGClass::stir(unsigned char const*, unsigned long, unsigned int)',
+    '    #01 setup',
+    '',
+    'The note here used to record 0x2e4 and guess at an unrebased hardware',
+    'register. The two addresses are 231 and 740, and the fact that they DIFFER',
+    'is the answer: they are ADC samples. The sketch writes',
+    '',
+    '  RNG.stir((uint8_t *)analog1, sizeof(analog1), sizeof(analog1)*2);',
+    '',
+    'where &analog1 was meant, so the reading is used as an address. Ten of',
+    'them - two in setup(), eight more in rngloop(). The firmware fixed it',
+    'itself in OnlyKey-Firmware@926b052 (2020-05-22). Patched above; see',
+    'ok-rn/FINDING-the-beta-seeded-its-rng-from-an-address-that-was-a-number.md',
+    '',
+    'AND ONE THING IN THE HARNESS. The provisioning suite gated on',
+    'capabilities.debugConsole === true. That value is a TRI-STATE and null',
+    'means unknown - firmware older than the -test/-prod keyword, which is',
+    'this one. Refusing on null refused exactly the old devices the bracket',
+    'exists to reach, while their console output was visible in the same log.',
+    'See ok-rn/FINDING-unknown-was-read-as-no-console.md.',
     '',
     'THREE THINGS HAD TO CHANGE IN THE TOOLING TO GET THIS FAR, and they are',
     'the reason this release is worth the trouble even unfinished:',
@@ -80,11 +172,18 @@ module.exports = {
     '    Windows checkout the first one wins the include. Upstream renamed it',
     '    to SHA256_2.h later; stage.js now does that to the staged copy.',
     '',
+    'THE NEXT RUNG is the unlock. The PIN is set and accepted at bracket time,',
+    'so the digits reach the device; what fails is the unlock that follows.',
+    'The console is WRITE-ONLY on this build (consolePress: false), so unlock()',
+    'has to be given enterDigits and every press is a real button. Whether the',
+    'timeout is the press path or the 2019 unlock path itself is not yet',
+    'measured, and guessing is what the last note did.',
+    '',
     'WHY IT IS WORTH FINISHING. This is the only firmware whose OKCONNECT',
     'reply uses the layout node-onlykey-lib calls legacy - the public key at',
     'bytes 21..53, the version string in the clear before it. transit.js',
     'parses it and nothing real has ever answered that way, so the branch is',
     'covered by a synthetic reply and by nothing else.',
   ].join(String.fromCharCode(10)),
-  patches: [],
+  patches: [rngStirsAnAddressNotAValue, rngloopStirsAddressesNotValues],
 };

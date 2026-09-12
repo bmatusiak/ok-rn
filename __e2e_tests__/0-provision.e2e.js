@@ -102,12 +102,24 @@ module.exports = function provision({describe, it}) {
        * naming here rather than fifteen seconds later in a message about the
        * PIN possibly being wrong.
        */
+      /*
+       * NOT-FALSE, not true. debugConsole has three values and null is
+       * UNKNOWN - firmware older than the -test/-prod keyword the 3.0 line
+       * encodes, which is every release before it. Asserting `=== true`
+       * refused exactly the old devices the bracket exists to reach, and did
+       * it while their console output was visible in the same log.
+       * ok-rn/FINDING-unknown-was-read-as-no-console.md
+       *
+       * An unknown build tries, and fails at the first prompt if the console
+       * really is absent - a worse message than this one, but a true one.
+       */
       const caps = device.capabilities;
-      assert.equal(
+      assert.notEqual(
         caps && caps.debugConsole,
-        true,
-        'this firmware has no debug console, so the PIN bracket has nothing ' +
-          'to answer it - stage the version with OKEMU_DEBUG=1',
+        false,
+        'this is a production build: the PIN bracket is a conversation in ' +
+          'Serial.println and a production build compiles those out. Stage ' +
+          'the version with OKEMU_DEBUG=1',
       );
 
       /*
