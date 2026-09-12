@@ -37,49 +37,58 @@
  * Adding a release is copying the nearest neighbour, changing `version`,
  * setting `status: 'untried'`, and emptying `notes`.
  *
- * ## How the pins were chosen, and why that is a convention rather than a fact
+ * ## Where the pins come from: UPSTREAM RELEASE TAGS
  *
- * NOBODY RECORDED THEM AT RELEASE TIME. There are no tags in either checkout,
- * and no release note names a commit, so every pin here was worked out
- * afterwards. The rule used is: the LAST commit that declares that version.
+ * Both repositories tag their releases, and the tags name commits. The local
+ * checkouts are forks with no tags of their own, which is why this was not
+ * obvious - but the GitHub API has them, and every pin here has been checked
+ * against one:
  *
- * Declares is meant literally. `libraries/onlykey/onlykey.h` carries
- * OKversionmaj/min/pat, so reading the header at every commit gives the range
- * of commits that called themselves v3.0.1, v3.0.2 and so on, and the pin is
- * the end of that range - the state the cycle finished in. It is what 3.0.0,
- * 3.0.1, 3.0.3 and 3.0.4 point at. v3.0.2 is the exception and says so in its
- * own file.
+ *     api.github.com/repos/trustcrypto/libraries/git/refs/tags
+ *     api.github.com/repos/trustcrypto/OnlyKey-Firmware/git/refs/tags
  *
- * The three oldest releases predate those macros entirely, so the header
- * cannot confirm them at all; their pins are the last code commit before the
- * next version's work began, which is a weaker argument and is the honest
- * state of them.
+ * All nine OnlyKey-Firmware pins match their `vX.Y.Z-prod` tag exactly. On the
+ * libraries side, v3.0.2, v3.0.1, v3.0.0, v2.1.2, v2.1.1, v2.1.0 and
+ * v0.2-beta.8 match theirs (v2.1.1's is an annotated tag and dereferences to
+ * the same commit). So these are not a convention and not an inference - they
+ * are what upstream shipped.
  *
- * ## What was tried to do better, and why it did not work
+ * ## The two that have no tag, and how they were derived
  *
- * `ok-rn/signed_firmware/` holds the signed release images, and they are
- * readable: word-swap the block data and the firmware's string table appears.
- * Every image declares its own version, which confirms the `file` column in
- * ok-versions.json - but a version string only narrows a release to the range
- * above, which is what we already had.
+ * The libraries repository stops tagging at v3.0.2-prod. OnlyKey-Firmware has
+ * v3.0.3-prod and v3.0.4-prod, both pointing at the SAME commit - the sketch
+ * did not change between those releases - so only the libraries side needs
+ * working out.
  *
- * Two ways past that, both closed:
+ * `libraries/onlykey/onlykey.h` carries OKversionmaj/min/pat, so reading the
+ * header at every commit gives which commits called themselves v3.0.3 and
+ * which v3.0.4. That still leaves a range, and the RELEASE DATE closes it: the
+ * pin is the last commit declaring that version at or before the day the
+ * release was published.
  *
- *   * REBUILD AND COMPARE. `arduino-1.6.5-r5-teensy_127/` is a Docker build of
- *     the pinned Arduino 1.6.5 + Teensyduino 1.27 whose compiler is a Linux
- *     ELF. The development machine has no Docker, no working WSL and cannot
- *     take a Linux toolchain. node-onlykey-emulator builds here, but an x86
- *     addon cannot byte-match a Teensy image.
- *   * COMPARE STRING TABLES. A commit that added or removed a literal would
- *     show up in the image. None of the in-range candidates does anything a
- *     production image keeps - they touch DEBUG prints, which -prod compiles
- *     out, or guards around non-STD builds.
+ * That rule is not invented for the occasion - it reproduces all seven tagged
+ * libraries pins. It also corrects an earlier guess here. "The last commit of
+ * the version's range" looked like the pattern and is wrong: commits keep the
+ * old version number until the next bump, so a release is often followed by
+ * more commits declaring it. v3.0.2 shipped on 2022-10-05 and two further
+ * 3.0.2 commits landed on 2022-10-25, which is exactly why its tag is at
+ * 5d7ce7a and not at the end of its range.
  *
- * Which leaves the useful conclusion: for the CLASSIC STD build this matrix
- * stages, the candidates inside a version's range are the same code. The pin
- * is a convention, the convention cannot be confirmed from the release, and
- * on what is actually measured here it does not change the answer. Written
- * down so the next person spends the afternoon on something else.
+ * Applied:
+ *
+ *   v3.0.3  published 2022-11-08  ->  a133bea (2022-11-04)
+ *                                     9c99922 is 2022-11-26, after the release
+ *   v3.0.4  published 2022-12-14  ->  c8804e3 (2022-11-30)
+ *
+ * ## What was tried before the tags were found, and why it failed
+ *
+ * Worth keeping so nobody repeats it. Rebuilding each candidate and comparing
+ * bytes needs the pinned Arduino 1.6.5 + Teensyduino 1.27, whose compiler is a
+ * Linux ELF, and the development machine has no Docker and no working WSL.
+ * Comparing string tables out of the signed release images works - they are
+ * readable once the block data is word-swapped - but no candidate inside a
+ * range changes a literal that a production build keeps. Both dead ends; the
+ * tags answered it in two requests.
  */
 
 const fs = require('fs');

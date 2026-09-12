@@ -5,7 +5,7 @@
         "file": "Signed_OnlyKey_3_0_4_STD"
     },
     "v3.0.3":{
-        "libraries":"9c99922",
+        "libraries":"a133bea",
         "OnlyKey-Firmware":"9600daa",
         "file": "Signed_OnlyKey_3_0_3_STD"
     },
@@ -24,7 +24,7 @@
         "OnlyKey-Firmware":"dc24867"
     },
     "v2.1.2":{
-        "libraries":"8f74eac",
+        "libraries":"12eb5b0",
         "OnlyKey-Firmware":"bbb910a",
         "file": "Signed_OnlyKey_2_1_2_STD"
     },

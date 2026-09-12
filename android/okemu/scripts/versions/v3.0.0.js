@@ -12,11 +12,11 @@ const shared = require('./_shared');
  * to be one. `ok-versions.json` carries no `file` for this row because of that,
  * and it is the only row without one.
  *
- * Which makes this the one pin nothing outside the source tree can corroborate.
- * Every other release has an image that states its own version, so the pin is
- * at least known to be inside the right range (see versions/index.js). Here the
- * commit range is the whole of the evidence, and the only thing measured
- * against this release is what this matrix measures itself.
+ * The pins are still exact: both are the upstream release tags - `libraries`
+ * v3.0.0-prod is 5515974 and OnlyKey-Firmware's is dc24867. So the absent
+ * image costs nothing here. What it does mean is that this is the one release
+ * whose behaviour cannot be checked against a shipped binary, and the only
+ * thing measured against it is what this matrix measures itself.
  */
 module.exports = {
   version: 'v3.0.0',
