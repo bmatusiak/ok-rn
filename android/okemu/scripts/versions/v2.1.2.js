@@ -1,4 +1,5 @@
 'use strict';
+const shared = require('./_shared');
 
 /**
  * v2.1.2 - the pin was right all along, and it was on a BRANCH.
@@ -73,5 +74,33 @@ module.exports = {
     'measurement worth taking.',
   ].join('\n'),
 
-  patches: [],
+  /*
+   * v2.1.1's list, and this file said it would NOT copy that list because
+   * "guessing which apply here would record a measurement nobody made".
+   * That caution cost most of a day. With no patches this release stages,
+   * builds, boots, provisions - and stores its PIN hash at a 64-bit stride
+   * into a 32-bit-word flash layout, so every other word is lost and the
+   * PIN never matches. Read straight out of flash.bin after a provision:
+   *
+   *   +0..3   e3e66c62   <- nonce word 0, then FOUR BYTES OF 0xFF
+   *   +8..11  50f04142   <- nonce word 1, then 0xFF again
+   *   +64..67 e8124951   <- p1hash word 0, same stride
+   *
+   * That is `unsigned long *adr` being 8 bytes on the host, exactly what
+   * shared.flashWalkStride exists for, and okcore_flashsector is byte-
+   * identical to v2.1.1's. The others are here because the code they patch
+   * is also unchanged from v2.1.1; stage.js refuses a literal that does not
+   * match, so anything in this list that did not belong would have said so.
+   */
+  patches: [
+    shared.flashWalkStride,
+    shared.droppedTransportResponse,
+    shared.hwModelStackBuffer,
+    ...shared.missingReturns,
+    shared.byteprintNullArgument,
+    shared.pageZeroDebugDump,
+    ...shared.nullSetterPointers,
+    shared.wipeSlotNullSetters,
+    shared.hmacChallengeModeNullSetter,
+  ],
 };
