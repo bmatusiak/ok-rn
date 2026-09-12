@@ -162,6 +162,14 @@ command what six readings of the firmware could not.
 
 ## Status
 
-`v2.1.2.js` is `boots`, which is exactly what was watched happen: it stages,
-builds, starts on a phone and completes OKCONNECT. It is not `tested` and
-should not be recorded as such.
+**Fixed.** `v2.1.2.js` is `tested`: 87 passed, 0 failed, 43 skipped, swept as
+production on a wiped slot. Blocked for the whole life of this project, and
+green the same day it was unblocked.
+
+Two things came out of it, and only one was the cause:
+
+- **The cause** was an empty patch list, which denied this release the
+  flash-stride fix every other 2.x and 3.x script imports.
+- **A real bug found on the way**, fixed and kept: `setPin` returned before
+  the device had finished storing the PIN. It would have bitten any release
+  eventually.
