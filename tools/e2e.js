@@ -462,7 +462,7 @@ async function main() {
   try {
     fs.writeFileSync(
       path.join(__dirname, '.last-e2e.json'),
-      JSON.stringify({ passed, failed, skipped, at: new Date().toISOString() }) + '\n',
+      JSON.stringify({ passed, failed, skipped, bailedAfter, at: new Date().toISOString() }) + '\n',
     );
   } catch (_) {
     /* Reporting is not worth failing a run over. */

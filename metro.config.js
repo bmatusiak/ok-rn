@@ -47,6 +47,24 @@ const config = {
      * copy of anything they both need.
      */
     nodeModulesPaths: [path.join(__dirname, 'node_modules')],
+
+    /*
+     * DO NOT WATCH THE NATIVE BUILD DIRECTORIES. Metro dies if one vanishes.
+     *
+     * `tools/matrix.js` deletes `android/okemu/.cxx` between versions, because
+     * stale objects link new sources against old ones and present as undefined
+     * symbols in a build that worked minutes earlier. Metro had that directory
+     * under its watcher and went down with it mid-sweep:
+     *
+     *   filename: '…/android/okemu/.cxx/Debug/…/.cmake/api/v1/query'
+     *
+     * which then reads as every remaining version failing to bundle, nowhere
+     * near the cause. None of this is bundled JavaScript - it is CMake's own
+     * bookkeeping and the compiled output - so excluding it costs nothing and
+     * removes a whole class of "the sweep died halfway" that has no other
+     * explanation on the terminal.
+     */
+    blockList: /android[/\\](?:okemu[/\\](?:\.cxx|\.stage)|[^/\\]+[/\\]build)[/\\]/,
   },
 };
 

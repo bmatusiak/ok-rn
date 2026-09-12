@@ -93,23 +93,31 @@ function run(cmd, argv, env) {
   return r.status === null ? 1 : r.status;
 }
 
-/** gradle and the e2e runner, with this version's environment. */
-function envFor(version) {
+/**
+ * gradle and the e2e runner, with this version's environment.
+ *
+ * THE DEFAULT IS WHAT SHIPS. A release is a production build - the DEBUG gate
+ * off, and with it every keyboard layout compiled in rather than US English
+ * alone - and that is the thing worth measuring. Forcing the gate on measures a
+ * configuration no user has.
+ *
+ * `debug` asks for the other one, and provisioning needs it: a production build
+ * cannot be given a PIN at all, because the bracket is a conversation held
+ * entirely in Serial.println
+ * (FINDING-provisioning-needs-a-debug-build.md). That is what
+ * `provisioningPass` below is for - one debug build to set the PIN, then back
+ * to what ships for everything that is actually being measured.
+ *
+ * The working tree is left alone in both cases. It is not a release, its gate
+ * is whatever the sources have, and forcing it either way would measure
+ * something nobody builds.
+ */
+function envFor(version, {debug = false} = {}) {
   if (version === WORKING_TREE) return {};
   if (version === WORKING_TREE_DUO) return { OKEMU_MODEL: 'duo' };
-  return {
-    OKEMU_VERSION: version,
-    /*
-     * A RELEASE SHIPS WITH THE DEBUG GATE OFF, and a production build cannot be
-     * given a PIN at all - the bracket is a conversation held entirely in
-     * Serial.println (FINDING-provisioning-needs-a-debug-build.md). So every
-     * pinned version is staged with the gate forced on, or its fresh storage
-     * slot would stay UNINITIALIZED forever.
-     *
-     * The working tree already has it on, so it is left alone.
-     */
-    OKEMU_DEBUG: '1',
-  };
+  return debug
+    ? { OKEMU_VERSION: version, OKEMU_DEBUG: '1' }
+    : { OKEMU_VERSION: version, OKEMU_PRODUCTION: '1' };
 }
 
 function sweep(version) {
@@ -138,18 +146,49 @@ function sweep(version) {
   if (dryRun) return { version, outcome: 'dry run' };
 
   /* See the header: stale objects link against the wrong sources. */
-  fs.rmSync(path.join(OKEMU, '.cxx'), { recursive: true, force: true });
+  const build = (buildEnv) => {
+    fs.rmSync(path.join(OKEMU, '.cxx'), { recursive: true, force: true });
+    return run(path.join(ROOT, 'android', 'gradlew'),
+      ['-p', path.join(ROOT, 'android'), ':app:installDebug', '-q'], buildEnv);
+  };
 
-  const built = run(path.join(ROOT, 'android', 'gradlew'),
-    ['-p', path.join(ROOT, 'android'), ':app:installDebug', '-q'], env);
-  if (built !== 0) return { version, outcome: 'build failed' };
+  if (build(env) !== 0) return { version, outcome: 'build failed' };
 
   /*
    * Provisioning is attempted every time and costs one status read on a device
    * that already has a PIN, so there is no need to know in advance which case
    * this is.
    */
-  run('node', [path.join(ROOT, 'tools', 'e2e.js'), '--only', 'provision'], env);
+  const provisioned = run(
+    'node', [path.join(ROOT, 'tools', 'e2e.js'), '--only', 'provision'], env);
+
+  /*
+   * A FRESH STORAGE SLOT NEEDS ONE DEBUG BUILD, and only one.
+   *
+   * The PIN bracket is a conversation in Serial.println, so a production build
+   * - which is what everything here is measured as - cannot set a first PIN at
+   * all. It refuses by name rather than timing out, which is what makes this
+   * detectable in seconds instead of minutes.
+   *
+   * So: build debug, set the PIN, throw that build away and go back to what
+   * ships. Flash and EEPROM are files and outlive the APK, so the production
+   * build that follows finds a provisioned device and never needs this again -
+   * the cost is two extra builds the first time a version is ever swept.
+   *
+   * The working tree is not eligible: its gate is whatever the sources have,
+   * and envFor returns the same environment either way, so a debug pass there
+   * would rebuild the identical thing.
+   */
+  const pinned = version !== WORKING_TREE && version !== WORKING_TREE_DUO;
+  if (provisioned !== 0 && pinned) {
+    console.log(
+      `\n  ${label}: no PIN yet, and a production build cannot set one.` +
+      `\n  One debug build to provision, then back to what ships.\n`);
+    const debugEnv = envFor(version, { debug: true });
+    if (build(debugEnv) !== 0) return { version, outcome: 'build failed' };
+    run('node', [path.join(ROOT, 'tools', 'e2e.js'), '--only', 'provision'], debugEnv);
+    if (build(env) !== 0) return { version, outcome: 'build failed' };
+  }
 
   /*
    * The counts come from a file rather than from stdout: this runs e2e.js with

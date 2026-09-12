@@ -22,6 +22,7 @@
  */
 'use strict';
 const {getOnlyKey} = require('../src/onlykey');
+const {buildInfo} = require('../src/buildInfo');
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 const {IFACE} = OkEmuModule;
@@ -56,10 +57,39 @@ async function pressAndRead(tap, button) {
   return {digit: Number(hits[0].slice(-1)), hits: 1, said};
 }
 
+/*
+ * THIS SUITE READS THE FIRMWARE'S OWN DEBUG PRINT, so it needs a debug build.
+ *
+ * `pressAndRead` counts "password appended with N" out of the serial tap, and
+ * that line lives behind #ifdef DEBUG. On a production build - which is what a
+ * release IS, and what the matrix now builds by default - the tap is empty and
+ * every press reads back as null. That is the console being absent, not a
+ * button being broken.
+ *
+ * CAPABILITIES CANNOT ANSWER THIS HERE. The suite must run LOCKED, because a
+ * press only appends to the PIN buffer while locked; and a locked device
+ * broadcasts INITIALIZED with no version, so debugConsole is null - UNKNOWN -
+ * and skips nothing. That was tried.
+ *
+ * The staged build knows. stage.js writes `production` into
+ * src/generated/firmware.json from the gate it actually applied, and buildInfo
+ * reads it: no version string, no lock state, no console needed to answer a
+ * question about the console.
+ *
+ * BOTH TESTS SKIP TOGETHER, BEFORE PRESSING ANYTHING. The mapping test leaves
+ * six digits in the PIN buffer and the rollover test adds the four that carry
+ * it past pass_keypress' limit. Skipping only the first would leave the second
+ * pressing four digits into an empty buffer, and the next suite would unlock
+ * into junk - which is the exact failure the rollover test exists to prevent.
+ */
+
 module.exports = function buttonProbe({describe, it}) {
   describe(buttonProbe.name, () => {
-    it('every button arrives as itself', async ({log, assert}) => {
+    it('every button arrives as itself', async ({log, assert, skip}) => {
       if (!OkEmu.isRunning()) await OkEmu.start();
+      if (buildInfo.production) {
+        skip('staged as production: no debug console, so a press has no witness');
+      }
       // setup() runs on its own thread; let it reach the main loop before the
       // first press, or the touch baseline has not been taken yet.
       await delay(1500);
@@ -85,17 +115,24 @@ module.exports = function buttonProbe({describe, it}) {
 
       const tap = serialTap();
       const seen = {};
+      let heard = 0;
       try {
         for (let button = 1; button <= 6; button++) {
-          const {digit, hits} = await pressAndRead(tap, button);
+          const {digit, hits, said} = await pressAndRead(tap, button);
           seen[button] = digit;
+          heard += said.length;
           log(`pressed ${button} -> firmware said ${digit} (${hits} line(s))`);
         }
       } finally {
         tap.off();
       }
 
-      log(`mapping: ${JSON.stringify(seen)}`);
+      /*
+       * The console character count is logged, not acted on. By here the build
+       * is known to be a debug one, so silence means the listener broke and
+       * the assertions below should say so rather than skipping past it.
+       */
+      log(`mapping: ${JSON.stringify(seen)}, ${heard} characters of console`);
       for (let button = 1; button <= buttons; button++) {
         assert.equal(
           seen[button], button,
@@ -112,6 +149,15 @@ module.exports = function buttonProbe({describe, it}) {
     });
 
     it('leaves the PIN buffer clean for the suites that follow', async ({log, assert, skip}) => {
+      /*
+       * Skipped for the same reason as the test above, and BEFORE pressing:
+       * its six presses did not happen either, so four more here would leave a
+       * part-filled buffer rather than clearing one. See the suite note.
+       */
+      if (buildInfo.production) {
+        skip('staged as production: the mapping test pressed nothing, so there is nothing to clear');
+      }
+
       /*
        * A DUO HAS NO BUTTON PIN BUFFER TO CLEAN.
        *

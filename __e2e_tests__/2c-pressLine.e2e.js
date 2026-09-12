@@ -38,6 +38,7 @@
 'use strict';
 
 const {getOnlyKey} = require('../src/onlykey');
+const {buildInfo} = require('../src/buildInfo');
 
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
@@ -80,7 +81,7 @@ let shared = null;
 
 module.exports = function pressLineProbe({describe, it}) {
   describe(pressLineProbe.name, () => {
-    it('the console is being listened to at all', async ({log, assert}) => {
+    it('the console is being listened to at all', async ({log, assert, skip}) => {
       if (!OkEmu.isRunning()) await OkEmu.start();
 
       const {device} = await getOnlyKey();
@@ -98,19 +99,62 @@ module.exports = function pressLineProbe({describe, it}) {
         await delay(1500);
         const heard = tap.take();
         log(`heard ${heard.length} characters of console output`);
-        assert.ok(
-          heard.length > 0,
-          'nothing at all arrived on SEREMU, so this build has no console and ' +
-            'the question is not answerable here',
-        );
+
+        /*
+         * NO CONSOLE IS AN ANSWER, NOT A FAILURE.
+         *
+         * This used to assert here, and the message it printed already said
+         * why that was wrong: "the question is not answerable here". A
+         * production build has no console by construction - the gate that
+         * removes it is the same one that makes the version say -prod - so a
+         * silent tap on one is the expected result rather than a broken
+         * listener.
+         *
+         * It only reads as a failure on a DEBUG build, where the firmware
+         * talks on SEREMU constantly and silence would mean the listener
+         * itself is broken. That distinction is the whole reason this control
+         * exists, so the skip keeps it: on a build that should talk, silence
+         * still fails.
+         */
+        if (heard.length === 0) {
+          /*
+           * ASK THE BUILD, NOT THE DEVICE.
+           *
+           * capabilities().debugConsole is derived from the -test/-prod
+           * keyword in the version string, and a LOCKED device broadcasts
+           * INITIALIZED with no version in it - so while locked it is null,
+           * which is UNKNOWN and skips nothing. That was tried and v3.0.2
+           * failed here anyway.
+           *
+           * The staged build already knows: stage.js writes `production` into
+           * src/generated/firmware.json from the gate it actually applied, and
+           * buildInfo reads it. No version string, no lock state, no console
+           * needed to answer a question about the console.
+           */
+          if (buildInfo.production) {
+            skip('this build was staged as production, which has no console to listen to');
+          }
+          assert.ok(
+            false,
+            'nothing at all arrived on SEREMU, and this build was staged with ' +
+              'the console IN - so the listener is broken rather than the device silent',
+          );
+        }
         shared = {device};
       } finally {
         tap.off();
       }
     });
 
-    it('and it either ANSWERS a line, or is write-only', async ({log, assert}) => {
-      assert.ok(shared, 'the listener test did not run');
+    it('and it either ANSWERS a line, or is write-only', async ({log, assert, skip}) => {
+      /*
+       * Follows the test above rather than repeating its work. When that one
+       * skipped for want of a console, there is nothing here to ask either -
+       * a console that does not exist neither answers nor is write-only.
+       */
+      if (!shared) {
+        skip('the listener test found no console, so there is nothing to ask a line of');
+      }
       const {device} = shared;
 
       const caps = device.capabilities;

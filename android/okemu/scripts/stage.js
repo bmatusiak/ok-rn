@@ -373,6 +373,58 @@ function gateDebug(want) {
 }
 
 /**
+ * Keep core/keylayouts.h on the same side of the gate as onlykey.h.
+ *
+ * The header asks for this itself - "keep it in sync manually" above a define
+ * whose comment is "comment this out (to match #undef DEBUG in onlykey.h) for
+ * a release build". Two switches for one decision, and the second one is in a
+ * file nobody edits.
+ *
+ * What hangs off it: with KEYLAYOUTS_DEBUG_BUILD defined, all twenty-six
+ * SUPPORT_LAYOUT_* lines are commented out and only US English compiles, its
+ * block being the one with no guard. Every other layout takes an empty branch
+ * and types nothing at all.
+ *
+ * Reported either way, and never fatal. A release old enough to predate the
+ * switch is a fact about that release, not a staging failure.
+ *
+ * @param {boolean|null} debugOn what the DEBUG gate ended up as
+ */
+function gateKeylayouts(debugOn) {
+  if (debugOn === null) return null;
+
+  const target = path.join(STAGE_CORE, 'keylayouts.h');
+  if (!fs.existsSync(target)) return null;
+
+  const ON = '#define KEYLAYOUTS_DEBUG_BUILD';
+  const OFF = '//#define KEYLAYOUTS_DEBUG_BUILD';
+
+  let text = fs.readFileSync(target, 'utf8');
+  const on = text.includes(OFF) ? false : text.includes(ON) ? true : null;
+  if (on === null) {
+    console.log('stage: keylayouts.h has no KEYLAYOUTS_DEBUG_BUILD switch at this pin');
+    return null;
+  }
+
+  if (on === debugOn) {
+    console.log(
+      `stage: keyboard layouts ${on ? 'US English only' : 'all enabled'} ` +
+      '- already matching the DEBUG gate');
+    return on;
+  }
+
+  text = debugOn
+    ? text.split(OFF).join(ON + ' - re-enabled by stage.js to match the DEBUG gate')
+    : text.split(ON).join(OFF + ' - removed by stage.js to match the DEBUG gate');
+
+  fs.writeFileSync(target, text);
+  console.log(
+    `stage: keyboard layouts ${debugOn ? 'US English only' : 'ALL ENABLED'} ` +
+    `- synced to the DEBUG gate (was ${on ? 'US English only' : 'all enabled'})`);
+  return debugOn;
+}
+
+/**
  * Needed whenever the DEBUG gate ends up OFF, whichever way it got there.
  *
  * Not "the OKEMU_PRODUCTION patches": a pinned release is a production build
@@ -1413,6 +1465,24 @@ function main() {
    * environment.
    */
   const debugOn = gateDebug(WANT_DEBUG);
+  /*
+   * And the KEYBOARD gate with it, because upstream asks for that by hand.
+   *
+   * core/keylayouts.h carries its own switch, KEYLAYOUTS_DEBUG_BUILD, with the
+   * comment "comment this out (to match #undef DEBUG in onlykey.h) for a
+   * release build" and, above it, "keep it in sync manually". A manual sync
+   * nobody performs is how the matrix came to measure every release with
+   * twenty-six keyboard layouts compiled OUT: inside that branch every
+   * SUPPORT_LAYOUT_* line is commented, and only US English has no guard at
+   * all, so selecting German took an empty branch and typed nothing
+   * (FINDING-only-us-english-types-on-a-debug-build.md).
+   *
+   * So it follows the DEBUG gate rather than being a second thing to remember.
+   * This does not change what the firmware DOES - it is the same switch
+   * upstream flips for a release - it changes which of its two documented
+   * configurations gets built.
+   */
+  gateKeylayouts(debugOn);
   /*
    * The EDITION, read the same way. Reported whether or not it was forced,
    * because a travel build looks like a broken standard one from the outside:
