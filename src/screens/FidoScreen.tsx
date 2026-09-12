@@ -1,5 +1,5 @@
 import React from 'react';
-import {ScrollView, StyleSheet, Text, View} from 'react-native';
+import {StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, Section, StatusPill} from '../ui/components';
 import {useKeyName} from '../hooks/KeyContext';
 import {theme} from '../ui/theme';
@@ -25,11 +25,8 @@ export function FidoScreen({
   const running = fido.state === 'advertising' || fido.state === 'connected';
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}
-    >
+    /* The Bluetooth tab owns the scrolling; see BtKeyboardScreen. */
+    <>
       <Section title={`Authenticator — ${keyName}`} right={<StatusPill state={fido.state} />}>
         <Text style={styles.hint}>
           Advertises the FIDO BLE service 0xFFFD so a desktop browser can use this phone as a
@@ -91,14 +88,14 @@ export function FidoScreen({
           <Text style={styles.hint}>
             Nothing pending. Requests are answered by the OnlyKey firmware
             running in this app, not by this screen — so the device must be
-            unlocked first, on the Soft key tab. There is no Deny: letting the
+            unlocked first, on This Key. There is no Deny: letting the
             ceremony time out is the refusal, and it is the one the host
             understands.
           </Text>
         )}
       </Section>
 
-    </ScrollView>
+    </>
   );
 }
 

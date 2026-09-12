@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useState} from 'react';
-import {ScrollView, StyleSheet, Text, View} from 'react-native';
+import {StyleSheet, Text, View} from 'react-native';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useBtKeyboard} from '../hooks/useBtKeyboard';
@@ -59,7 +59,7 @@ export function BtKeyboardScreen({emu, typed}: {emu: EmuSession; typed: Keystrok
 
   if (bt.supported === false) {
     return (
-      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+      <>
         <Section title="Bluetooth keyboard">
           <Text style={styles.body}>
             This phone does not offer the Bluetooth HID Device profile, so it
@@ -68,15 +68,17 @@ export function BtKeyboardScreen({emu, typed}: {emu: EmuSession; typed: Keystrok
             app can turn on.
           </Text>
         </Section>
-      </ScrollView>
+      </>
     );
   }
 
+  /*
+   * NO SCROLL VIEW OF ITS OWN any more. This is one half of the Bluetooth
+   * tab, and the tab owns the scrolling - two nested scroll views fight each
+   * other for the same drag.
+   */
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}>
+    <>
       <Section title="Bluetooth keyboard">
         <Text style={styles.body}>
           The key types its slots rather than sending them. Published here, it
@@ -218,7 +220,7 @@ export function BtKeyboardScreen({emu, typed}: {emu: EmuSession; typed: Keystrok
           ) : null}
         </Section>
       ) : null}
-    </ScrollView>
+    </>
   );
 }
 

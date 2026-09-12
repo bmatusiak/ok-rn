@@ -58,7 +58,7 @@ export function useKeystrokes(backendOverride?: Backend): {
   clear: () => void;
 } {
   /*
-   * APP SCOPE, not screen scope. Mounted inside the Keyboard tab, this heard
+   * APP SCOPE, not screen scope. Mounted inside the Bluetooth tab, this heard
    * nothing typed while another tab was open - and a press on a hard key's
    * own buttons happens whenever a finger lands. App.tsx owns one instance
    * and hands the backend in, since it renders the provider rather than

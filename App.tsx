@@ -26,12 +26,11 @@ import {SlotsScreen} from './src/screens/SlotsScreen';
 import {SlotEditorScreen} from './src/screens/SlotEditorScreen';
 import {KeysScreen} from './src/screens/KeysScreen';
 import {BackupScreen} from './src/screens/BackupScreen';
-import {BtKeyboardScreen} from './src/screens/BtKeyboardScreen';
+import {BluetoothScreen} from './src/screens/BluetoothScreen';
 import {CryptoScreen} from './src/screens/CryptoScreen';
 import {MessagesScreen} from './src/screens/MessagesScreen';
 import {ToolsScreen} from './src/screens/ToolsScreen';
 import {PreferencesScreen} from './src/screens/PreferencesScreen';
-import {FidoScreen} from './src/screens/FidoScreen';
 import {PasskeysScreen} from './src/screens/PasskeysScreen';
 import {LogScreen} from './src/screens/LogScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
@@ -52,13 +51,12 @@ const TABS = [
   'This Key',
   'Slots',
   'Keys',
-  'Keyboard',
+  'Bluetooth',
   'Backup',
   'Crypto',
   'Messages',
   'Tools',
   'Settings',
-  'Security',
   'Passkeys',
   'Log',
 ] as const;
@@ -310,8 +308,8 @@ function Shell() {
             )
           ) : tab === 'Keys' ? (
             <KeysScreen emu={emu} />
-          ) : tab === 'Keyboard' ? (
-            <BtKeyboardScreen emu={emu} typed={typed} />
+          ) : tab === 'Bluetooth' ? (
+            <BluetoothScreen emu={emu} typed={typed} fido={fido} />
           ) : tab === 'Backup' ? (
             <BackupScreen emu={emu} blockScreenshots={!testing.enabled} />
           ) : tab === 'Crypto' ? (
@@ -322,8 +320,6 @@ function Shell() {
             <ToolsScreen onOpenTab={next => setTab(next as Tab)} />
           ) : tab === 'Settings' ? (
             <PreferencesScreen emu={emu} />
-          ) : tab === 'Security' ? (
-            <FidoScreen fido={fido} />
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} />
           ) : tab === 'Log' ? (

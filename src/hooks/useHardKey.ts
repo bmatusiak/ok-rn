@@ -304,7 +304,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
    * maximum on press-in and made endHold a no-op - so every tap on the
    * keypad was a 71-tick hold, which types the b slot, and the capture pane
    * read nothing from a tap because slot 1b was empty. Measured, on the
-   * Keyboard tab, against a slot the editor had just read fine.
+   * Bluetooth tab, against a slot the editor had just read fine.
    *
    * So press-in only notes the time, and press-out converts the elapsed
    * time to iterations at the firmware's ~36 ms each (press.js) and sends
