@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useOkEmu} from './useOkEmu';
 import {useHardKey} from './useHardKey';
 import UsbPipe, {VENDOR_ID, PRODUCT_ID} from '../transport/UsbPipe';
+import {resetOnlyKey} from '../onlykey';
 import type {LogLevel} from './useLog';
 import type {Backend} from './keySession';
 import {BACKEND_NAME} from './keySession';
@@ -153,13 +154,34 @@ export function useKey({
   useEffect(() => {
     let alive = true;
 
+    /*
+     * A KEY THAT LEAVES THE BUS TAKES ITS SESSION WITH IT.
+     *
+     * The library session holds what is true of ONE physical key while it
+     * stays plugged in: the transit key from OKCONNECT, the detected model,
+     * and whether this session put the key into config mode. None of that
+     * survives an unplug - a replugged key has rebooted, so it is out of
+     * config mode, and it may not even be the same key.
+     *
+     * Nothing used to drop it. resetOnlyKey existed and only the e2e suites
+     * called it, so a replug kept a session describing a device that had
+     * physically gone away.
+     *
+     * Torn down on the DISAPPEARANCE rather than rebuilt on the arrival:
+     * getOnlyKey builds one on demand, so the next thing that wants the key
+     * gets a fresh session without anything having to predict when that is.
+     */
     const look = async () => {
       try {
         const devices = await UsbPipe.listDevices();
         const found = devices.some(
           d => d.vendorId === VENDOR_ID && d.productId === PRODUCT_ID,
         );
-        if (alive) setAttached(found);
+        if (!alive) return;
+        setAttached(was => {
+          if (was === true && !found) void resetOnlyKey('usb');
+          return found;
+        });
       } catch {
         if (alive) setAttached(false);
       }

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
@@ -9,6 +9,7 @@ import {SetupScreen} from './SetupScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {KeyControl} from '../hooks/useKey';
 import {KeySource} from '../ui/KeySource';
+import {useActiveKey} from '../hooks/KeyContext';
 
 /**
  * The key itself: what state it is in, what it holds, and its buttons.
@@ -38,6 +39,52 @@ function describeModel(identity: EmuSession['identity']): string {
 }
 
 /** Which firmware build, and what that means for the console. */
+/**
+ * Every capability the library reports, as rows.
+ *
+ * The screen used to show two of seventeen. The rest are not trivia: each one
+ * is a MEASUREMENT against a firmware release - which gesture bands exist,
+ * which reply layout the key uses, whether a derive can be touch-free, how
+ * many slots there are - and several were wrong in the app before the version
+ * matrix settled them. This is where that work becomes visible to the person
+ * holding the key, instead of living only in a test table.
+ *
+ * Gestures are rendered as "button N, hold >= M" because that is what a
+ * person has to DO. The raw band numbers mean nothing without the firmware
+ * loop they count.
+ */
+function describeCapabilities(
+  caps: EmuSession['capabilities'],
+): {label: string; value: string}[] {
+  if (!caps) return [];
+  const rows: {label: string; value: string}[] = [];
+  const say = (v: unknown): string => {
+    if (v === true) return 'yes';
+    if (v === false) return 'no';
+    if (v === null || v === undefined) return '-';
+    return String(v);
+  };
+
+  for (const [name, value] of Object.entries(caps)) {
+    if (name === 'gestures') continue;
+    if (value && typeof value === 'object') continue;
+    rows.push({label: name, value: say(value)});
+  }
+
+  const gestures = (caps as any).gestures;
+  if (gestures && typeof gestures === 'object') {
+    for (const [name, band] of Object.entries<any>(gestures)) {
+      if (!band || typeof band !== 'object') continue;
+      const upper = band.hi === null || band.hi === undefined ? '' : ` and under ${band.hi}`;
+      rows.push({
+        label: name,
+        value: `button ${band.button}, hold ${band.lo}+${upper}`,
+      });
+    }
+  }
+  return rows;
+}
+
 function describeBuild(caps: EmuSession['capabilities']): string {
   if (!caps || caps.debugConsole === null) {
     return 'unknown';
@@ -46,6 +93,7 @@ function describeBuild(caps: EmuSession['capabilities']): string {
 }
 
 export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
+
   if (emu.state === 'halted') {
     return (
       <Message
@@ -145,6 +193,49 @@ function sourceLabel(keys: KeyControl): string {
 }
 
 function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
+  const getKey = useActiveKey();
+  const capabilityRows = describeCapabilities(emu.capabilities);
+
+  /*
+   * Whether THIS SESSION put the key into config mode.
+   *
+   * Polled rather than subscribed because nothing emits it: the flag lives in
+   * the library session and is set by enterConfigMode, cleared by restart and
+   * by a wipe. A second is far more often than it changes, and it is a
+   * property read - no device traffic at all.
+   *
+   * It is worth surfacing because config mode is INVISIBLE otherwise. The
+   * firmware answers eleven kinds of message and silently drops the rest, so
+   * a key left in it looks broken in three different ways at once - and it
+   * has done exactly that twice, to a person who had no way to find out why.
+   */
+  const [configMode, setConfigMode] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const read = async () => {
+      try {
+        const {device} = await getKey();
+        if (alive) setConfigMode(Boolean(device.inConfigMode));
+      } catch {
+        /* No key yet; it is not in config mode as far as anyone can tell. */
+      }
+    };
+    void read();
+    const timer = setInterval(read, 1000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [getKey]);
+
+  const restartKey = useCallback(async () => {
+    try {
+      const {device} = await getKey();
+      await device.restart();
+    } catch {
+      /* The halt banner covers a key that cannot be restarted in process. */
+    }
+  }, [getKey]);
   return (
     <ScrollView
       style={styles.root}
@@ -193,6 +284,44 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
           )}
         </View>
       </Section>
+
+      {configMode ? (
+        <Section title="This session put the key in config mode">
+          <Text style={styles.hint}>
+            Config mode lets keys and settings be written, and it LOCKS the
+            key while it lasts. It ends only when the key reboots — nothing
+            else clears it, not even unlocking again.
+          </Text>
+          <Text style={styles.settling}>
+            While it lasts the key answers only eleven kinds of message and
+            silently drops the rest. A correct PIN can look ignored, a
+            security-key ceremony never answers, and reading a public key
+            times out — none of which report anything.
+          </Text>
+          <Text style={styles.hint}>
+            Said as "this session entered it" rather than "the key is in it",
+            because the key does not broadcast the fact. This is a record of
+            what the app did, and a key rebooted by anything else is already
+            out of it.
+          </Text>
+          <Btn title="Restart the key" tone="primary" onPress={restartKey} />
+        </Section>
+      ) : null}
+
+      {capabilityRows.length ? (
+        <Section title="What this firmware can do">
+          <Text style={styles.hint}>
+            Measured against each firmware release by the version matrix, not
+            assumed. Where a row here is wrong, a screen somewhere is offering
+            something the key cannot do.
+          </Text>
+          <View style={styles.rows}>
+            {capabilityRows.map(row => (
+              <KeyValue key={row.label} label={row.label} value={row.value} />
+            ))}
+          </View>
+        </Section>
+      ) : null}
 
       {emu.canPress !== true ? (
         <Section title="Buttons">
@@ -263,6 +392,7 @@ function describeLed(pixels: number[]): string {
 }
 
 const styles = StyleSheet.create({
+  rows: {marginTop: 4},
   /*
    * PinScreen centres itself in whatever it is given, and a ScrollView gives
    * a child no height at all - so it needs one here or the pad collapses.
