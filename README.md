@@ -387,6 +387,44 @@ And two more since:
   mapped flash on a Teensy and segfaults on a phone. Patched, and the release
   now boots, provisions and answers.
 
+## The firmware matrix (swept 2026-09-12)
+
+Every pinned release, built from its own sources and run against the whole
+suite on the phone. `node tools/matrix.js` does all of it; one name does one.
+
+| build | result |
+|---|---|
+| working tree | 107 passed, 23 skipped |
+| working tree (DUO) | 103 passed, 27 skipped |
+| v3.0.4 | 60 passed, **5 failed**, 3 skipped |
+| v3.0.3 | 60 passed, **5 failed**, 3 skipped |
+| v3.0.2 | 94 passed, 36 skipped |
+| v3.0.1 | 95 passed, 35 skipped |
+| v3.0.0 | 95 passed, 35 skipped |
+| v2.1.2 | **blocked** - its pinned commit is on a branch this fork lacks |
+| v2.1.1 | 95 passed, 35 skipped |
+| v2.1.0 | 95 passed, 35 skipped |
+| v0.2-beta.8 | 14 passed, **3 failed** - stops at the unlock |
+
+The pins are upstream release TAGS, checked against the GitHub API rather than
+inferred; the two that have no tag are derived by release date and the rule is
+in `android/okemu/scripts/versions/index.js`. A skip is not a pass: a firmware
+without a feature refuses itself by name, which is why the older releases skip
+thirty-five tests and the working tree twenty-three.
+
+**The two failing releases are the library, not the firmware.** v3.0.3 and
+v3.0.4 disprove two capability boundaries that were written as guesses about
+the release after v3.0.2 - `touchFreeDerive` and `postQuantum`. Neither is
+changed yet, because the development tree also declares 3.0.4 and no version
+threshold can separate them. See
+[the finding](FINDING-two-capability-guesses-about-the-next-release-were-both-wrong.md).
+
+**v0.2-beta.8 stops at the unlock**, and not by crashing: the firmware calls
+`CPU_RESTART()` itself, from the integrity check that this release threads
+through thirty-odd paired counters. See
+[the finding](FINDING-the-2019-beta-restarts-itself-during-pin-entry.md).
+
+
 ## Known gaps
 
 - **Firmware update has not touched hardware.** See above; the screen and the

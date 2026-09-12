@@ -84,6 +84,16 @@ module.exports = {
     shared.hmacChallengeModeNullSetter,
   ],
 
-  /* Applied because a release ships with the DEBUG gate OFF - see _shared.js. */
+  /*
+   * Kept from v3.0.2, and INERT here: these sources carry the DEBUG gate ON
+   * already, where v3.0.2's have it off. Upstream left it enabled in the
+   * committed source after 3.0.2 and turned it off when building the
+   * release - the signed image declares -prod, which is that gate being
+   * off. Listed anyway so a later release shipping with it off is covered
+   * without anyone having to notice.
+   */
   debugOffPatches: [shared.okconnectBufferGuardWithChallengeMode],
+
+  /* From a plain stage.js, no gate override. First recorded for this release. */
+  expect: { digest: '2ae03cbd65e1' },
 };
