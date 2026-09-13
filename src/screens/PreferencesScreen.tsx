@@ -7,6 +7,7 @@ import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
 import * as biometrics from '../biometrics';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
+import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
 import {PinScreen} from './PinScreen';
 import {SetupScreen} from './SetupScreen';
 import OkEmu from '../transport/OkEmu';
@@ -462,22 +463,46 @@ export function PreferencesScreen({
             />
           ) : null}
 
-          {group.rows.map(pref => (
-            <PrefRow
-              key={pref.name}
-              pref={pref}
-              value={values[pref.name] ?? ''}
-              onChange={v => setValues(prev => ({...prev, [pref.name]: v}))}
-              onApply={() => apply(pref.name)}
-              busy={busy === pref.name}
-              disabled={
-                busy !== null ||
-                locked ||
-                pref.requires === 'firstUse' ||
-                (pref.requires === 'configMode' && !configReady)
-              }
-            />
-          ))}
+          {/*
+            * GATED BY THE MODE EACH GROUP NEEDS, as a panel rather than row by
+            * row - a whole section that cannot be used should look it, and the
+            * reason sits directly above.
+            *
+            *   Settings   OKSETSLOT on any unlocked key
+            *   Advanced   OKSETSLOT wants `configmode == true` on a
+            *              provisioned key (okcore.cpp:452)
+            *   setup only `!initcheck`, so refused here whatever we do -
+            *              shown for completeness, never offered
+            *
+            * Wipe mode and Backup key mode are the awkward pair: their
+            * DANGEROUS value needs config mode and their safe one needs first
+            * use, so `requires` names the stricter and the note says so.
+            */}
+          <ConfigModeRequired
+            ready={
+              group.title === 'Settings'
+                ? true
+                : group.title === 'Advanced'
+                  ? configReady
+                  : false
+            }>
+            {group.rows.map(pref => (
+              <PrefRow
+                key={pref.name}
+                pref={pref}
+                value={values[pref.name] ?? ''}
+                onChange={v => setValues(prev => ({...prev, [pref.name]: v}))}
+                onApply={() => apply(pref.name)}
+                busy={busy === pref.name}
+                disabled={
+                  busy !== null ||
+                  locked ||
+                  pref.requires === 'firstUse' ||
+                  (pref.requires === 'configMode' && !configReady)
+                }
+              />
+            ))}
+          </ConfigModeRequired>
         </Section>
       ))}
 

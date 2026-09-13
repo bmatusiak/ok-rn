@@ -175,14 +175,40 @@ export function Btn({
 }) {
   const bg =
     tone === 'primary' ? theme.accent : tone === 'danger' ? theme.error : theme.surfaceAlt;
-  const fg = tone === 'default' ? theme.text : '#0b0d10';
+  /*
+   * DARK TEXT ON THE RED, WHITE ON THE BLUE - they are different brightnesses
+   * and cannot share a foreground.
+   *
+   * Both used near-black. Against `accent` (#0056b3) that is 2.8:1, well under
+   * the 4.5:1 body text needs, and it reads as smudged rather than as a label -
+   * reported from the Backup screen, where the primary button is the one you
+   * are looking for. White on the same blue is 7.0:1.
+   *
+   * `danger` (#f87171) is a LIGHT red and keeps the dark text, which is 7.0:1
+   * there; white on it would be 2.7:1, the same mistake mirrored.
+   *
+   * Fixed values, not theme tokens: the button paints its own background, so
+   * the contrast is a property of that pair and not of the surface behind it.
+   */
+  const fg =
+    tone === 'primary' ? '#ffffff' : tone === 'danger' ? '#0b0d10' : theme.text;
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
       style={({pressed}) => [
         styles.btn,
-        {backgroundColor: bg, opacity: disabled ? 0.4 : pressed ? 0.75 : 1},
+        /*
+         * 0.4 WAS TOO FAR. A disabled button still has to be READ - it is how
+         * you find out what is unavailable and, with the reason beside it, why.
+         * At 0.4 the dark text on `danger` fell to about 2:1 against the
+         * surface and read as a smear rather than a label; reported from the
+         * Backup screen, where Restore sits disabled until a file is read.
+         *
+         * 0.55 still says "not now" at a glance - it is well below the
+         * enabled state - without making the word itself a guess.
+         */
+        {backgroundColor: bg, opacity: disabled ? 0.55 : pressed ? 0.75 : 1},
       ]}>
       <Text style={[styles.btnText, {color: fg}]}>{title}</Text>
     </Pressable>

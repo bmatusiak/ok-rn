@@ -9,6 +9,7 @@ import {useSharedBtKeyboard} from '../hooks/BtKeyboardContext';
 import NativeShare from '../../specs/NativeShare';
 import {useSecureScreen} from '../hooks/useSecureScreen';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
+import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
 import {PinScreen} from './PinScreen';
 import {summarizeBackup} from '../backupFile';
 import type {BackupSummary} from '../backupFile';
@@ -212,7 +213,7 @@ export function BackupScreen({
     } finally {
       setBusy(null);
     }
-  }, [getKey, suspendBridge]);
+  }, [getKey, suspendBridge, canTrigger]);
 
   /*
    * Take the backup key from a PGP key instead of a passphrase.
@@ -370,6 +371,28 @@ export function BackupScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      {/*
+        * A BACKUP CANNOT BE TAKEN IN CONFIG MODE.
+        *
+        * The key TYPES its backup, and in config mode it will not type - that
+        * is what the banner says and what the firmware does. So the capture
+        * would hold button 1, receive nothing, and sit there until its
+        * two-minute timeout before failing for a reason the screen could have
+        * given up front.
+        *
+        * The mirror of Restore directly below, which needs config mode; these
+        * two are never both available, which is worth seeing rather than
+        * discovering.
+        */}
+      {configMode ? (
+        <Section title="Not while in config mode">
+          <Text style={styles.body}>
+            A backup is TYPED by the key, and the key will not type until it is
+            restarted. Unplug a hard key, or restart the app for the soft key.
+          </Text>
+        </Section>
+      ) : null}
+      <ConfigModeRequired ready={!configMode}>
       <Section title={`Backup — ${keyName}`}>
         <Text style={styles.body}>
           The key types its backup rather than sending it, so this asks it to
@@ -399,6 +422,8 @@ export function BackupScreen({
         />
         {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
       </Section>
+      </ConfigModeRequired>
+
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -525,6 +550,31 @@ export function BackupScreen({
         </Section>
       ) : null}
 
+      {/*
+        * RESTORE NEEDS CONFIG MODE on a provisioned key.
+        *
+        * The firmware takes OKRESTORE under `configmode == true` OR
+        * `!initcheck` (okcore.cpp:600), and `initcheck` is set once a nonce
+        * exists in flash - so the second branch is a key that has never been
+        * set up, which is Setup's business. On this tab it is always the first.
+        *
+        * Outside config mode the write is SILENTLY DROPPED - no
+        * acknowledgement, no error, nothing on any interface. A restore that
+        * looked like it worked and did nothing is the worst thing this screen
+        * could do, so the panel goes dim and inert rather than inviting it.
+        */}
+      {!configReady ? (
+        <ConfigModePanel
+          emu={emu}
+          configMode={configMode}
+          setConfigMode={setConfigMode}
+          probe={probe}
+          onCheck={onCheck}
+          checking={checking}
+          purpose="restore a backup"
+        />
+      ) : null}
+      <ConfigModeRequired ready={configReady}>
       <Section title="Restore">
         <Text style={styles.body}>
           Choose a backup file, or paste one, to write it back. Read it first:
@@ -610,6 +660,8 @@ export function BackupScreen({
             : 'Read the file first. A restore replaces what is on the key.'}
         </Text>
       </Section>
+      </ConfigModeRequired>
+
     </ScrollView>
   );
 }
