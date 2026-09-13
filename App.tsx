@@ -514,10 +514,27 @@ function Shell() {
             <View style={styles.promptText}>
               <Text style={styles.promptTitle}>Confirm on your key</Text>
               <Text style={styles.promptBody}>
-                A site is asking for a security key. This is the press it wants.
+                {emu.canPress === true
+                  ? 'A site is asking for a security key. This is the press it wants.'
+                  : 'A site is asking for a security key. Press any button on the key itself.'}
               </Text>
             </View>
-            <Btn title="Confirm" tone="primary" onPress={fido.confirm} />
+            {/*
+              NO CONFIRM BUTTON ON A KEY THE APP CANNOT PRESS.
+
+              `fido.confirm` presses the active key through holdTicks, which
+              throws without the debug console - every production key. Here that
+              is worse than elsewhere: the browser is mid-ceremony, and a button
+              that throws means the credential is never made and the site just
+              times out. The instruction is the honest offer.
+
+              This prompt is app-wide, above the views, so it needed its own
+              gate - the one on the Bluetooth tab's Authenticator panel does not
+              reach it.
+            */}
+            {emu.canPress === true ? (
+              <Btn title="Confirm" tone="primary" onPress={fido.confirm} />
+            ) : null}
           </View>
         ) : null}
 
@@ -601,7 +618,7 @@ function Shell() {
           ) : tab === 'Keys' ? (
             <KeysScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
           ) : tab === 'Bluetooth' ? (
-            <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} testing={testing.enabled} />
+            <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
             <BackupScreen emu={emu} blockScreenshots={!testing.enabled} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
           ) : tab === 'Crypto' ? (

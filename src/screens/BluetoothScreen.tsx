@@ -39,9 +39,17 @@ export function BluetoothScreen({
   on,
   setOn,
   auto,
+  canPress = false,
   testing = false,
 }: {
   fido: FidoSession;
+  /**
+   * Whether the ACTIVE key takes presses from the app.
+   *
+   * The debug-console probe. False on every production key, which is what
+   * decides whether a Confirm button can exist at all.
+   */
+  canPress?: boolean;
   /**
    * The master switch, owned by App.
    *
@@ -313,7 +321,26 @@ export function BluetoothScreen({
                       credential without one — this is the device asking, not the
                       app.
                     </Text>
-                    <Btn title="Confirm" tone="primary" onPress={fido.confirm} />
+                    {/*
+                      * CONFIRM ONLY WHERE THE APP CAN ACTUALLY PRESS.
+                      *
+                      * `fido.confirm` presses the active key, and that goes
+                      * through holdTicks, which throws without the debug
+                      * console (useHardKey.ts) - every production key. A
+                      * Confirm button there is one that can only fail, on the
+                      * screen where failing means a credential is not made.
+                      *
+                      * A developer hard key and the soft key both take presses
+                      * from the app, so they keep the button.
+                      */}
+                    {canPress ? (
+                      <Btn title="Confirm" tone="primary" onPress={fido.confirm} />
+                    ) : (
+                      <Text style={styles.note}>
+                        Press any button on the key itself — this one takes no
+                        presses from the app.
+                      </Text>
+                    )}
                   </>
                 ) : (
                   <Text style={styles.note}>
