@@ -60,6 +60,7 @@ wrong version of the table looks exactly like the right one.
 | 41 | [blocking presence fails a second shared secret](FINDING-blocking-presence-fails-a-second-shared-secret.md) | high for the 2.1 line - the derive retry went out with NO press, so it could not succeed however many times it ran; the vault round trip was one of the casualties. **Fixed**, 68/68 | ours | n/a |
 | 42 | [the debug console is a control channel on new firmware only](FINDING-the-debug-console-is-a-control-channel-on-new-firmware-only.md) | high for real hardware - it decides whether a developer key can be driven unattended, and unlock()'s default path silently cannot work on ANY released firmware | OnlyKey firmware | n/a |
 | 43 | [probing on a locked key burns PIN attempts](FINDING-probing-on-a-locked-key-burns-pin-attempts.md) | high for anyone iterating on a press probe - repeated `--only` runs of a locked-state press suite WIPED the bench key back to unconfigured | ours | n/a |
+| 44 | [a locked key showed a green LED](FINDING-a-locked-key-showed-a-green-led.md) | high — the indicator read *unlocked* on a locked key; likely a hot reload desyncing the session while the firmware thread lives on | **ours** | partly |
 
 ## Read #6 first, then #2
 

@@ -93,3 +93,38 @@ way, and the miss is invisible — staging reported "57 registers rebased" both
 before and after, because 57 was never the number that mattered. The
 counter-measure is to assert the ABSENCE of what should have been rewritten:
 after staging, no `0xE000ED0C` should remain outside a comment.
+
+## Coming back from one, if it is ever wanted
+
+Restarting the app is the working answer and is staying that way for now. The
+note below is so the reasoning is not re-derived later.
+
+The thread is NOT dead after the trap. `siglongjmp` lands back in
+`okemu_firmware_run()`, which tears the HAL down and RETURNS - so the executor
+thread is free and a second boot has somewhere to run. The refusal in
+`NativeOkEmuModule.restart()` is about a different case: restarting while the
+firmware is still looping, which would start a second one alongside the first.
+
+Two ways to boot again, and they are not equivalent:
+
+- **Snapshot `.data` + `.bss`, memcpy back, call `setup()` again.** Contained,
+  one mapping. But it resets only the static segments - every `malloc`'d buffer
+  survives, key material included. A Teensy power cycle loses ALL SRAM, so this
+  is a partial reboot that carries secrets across the boundary. Silently wrong
+  in exactly the direction that matters here.
+- **Run the firmware in its own process** (`android:process=":okemu"`), kill it
+  and start it again. Process death reclaims the heap too, so it is a real
+  power cycle with nothing hand-rolled. The native surface is 18 methods plus
+  one Listener, which is an almost mechanical AIDL translation.
+
+The secure form of the second is `android:isolatedProcess="true"` with
+flash.bin and eeprom.bin passed in as ParcelFileDescriptors: own UID, no
+permissions, no filesystem, no network. Worth more than the reboot fidelity -
+the emulator runs unmodified embedded C, CTAP2/CBOR parser included, against
+input shaped by whoever is talking to it, and today that shares an address
+space with the JS heap and the hard-key USB handles.
+
+The thing to measure before committing to it is TIMING. Per-frame HID I/O and
+the 60ms tick poll would cross Binder, and press timing is load-bearing here -
+see FINDING-counted-presses-merge-without-an-idle-gap.md. Sub-millisecond
+round trips are likely fine; likely is not measured.

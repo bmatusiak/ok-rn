@@ -54,6 +54,23 @@ set `ANDROID_SERIAL` when more than one device is attached. the runner
 force-stops the app, so the firmware restarts from `flash.bin`/`eeprom.bin` -
 device state persists between runs, preferences included.
 
+TESTING MODE NO LONGER DEFAULTS ON. it used to be `useState(__DEV__)`, so every
+debug launch opened with the PIN bypassed and the screenshot block down - which
+meant the app a developer looked at all day was never the app anyone ships, and
+the door could not be examined without first turning something off.
+
+that default was load-bearing for the runner, which drives the UI from a
+terminal and cannot type a PIN. so the way in is now explicit: LoginScreen
+carries a `__DEV__`-only "Enter testing mode" button at the foot of the page,
+and `tools/e2e.js` taps it before opening the drawer, skipping it silently when
+a relaunch lands past the login screen.
+
+driving the app by hand over adb, the same route applies - tap "Enter testing
+mode" rather than entering the PIN. it bypasses the app's door but NOT the
+firmware's: the device still reads `locked`, and a press still goes to the PIN
+buffer rather than typing a slot. unlock it on the Buttons panel of This Key,
+which sends real presses, or the slot tests all look broken.
+
 a suite should work when run ALONE. suites 10+ used to inherit an unlocked
 device from suite 3, which made `--only` useless for them.
 
