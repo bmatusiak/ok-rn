@@ -407,37 +407,72 @@ And two more since:
   mapped flash on a Teensy and segfaults on a phone. Patched, and the release
   now boots, provisions and answers.
 
-## The firmware matrix (swept 2026-09-12)
+## The firmware matrix (swept 2026-09-12, as production)
 
 Every pinned release, built from its own sources and run against the whole
 suite on the phone. `node tools/matrix.js` does all of it; one name does one.
 
+**These are production numbers.** The previous table was measured with
+`OKEMU_DEBUG=1` forced on every release, which is a configuration no user has:
+a debug build opens a serial console the product does not ship and, worse,
+`webcryptcheck()` returns "trust all origins for debug firmware" before
+comparing anything. Thirteen green sweeps were partly the gate being skipped.
+Flipping the default is what found the origin bug, three capability guesses,
+and two firmware defects.
+
 | build | result |
 |---|---|
 | working tree | 107 passed, 23 skipped |
-| working tree (DUO) | 103 passed, 27 skipped |
-| v3.0.4 | 60 passed, **5 failed**, 3 skipped |
-| v3.0.3 | 60 passed, **5 failed**, 3 skipped |
-| v3.0.2 | 94 passed, 36 skipped |
-| v3.0.1 | 95 passed, 35 skipped |
-| v3.0.0 | 95 passed, 35 skipped |
-| v2.1.2 | **blocked** - its pinned commit is on a branch this fork lacks |
-| v2.1.1 | 95 passed, 35 skipped |
-| v2.1.0 | 95 passed, 35 skipped |
-| v0.2-beta.8 | 14 passed, **3 failed** - stops at the unlock |
+| working tree (DUO) | 106 passed, 24 skipped |
+| v3.0.4 | 88 passed, 42 skipped |
+| v3.0.3 | 88 passed, 42 skipped |
+| v3.0.2 | 86 passed, 44 skipped |
+| v3.0.1 | 87 passed, 43 skipped |
+| v3.0.0 | 87 passed, 43 skipped |
+| v2.1.2 | 87 passed, 43 skipped |
+| v2.1.1 | 87 passed, 43 skipped |
+| v2.1.0 | 89 passed, 41 skipped |
+| v0.2-beta.8 | 12 passed, **3 failed** — boots and provisions, does not unlock |
+
+Eight of nine releases green, and the ninth is a 2019 beta with a named next
+measurement (`FINDING-v2.1.2-sets-a-pin-it-will-not-accept.md` covers the
+class; its flash-stride fix is applied and proved, and something else remains).
 
 The pins are upstream release TAGS, checked against the GitHub API rather than
 inferred; the two that have no tag are derived by release date and the rule is
 in `android/okemu/scripts/versions/index.js`. A skip is not a pass: a firmware
-without a feature refuses itself by name, which is why the older releases skip
-thirty-five tests and the working tree twenty-three.
+without a feature refuses itself by name, which is why older releases skip more
+than forty tests and the working tree twenty-three.
 
-**The two failing releases are the library, not the firmware.** v3.0.3 and
-v3.0.4 disprove two capability boundaries that were written as guesses about
-the release after v3.0.2 - `touchFreeDerive` and `postQuantum`. Neither is
-changed yet, because the development tree also declares 3.0.4 and no version
-threshold can separate them. See
-[the finding](FINDING-capability-guesses-about-the-next-release-were-wrong.md).
+### The tags do not match what shipped
+
+Five of the nine pins have `#define DEBUG` **enabled** in their committed
+sources — v3.0.4, v3.0.3, v2.1.2, v2.1.0 and the beta. Only v3.0.2, v3.0.1,
+v3.0.0 and v2.1.1 have it off. But every bundled signed image declares `-prod`
+in its own string table, which is what the firmware composes when DEBUG is
+undefined. So the binaries that went to users were built with the gate off even
+where the tagged sources have it on, which is exactly why this matrix stages
+every release as production and records those five digests from a production
+stage.
+
+### What the sweep found
+
+- **The vendor path had never worked on a release.** The library sent an origin
+  no shipped firmware treats as first-party, so every derive went unanswered —
+  invisible while the debug gate waved all origins through.
+  ([finding](FINDING-the-vendor-path-is-origin-gated.md))
+- **Three capability boundaries were guesses one release ahead.**
+  `touchFreeDerive`, `postQuantum` and `xwingDerive` all claimed features that
+  arrive only on the development line. The post-quantum sources are fifty-plus
+  files at HEAD and absent from every release, measured by diff.
+  ([finding](FINDING-capability-guesses-about-the-next-release-were-wrong.md))
+- **v2.1.2 stored a PIN it then refused**, because its script carried no
+  patches and so never got the flash-stride fix. Found by dumping `flash.bin`
+  and seeing every other 32-bit word missing.
+  ([finding](FINDING-v2.1.2-sets-a-pin-it-will-not-accept.md))
+- **v2.1.0 prints to the serial console on a production build**, upstream and
+  fixed in v2.1.1, which is the commit that added the `#ifdef DEBUG` guards.
+  ([finding](FINDING-v2.1.0-prints-to-the-console-on-a-production-build.md))
 
 **v0.2-beta.8 stops at the unlock**, and not by crashing: the firmware calls
 `CPU_RESTART()` itself, from the integrity check that this release threads

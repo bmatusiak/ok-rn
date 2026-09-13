@@ -60,22 +60,12 @@ bit 2 enables this bootstrap, bit 3 allows per-site derives without a touch.
 It is present in every release from v2.1.0 onward. Only v0.2-beta.8 lacks it,
 with a one-argument `webcryptcheck` that returns 1 or 0 and has no modes.
 
-**On a debug build it returns before comparing anything.** Every origin is
-trusted, so any rpId reaches the vendor path as first-party and the test
-passes. With the gate off, the comparison actually runs, and `stored_apprpid`
-is `"apps.crp.to"` - spelled out byte by byte in the source.
-
-The library's tunnel sends `onlyagent.app`. `src/protocol/ctap.js:42` sets
-`RP_ID = 'onlyagent.app'`, and `tunnel.js` binds every request to it. No
-release knows that origin: it was added to the firmware in
-`libraries@a5b731f` (2026-07-08), "fido2: accept onlyagent.app origin
-alongside apps.crp.to", which is working-tree work and has never shipped.
-`git grep onlyagent.app` finds nothing at `5d7ce7a` (v3.0.2) or `c8804e3`
-(v3.0.4) and two hits at HEAD.
-
-So the origin does not match, `ok_extension.cpp:364` sets
-`CTAP2_ERR_EXTENSION_NOT_SUPPORTED` with the comment "APPID doesn't match",
-and the tunnel gets neither an answer nor a device-authored error.
+**For why `_appid` is NULL on the whole CTAP2 route - and therefore why the
+rpid string comparison is the ONLY one that can ever succeed there - see
+`FINDING-production-firmware-crashes-in-webcryptcheck.md`.** That finding is
+older and more complete on the mechanism: it establishes the null, the three
+call sites that pass it, and the crash that guarding it revealed. This file
+does not restate it.
 
 ## It is not the tunnel. It is the whole vendor path
 

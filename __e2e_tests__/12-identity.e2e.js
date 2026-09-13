@@ -196,7 +196,8 @@ module.exports = function identity({describe, it}) {
        * traffic is the device itself.
        */
       const {status} = await connected(log);
-      const caps = okdevice.version.capabilities(okdevice.version.parseStatus(status));
+      const info = okdevice.version.parseStatus(status);
+      const caps = okdevice.version.capabilities(info);
 
       const seen = await new Promise(resolve => {
         let done = false;
@@ -217,6 +218,33 @@ module.exports = function identity({describe, it}) {
       });
 
       log(`SEREMU traffic seen: ${seen}, build says console: ${caps.debugConsole}`);
+
+      /*
+       * v2.1.0 IS THE ONE RELEASE WHERE THEY DISAGREE, AND THE DEVICE IS WRONG.
+       *
+       * It announces -prod, so debugConsole is false, and it prints anyway.
+       * Not our staging: v2.1.1 is the commit that WRAPPED those calls in
+       * `#ifdef DEBUG` - prints like "Generating Yubico OTP..." were bare
+       * before it - so turning the gate off never silenced them. And the
+       * shipped binary had the gate off: Signed_OnlyKey_2_1_0_STD declares
+       * `v2.1.0-prod` in its own string table, which is what the firmware
+       * composes when DEBUG is undefined. Those prints went out to users.
+       *
+       * Named rather than relaxed. The assertion is right and the firmware is
+       * wrong, so weakening it would record a real defect as absent; skipping
+       * the whole test would lose the check everywhere else. This says which
+       * release, why, and where it is written down.
+       * ok-rn/FINDING-v2.1.0-prints-to-the-console-on-a-production-build.md
+       */
+      const leaks = /^v2\.1\.0-/.test(String(info.versionField || ''));
+      if (leaks && seen && caps.debugConsole === false) {
+        log(
+          'v2.1.0 prints on a production build - upstream, fixed in v2.1.1. ' +
+            'See FINDING-v2.1.0-prints-to-the-console-on-a-production-build.md',
+        );
+        return;
+      }
+
       assert.equal(
         seen, caps.debugConsole,
         'the version keyword and the actual bus traffic must agree about the console',
