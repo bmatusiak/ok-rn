@@ -649,9 +649,16 @@ module.exports = function derive({describe, it}) {
       needsVendorOrigin(skip);
 
       /*
-       * X-WING DOES NOT EXIST ON EVERY FIRMWARE. `KEYTYPE_XWING` appears
-       * nowhere in libraries@5d7ce7a (v3.0.2), so this is not a feature the
-       * device refuses - it is one it never had.
+       * X-WING IS THE DEVELOPMENT LINE ONLY. Measured by diff across every
+       * pin: `KEYTYPE_XWING`, `mlkem`, `okpqc` and the whole ML-KEM/ML-DSA
+       * tree exist at HEAD and at NO released firmware - not v3.0.2
+       * (5d7ce7a), not v3.0.3 (a133bea), not v3.0.4 (c8804e3). So this is
+       * not a feature the device refuses; it is one it never had.
+       *
+       * The capability used to say "v3.0.3 and later", a guess one release
+       * ahead of anything anyone had run, and these two tests FAILED on
+       * v3.0.4 and v3.0.3 for it while v3.0.2 passed by skipping them.
+       * ok-rn/FINDING-capability-guesses-about-the-next-release-were-wrong.md
        *
        * SKIPPED rather than asserted, and the distinction is the point. The
        * library now checks the capability and declines to send, so asserting
@@ -661,7 +668,7 @@ module.exports = function derive({describe, it}) {
        * not be asked.
        */
       if (device.capabilities && device.capabilities.xwingDerive === false) {
-        skip('KEYTYPE_XWING does not exist before v3.0.2 - the key type is absent, not refused');
+        skip('KEYTYPE_XWING is development-line only - the key type is absent, not refused');
       }
 
       const first = await okcrypto.derivePublicKey('xwing.example', {
@@ -721,7 +728,7 @@ module.exports = function derive({describe, it}) {
        * type cannot hold an identity in it. Nothing to encrypt to.
        */
       if (device.capabilities && device.capabilities.xwingDerive === false) {
-        skip('the age format is X-Wing end to end, and KEYTYPE_XWING does not exist before v3.0.2');
+        skip('the age format is X-Wing end to end, and KEYTYPE_XWING is development-line only');
       }
 
       const id = await okcrypto.deviceAge.identity('age.example', opts);

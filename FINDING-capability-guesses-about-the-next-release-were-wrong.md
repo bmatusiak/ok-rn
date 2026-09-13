@@ -1,4 +1,4 @@
-# Two capability boundaries guessed one release ahead, and both releases arrived
+# Three capability boundaries guessed one release ahead, and every release arrived
 
 ## What happened
 
@@ -78,6 +78,65 @@ This one says out loud that it is a bet, and what to do when it loses:
 3.0.3 shipped without it. So did 3.0.4. The X-Wing and age tests skip cleanly
 on v3.0.2 - "KEYTYPE_XWING does not exist before v3.0.2" - and on v3.0.3 and
 v3.0.4 they run and fail, because the flag says the key type is there.
+
+## The third: xwingDerive, found by the sweep the first two prompted
+
+Two was wrong. There were three, and the last one survived the first fix
+because nothing had ever run the test that depended on it against a release.
+
+`xwingDerive` read `patch > 2` - v3.0.3 and later - and the first production
+sweep of the whole matrix produced this:
+
+```
+v3.0.4   56 passed, 2 failed, 10 skipped
+v3.0.3   56 passed, 2 failed, 10 skipped
+v3.0.2   86 passed, 0 failed, 44 skipped
+```
+
+Both failures on each were the same:
+
+```
+✗ the X-Wing key type returns its split-custody pair
+✗ an age file encrypted to the device is read back by it
+  -> payload is 16 bytes; a keytype-5 public key is 64
+```
+
+v3.0.2 passed by SKIPPING those two tests. Same firmware family, opposite
+verdicts, entirely because of where a threshold was drawn.
+
+**MEASURED BY DIFF this time, not by grep.** `KEYTYPE_XWING`, `mlkem`, `okpqc`
+and every ML-KEM/ML-DSA source appear at HEAD and at no pinned release:
+
+| pin | post-quantum sources |
+|---|---|
+| v3.0.2 `5d7ce7a` | none |
+| v3.0.3 `a133bea` | none |
+| v3.0.4 `c8804e3` | none |
+| HEAD | `okpqc.cpp/.h`, `utility/src/` (ML-KEM), `utility/mldsa_src/` (ML-DSA) - 50+ files |
+
+And the boundary it was drawn on barely exists. The whole 3.0 line is within
+about seventy lines of itself:
+
+| step | libraries | firmware |
+|---|---|---|
+| v3.0.2 → v3.0.3 | 29 lines, 2 files | 27 lines, 2 files |
+| v3.0.3 → v3.0.4 | 16 lines, 2 files | identical, same pin |
+
+v3.0.3 → v3.0.4 is a Yubico OTP public-id length fix and `OKversionpat "3"`
+becoming `"4"`. There was never a feature boundary there to sit on.
+
+**Fixed** to the same rule as `postQuantum`, and a test now pins that the two
+must AGREE - they are one body of work that arrived in one commit, and they
+disagreed only because they were written months apart.
+
+### One more thing the diff turned up
+
+The v3.0.3 commit turns the DEBUG switch ON in both `OnlyKey.ino` and
+`onlykey.h` (`//#define DEBUG` → `#define DEBUG`). So the tagged sources for
+v3.0.3 and v3.0.4 ship with the console enabled upstream, which is why their
+recorded digests had to be re-taken from a production stage. It also sets
+`derived_key_challenge_mode = 1` on first use from v3.0.3 on, which changes
+the starting state for any future work on third-party derives.
 
 ## Why the fix is not just raising the number
 

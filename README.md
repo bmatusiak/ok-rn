@@ -437,7 +437,7 @@ v3.0.4 disprove two capability boundaries that were written as guesses about
 the release after v3.0.2 - `touchFreeDerive` and `postQuantum`. Neither is
 changed yet, because the development tree also declares 3.0.4 and no version
 threshold can separate them. See
-[the finding](FINDING-two-capability-guesses-about-the-next-release-were-both-wrong.md).
+[the finding](FINDING-capability-guesses-about-the-next-release-were-wrong.md).
 
 **v0.2-beta.8 stops at the unlock**, and not by crashing: the firmware calls
 `CPU_RESTART()` itself, from the integrity check that this release threads
