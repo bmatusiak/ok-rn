@@ -438,6 +438,41 @@ function gateKeylayouts(debugOn) {
  * release in ok-versions.json; the third guard in this function is spelled
  * differently before and after v3.0.2, so it lives in the version scripts.
  */
+/*
+ * The null `_appid` guard, applied on BOTH builds.
+ *
+ * It used to live in DEBUG_OFF_PATCHES, on the reasoning that a debug build
+ * returns 2 from webcryptcheck() - "trust all origins for debug firmware" -
+ * before reaching any comparison, so the nulls could never be dereferenced.
+ *
+ * THAT IS TRUE OF EVERY RELEASE EXCEPT THE OLDEST. v0.2-beta.8's
+ * webcryptcheck takes one argument and its `#ifdef DEBUG` block is EMPTY -
+ * there is no early return to reach - so it runs the comparisons on a debug
+ * build too, and extend_fido2() passes NULL for _appid on the whole CTAP2
+ * route. Measured from the tombstone:
+ *
+ *   #00 __memcmp_aarch64+16
+ *   #01 webcryptcheck+356
+ *   #03 ctap_filter_invalid_credentials  #04 ctap_get_assertion
+ *   #05 ctap_request  #06 ctaphid_handle_packet
+ *
+ * Its PRODUCTION build survived, because DEBUG_OFF_PATCHES guarded it, while
+ * its DEBUG build died in ctapFlow - exactly backwards from what a debug
+ * build is for, since that release is the one still being diagnosed.
+ *
+ * Applying it always costs nothing where the early return exists, because the
+ * guard is then unreachable. The literal was checked to exist verbatim at
+ * every pin in ok-versions.json.
+ * ok-rn/FINDING-production-firmware-crashes-in-webcryptcheck.md
+ */
+const APPID_NULL_GUARD = {
+  file: 'libraries/fido2/device.cpp',
+  edits: [
+    ['	appid_match2 = memcmp (stored_appid, _appid, 32);',
+     '	appid_match2 = (_appid == NULL) ? 1 : memcmp (stored_appid, _appid, 32);'],
+  ],
+};
+
 const DEBUG_OFF_PATCHES = [
   {
     /*
@@ -476,8 +511,9 @@ const DEBUG_OFF_PATCHES = [
          '       Callers pass NULL for both of these. ctap.cpp:1141 passes',
          '       webcryptcheck(NULL, NULL); extensions.cpp:113 and :125 -',
          '       extend_fido2(), the whole CTAP2 path - pass NULL as _appid on',
-         '       both branches. Only the #ifdef DEBUG early return above kept a',
-         '       debug build from dereferencing them.',
+         '       both branches. The #ifdef DEBUG early return above keeps a debug',
+         '       build from dereferencing them on every release that HAS one -',
+         '       see APPID_NULL_GUARD for the guard that assumes nothing.',
          '',
          '       Guarded per COMPARISON rather than by returning early, so every',
          '       check whose inputs are actually present still runs. The rpid',
@@ -488,8 +524,6 @@ const DEBUG_OFF_PATCHES = [
          '       there. */',
          '    appid_match1 = memcmp (stored_apprpid, rpid, 12);',
        ].join(NL)],
-      ['	appid_match2 = memcmp (stored_appid, _appid, 32);',
-       '	appid_match2 = (_appid == NULL) ? 1 : memcmp (stored_appid, _appid, 32);'],
     ],
   },
 ];
@@ -1563,6 +1597,7 @@ function main() {
 
   // 7. documented source-level fixups, plus this release's own
   const patched = applyPatches([
+    APPID_NULL_GUARD,
     ...release.patches,
     ...(debugOn === false ? [...DEBUG_OFF_PATCHES, ...release.debugOffPatches] : []),
   ], release.absentPatterns);

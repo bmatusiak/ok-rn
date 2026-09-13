@@ -146,3 +146,38 @@ presence ceremonies, keystroke capture and decode, and composite signing
 including the challenge.
 
 The nine failures are one bug, not nine.
+
+## The guard is applied on BOTH builds now, because of one release
+
+This finding, and the patch it produced, both rested on a sentence that turned
+out to be true of every release but the oldest:
+
+> On a DEBUG build the function returns 2 - "trust all origins for debug
+> firmware" - BEFORE reaching any comparison, so the nulls never matter.
+
+**v0.2-beta.8's `webcryptcheck` takes one argument and its `#ifdef DEBUG`
+block is EMPTY.** There is no early return to reach, so it runs the
+comparisons on a debug build too, and `extend_fido2()` hands it NULL on the
+whole CTAP2 route. Measured from the tombstone:
+
+```
+#00 __memcmp_aarch64+16
+#01 webcryptcheck+356
+#03 ctap_filter_invalid_credentials(CTAP_getAssertion*)
+#04 ctap_get_assertion   #05 ctap_request   #06 ctaphid_handle_packet
+```
+
+The effect was backwards from what a debug build is for: the beta's PRODUCTION
+build survived, because `DEBUG_OFF_PATCHES` guarded it, while its DEBUG build
+died in `ctapFlow` - and that release is the one still being diagnosed.
+
+So the `appid_match2` guard moved out of `DEBUG_OFF_PATCHES` into the
+always-applied `PATCHES` as `APPID_NULL_GUARD`. Where the early return exists
+the guard is unreachable and costs nothing; the literal was already checked to
+exist verbatim at every pin. The beta's debug build goes from crashing to 73
+passed, and the working tree is unchanged at 107.
+
+An earlier attempt gave the beta its own copy and declared the shared literal
+in `absentPatterns`. `stage.js` refused it outright - *"DOES contain a pattern
+its release declares absent"* - which is that check doing exactly its job, and
+it pushed the fix to where the wrong assumption actually lived.

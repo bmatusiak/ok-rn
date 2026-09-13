@@ -232,16 +232,43 @@ module.exports = {
     '                           it happened.',
     '',
     'WHAT IS LEFT: the config-mode gesture. cryptoSign needs config mode and',
-    'gets "the device never locked after 3 holds, so the config-mode gesture',
-    'was not taken". A long-press band on a 2019 firmware is the obvious',
-    'suspect and is not yet measured.',
+    'gets "the device never locked after 3 holds". NOT a timing problem: the',
+    'pressBands suite now runs on a debug build and passes - taps and holds',
+    'both register, and the press timer counts down to zero - and the gesture',
+    'this firmware wants (button 6, duration >= 72) is exactly what the',
+    'library holds. The branch also requires !isfade, which is the next thing',
+    'to watch on the console during an attempt.',
     '',
-    'Status stays boots rather than tested, on the same rule applied to',
-    'v2.1.2: the suite has to pass, not merely run.',
-  ].join(String.fromCharCode(10)),
+    'ITS DEBUG BUILD IS USABLE AGAIN, which is what makes that measurable. It',
+    'used to die in ctapFlow on a null _appid inside webcryptcheck, because',
+    'this release is the ONLY one whose #ifdef DEBUG block is empty - every',
+    'other release returns 2 before reaching the comparison, which is the',
+    'assumption stage.js had baked into DEBUG_OFF_PATCHES. The guard is now',
+    'applied on both builds. Debug goes 73 passed where it used to crash.',
+    ].join(String.fromCharCode(10)),
+  /*
+   * WHICH SHARED PATCHES THIS 2019 TREE CAN TAKE, tested rather than guessed.
+   * Each of _shared.js's literals was matched against the STAGED tree before
+   * being listed here, and only three match unchanged:
+   *
+   *   byteprintNullArgument   byteprint() is byte-identical, so the shared
+   *                           literal applies as-is
+   *   missingReturns[2]       only the ok_extension.cpp entry matches; the
+   *                           okcore.cpp and device.cpp entries do not exist
+   *                           in this tree, and stage.js refuses a literal it
+   *                           cannot find, so the spread cannot be used
+   *   pageZeroDebugDump       matches unchanged
+   *
+   * The rest do not match, almost all because this release predates the
+   * okcore_/okeeprom_ renames - which is why flashWalkStride and
+   * nullSetterPointers are re-spelled above rather than imported.
+   */
   patches: [
     flashWalkStride2019,
     nullSetterPointers2019,
+    shared.byteprintNullArgument,
+    shared.missingReturns[2],
+    shared.pageZeroDebugDump,
     rngStirsAnAddressNotAValue,
     rngloopStirsAddressesNotValues,
   ],
