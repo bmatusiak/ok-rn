@@ -3,6 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {missingNote, supports} from '../firmwareFeatures';
 import {theme} from '../ui/theme';
+import {ConfigModeBlocked} from '../ui/ConfigModeBlocked';
 import {lookup, type Found, type Source} from '../keySearch';
 import {splitPublicKeys, summarizeKey, type KeySummary} from '../armoredKeys';
 import {bytes as okbytes} from 'node-onlykey-lib';
@@ -85,7 +86,14 @@ const SOURCE_PLACEHOLDER: Record<Source, string> = {
 /** RSA slots 1-4 are where a composite key lives, as the reference CLI's setpqc puts it. */
 const RSA_SLOTS = ['1', '2', '3', '4'] as const;
 
-export function MessagesScreen({emu}: {emu: EmuSession}) {
+export function MessagesScreen({
+  emu,
+  configMode = false,
+}: {
+  emu: EmuSession;
+  /** Signing and decryption are refused in config mode - okcore.cpp:347. */
+  configMode?: boolean;
+}) {
   /* The ACTIVE key, for the composite key that lives on the device. */
   const getKey = useActiveKey();
   const keyName = useKeyName();
@@ -406,6 +414,7 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      <ConfigModeBlocked active={configMode} what="sign or decrypt">
       <Section title="Messages">
         <Segmented
           options={MODES}
@@ -621,6 +630,7 @@ export function MessagesScreen({emu}: {emu: EmuSession}) {
           </View>
         </Section>
       ) : null}
+      </ConfigModeBlocked>
     </ScrollView>
   );
 }

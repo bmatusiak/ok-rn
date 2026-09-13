@@ -178,6 +178,30 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
   const [consoleAnswers, setConsoleAnswers] = useState<boolean | null>(null);
   const canPress = consoleAnswers === true;
 
+  /**
+   * Say the key is unlocked on evidence other than the broadcast.
+   *
+   * ONLY THE CONFIG-MODE PROBE CALLS THIS. Entering config mode locks the key
+   * and the unlock that follows is never announced - the status goes on saying
+   * INITIALIZED - so `device` sticks at `locked` over a working key. Measured
+   * on the bench, 2026-09-13:
+   *
+   *   14:15:28  [config] label probe: UNLOCKED     app showed "Locked"
+   *   14:17:21  [config] label probe: locked       after a replug
+   *
+   * A slot-label read is the proof: the firmware answers it only when
+   * `unlocked == true` and otherwise says "Error device locked"
+   * (okcore.cpp:379-396), so labels coming back cannot be anything else.
+   *
+   * Only ever UPGRADES to unlocked. Claiming a lock from an absence of
+   * evidence is the mistake this exists to avoid - silence is also what a
+   * wedged key produces.
+   */
+  const markUnlocked = useCallback(() => {
+    unlockedAt.current = Date.now();
+    setDevice(prev => (prev === 'unlocked' ? prev : 'unlocked'));
+  }, []);
+
   const start = useCallback(async (): Promise<void> => {
     setBusy(true);
     try {
@@ -404,6 +428,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
   return {
     state,
     device,
+    markUnlocked,
     version,
     identity,
     capabilities,

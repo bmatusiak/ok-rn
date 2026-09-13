@@ -1,9 +1,9 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
-import {Keypad, PinDots} from '../ui/Keypad';
+import OkEmu from '../transport/OkEmu';
+import {Keypad} from '../ui/Keypad';
 import {Logo} from '../ui/Logo';
-import {Btn} from '../ui/components';
-import {device as okdevice} from 'node-onlykey-lib';
+import {Btn, LedCircle, Segmented} from '../ui/components';
 import * as biometrics from '../biometrics';
 import {DuoPinForm} from '../ui/DuoPinForm';
 import {useActiveKey} from '../hooks/KeyContext';
@@ -16,7 +16,6 @@ import {theme} from '../ui/theme';
  * number decides where the buffer rolls over, and two copies of it would be two
  * places to get the cap wrong.
  */
-const MAX_PIN = okdevice.pin.MAX_DIGITS;
 
 /**
  * PIN entry, on the device's own buttons.
@@ -40,6 +39,15 @@ const MAX_PIN = okdevice.pin.MAX_DIGITS;
  * unlock() a promise that resolves when the user finishes would be the same
  * queue with a worse shape.
  */
+/**
+ * The two keys, by the names they are called everywhere else in the app.
+ *
+ * Literal strings rather than a code/label pair because `Segmented` renders
+ * the option itself - one place to read, one place to change.
+ */
+export type KeyPick = 'Hard key' | 'Soft Key';
+const PICK_OPTIONS: readonly KeyPick[] = ['Hard key', 'Soft Key'];
+
 export function PinScreen({
   onPress,
   onBack,
@@ -47,7 +55,30 @@ export function PinScreen({
   canPress = true,
   model = 'classic',
   settling = null,
+  led,
+  keyPick = null,
+  configMode = false,
+  onCheckConfig,
+  checking = false,
 }: {
+  /**
+   * Whether the app believes the key is in config mode.
+   *
+   * It changes what this screen can promise. Normally the key announces its
+   * own unlock and the shell moves on by itself; in config mode it never does
+   * (OnlyKey.ino:707), so the PIN can go all the way in and nothing happens.
+   * Asking is the only way to find out, and THIS is where someone is standing
+   * when they need to - not on Keys or Backup, where the panel lives.
+   */
+  configMode?: boolean;
+  onCheckConfig?: () => void;
+  checking?: boolean;
+  /**
+   * Which key this screen is talking to, and how to change it - or null to
+   * offer no choice at all, which is the honest state when nothing is plugged
+   * in: there is no second key to pick.
+   */
+  keyPick?: {value: KeyPick; onChange: (next: KeyPick) => void} | null;
   /** Why a press would be dropped right now (useKey / useOkEmu.settling), or null. */
   settling?: string | null;
   onPress: (button: number) => Promise<void> | void;
@@ -69,9 +100,15 @@ export function PinScreen({
    * but these.
    */
   canPress?: boolean | null;
+  /**
+   * The soft key's NeoPixel, packed 0xRRGGBB per pixel, or undefined.
+   *
+   * SOFT KEYS ONLY. A hard key's LED is on the key in your hand; there is no
+   * feed for it over USB, so the caller passes nothing and no circle is drawn.
+   */
+  led?: number[];
 }) {
-  const [count, setCount] = useState(0);
-  const [working, setWorking] = useState(false);
+  const [, setWorking] = useState(false);
 
   /* The DUO path: the library's unlock() types the PIN for a DUO. */
   const getKey = useActiveKey();
@@ -136,36 +173,33 @@ export function PinScreen({
     };
   }, []);
 
-  /**
-   * Presses ACCEPTED, including ones still waiting their turn.
-   *
-   * The cap has to be counted here rather than off `count`, which only moves
-   * once a press has landed: ten fast taps must queue ten presses, not however
-   * many happened to have finished by the time the tenth arrived.
-   */
-  const accepted = useRef(0);
-
   /** How many are still in flight, so the screen knows when it has drained. */
   const outstanding = useRef(0);
 
   const press = useCallback(
     (button: number) => {
-      if (accepted.current >= MAX_PIN) {
-        return;
-      }
-      accepted.current += 1;
+      /*
+       * NOTHING COUNTS PRESSES HERE ANY MORE. There used to be a cap at ten
+       * digits, a row of dots, and a "Start over" button that ran the buffer
+       * to its rollover. All three are gone.
+       *
+       * A PIN is 7 to 10 digits and this screen cannot know which, so the dots
+       * were always a guess; a wrong PIN gets no feedback from the device
+       * either way; and the cap turned into a trap the moment Start over went,
+       * because after ten presses nothing would reach the key at all.
+       *
+       * A key in your hand takes presses forever and rolls its own buffer over
+       * (pass_keypress, OnlyKey.ino). This does the same: press, send, that is
+       * the whole contract.
+       */
       outstanding.current += 1;
       setWorking(true);
 
       queue.current = queue.current
         .then(() => onPress(button))
         .then(
+          () => {},
           () => {
-            setCount(prev => prev + 1);
-          },
-          () => {
-            /* It never reached the key, so it does not count against the cap. */
-            accepted.current -= 1;
           },
         )
         .then(() => {
@@ -189,25 +223,6 @@ export function PinScreen({
    * What stays here is the PRESSING. Each padded press goes through the same
    * queue as a typed one, because they merge the same way if they do not.
    */
-  const startOver = useCallback(() => {
-    const padding = okdevice.pin.rolloverPresses(accepted.current);
-    if (!padding.length) {
-      return;
-    }
-
-    for (const button of padding) {
-      press(button);
-    }
-
-    /*
-     * The counters go back to zero behind the padding rather than beside it -
-     * the buffer is only empty once the last of those presses has been sent.
-     */
-    queue.current = queue.current.then(() => {
-      accepted.current = 0;
-      setCount(0);
-    });
-  }, [press]);
 
   /*
    * Unlock with a fingerprint, by REPLAYING the stored PIN through press().
@@ -258,6 +273,31 @@ export function PinScreen({
     <View style={styles.root}>
       <Logo height={30} />
 
+      {/*
+        * WHICH KEY, before anything that depends on which key it is.
+        *
+        * Everything below this row differs between the two: the soft key draws
+        * an LED and a keypad because the app drives both, and the hard key
+        * draws neither - its light is on the desk and its buttons are under
+        * your finger. Choosing after seeing a keypad that is about to vanish
+        * would be the wrong order.
+        */}
+      {keyPick ? (
+        <View style={styles.pick}>
+          <Segmented
+            options={PICK_OPTIONS}
+            value={keyPick.value}
+            onChange={keyPick.onChange}
+          />
+        </View>
+      ) : null}
+
+      {led ? (
+        <View style={styles.ledRow}>
+          <LedCircle pixels={led} />
+        </View>
+      ) : null}
+
       <Text style={styles.title}>Locked</Text>
 
       {model === 'duo' ? (
@@ -289,6 +329,32 @@ export function PinScreen({
             last digit is right; this screen follows. To start over, hold any
             button for a few seconds or unplug and reattach it.
           </Text>
+          {/*
+            THE ONLY WAY TO FINISH, ON THE SCREEN WHERE IT MATTERS MOST.
+
+            The note above is true outside config mode: the key announces its
+            own unlock and this screen follows. In config mode it never does,
+            so someone can type the whole PIN on the key and nothing happens
+            at all. Asking is the only way out, and this is where they are
+            standing.
+          */}
+          {configMode && onCheckConfig ? (
+            <>
+              <Text style={styles.note}>
+                In config mode the key does not announce the unlock. Enter your
+                PIN on the key, then check.
+              </Text>
+              <View style={styles.footer}>
+                <Btn
+                  title={checking ? 'Checking…' : 'Check config mode'}
+                  tone="primary"
+                  disabled={checking}
+                  onPress={onCheckConfig}
+                />
+              </View>
+            </>
+          ) : null}
+
           {onBack ? (
             <View style={styles.footer}>
               <Btn title="Back" onPress={onBack} />
@@ -311,28 +377,40 @@ export function PinScreen({
         </>
       ) : null}
 
-      <View style={styles.dots}>
-        <PinDots count={count} max={MAX_PIN} />
-      </View>
-
       {settling ? <Text style={styles.settling}>{settling}</Text> : null}
       <View style={styles.pad}>
         <Keypad onPress={press} disabled={busy} />
       </View>
 
+      {/*
+        RESTART, NOT "START OVER".
+        The old button ran the firmware's PIN buffer to its rollover, which is
+        the only reset the buffer has - but it needed to know how many digits
+        had gone in, and a PIN is 7 to 10 so the screen never did. Restarting
+        the app is the reset that always works: the firmware thread goes with
+        the process, flash and EEPROM persist, and the key comes back locked.
+      */}
+      {configMode && onCheckConfig ? (
+        <>
+          <Text style={styles.note}>
+            In config mode the key does not announce the unlock. Enter your PIN,
+            then check.
+          </Text>
+          <View style={styles.footer}>
+            <Btn
+              title={checking ? 'Checking…' : 'Check config mode'}
+              tone="primary"
+              disabled={checking}
+              onPress={onCheckConfig}
+            />
+          </View>
+        </>
+      ) : null}
+
       <View style={styles.footer}>
-        <Btn
-          title="Start over"
-          disabled={count === 0 || working}
-          onPress={startOver}
-        />
+        <Btn title="Restart app" onPress={() => OkEmu.restartApp()} />
         {onBack ? <Btn title="Back" onPress={onBack} /> : null}
       </View>
-
-      <Text style={styles.note}>
-        The key checks after every press. Start over runs the buffer to its
-        rollover, which is the only clean reset it has.
-      </Text>
       </>
       )}
     </View>
@@ -344,7 +422,8 @@ const styles = StyleSheet.create({
   root: {flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24},
   title: {color: theme.text, fontSize: 22, fontWeight: '700', marginTop: 28},
   hint: {color: theme.textDim, fontSize: 13, marginTop: 4},
-  dots: {marginTop: 22, marginBottom: 26},
+  pick: {marginTop: 20, width: '100%', maxWidth: 320},
+  ledRow: {marginTop: 18, marginBottom: 10},
   pad: {width: '100%', maxWidth: 320},
   footer: {flexDirection: 'row', gap: 10, marginTop: 22, width: '100%', maxWidth: 320},
   settling: {

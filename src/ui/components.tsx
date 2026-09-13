@@ -7,16 +7,119 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import {device as okdevice} from 'node-onlykey-lib';
 import type {LogEntry} from '../hooks/useLog';
-import {levelColor, stateColor, theme} from './theme';
+import {ledColor, levelColor, stateColor, theme} from './theme';
 
-export function StatusPill({state, label}: {state: string; label?: string}) {
-  const color = stateColor(state);
+export function StatusPill({
+  state,
+  label,
+  dotColor,
+  tone,
+}: {
+  state: string;
+  label?: string;
+  /**
+   * Colour for the DOT ONLY, leaving the border and the word alone.
+   *
+   * The pill says what the device IS - locked, unlocked - and that reading
+   * must not change colour just because a light blinked. The dot says what it
+   * is DOING: on a soft key it mirrors the firmware's own NeoPixel, which is
+   * the only activity feedback a real key gives you. Nothing passes this for a
+   * hard key, so its dot keeps the state colour.
+   */
+  dotColor?: string | null;
+  /**
+   * Overrides the pill's colour while leaving the WORD alone.
+   *
+   * For config mode, which is not a lock state and must not be drawn as one.
+   * The key may well be unlocked and the word has to keep saying so - but it
+   * will not sign or type, and only a restart ends that. The reading stays
+   * true; the colour carries the caveat.
+   */
+  tone?: string | null;
+}) {
+  const color = tone ?? stateColor(state);
   return (
     <View style={[styles.pill, {borderColor: color}]}>
-      <View style={[styles.dot, {backgroundColor: color}]} />
+      <View style={[styles.dot, {backgroundColor: dotColor ?? color}]} />
       <Text style={[styles.pillText, {color}]}>{label ?? state}</Text>
     </View>
+  );
+}
+
+/**
+ * The device's own LED, drawn as the part it is.
+ *
+ * SOFT KEYS ONLY. It is the only feedback a key gives while a PIN goes in -
+ * the device says nothing about how many digits have landed or whether one was
+ * wrong - so callers pass `pixels` for the soft key and nothing for a hard
+ * one, whose LED is on the key in your hand.
+ */
+export function LedCircle({
+  pixels,
+  size = 44,
+}: {
+  pixels: number[];
+  size?: number;
+}) {
+  return (
+    <View
+      style={[
+        styles.led,
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: ledColor(pixels) ?? theme.surface,
+        },
+      ]}
+    />
+  );
+}
+
+/**
+ * The counted hold, somewhere a thumb is not, coloured by the band it is in.
+ *
+ * It used to be drawn on the key being held - the one spot guaranteed to be
+ * under a finger.
+ *
+ * THREE PRESS TYPES, in the words a user thinks in. `bandFor()` owns where the
+ * edges are, so this cannot drift from the library that decides what a press
+ * means - but its names are the firmware's, and two of them read wrong to
+ * someone holding a button:
+ *
+ *   bandFor     shown as   ticks    what the key does
+ *   tap         tap        0-20     types the slot
+ *   hold        press      21-71    types the b profile
+ *   gesture     hold       72-89    backup / lock / config mode
+ *   rejected    too long   90+      the firmware stops banding it at all
+ *
+ * Green, amber, red. Red starts at the gesture band because that is where a
+ * press stops typing something and starts doing something that cannot be taken
+ * back - and the label says which, so it can be read before letting go.
+ */
+const BAND_LABEL: Record<string, string> = {
+  tap: 'tap',
+  hold: 'press',
+  gesture: 'hold',
+  rejected: 'too long',
+};
+
+export function HoldTicks({ticks}: {ticks?: {button: number; ticks: number} | null}) {
+  if (!ticks) {
+    return null;
+  }
+  const band = okdevice.press.bandFor(ticks.ticks);
+  const color =
+    band === 'tap' ? theme.ok : band === 'hold' ? theme.warn : theme.error;
+  const gestures: Record<number, string | undefined> = okdevice.press.GESTURES;
+  const does = gestures[ticks.button];
+  return (
+    <Text style={[styles.holdTicks, {color}]}>
+      {ticks.ticks} · {BAND_LABEL[band] ?? band}
+      {band === 'gesture' && does ? ` · ${does}` : ''}
+    </Text>
   );
 }
 
@@ -172,6 +275,14 @@ export function LogList({entries, limit = 40}: {entries: LogEntry[]; limit?: num
 }
 
 const styles = StyleSheet.create({
+  led: {borderWidth: 1, borderColor: theme.border, alignSelf: 'center'},
+  holdTicks: {
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
+    textAlign: 'center',
+    marginTop: 6,
+  },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -6,14 +6,15 @@ import {Btn, StatusPill} from './src/ui/components';
 import OkEmu from './src/transport/OkEmu';
 import {Drawer} from './src/ui/Drawer';
 import {Logo} from './src/ui/Logo';
-import {theme} from './src/ui/theme';
+import {ledColor, theme} from './src/ui/theme';
 
 import {useLog} from './src/hooks/useLog';
 import {useKey} from './src/hooks/useKey';
-import {useKeystrokes} from './src/hooks/useKeystrokes';
 import {KeyBackendProvider} from './src/hooks/KeyContext';
+import {BtKeyboardProvider, useSharedBtKeyboard} from './src/hooks/BtKeyboardContext';
+import {useBtAuto, type BtAuto} from './src/hooks/useBtAuto';
 import {useUsbHid} from './src/hooks/useUsbHid';
-import {useFidoGatt} from './src/hooks/useFidoGatt';
+import {useFidoGatt, type FidoSession} from './src/hooks/useFidoGatt';
 import {getOnlyKey} from './src/onlykey';
 import type {Backend} from './src/hooks/keySession';
 import {useTestingMode} from './src/hooks/useTestingMode';
@@ -73,6 +74,95 @@ type Phase = 'splash' | 'login' | 'pin' | 'setup' | 'main';
  * component - a hook inside App would be reading a provider that is its own
  * child, and would get zeros.
  */
+/**
+ * Bluetooth, keyboard, authenticator - blue armed, green connected, grey off.
+ *
+ * AND the thing that starts them, which is not a coincidence.
+ *
+ * Auto-start used to live on the Bluetooth screen, where it did nothing until
+ * you opened the Bluetooth tab - the one component certain not to be mounted
+ * at the moment "start on app start" is about. It belongs wherever is mounted
+ * for the life of the app, and these icons are exactly that: they report the
+ * radio on every tab, so they are always here to act on it.
+ *
+ * A component rather than three expressions in App, because it reads the
+ * keyboard session through the context that App WRAPS but is not inside -
+ * calling the hook in App's own body throws.
+ */
+function RadioStatus({
+  on,
+  setOn,
+  fido,
+  auto,
+  onPress,
+}: {
+  on: boolean;
+  setOn: (next: boolean) => void;
+  fido: FidoSession;
+  auto: BtAuto;
+  /** Opens the Bluetooth tab - the icons are a summary of it, so they lead there. */
+  onPress: () => void;
+}) {
+  const btk = useSharedBtKeyboard();
+  const published = btk.state !== 'unregistered' && btk.state !== 'unsupported';
+  const linked = btk.state === 'connected';
+  const advertising = fido.state === 'advertising' || fido.state === 'connected';
+
+  /* The radio, once storage has said so. */
+  useEffect(() => {
+    if (auto.ready && auto.autos.start) setOn(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto.ready, auto.autos.start]);
+
+  /*
+   * The features, and they need every condition the manual path needs - a
+   * target especially. Without one, publishing offers this phone to whatever
+   * was ever bonded with it, and the whole tab is built on "a feature is on
+   * FOR a target". This reaches the state the user would have reached by hand,
+   * never one they could not.
+   *
+   * Guarded on current state rather than run once, because the honest trigger
+   * is "on, targeted, and not started yet" - which is also true after a host
+   * drops and comes back.
+   */
+  useEffect(() => {
+    if (!auto.ready || !on || !btk.chosenHost) return;
+    if (auto.autos.keyboard && !published && !btk.busy) void btk.publish();
+    if (auto.autos.authenticator && !advertising && fido.supported !== false) {
+      void fido.start();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    auto.ready,
+    auto.autos.keyboard,
+    auto.autos.authenticator,
+    on,
+    btk.chosenHost,
+    published,
+    advertising,
+  ]);
+
+  const color = (enabled: boolean, connected: boolean) =>
+    connected ? theme.ok : enabled ? theme.accentHover : theme.textDim;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel="Bluetooth status"
+      style={({pressed}) => [styles.barMid, pressed && styles.pressed]}>
+      <Text style={[styles.barIcon, {color: color(on, linked)}]}>{'ᛒ'}</Text>
+      <Text style={[styles.barIcon, {color: color(published, linked)}]}>
+        {'⌨'}
+      </Text>
+      <Text
+        style={[styles.barIcon, {color: color(advertising, fido.state === 'connected')}]}>
+        {'⚿'}
+      </Text>
+    </Pressable>
+  );
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -129,10 +219,100 @@ function Shell() {
   const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log, fidoPending: fido.pending});
   backendRef.current = keys.backend;
   const emu = keys.key;
-  /* What the active key types, heard from every tab. See useKeystrokes. */
-  const typed = useKeystrokes(keys.backend);
+
+  /*
+   * THE BLUETOOTH MASTER SWITCH, here rather than on its tab.
+   *
+   * The bar reports it on every screen, and the Bluetooth tab unmounts the
+   * moment you look at another one - so the tab cannot be where it lives.
+   * Off until said otherwise; the tab's Auto panel is the only thing that
+   * turns it on by itself, and only because someone asked it to.
+   */
+  const [btOn, setBtOn] = useState(false);
+
+  /* Read here, acted on by RadioStatus, edited by the Bluetooth tab. */
+  const auto = useBtAuto();
+
+
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
+
+  /*
+   * CONFIG MODE, as a thing the APP believes.
+   *
+   * The key never says it is in config mode - entering it just locks the
+   * device, and nothing announces the unlock that follows - so the app cannot
+   * read this from the device. It has to be told, and then it can explain the
+   * lock that would otherwise look like any other.
+   */
+  const [configMode, setConfigMode] = useState(false);
+
+  /*
+   * UNPLUGGING THE HARD KEY ENDS CONFIG MODE, so the app's belief ends with it.
+   *
+   * Config mode is cleared by a boot and nothing else, and pulling the key IS
+   * a boot - it loses power. The library agrees: useKey.ts:193 drops the 'usb'
+   * session the moment the key leaves the bus, taking `session.configMode`
+   * with it. Leaving the banner up over a key that has rebooted would be the
+   * app asserting something it has no reason to believe.
+   *
+   * `attached === false`, not falsy: null means USB has not answered yet,
+   * which is true on every launch, and clearing on that would be clearing on
+   * no evidence.
+   *
+   * The soft key needs nothing here - its config mode ends when the process
+   * does, and this flag starts false every launch.
+   */
+  useEffect(() => {
+    if (keys.attached === false) setConfigMode(false);
+  }, [keys.attached]);
+
+  /*
+   * ASKED FOR, NEVER ON A TIMER.
+   *
+   * This began as a poll every 2.5s and that HURT PIN ENTRY on a hard key:
+   * the probe writes OKGETLABELS on the vendor interface, and doing that
+   * repeatedly while someone is pressing buttons interferes with the digits
+   * going in. A check that breaks the thing it is waiting for is worse than no
+   * check.
+   *
+   * So it is a button. The person pressing it has just finished entering their
+   * PIN and is the one who knows; the app does not have to guess, and it asks
+   * exactly once.
+   *
+   * What it asks is a slot-label read: the firmware answers that only when
+   * `unlocked == true` and otherwise says "Error device locked"
+   * (okcore.cpp:379-396), so labels coming back are proof of an unlock - the
+   * proof the broadcast never gives, because in config mode it goes on saying
+   * INITIALIZED.
+   */
+  const [probe, setProbe] = useState<{at: number; ok: boolean; note: string} | null>(
+    null,
+  );
+  const [checking, setChecking] = useState(false);
+
+  const checkConfig = useCallback(async () => {
+    setChecking(true);
+    try {
+      const {device} = await getActiveKey();
+      const ok = await device.configModeReady({timeoutMs: 2500});
+      setProbe({at: Date.now(), ok, note: ok ? 'labels came back' : 'refused'});
+      console.log(`[config] label probe: ${ok ? 'UNLOCKED' : 'locked'}`);
+      /* Labels came back, so the key is unlocked - the app has no other way
+         to learn that while in config mode. */
+      if (ok) emu.markUnlocked();
+    } catch (e) {
+      setProbe({at: Date.now(), ok: false, note: String((e as Error)?.message ?? e)});
+    } finally {
+      setChecking(false);
+    }
+  }, [getActiveKey, emu]);
+
+  /* Leaving config mode makes the last answer meaningless. */
+  useEffect(() => {
+    if (!configMode) setProbe(null);
+  }, [configMode]);
+
 
   const [tab, setTab] = useState<Tab>('This Key');
 
@@ -210,6 +390,12 @@ function Shell() {
       module-level setter.
     */
     <KeyBackendProvider backend={keys.backend}>
+      {/*
+        * INSIDE KeyBackendProvider, because the forwarder reads `useBackend()`
+        * to choose which pipe it listens on - the soft key's stream or the hard
+        * key's. Outside it, the bridge would forward the wrong key's typing.
+        */}
+      <BtKeyboardProvider>
       <StatusBar barStyle="light-content" />
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
         {ready ? (
@@ -239,14 +425,44 @@ function Shell() {
               Here rather than per screen, because the answer is the same
               everywhere and repeating it eleven times is eleven chances to
               disagree.
+
+              It leads to This Key, for the same reason the radio icons lead to
+              Bluetooth: each is a summary of one tab, and a summary you cannot
+              follow back to the thing it summarises is a dead end.
             */}
-            <View style={styles.barRight}>
+            {/*
+              WHAT THE RADIO IS DOING, on every tab.
+
+              Three things can be true at once here - the radio is on, the
+              keyboard is published, the authenticator is advertising - and
+              each of them is either merely ENABLED or actually CONNECTED to
+              something. That is six states, and the Bluetooth tab is the only
+              place any of it was visible. A keyboard silently not typing is
+              the failure this app keeps having; this is where it shows.
+
+              Blue is armed, green is connected, grey is off.
+            */}
+            <RadioStatus
+              on={btOn}
+              setOn={setBtOn}
+              fido={fido}
+              auto={auto}
+              onPress={() => setTab('Bluetooth')}
+            />
+
+            <Pressable
+              onPress={() => setTab('This Key')}
+              accessibilityRole="button"
+              accessibilityLabel="Key status"
+              style={({pressed}) => [styles.barRight, pressed && styles.pressed]}>
               <Text style={styles.barKey}>{keys.name}</Text>
               <StatusPill
                 state={emu.device}
                 label={emu.device === 'unknown' ? emu.state : emu.device}
+                dotColor={keys.backend === 'embedded' ? ledColor(emu.led) : null}
+                tone={configMode ? theme.error : null}
               />
-            </View>
+            </Pressable>
           </View>
         ) : null}
 
@@ -254,6 +470,15 @@ function Shell() {
           <View style={styles.testing}>
             <Text style={styles.testingText}>
               Testing mode — PIN bypassed, developer tools shown
+            </Text>
+          </View>
+        ) : null}
+
+        {configMode ? (
+          <View style={styles.configBanner}>
+            <Text style={styles.configBannerText}>
+              Config mode — the key will not sign or type. Only a restart ends
+              it: unplug a hard key, restart the app for the soft key.
             </Text>
           </View>
         ) : null}
@@ -302,6 +527,16 @@ function Shell() {
           ) : phase === 'login' ? (
             <LoginScreen
               device={emu.device}
+              attached={keys.attached}
+              /*
+                Straight to the Testing tab, not This Key. Someone who turns
+                testing mode on from the door is going there next - it is the
+                only reason the button exists.
+              */
+              onTesting={() => {
+                testing.toggle();
+                setTab(TESTING_TAB);
+              }}
               onContinue={() =>
                 // A blank key has no PIN to enter; it needs one chosen.
                 setPhase(emu.device === 'uninitialized' ? 'setup' : 'pin')
@@ -310,7 +545,41 @@ function Shell() {
           ) : phase === 'setup' ? (
             <SetupScreen onDone={() => setPhase('login')} model={emu.model} />
           ) : phase === 'pin' ? (
-            <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} onBack={() => setPhase('login')} />
+            <PinScreen
+              onPress={emu.press}
+              canPress={emu.canPress}
+              model={emu.model}
+              settling={emu.settling}
+              led={keys.backend === 'embedded' ? emu.led : undefined}
+              /*
+               * OFFERED ONLY WHEN THERE IS SOMETHING TO CHOOSE BETWEEN. With
+               * no hard key on the bus the row would be two options one of
+               * which does nothing, so it is not drawn at all.
+               *
+               * Picking writes the OVERRIDE rather than the mode: the mode is
+               * a standing preference ("prefer the hard key when one is
+               * attached"), and this is someone saying which key they mean
+               * right now, for this login.
+               */
+              keyPick={
+                keys.attached === true
+                  ? {
+                      value: keys.backend === 'usb' ? 'Hard key' : 'Soft Key',
+                      onChange: next =>
+                        keys.setOverride(next === 'Hard key' ? 'usb' : 'embedded'),
+                    }
+                  : null
+              }
+              onBack={() => setPhase('login')}
+              /*
+                The door is where someone stands when config mode has locked
+                the key and the unlock will never be announced. The panel on
+                Keys and Backup cannot help from here.
+              */
+              configMode={configMode}
+              onCheckConfig={() => void checkConfig()}
+              checking={checking}
+            />
           ) : tab === 'This Key' ? (
             <KeyScreen emu={emu} keys={keys} />
           ) : tab === 'Slots' ? (
@@ -330,19 +599,19 @@ function Shell() {
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
             )
           ) : tab === 'Keys' ? (
-            <KeysScreen emu={emu} />
+            <KeysScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
           ) : tab === 'Bluetooth' ? (
-            <BluetoothScreen emu={emu} typed={typed} fido={fido} />
+            <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
-            <BackupScreen emu={emu} blockScreenshots={!testing.enabled} />
+            <BackupScreen emu={emu} blockScreenshots={!testing.enabled} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
           ) : tab === 'Crypto' ? (
-            <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} />
+            <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} configMode={configMode} />
           ) : tab === 'Messages' ? (
-            <MessagesScreen emu={emu} />
+            <MessagesScreen emu={emu} configMode={configMode} />
           ) : tab === 'Settings' ? (
-            <PreferencesScreen emu={emu} />
+            <PreferencesScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
           ) : tab === 'Passkeys' ? (
-            <PasskeysScreen emu={keys.key} />
+            <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
             <AdvancedScreen emu={keys.key} hard={keys.hard} />
           ) : tab === 'Log' ? (
@@ -373,6 +642,9 @@ function Shell() {
               Start button over a device that cannot be started.
             */
             <TestingScreen
+              configMode={configMode}
+              setConfigMode={setConfigMode}
+              probe={probe} onCheck={checkConfig} checking={checking}
               emu={keys.soft}
               hard={keys.hard}
               active={keys.key}
@@ -403,6 +675,7 @@ function Shell() {
           }
         />
       </SafeAreaView>
+      </BtKeyboardProvider>
     </KeyBackendProvider>
   );
 }
@@ -426,6 +699,8 @@ const styles = StyleSheet.create({
   },
   barLeft: {flexDirection: 'row', alignItems: 'center', gap: 10},
   barRight: {flexDirection: 'row', alignItems: 'center', gap: 8},
+  barMid: {flexDirection: 'row', alignItems: 'center', gap: 12},
+  barIcon: {fontSize: 17},
 
   /* Quiet: it is context, not a headline. The pill beside it is the state. */
   barKey: {color: theme.textDim, fontSize: 12},
@@ -433,6 +708,17 @@ const styles = StyleSheet.create({
   barTitle: {color: theme.text, fontSize: 16, fontWeight: '700'},
   barSep: {color: theme.border, fontSize: 15},
   pressed: {opacity: 0.6},
+
+  configBanner: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: theme.radius,
+    borderWidth: 1,
+    borderColor: theme.error,
+  },
+  configBannerText: {color: theme.error, fontSize: 12, fontWeight: '600'},
 
   testing: {
     marginHorizontal: 16,

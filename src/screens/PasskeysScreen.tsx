@@ -37,6 +37,7 @@ import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
+import {ConfigModeBlocked} from '../ui/ConfigModeBlocked';
 import {protocol, device as deviceLib} from 'node-onlykey-lib';
 import {useFidoAdmin} from '../hooks/useFidoAdmin';
 import {useKeyName} from '../hooks/KeyContext';
@@ -88,7 +89,14 @@ function describeInfo(info: Map<number, any>): {label: string; value: string}[] 
   return out;
 }
 
-export function PasskeysScreen({emu}: {emu: EmuSession}) {
+export function PasskeysScreen({
+  emu,
+  configMode = false,
+}: {
+  emu: EmuSession;
+  /** CTAPHID is not on the config-mode allowlist - okcore.cpp:347. */
+  configMode?: boolean;
+}) {
   const keyName = useKeyName();
   const unlocked = emu.device === 'unlocked';
   const {fido, blocked, busy: opening, open} = useFidoAdmin(unlocked);
@@ -305,6 +313,7 @@ export function PasskeysScreen({emu}: {emu: EmuSession}) {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+      <ConfigModeBlocked active={configMode} what="answer a security-key request">
       <Section title={`Passkeys — ${keyName}`}>
         <Text style={styles.body}>
           The resident credentials this key carries: one per account that chose
@@ -573,6 +582,7 @@ export function PasskeysScreen({emu}: {emu: EmuSession}) {
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
+      </ConfigModeBlocked>
     </ScrollView>
   );
 }

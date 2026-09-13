@@ -5,7 +5,8 @@ import {theme} from '../ui/theme';
 import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import {PinScreen} from './PinScreen';
-import {useConfigMode} from '../hooks/useConfigMode';
+import {ConfigModePanel} from '../ui/ConfigModePanel';
+import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
 import {missingNote, supports} from '../firmwareFeatures';
 import type {EmuSession} from '../hooks/useOkEmu';
 
@@ -132,7 +133,22 @@ function describeType(name: string): string {
   return `${spec.bytes} bytes. The device is told the type; it cannot tell from the bytes.`;
 }
 
-export function KeysScreen({emu}: {emu: EmuSession}) {
+export function KeysScreen({
+  emu,
+  configMode,
+  setConfigMode,
+  probe,
+  onCheck,
+  checking,
+}: {
+  emu: EmuSession;
+  configMode: boolean;
+  setConfigMode: (on: boolean) => void;
+  probe: {at: number; ok: boolean; note: string} | null;
+  /** Runs one label probe, on demand. See App: never on a timer. */
+  onCheck: () => Promise<void>;
+  checking: boolean;
+}) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
   /* Named in every panel that states a fact about it. See useKeyName. */
@@ -184,7 +200,12 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
    * mode ends only at a restart) and the Backup screen needs exactly the same
    * thing to set a passphrase.
    */
-  const config = useConfigMode(emu);
+  /*
+   * READY means in config mode AND the PIN is back in. The second half can
+   * only be learned by probing - the key never announces it - and App runs
+   * that probe, so both halves arrive as props.
+   */
+  const configReady = configMode && probe?.ok === true;
 
   /*
    * Post-quantum generation, and whether this firmware has it at all - which
@@ -542,15 +563,18 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
   }, [genChallenge, emu]);
 
   /* Config mode locks the key; the PIN has to go back in before anything else. */
-  if (config.entered && !config.ready) {
+  if (configMode && !configReady) {
     return (
       <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-        <Section title="Config mode">
-          <Text style={styles.body}>
-            The key locked itself on entering config mode. Enter your PIN to
-            carry on loading keys.
-          </Text>
-        </Section>
+        <ConfigModePanel
+          emu={emu}
+          configMode={configMode}
+          setConfigMode={setConfigMode}
+          probe={probe}
+          onCheck={onCheck}
+          checking={checking}
+          purpose="load keys"
+        />
         <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
       </ScrollView>
     );
@@ -616,38 +640,23 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {!config.ready ? (
-        <Section title="Config mode is required">
-          <Text style={styles.body}>
-            The firmware only accepts a key while the device is in config mode,
-            and getting there locks it. The whole sequence is:
-          </Text>
-          <Text style={styles.steps}>
-            1. hold button 6 — the app does this{'\n'}
-            2. the key locks, and you enter your PIN again{'\n'}
-            3. the keys are written{'\n'}
-            4. restart the app — config mode ends only at a restart, and while
-            it is on the key will not sign or type anything
-          </Text>
-          <Btn
-            title={config.entering ? 'Holding…' : 'Enter config mode'}
-            tone="primary"
-            disabled={config.entering || locked}
-            onPress={config.enter}
-          />
-          {locked ? (
-            <Text style={styles.note}>Unlock the key first.</Text>
-          ) : null}
-        </Section>
-      ) : (
-        <Section title="Config mode">
-          <Text style={styles.body}>
-            Keys can be written. The key will not sign or type anything until
-            the app is restarted.
-          </Text>
-        </Section>
-      )}
+      <ConfigModePanel
+        emu={emu}
+        configMode={configMode}
+        setConfigMode={setConfigMode}
+        probe={probe}
+        onCheck={onCheck}
+        checking={checking}
+        purpose="load keys"
+      />
 
+      {/*
+        * WRITES ONLY, and only in config mode. Outside it OKSETPRIV is
+        * silently dropped - no error, nothing on any interface - and the first
+        * symptom is a later signing failure. Dimmed and inert beats offered
+        * and ignored.
+        */}
+      <ConfigModeRequired ready={configReady}>
       <Section title="Load a key">
         <Segmented
           value={mode}
@@ -696,7 +705,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
             <Btn
               title={busy === 'pgp' ? 'Loading…' : 'Load PGP key'}
               tone="primary"
-              disabled={busy !== null || !config.ready || !armored.trim()}
+              disabled={busy !== null || !configReady || !armored.trim()}
               onPress={loadPgp}
             />
           </>
@@ -744,7 +753,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
             <Btn
               title={busy === 'ssh' ? 'Loading…' : 'Load SSH key'}
               tone="primary"
-              disabled={busy !== null || !config.ready || !ssh.trim()}
+              disabled={busy !== null || !configReady || !ssh.trim()}
               onPress={loadSsh}
             />
           </>
@@ -828,7 +837,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
             <Btn
               title={busy === 'hex' ? 'Writing…' : 'Write to slot'}
               tone="primary"
-              disabled={busy !== null || !config.ready || !hex.trim()}
+              disabled={busy !== null || !configReady || !hex.trim()}
               onPress={loadHex}
             />
           </>
@@ -868,10 +877,12 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         <Btn
           title={busy === 'yubi' ? 'Writing…' : 'Write Yubico credential'}
           tone="primary"
-          disabled={busy !== null || !config.ready}
+          disabled={busy !== null || !configReady}
           onPress={writeYubi}
         />
       </Section>
+
+      </ConfigModeRequired>
 
       <Section title="Read a public key">
         <Text style={styles.body}>
@@ -939,7 +950,7 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         <Btn
           title={busy === 'generate' ? 'Generating\u2026' : `Generate in slot ${genSlot}`}
           tone="primary"
-          disabled={busy !== null || !config.ready || !pqc}
+          disabled={busy !== null || !configReady || !pqc}
           onPress={generate}
         />
 
@@ -968,6 +979,13 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         ) : null}
       </Section>
 
+      {/*
+        * OKWIPEPRIV, which the firmware gates on `configmode == true`
+        * (okcore.cpp:502) - unlike OKWIPESLOT next door, which does not. Same
+        * treatment as Load a key: dim and inert rather than a live-looking
+        * button over a message that will be dropped.
+        */}
+      <ConfigModeRequired ready={configReady}>
       <Section title="Wipe a slot">
         <Text style={styles.note}>
           Erases the key in one slot. Irreversible, and it also needs config
@@ -977,10 +995,12 @@ export function KeysScreen({emu}: {emu: EmuSession}) {
         <Btn
           title={busy === 'wipe' ? 'Wiping…' : `Wipe slot ${slot}`}
           tone="danger"
-          disabled={busy !== null || !config.ready}
+          disabled={busy !== null || !configReady}
           onPress={wipe}
         />
       </Section>
+
+      </ConfigModeRequired>
 
       {loaded ? (
         <Section title="Restart to finish">

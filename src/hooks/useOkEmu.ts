@@ -186,6 +186,15 @@ export function useOkEmu({log, autoStart = false}: Options) {
           const sinceUnlock = Date.now() - unlockedAt.current;
           if (sinceUnlock > UNLOCK_GRACE_MS) {
             setDevice('locked');
+            /*
+             * A LOCKED KEY SHOWS NO LIGHT. The pixel is only ever written by
+             * an event, so the last colour would otherwise sit there for ever
+             * - and after a CPU_RESTART no event is coming at all. That left
+             * the indicator GREEN on a locked device, which is the one thing
+             * it must never say. Activity relights it: the firmware drives the
+             * pixel on a press and the event arrives as usual.
+             */
+            setLed([]);
           }
         }
       }
@@ -235,6 +244,8 @@ export function useOkEmu({log, autoStart = false}: Options) {
        * what IS certain is that it is not unlocked.
        */
       setDevice('unknown');
+      /* The thread is gone; nothing will drive the pixel again. See above. */
+      setLed([]);
 
       log(
         'error',
@@ -522,8 +533,30 @@ export function useOkEmu({log, autoStart = false}: Options) {
   const beginHold = useCallback(
     async (button: number) => {
       try {
-        const armed = PRESS_TICKS.GESTURE - 1;
-        await OkEmu.setButtonTicks(button, armed);
+        /*
+         * A HOLD REACHES THE GESTURE BAND. It used to arm at GESTURE - 1, one
+         * tick short, so no hold from this keypad could ever fire one - button
+         * 3 held for five seconds counted to 71 and did nothing, which is not
+         * what the key in your hand does.
+         *
+         * Armed one tick below REJECTED instead: past 90 the firmware stops
+         * banding the press and rejects it, so that is the ceiling worth
+         * having. Between 72 and 89 the gesture fires - backup on 1, lock on
+         * 3, config mode on 6 - exactly as it would on hardware.
+         */
+        const armed = PRESS_TICKS.REJECTED - 1;
+        /*
+         * `allowGesture` IS REQUIRED HERE, and leaving it off is what made the
+         * counter invisible. setButtonTicks refuses any count at or past
+         * GESTURE unless the caller asks for it (OkEmu.ts:205) - a slot read
+         * never wants one by accident. Arming at 89 put this call in that
+         * range, so it rejected before setPressTicks ran and a held button
+         * showed nothing at all while still highlighting under the finger.
+         *
+         * A finger on a pad is the one caller that does mean it: the band is
+         * the point of the control.
+         */
+        await OkEmu.setButtonTicks(button, armed, {allowGesture: true});
         setPressTicks({button, ticks: 0});
         stopPolling();
         holdPoll.current = setInterval(async () => {
@@ -546,8 +579,13 @@ export function useOkEmu({log, autoStart = false}: Options) {
     async (button: number) => {
       stopPolling();
       try {
-        /* Cancels the counted hold as well as releasing the pad. */
-        const armed = PRESS_TICKS.GESTURE - 1;
+        /*
+         * Cancels the counted hold as well as releasing the pad. The armed
+         * count MUST match beginHold's or the subtraction below reports a
+         * band that never happened - it read GESTURE - 1 while beginHold
+         * armed at REJECTED - 1, eighteen ticks apart.
+         */
+        const armed = PRESS_TICKS.REJECTED - 1;
         const left = await OkEmu.buttonTicksLeft(button);
         await OkEmu.setButton(button, false);
         const held = armed - left;
@@ -563,6 +601,29 @@ export function useOkEmu({log, autoStart = false}: Options) {
   );
 
   useEffect(() => stopPolling, [stopPolling]);
+
+  /**
+   * Say the key is unlocked on evidence other than the broadcast.
+   *
+   * ONLY THE CONFIG-MODE PROBE CALLS THIS. Entering config mode locks the key
+   * and the unlock that follows is never announced - the status goes on saying
+   * INITIALIZED - so `device` sticks at `locked` over a working key. Measured
+   * on the bench, 2026-09-13:
+   *
+   *   14:15:28  [config] label probe: UNLOCKED     app showed "Locked"
+   *   14:17:21  [config] label probe: locked       after a replug
+   *
+   * A slot-label read is the proof: the firmware answers it only when
+   * `unlocked == true` and otherwise says "Error device locked"
+   * (okcore.cpp:379-396), so labels coming back cannot be anything else.
+   *
+   * Only ever UPGRADES to unlocked. Claiming a lock from an absence of
+   * evidence is the mistake this exists to avoid - silence is also what a
+   * wedged key produces.
+   */
+  const markUnlocked = useCallback(() => {
+    setDevice(prev => (prev === 'unlocked' ? prev : 'unlocked'));
+  }, []);
 
   const send = useCallback(
     async (iface: Iface, msg: number) => {
@@ -647,6 +708,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
   return {
     state,
     device,
+    markUnlocked,
     version,
     identity,
     capabilities,

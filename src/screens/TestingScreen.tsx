@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import OkEmu from '../transport/OkEmu';
 import {theme} from '../ui/theme';
@@ -34,6 +34,11 @@ const TEST_PIN = '1234561';
  * changes meaning underneath you.
  */
 export function TestingScreen({
+  configMode,
+  setConfigMode,
+  probe,
+  onCheck,
+  checking,
   emu,
   hard,
   active,
@@ -42,6 +47,20 @@ export function TestingScreen({
   usbEntries,
   clearUsb,
 }: {
+  /**
+   * What the APP believes about config mode, and how to change it.
+   *
+   * The key never reports this - entering config mode only locks the device -
+   * so the belief is set here rather than read from anywhere. This switch is
+   * how it gets set while the flow is being built.
+   */
+  configMode: boolean;
+  setConfigMode: (on: boolean) => void;
+  /** The last label probe, or null when not probing. Reports only. */
+  probe: {at: number; ok: boolean; note: string} | null;
+  /** Runs one label probe, on demand. See App: never on a timer. */
+  onCheck: () => Promise<void>;
+  checking: boolean;
   emu: EmuSession;
   /** The hard key, for the one bench operation this tab offers on it. */
   hard: HardKeySession;
@@ -87,6 +106,41 @@ export function TestingScreen({
         "Soft Key firmware", not "Firmware". Both keys run firmware, and this
         panel can only ever be about one of them.
       */}
+      <Section title="Config mode">
+        <View style={styles.row}>
+          <View style={styles.cell}>
+            <Text style={styles.note}>
+              {configMode
+                ? 'The app believes the key is in config mode.'
+                : 'The app believes the key is not in config mode.'}
+            </Text>
+          </View>
+          <Switch value={configMode} onValueChange={setConfigMode} />
+        </View>
+        <Text style={styles.note}>
+          Changes what the APP believes, not the device. The key enters config
+          mode by holding button 6, and leaves it only by being unplugged (hard
+          key) or by restarting the app (soft key).
+        </Text>
+        {configMode ? (
+          <>
+            <KeyValue
+              label="label probe"
+              value={
+                probe
+                  ? `${probe.ok ? 'UNLOCKED' : 'locked'} — ${probe.note}`
+                  : 'not asked yet'
+              }
+            />
+            <Btn
+              title={checking ? 'Checking…' : 'Check config mode'}
+              disabled={checking}
+              onPress={() => void onCheck()}
+            />
+          </>
+        ) : null}
+      </Section>
+
       <Section title="Soft Key firmware">
         <View style={styles.kv}>
           <KeyValue label="state" value={emu.state} />

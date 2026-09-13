@@ -6,7 +6,7 @@ import {theme} from '../ui/theme';
 import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
 import * as biometrics from '../biometrics';
-import {useConfigMode} from '../hooks/useConfigMode';
+import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {PinScreen} from './PinScreen';
 import {SetupScreen} from './SetupScreen';
 import OkEmu from '../transport/OkEmu';
@@ -39,7 +39,23 @@ function layoutOptions() {
   return keystrokes.layouts();
 }
 
-export function PreferencesScreen({emu}: {emu: EmuSession}) {
+export function PreferencesScreen({
+  emu,
+  configMode,
+  setConfigMode,
+  probe,
+  onCheck,
+  checking,
+}: {
+  emu: EmuSession;
+  configMode: boolean;
+  setConfigMode: (on: boolean) => void;
+  /** The label probe App runs while in config mode; `ok` means unlocked. */
+  probe: {at: number; ok: boolean; note: string} | null;
+  /** Runs one label probe, on demand. See App: never on a timer. */
+  onCheck: () => Promise<void>;
+  checking: boolean;
+}) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
   /* Named in every panel that states a fact about it. See useKeyName. */
@@ -123,7 +139,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const config = useConfigMode(emu);
+  const configReady = configMode && probe?.ok === true;
 
   /*
    * PERMISSIONS, visible and re-askable. The security-key role asks for
@@ -230,19 +246,23 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
   );
 
   /* Config mode locks the key, so the PIN has to go back in. */
-  if (config.entered && !config.ready) {
+  if (configMode && !configReady) {
     return (
       <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-        <Section title="Config mode">
-          <Text style={styles.body}>
-            The key locked itself on entering config mode. Enter your PIN to
-            carry on.
-          </Text>
-        </Section>
+        <ConfigModePanel
+          emu={emu}
+          configMode={configMode}
+          setConfigMode={setConfigMode}
+          probe={probe}
+          onCheck={onCheck}
+          checking={checking}
+          purpose="change a PIN"
+        />
         <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
       </ScrollView>
     );
   }
+
 
   if (changing) {
     return (
@@ -319,23 +339,16 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
       </Section>
 
       <Section title={`Change PINs — ${keyName}`}>
-        {!config.entered ? (
-          <>
-            <Text style={styles.body}>
-              A PIN on a key that already has one can only be changed in config
-              mode, which locks the key: hold button 6 (the app does this),
-              enter the current PIN again, choose the new one, then restart the
-              key. Until the restart it will not sign or type anything.
-            </Text>
-            <Btn
-              title={config.entering ? 'Holding…' : 'Enter config mode'}
-              tone="primary"
-              disabled={config.entering || locked}
-              onPress={config.enter}
-            />
-            {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
-            {config.error ? <Text style={styles.error}>{config.error}</Text> : null}
-          </>
+        {!configMode ? (
+          <ConfigModePanel
+            emu={emu}
+            configMode={configMode}
+            setConfigMode={setConfigMode}
+            probe={probe}
+            onCheck={onCheck}
+            checking={checking}
+            purpose="change a PIN"
+          />
         ) : changed ? (
           <>
             <Text style={styles.body}>
@@ -437,16 +450,16 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
         <Section key={group.title} title={group.title}>
           <Text style={styles.note}>{group.note}</Text>
 
-          {group.title === 'Advanced' && !config.ready ? (
-            <>
-              <Btn
-                title={config.entering ? 'Holding…' : 'Enter config mode'}
-                tone="primary"
-                disabled={config.entering || locked}
-                onPress={config.enter}
-              />
-              {config.error ? <Text style={styles.error}>{config.error}</Text> : null}
-            </>
+          {group.title === 'Advanced' && !configReady ? (
+            <ConfigModePanel
+              emu={emu}
+              configMode={configMode}
+              setConfigMode={setConfigMode}
+              probe={probe}
+              onCheck={onCheck}
+              checking={checking}
+              purpose="change these"
+            />
           ) : null}
 
           {group.rows.map(pref => (
@@ -461,7 +474,7 @@ export function PreferencesScreen({emu}: {emu: EmuSession}) {
                 busy !== null ||
                 locked ||
                 pref.requires === 'firstUse' ||
-                (pref.requires === 'configMode' && !config.ready)
+                (pref.requires === 'configMode' && !configReady)
               }
             />
           ))}

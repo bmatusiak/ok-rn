@@ -5,9 +5,10 @@ import {theme} from '../ui/theme';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import {device as okdevice} from 'node-onlykey-lib';
 import {useKeyboardLayout} from '../hooks/useKeyboardLayout';
+import {useSharedBtKeyboard} from '../hooks/BtKeyboardContext';
 import NativeShare from '../../specs/NativeShare';
 import {useSecureScreen} from '../hooks/useSecureScreen';
-import {useConfigMode} from '../hooks/useConfigMode';
+import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {PinScreen} from './PinScreen';
 import {summarizeBackup} from '../backupFile';
 import type {BackupSummary} from '../backupFile';
@@ -43,7 +44,19 @@ type BackupSource = (typeof BACKUP_SOURCES)[number];
 export function BackupScreen({
   emu,
   blockScreenshots = true,
+  configMode,
+  setConfigMode,
+  probe,
+  onCheck,
+  checking,
 }: {
+  configMode: boolean;
+  setConfigMode: (on: boolean) => void;
+  /** The label probe App runs while in config mode; `ok` means unlocked. */
+  probe: {at: number; ok: boolean; note: string} | null;
+  /** Runs one label probe, on demand. See App: never on a timer. */
+  onCheck: () => Promise<void>;
+  checking: boolean;
   emu: EmuSession;
   blockScreenshots?: boolean;
 }) {
@@ -88,7 +101,27 @@ export function BackupScreen({
    * twice - the sequence is three firmware quirks deep and only worth getting
    * right once.
    */
-  const config = useConfigMode(emu);
+  const configReady = configMode && probe?.ok === true;
+
+  /*
+   * THE BRIDGE MUST NOT RELAY A BACKUP.
+   *
+   * `captureBackup` makes the key type its whole encrypted backup as
+   * keystrokes, and the Bluetooth keyboard forwards IFACE.KEYBOARD frames to
+   * the paired computer. With a host connected, the backup went there too -
+   * measured twice, into a terminal on the other machine.
+   *
+   * The bridge cannot tell a backup from a password by looking at reports. It
+   * can be told that the app is about to make the key talk, and that none of
+   * it is for the host.
+   */
+  const {suspend: suspendBridge} = useSharedBtKeyboard();
+
+  /*
+   * Whether the app can hold the button, or only listen while you do.
+   * `canPress` is the debug-console probe; a production key answers no.
+   */
+  const canTrigger = emu.canPress === true;
 
   /* A staged backup must not outlive the screen that made it. */
   useEffect(() => () => { void NativeShare.clearShared().catch(() => {}); }, []);
@@ -111,7 +144,7 @@ export function BackupScreen({
        */
       if (!device.capabilities) await device.connect();
       const backup = device.capabilities.gestures.backup;
-      const result = await device.captureBackup({
+      const result = (await suspendBridge(() => device.captureBackup({
         /*
          * The trigger is ours because pressing a button is platform-specific;
          * the library does the capture, decode and verification - and it says
@@ -121,12 +154,27 @@ export function BackupScreen({
          * config-mode gesture. A hold this screen picked itself would be a
          * backup on one key and a typed slot on another.
          */
+        /*
+         * NO TRIGGER ON A KEY THE APP CANNOT PRESS.
+         *
+         * `holdTicks` throws without the debug console (useHardKey.ts), which
+         * is every production key - so on one of those the app cannot start a
+         * backup at all, and a button that tries can only fail. The library
+         * makes `trigger` optional (plugins/device/index.js:2276) and simply
+         * listens when it is absent, which is exactly right: the person holds
+         * button 1 themselves and the capture picks it up off the same stream.
+         *
+         * Same capture, same decode, same verification either way. The only
+         * difference is whose finger starts it.
+         */
         /* The ACTIVE key's hold, not the emulator's. See useOkEmu.holdTicks. */
-        trigger: () => emu.holdTicks(backup.button, backup.ticks, {allowGesture: true}),
+        trigger: canTrigger
+          ? () => emu.holdTicks(backup.button, backup.ticks, {allowGesture: true})
+          : undefined,
         layout,
         timeoutMs: 120000,
         onProgress: ({characters}: {characters: number}) => setProgress(characters),
-      });
+      }))) as {text: string; verified: boolean; digest?: string | null};
 
       setText(result.text);
       setVerified(result.verified);
@@ -164,7 +212,7 @@ export function BackupScreen({
     } finally {
       setBusy(null);
     }
-  }, [getKey]);
+  }, [getKey, suspendBridge]);
 
   /*
    * Take the backup key from a PGP key instead of a passphrase.
@@ -329,8 +377,22 @@ export function BackupScreen({
           encrypted under your backup passphrase if you set one, and in the
           clear if you did not.
         </Text>
+        {!canTrigger ? (
+          <Text style={styles.note}>
+            This key takes no presses from the app, so you start the backup:
+            press below, then hold button 1 on the key until it finishes typing.
+          </Text>
+        ) : null}
         <Btn
-          title={busy === 'capture' ? `Reading… ${progress} chars` : 'Back up now'}
+          title={
+            busy === 'capture'
+              ? canTrigger
+                ? `Reading… ${progress} chars`
+                : `Listening… ${progress} chars — hold button 1`
+              : canTrigger
+                ? 'Back up now'
+                : 'Capture backup'
+          }
           tone="primary"
           disabled={busy !== null || locked}
           onPress={capture}
@@ -404,7 +466,7 @@ export function BackupScreen({
                 placeholderTextColor={theme.textDim}
                 style={styles.input}
               />
-              {config.ready ? (
+              {configReady ? (
                 <Btn
                   title={busy === 'pgpBackup' ? 'Setting…' : 'Use this key for backups'}
                   tone="primary"
@@ -432,30 +494,19 @@ export function BackupScreen({
             placeholderTextColor={theme.textDim}
             style={styles.input}
           />
-          {!config.ready ? (
+          {!configReady ? (
             <>
-              <Text style={styles.note}>
-                The key only accepts a backup key in config mode, and getting
-                there locks it. The app holds button 6, you enter your PIN
-                again, and afterwards the app has to be restarted — config mode
-                ends only at a restart.
-              </Text>
-              <Btn
-                title={config.entering ? 'Holding…' : 'Enter config mode'}
-                tone="primary"
-                disabled={config.entering || locked}
-                onPress={config.enter}
+              <ConfigModePanel
+                emu={emu}
+                configMode={configMode}
+                setConfigMode={setConfigMode}
+                probe={probe}
+              onCheck={onCheck}
+              checking={checking}
+                purpose="set a backup passphrase"
               />
-              {config.error ? (
-                <Text style={styles.error}>{config.error}</Text>
-              ) : null}
-              {config.entered ? (
-                <>
-                  <Text style={styles.note}>
-                    The key locked itself. Enter your PIN to carry on.
-                  </Text>
-                  <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
-                </>
+              {configMode ? (
+                <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
               ) : null}
             </>
           ) : (
