@@ -146,6 +146,45 @@ const flashWalkStride2019 = {
   ],
 };
 
+/**
+ * Setters handed a literal 0 where they dereference a pointer, 2019 spelling.
+ *
+ * SAME DEFECT AND SAME THREE SHAPES as `_shared.js:nullSetterPointers`, which
+ * v2.1.0 and v2.1.1 import; this tree predates the rename, so its setters are
+ * `onlykey_eeset_*` where later releases have `okeeprom_eeset_*`, and a
+ * literal cannot be shared across that.
+ *
+ * MEASURED, from the tombstone rather than from reading:
+ *
+ *   F/libc  Fatal signal 11 (SIGSEGV), fault addr 0x0 in tid (okemu-firmware)
+ *     #00 onlykey_eeset_common+76
+ *     #01 onlykey_eeset_failedlogins+28
+ *     #02 payload(int)+804
+ *     #03 checkKey(Task*)+808
+ *     #04 SoftTimerClass::testAndCall(Task*)+196
+ *
+ * On a Teensy the write goes to address 0 and is harmless enough to have
+ * shipped; hosted, it takes the whole process down, which is why this read as
+ * "the app leaves the screen during PIN entry" for three runs before anyone
+ * captured logcat while it happened.
+ *
+ * The third site is spelled with a space before the paren and carries no
+ * comment - the shared patch records the same trap, and it is found by
+ * scanning the STAGED tree for setters whose first argument is a numeric
+ * literal rather than by reading a diff.
+ */
+const nullSetterPointers2019 = {
+  file: 'sketch/OnlyKey.ino',
+  edits: [
+    ['onlykey_eeset_failedlogins(0); //Set failed login counter to 0',
+     '{ uint8_t zero = 0; onlykey_eeset_failedlogins(&zero); } //Set failed login counter to 0 - null pointer, see scripts/versions/v0.2-beta.8.js'],
+    ['onlykey_eeset_sincelastregularlogin(0); //Set failed logins since last regular login to 0',
+     '{ uint8_t zero = 0; onlykey_eeset_sincelastregularlogin(&zero); } //Set failed logins since last regular login to 0 - null pointer, see scripts/versions/v0.2-beta.8.js'],
+    ['onlykey_eeset_sincelastregularlogin (0);',
+     '{ uint8_t zero = 0; onlykey_eeset_sincelastregularlogin(&zero); } /* null pointer, see scripts/versions/v0.2-beta.8.js */'],
+  ],
+};
+
 module.exports = {
   version: 'v0.2-beta.8',
   pins: { libraries: '307ba86', 'OnlyKey-Firmware': '697c4c0' },
@@ -167,38 +206,42 @@ module.exports = {
   ],
   status: 'boots',
   notes: [
-    'BOOTS, PROVISIONS, DOES NOT UNLOCK - and the reason is now half known.',
+    'IT UNLOCKS. The 2019 beta has never unlocked in this project until now:',
+    '45 passed, 2 failed, 10 skipped, up from 12 passed. It boots, provisions,',
+    'unlocks with its PIN on three runs out of three, reads and writes labels,',
+    'and gets as far as cryptoSign.',
     '',
-    'THE FLASH STRIDE IS FIXED. This release carried no shared patches at all,',
-    'so it never got flashWalkStride - the fix whose own comment in _shared.js',
-    'reads "without this the PIN never matches". It could not simply be',
-    'imported: this tree predates the rename, so its walkers are',
-    'onlykey_flashget_common / onlykey_flashset_common where every later',
-    'release has okcore_*. A version-local copy is above.',
+    'IT NEEDED TWO SHARED PATCHES IT NEVER HAD, both in the 2019 spelling.',
+    'This script carried only its own two RNG fixes, and no shared list at',
+    'all - the same gap that made v2.1.2 store a PIN it then refused.',
     '',
-    'PROVED BY THE ARTEFACT, not by reading. flash.bin pulled off the phone',
-    'after a provision now shows a contiguous 64-byte run at sector 118 +0 -',
-    'the nonce and the PIN hash written whole. v2.1.2 without this patch wrote',
-    'four bytes and skipped four, all the way down, and that was exactly why',
-    'it stored a PIN it then refused.',
+    '  flashWalkStride2019      unsigned long is 8 bytes on a 64-bit host, so',
+    '                           the flash walk advanced twice as far as the',
+    '                           byte buffer beside it and every other 32-bit',
+    '                           word was lost. Proved by dumping flash.bin:',
+    '                           a contiguous 64-byte run at sector 118 +0',
+    '                           where there had been four-on/four-off.',
+    '  nullSetterPointers2019   three setters handed a literal 0 where they',
+    '                           dereference a pointer. Proved by the tombstone:',
+    '                           SIGSEGV at 0x0 in onlykey_eeset_common, from',
+    '                           onlykey_eeset_failedlogins, from payload().',
+    '                           On a Teensy that write is harmless enough to',
+    '                           have shipped; hosted it kills the process, so',
+    '                           it read as "the app leaves the screen during',
+    '                           PIN entry" until someone captured logcat while',
+    '                           it happened.',
     '',
-    'WHAT IS STILL WRONG. With the flash correct the failure MOVED rather than',
-    'went away. It used to time out at 20 s on the unlock and carry on; now',
-    'the app leaves the screen during PIN entry, always after the sixth press',
-    'and before the seventh completes 1234561. Three runs, identical.',
+    'WHAT IS LEFT: the config-mode gesture. cryptoSign needs config mode and',
+    'gets "the device never locked after 3 holds, so the config-mode gesture',
+    'was not taken". A long-press band on a 2019 firmware is the obvious',
+    'suspect and is not yet measured.',
     '',
-    'Ruled out so far: no SIGSEGV, no tombstone, no abort in logcat, and the',
-    'AIRCR trap never fires - so this is NOT the CPU_RESTART path that',
-    'FINDING-cpu-restart-writes-to-unmapped-memory.md covers, and',
-    'CPU_RESTART_ADDR is correctly rebased in the staged tree.',
-    '',
-    'Next measurement: capture logcat across the sixth press with the firmware',
-    'thread named, and find out whether the process dies or is merely',
-    'backgrounded. The distinction decides whether this is the firmware, the',
-    'HAL, or the runner.',
+    'Status stays boots rather than tested, on the same rule applied to',
+    'v2.1.2: the suite has to pass, not merely run.',
   ].join(String.fromCharCode(10)),
   patches: [
     flashWalkStride2019,
+    nullSetterPointers2019,
     rngStirsAnAddressNotAValue,
     rngloopStirsAddressesNotValues,
   ],

@@ -160,6 +160,41 @@ The lesson is the one the matrix was built on and this file forgot for a
 day: **measure the artefact, not the source.** The flash file answered in one
 command what six readings of the firmware could not.
 
+## The same gap was in v0.2-beta.8, and cost it more
+
+The 2019 beta carried only its own two RNG fixes and no shared list either. It
+showed the same symptom - boots, provisions, reports INITIALIZED, every button
+arrives as itself, unlock times out - and needed the same fix in the 2019
+spelling (`onlykey_flashget_common`, not `okcore_*`). `flash.bin` after a
+provision confirmed it the same way: a contiguous 64-byte run where there had
+been four bytes written and four skipped.
+
+That alone did not fix it, and the second half is worth recording because the
+FAILURE MOVED rather than went away. With the flash correct, the app started
+dying during PIN entry instead of timing out. Logcat captured while it
+happened named it in one line:
+
+```
+F/libc  Fatal signal 11 (SIGSEGV), fault addr 0x0 in tid (okemu-firmware)
+  #00 onlykey_eeset_common+76
+  #01 onlykey_eeset_failedlogins+28
+  #02 payload(int)+804
+  #03 checkKey(Task*)+808
+```
+
+Three setters handed a literal `0` where they dereference a pointer - the same
+defect as `_shared.js:nullSetterPointers`, again in the older spelling. On a
+Teensy that write goes to address 0 and is harmless enough to have shipped;
+hosted, it takes the whole process down.
+
+**With both, the beta unlocks for the first time in this project: 45 passed,
+up from 12.** Two failures remain, on the config-mode gesture.
+
+The general lesson for any release added later: **a version script with an
+empty or short patch list is a claim, not a neutral default.** `_shared.js`
+holds fixes that make the firmware RUN hosted, and a release that predates a
+rename needs them under its own names rather than not at all.
+
 ## Status
 
 **Fixed.** `v2.1.2.js` is `tested`: 87 passed, 0 failed, 43 skipped, swept as
