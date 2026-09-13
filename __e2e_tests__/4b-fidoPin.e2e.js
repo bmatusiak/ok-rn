@@ -37,9 +37,40 @@
 const {getOnlyKey} = require('../src/onlykey');
 const {pressDigits} = require('./helpers/pressDigits');
 const {protocol, device: deviceLib} = require('node-onlykey-lib');
-
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
+
+/**
+ * Everything on the bus, for the one failure that keeps costing a sweep a run.
+ *
+ * "a PIN can be changed, and changed back" answers CTAP1_ERR_INVALID_COMMAND
+ * about one run in four - measured at 4 of 15 across a full production sweep,
+ * never moving to another test. The status is self-contradictory: the same
+ * clientPin subcommand succeeded moments earlier, so the device plainly knows
+ * it. Every occurrence follows another clientPin exchange, which is the shape
+ * of a late reply being matched to the next request rather than of a device
+ * refusing anything (compare
+ * FINDING-a-collector-ate-the-previous-replys-reports.md, the same class one
+ * layer down).
+ *
+ * So capture the wire and let the next failure say what is on it, instead of
+ * being read as a device that forgot a command it had just run.
+ * Soft key only: a real key over USB does not come through OkEmu.
+ */
+function busTap() {
+  if (!OkEmu || typeof OkEmu.on !== 'function' || !OkEmu.isRunning || !OkEmu.isRunning()) {
+    return {lines: () => ['(no soft-key bus to tap)'], off: () => {}};
+  }
+  const seen = [];
+  const t0 = Date.now();
+  const off = OkEmu.on('stream', e => {
+    const hex = Array.from(e.bytes).slice(0, 20).map(b => b.toString(16).padStart(2, '0')).join('');
+    const tag = ['kbd', 'fido', 'vend', 'ser'][e.iface] || e.iface;
+    seen.push(`+${Date.now() - t0}ms ${tag}${e.dir === 0 ? '<' : '>'} ${hex}`);
+  });
+  return {lines: () => seen.slice(-40), off};
+}
+
 
 const {CtapHid} = protocol.ctaphid;
 const {FidoAdmin, RESET_CONFIRMATION} = deviceLib.fido;
@@ -229,7 +260,21 @@ module.exports = function fidoPin({describe, it}) {
       const pin = await authenticate(fido, log);
       const other = pin === FIDO_PIN ? FIDO_PIN_ALT : FIDO_PIN;
 
-      await fido.changePin(pin, other, {timeoutMs: 10000});
+      /*
+       * THE FIRST CHANGE IS THE ONE THAT FAILS. Not the second - there is
+       * never an intervening log line when it goes wrong - so the 750ms
+       * settle further down cannot be what protects it. See busTap() above.
+       */
+      const tap = busTap();
+      try {
+        await fido.changePin(pin, other, {timeoutMs: 10000});
+      } catch (e) {
+        await delay(1500);
+        log(`bus across the failed changePin: ${JSON.stringify(tap.lines())}`);
+        throw e;
+      } finally {
+        tap.off();
+      }
       current = other;
       log(`changed to the ${other === FIDO_PIN ? 'primary' : 'alternate'} PIN`);
 
