@@ -1,6 +1,6 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
-import {Btn, KeyValue, Section} from '../ui/components';
+import {Btn, HoldTicks, KeyValue, LedCircle, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
 import OkEmu from '../transport/OkEmu';
@@ -162,7 +162,7 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         showsVerticalScrollIndicator={false}>
         <KeySource keys={keys} />
         <View style={styles.locked}>
-          <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
+          <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} led={keys.backend === 'embedded' ? emu.led : undefined} />
         </View>
       </ScrollView>
     );
@@ -278,6 +278,42 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
       showsVerticalScrollIndicator={false}>
       <KeySource keys={keys} />
 
+      {emu.canPress !== true ? (
+        <Section title="Buttons">
+          <Text style={styles.hint}>
+            This key has its own — six of them, under your finger. The app
+            does not draw a keypad for a key you can press. A site asking for
+            a security key is waiting on one of these; any will do.
+          </Text>
+        </Section>
+      ) : (
+      <Section title="Buttons">
+        <Text style={styles.hint}>
+          The key's entire input surface. A site asking for a security key
+          waits on one of these — any of them will do. Hold one and the counter
+          below the light says where you are: up to 20 types the slot, past 20
+          types its b profile, and past 72 it stops typing and does something —
+          a backup on 1, lock on 3, config mode on 6. It lets go at 89, before
+          the point the firmware refuses the press outright.
+        </Text>
+        {keys.backend === 'embedded' ? (
+          <View style={styles.ledRow}>
+            <LedCircle pixels={emu.led} />
+          </View>
+        ) : null}
+        <HoldTicks ticks={emu.pressTicks} />
+        {emu.settling ? <Text style={styles.settling}>{emu.settling}</Text> : null}
+        <View style={styles.pad}>
+          <Keypad
+            onPress={emu.press}
+            onHoldStart={emu.beginHold}
+            onHoldEnd={emu.endHold}
+            buttons={emu.capabilities?.buttons ?? (emu.model === 'duo' ? 3 : 6)}
+          />
+        </View>
+      </Section>
+      )}
+
       {/*
         THE PANEL NAMES ITS OWN SUBJECT.
 
@@ -385,34 +421,6 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         </Section>
       ) : null}
 
-      {emu.canPress !== true ? (
-        <Section title="Buttons">
-          <Text style={styles.hint}>
-            This key has its own — six of them, under your finger. The app
-            does not draw a keypad for a key you can press. A site asking for
-            a security key is waiting on one of these; any will do.
-          </Text>
-        </Section>
-      ) : (
-      <Section title="Buttons">
-        <Text style={styles.hint}>
-          The key's entire input surface. A site asking for a security key
-          waits on one of these — any of them will do. Hold one to count ticks:
-          up to 20 types the slot, past 20 types its b profile. It releases
-          itself at 71, before the band that takes a backup.
-        </Text>
-        {emu.settling ? <Text style={styles.settling}>{emu.settling}</Text> : null}
-        <View style={styles.pad}>
-          <Keypad
-            onPress={emu.press}
-            onHoldStart={emu.beginHold}
-            onHoldEnd={emu.endHold}
-            ticks={emu.pressTicks}
-            buttons={emu.capabilities?.buttons ?? (emu.model === 'duo' ? 3 : 6)}
-          />
-        </View>
-      </Section>
-      )}
     </ScrollView>
   );
 }
@@ -463,6 +471,7 @@ const styles = StyleSheet.create({
   root: {flex: 1},
   content: {paddingBottom: 4},
   kv: {marginTop: 6},
+  ledRow: {marginTop: 14, marginBottom: 4},
   spinner: {marginVertical: 18},
   hint: {color: theme.textDim, fontSize: 11, lineHeight: 16, marginTop: 10},
   settling: {color: theme.warn, fontSize: 12, lineHeight: 17, marginTop: 10},

@@ -23,7 +23,12 @@ import {theme} from './theme';
  * emulator releases the pad at 71 whatever the thumb does. Holding longer
  * simply does nothing.
  *
- * `ticks` is that counter, shown live. On hardware the LED tells you which
+ * `ticks` is that counter. It is NOT drawn on the key any more: the counter
+ * sat on the button being held, which is the one place a thumb is guaranteed
+ * to be covering. Callers render it somewhere visible instead - see
+ * HoldTicks, which the Buttons panel puts under the LED.
+ *
+ * On hardware the LED tells you which
  * band you are in while you are still in it; on a phone the pad and the LED
  * are the same screen, so the number goes on the key itself.
  */
@@ -31,7 +36,6 @@ export function Keypad({
   onPress,
   onHoldStart,
   onHoldEnd,
-  ticks = null,
   disabled = false,
   buttons = 6,
 }: {
@@ -40,7 +44,6 @@ export function Keypad({
   onHoldStart?: (button: number) => void;
   onHoldEnd?: (button: number) => void;
   /** The counted hold in progress, if any. */
-  ticks?: {button: number; ticks: number} | null;
   disabled?: boolean;
   /**
    * How many buttons the key HAS. Six on a Classic, three on a DUO - the
@@ -78,15 +81,6 @@ export function Keypad({
                 disabled && styles.keyDisabled,
               ]}>
               <Text style={styles.keyText}>{n}</Text>
-              {ticks?.button === n ? (
-                <Text
-                  style={[
-                    styles.ticks,
-                    ticks.ticks > 20 && styles.ticksHold,
-                  ]}>
-                  {ticks.ticks} · {ticks.ticks <= 20 ? 'tap' : 'hold'}
-                </Text>
-              ) : null}
             </Pressable>
           ))}
         </View>
@@ -134,14 +128,6 @@ const styles = StyleSheet.create({
    * appears. A pad that grows under your thumb mid-press is a pad you let go
    * of at the wrong moment - and the moment is the whole point here.
    */
-  ticks: {
-    position: 'absolute',
-    bottom: 6,
-    color: theme.textDim,
-    fontSize: 11,
-    fontVariant: ['tabular-nums'],
-  },
-  ticksHold: {color: theme.warn},
 
   dots: {flexDirection: 'row', gap: 8, justifyContent: 'center'},
   dot: {

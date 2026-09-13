@@ -103,7 +103,18 @@ export function useKey({
     ? `The key is settling after a security-key ceremony and drops every press for up to 20 seconds (${Math.ceil((settleUntil - now) / 1000)} s to go).`
     : null;
 
-  const [mode, setModeState] = useState<KeyMode>('manual');
+  /*
+   * A PLUGGED-IN HARD KEY WINS BY DEFAULT.
+   *
+   * This defaulted to 'manual', which meant attaching a key changed nothing:
+   * the app stayed on the soft key and the login screen kept offering its
+   * keypad while the real key sat on the bus doing nothing. Someone who plugs
+   * a key into a phone has said which key they mean.
+   *
+   * Only the DEFAULT moves - a stored setting still wins, so anyone who chose
+   * 'manual' keeps it.
+   */
+  const [mode, setModeState] = useState<KeyMode>('auto');
   const [override, setOverrideState] = useState<Backend | null>(null);
   /**
    * Whether a hard key is on the bus. NULL until the first look.
@@ -209,12 +220,40 @@ export function useKey({
     }
   }, []);
 
+  /*
+   * A HARD-KEY OVERRIDE DOES NOT SURVIVE THE HARD KEY LEAVING.
+   *
+   * `backend` below still lets an override beat everything, and that is right
+   * while both keys exist. It stops being right the moment the key is pulled:
+   * the override then names something that is not on the bus, so the app sits
+   * on a dead handle - "Enter your PIN on the key's own buttons", no keypad,
+   * no LED - for a key that is in your pocket. Measured on the login screen:
+   * pulling the key left the PIN screen on the hard-key branch with no way
+   * back, because the Hard key / Soft Key row only draws when one is attached.
+   *
+   * Only the 'usb' direction clears. An override to the SOFT key is never
+   * stranded - the soft key is always running - so someone who deliberately
+   * chose it keeps it when they unplug.
+   *
+   * `attached === false` rather than falsy: null means USB has not answered
+   * yet, which happens on every launch, and clearing on that would throw the
+   * choice away before it was ever tested.
+   *
+   * setOverride, not setOverrideState: the stored value has to go too, or the
+   * next launch reads it back and lands on the same dead handle with no key
+   * ever having been plugged in.
+   */
+  useEffect(() => {
+    if (attached === false && override === 'usb') void setOverride(null);
+  }, [attached, override, setOverride]);
+
   /**
    * Which key wins.
    *
-   * An override beats everything, including a key that is not plugged in - if
-   * someone has forced the hard key, showing them the soft one instead would be
-   * answering a different question than they asked.
+   * An override beats everything EXCEPT a hard key that has gone away - see
+   * the effect above, which clears that case before this runs. Short of that,
+   * if someone has forced a key, showing them the other one would be answering
+   * a different question than they asked.
    */
   const backend: Backend = useMemo(() => {
     if (override) return override;

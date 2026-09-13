@@ -83,6 +83,20 @@ export const levelColor = {
  * (uninitialized / locked / unlocked) and the transports'
  * (connected / advertising / error), because the same pill shows both.
  */
+/**
+ * The device's NeoPixel as a CSS colour, or null when it is off/unknown.
+ *
+ * SOFT KEYS ONLY. `emu.led` is packed 0xRRGGBB per pixel, straight from the
+ * emulator's led events; a hard key's LED is on the key in your hand and has
+ * no feed over USB, so callers pass nothing for one.
+ */
+export function ledColor(pixels: number[] | undefined): string | null {
+  if (!pixels || !pixels.length || !pixels[0]) {
+    return null;
+  }
+  return `#${pixels[0].toString(16).padStart(6, '0')}`;
+}
+
 export function stateColor(state: string): string {
   switch (state) {
     case 'unlocked':

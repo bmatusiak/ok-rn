@@ -12,9 +12,17 @@ import {useCallback, useState} from 'react';
  *   3. Reveals the developer surfaces - the E2E runner, USB HID, raw sends -
  *      which are hidden otherwise.
  *
- * DEFAULTS ON IN A DEBUG BUILD, and that is load-bearing: `npm run e2e:run`
- * drives the app from a terminal and cannot type a PIN, so a debug build that
- * demanded one would strand the suite at a login screen.
+ * DEFAULTS OFF, in every build. It used to default to `__DEV__`, which meant
+ * a debug build opened with the PIN bypassed and the screenshot block down -
+ * so the app a developer looks at all day was never the app anyone ships, and
+ * the door could not be examined without first turning something off.
+ *
+ * `npm run e2e:run` was the reason for the old default: it drives the app from
+ * a terminal and cannot type a PIN, so with the gate up it would stall at the
+ * login screen. It now turns the mode on for itself - LoginScreen carries a
+ * `__DEV__`-only way in, and tools/e2e.js taps it before opening the drawer.
+ * An explicit step in the runner, rather than a default that changed what
+ * every debug launch looked like.
  *
  * NOT PERSISTED, and now by choice rather than by necessity. This used to say
  * the app had no storage dependency, which stopped being true when AsyncStorage
@@ -22,12 +30,11 @@ import {useCallback, useState} from 'react';
  *
  * It stays unpersisted because remembering it is the wrong behaviour: testing
  * mode bypasses the PIN and turns off the screenshot block, and a setting like
- * that surviving a relaunch is a setting someone forgets is on. The default is
- * already right for both builds - on in debug, off in release - so there is
- * nothing worth carrying across a restart.
+ * that surviving a relaunch is a setting someone forgets is on. Every launch
+ * starts with the gate up.
  */
 export function useTestingMode() {
-  const [enabled, setEnabled] = useState<boolean>(__DEV__);
+  const [enabled, setEnabled] = useState<boolean>(false);
 
   const toggle = useCallback(() => setEnabled(prev => !prev), []);
 

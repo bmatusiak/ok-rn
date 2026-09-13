@@ -267,8 +267,13 @@ async function main() {
    *
    * "Menu" is the accessibility label on the logo in the top bar, which is
    * what opens the drawer; "Testing" is the item inside it. That item exists
-   * only in testing mode - which defaults ON in a debug build precisely so
-   * this runner does not stall at a PIN pad it cannot type on.
+   * only in testing mode, and testing mode no longer defaults on - so this
+   * turns it on first, from the login screen, before the top bar exists.
+   *
+   * "Enter testing mode" is a __DEV__-only button on LoginScreen, put there
+   * for exactly this: the runner cannot type a PIN, and everything below is
+   * behind the door until the mode is on. Optional, because a relaunch onto an
+   * already-unlocked app lands past the login screen with no such button.
    */
   /*
    * CHECK IT IS OURS FIRST. The launch may have died during the bundle load,
@@ -276,6 +281,13 @@ async function main() {
    * reported as a missing button rather than as a missing app.
    */
   await waitForApp({timeoutMs: 60000});
+
+  try {
+    await tapText('Enter testing mode', {timeoutMs: 60000});
+    await sleep(800);
+  } catch {
+    /* Already past the login screen - see the note above. */
+  }
 
   await tapText('Menu', {timeoutMs: 120000});
   await sleep(600);

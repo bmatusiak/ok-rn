@@ -16,12 +16,22 @@ import type {DeviceState} from '../hooks/useOkEmu';
  */
 export function LoginScreen({
   device,
+  attached,
   onContinue,
+  onTesting,
 }: {
   device: DeviceState;
+  attached?: boolean | null;
   onContinue: () => void;
+  /** Turns testing mode on from outside the door. Debug builds only. */
+  onTesting?: () => void;
 }) {
   const setup = device === 'uninitialized';
+  const hint = setup
+    ? 'This key has no PIN yet. Choose one to finish setting it up.'
+    : device === 'locked'
+      ? null
+      : 'Waiting for the key…';
 
 
   return (
@@ -36,34 +46,59 @@ export function LoginScreen({
         <Row label="app" value={buildInfo.app} />
       </View>
 
+      {/*
+        * A HARD KEY BEING PRESENT IS NOT VISIBLE ANYWHERE ELSE ON THIS SCREEN.
+        *
+        * Everything in the card above comes from `buildInfo` - the soft key's
+        * staged firmware, baked in at build time - so it reads exactly the same
+        * with a key plugged in as without, and describes the emulator either
+        * way. Attachment is the one fact here that the device gets a say in.
+        *
+        * `attached` is tri-state: null means USB has not answered yet, which is
+        * not the same as nothing being there, so only `true` says anything.
+        */}
+      {attached === true ? (
+        <Text style={styles.attached}>Hard key attached</Text>
+      ) : null}
+
       <View style={styles.action}>
         <Btn
           title={setup ? 'Set up this key' : 'Log in'}
           tone="primary"
           onPress={onContinue}
         />
-        <Text style={styles.hint}>
-          {setup
-            ? 'This key has no PIN yet. Choose one to finish setting it up.'
-            : device === 'locked'
-              /*
-               * A DUO IS NOT UNLOCKED ON A KEYPAD. Its PIN travels in the
-               * message body, so telling its owner to press six buttons is
-               * wrong twice over - it has three, and none of them enter a PIN.
-               *
-               * Read from the BUILD rather than from the device: this screen is
-               * the soft key's own door, and the model is a property of the
-               * firmware that was staged. The device's capabilities are not
-               * available here anyway - they are parsed from the status the
-               * firmware broadcasts on UNLOCK, which is the thing this screen
-               * exists to reach.
-               */
-              ? buildInfo.model === 'duo'
-                ? 'Enter your PIN.'
-                : 'Enter your PIN on the six-button keypad.'
-              : 'Waiting for the key\u2026'}
-        </Text>
+        {/*
+          * THE PIN LINE IS GONE at the user's direction: by the time it was
+          * read the keypad it describes is already on screen, and it said
+          * nothing the pad did not. What is left are the two states that are
+          * not "enter your PIN" - a key with no PIN yet, and one that has not
+          * answered.
+          */}
+        {hint ? <Text style={styles.hint}>{hint}</Text> : null}
       </View>
+
+      {/*
+        * TESTING MODE SITS AT THE FOOT OF THE PAGE, not under Log in.
+        *
+        * It is not part of logging in - it is a non-production tool that
+        * bypasses the PIN and drops the screenshot block - and a button
+        * directly below the primary action reads as a second way to do the
+        * same thing. Absolutely positioned so it does not shift the centred
+        * block above it.
+        *
+        * `__DEV__` rather than a prop check alone: this must not exist in a
+        * release bundle at all, not merely go unrendered. It is the only way
+        * in from outside the door - the toggle lives in the drawer, which
+        * opens from a top bar this screen does not draw - so tools/e2e.js taps
+        * it too.
+        */}
+      {__DEV__ && onTesting ? (
+        <View style={styles.devFooter}>
+          <View style={styles.devFooterInner}>
+            <Btn title="Enter testing mode" onPress={onTesting} />
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -95,6 +130,26 @@ const styles = StyleSheet.create({
   row: {flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6},
   rowLabel: {color: theme.textDim, fontSize: 12},
   rowValue: {color: theme.textSecondary, fontSize: 12, fontFamily: theme.mono, flexShrink: 1},
+  attached: {
+    marginTop: 12,
+    color: theme.textSecondary,
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  /*
+   * left/right rather than a width, with the sizing on the inner view: an
+   * absolute box takes its width from its anchors, so `maxWidth` alone pinned
+   * it to the left edge at 320 wide instead of centring it. The inner view
+   * carries the same 320 cap as `action`, so it lines up under Log in.
+   */
+  devFooter: {
+    position: 'absolute',
+    left: 24,
+    right: 24,
+    bottom: 24,
+    alignItems: 'center',
+  },
+  devFooterInner: {width: '100%', maxWidth: 320},
   action: {marginTop: 32, width: '100%', maxWidth: 320, gap: 12},
   hint: {color: theme.textDim, fontSize: 12, textAlign: 'center', lineHeight: 17},
 });
