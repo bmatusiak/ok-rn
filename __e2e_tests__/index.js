@@ -14,6 +14,7 @@ module.exports = [
     require('./8b-backup.e2e.js'),
     require('./9-cryptoSign.e2e.js'),
     require('./10-derive.e2e.js'),
+    require('./10b-thirdPartyOrigin.e2e.js'),
     require('./11-compositePgp.e2e.js'),
     require('./12-identity.e2e.js'),
     require('./13-deriveParity.e2e.js'),
