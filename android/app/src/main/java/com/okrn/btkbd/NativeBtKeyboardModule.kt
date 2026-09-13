@@ -528,8 +528,29 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
       0x81.toByte(), 0x02,    //   Input (Data, Variable, Absolute)  modifiers
       0x95.toByte(), 0x01,    //   Report Count (1)
       0x75, 0x08,             //   Report Size (8)
-      0x05, 0x0C,             //   Usage Page (Consumer)
-      0x09, 0xB8.toByte(),    //   Usage (Eject)
+      /*
+       * A BARE CONSTANT, with no usage on it.
+       *
+       * This used to declare the reserved byte as Usage Page (Consumer) /
+       * Usage (Eject) before the constant - which Apple's descriptor does, and
+       * which is where this was copied from. Windows rejects the whole
+       * descriptor for it:
+       *
+       *   DEVPKEY_Device_DriverProblemDesc
+       *   "The HID Report Descriptor failed validation. An unknown item was
+       *    found in the descriptor."
+       *   ProblemStatus 0xC000001D, ProblemCode 10
+       *
+       * hidparse validates before HidBth starts, so the driver never starts,
+       * never opens the HID L2CAP channels, and the host drops the ACL a few
+       * seconds later. From the phone that reads as "the host refused us" and
+       * from the host as "device cannot start" - neither of which names the
+       * descriptor. Windows' own DriverProblemDesc does.
+       *
+       * The HID spec's boot keyboard (Appendix B.1) has nothing here but the
+       * constant, and the byte is padding the host ignores either way: the
+       * reports this forwards always carry 0 in it.
+       */
       0x81.toByte(), 0x01,    //   Input (Constant)                  reserved
       0x95.toByte(), 0x05,    //   Report Count (5)
       0x75, 0x01,             //   Report Size (1)

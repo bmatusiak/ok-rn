@@ -1,8 +1,10 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {bytes as okbytes} from 'node-onlykey-lib';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import NativeBtKeyboard from '../../specs/NativeBtKeyboard';
 import type {BtHost, BtKeyboardStatusEvent} from '../../specs/NativeBtKeyboard';
 import OkEmu, {IFACE} from '../transport/OkEmu';
+import {reportsFor} from '../btTestText';
 import UsbPipe from '../transport/UsbPipe';
 import {useBackend} from './KeyContext';
 
@@ -26,6 +28,36 @@ import {useBackend} from './KeyContext';
 const REPORT_BYTES = 8;
 
 /**
+ * All keys up. Sent whenever forwarding stops, for any reason.
+ *
+ * A HID report is an ABSOLUTE state, not an event: "the H key is down now".
+ * The release is a second report saying nothing is down. So if the stream ends
+ * between those two - the key unplugged mid-word, the host dropped, the app
+ * withdrew - the last thing the host heard was a key going DOWN, and it holds
+ * it there and auto-repeats forever.
+ *
+ * Measured: a hard key was unplugged part-way through typing a backup and the
+ * host kept repeating a character until the machine was restarted
+ * (FINDING-a-stuck-key-outlives-the-keyboard.md).
+ *
+ * Cheap insurance - eight zero bytes - so it goes on every teardown path
+ * rather than only the ones that seemed likely.
+ */
+const RELEASE_ALL = '0000000000000000';
+
+/**
+ * The host this phone types to, remembered across launches.
+ *
+ * Bonding is not choosing. A phone is paired with a car, a headset and three
+ * computers, and exactly one of them is the thing you want a password typed
+ * into - so which one has to be said once, deliberately, and then trusted.
+ * Without it the only honest thing the app can do is wait for a host to
+ * connect on its own, which is what made this so tedious: publish, then go
+ * poke the computer, every time.
+ */
+const HOST_KEY = 'ok-rn/bt-keyboard/host';
+
+/**
  * How long to stay visible while a host is being paired.
  *
  * The platform's own ceiling, and pairing is a one-off - a keyboard that
@@ -47,8 +79,6 @@ export type BtKeyboard = {
   /** What a host sees this phone called - the adapter name, not "OnlyKey". */
   localName: string;
   hosts: BtHost[];
-  /** Whether firmware keystrokes are being forwarded to the host. */
-  typing: boolean;
   /** Reports forwarded since the last connect - the only proof it is working. */
   sent: number;
   busy: boolean;
@@ -59,7 +89,35 @@ export type BtKeyboard = {
   refreshHosts: () => Promise<void>;
   connect: (address: string) => Promise<void>;
   makeDiscoverable: () => Promise<void>;
-  setTyping: (on: boolean) => void;
+  /** The host address chosen to type to, or null if none has been chosen. */
+  chosenHost: string | null;
+  /** Choose the host to type to; null forgets the choice. */
+  chooseHost: (address: string | null) => Promise<void>;
+  /**
+   * Types a literal string at the host, bypassing the key entirely.
+   *
+   * A LINK TEST, not a typing path - see src/btTestText.ts. It answers "is
+   * anything crossing this link" without pressing a slot and firing real
+   * credentials at whatever window has focus.
+   *
+   * Resolves with how many characters it could not encode.
+   */
+  sendText: (text: string) => Promise<{sent: number; skipped: string[]}>;
+  /**
+   * Stop relaying while the app is deliberately making the key type.
+   *
+   * A BACKUP IS TYPED. `captureBackup` holds button 1 into the gesture band and
+   * the key emits its whole encrypted backup as keystrokes, which the library
+   * reads off the same IFACE.KEYBOARD stream this bridge forwards. With a host
+   * connected, that went to the host too - measured twice, landing in a
+   * terminal on the paired computer
+   * (FINDING-the-bridge-relayed-a-backup.md).
+   *
+   * The bridge cannot tell a backup from a password by looking at reports, and
+   * should not try: it is deliberately dumb. What it CAN be told is "the app is
+   * about to make the key talk, and none of it is for you".
+   */
+  suspend: (during: () => Promise<any>) => Promise<any>;
 };
 
 export function useBtKeyboard(): BtKeyboard {
@@ -77,7 +135,6 @@ export function useBtKeyboard(): BtKeyboard {
   const [host, setHost] = useState('');
   const [hosts, setHosts] = useState<BtHost[]>([]);
   const [localName, setLocalName] = useState('');
-  const [typing, setTypingState] = useState(false);
   const [sent, setSent] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,8 +144,33 @@ export function useBtKeyboard(): BtKeyboard {
    * not be torn down and rebuilt every time one of these changes - a report
    * that arrives during the gap is a character the host never sees.
    */
-  const typingRef = useRef(false);
   const connectedRef = useRef(false);
+
+  /** True while something has deliberately made the key type - see `suspend`. */
+  const suspendedRef = useRef(false);
+
+  /** The chosen host's address, or '' until storage has been read. */
+  const [chosenHost, setChosenHost] = useState<string | null>(null);
+
+  /*
+   * Read from inside the auto-connect timer for the same reason as the two
+   * above: it must not tear the interval down and rebuild it every time a
+   * connect attempt flips `busy`.
+   */
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+
+  useEffect(() => {
+    let cancelled = false;
+    AsyncStorage.getItem(HOST_KEY)
+      .then(stored => {
+        if (!cancelled && stored) setChosenHost(stored);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,15 +200,9 @@ export function useBtKeyboard(): BtKeyboard {
       const connected = event.state === 'connected';
       connectedRef.current = connected;
       if (connected) setSent(0);
-      /*
-       * Forwarding stops when the host goes away, rather than being left armed
-       * against nothing. Re-arming is the user's call: a keyboard that starts
-       * typing the moment a laptop wakes up is not what anyone asked for.
-       */
-      if (!connected) {
-        typingRef.current = false;
-        setTypingState(false);
-      }
+      /* The host went away mid-word: say everything is up, in case it comes
+         back to a keyboard it still thinks is holding a key down. */
+      if (!connected) NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
     });
     return () => sub.remove();
   }, []);
@@ -136,7 +212,7 @@ export function useBtKeyboard(): BtKeyboard {
     const pipe = backend === 'usb' ? UsbPipe : OkEmu;
     const off = pipe.on('stream', (e: {iface: number; dir: number; bytes: Uint8Array}) => {
       if (e.iface !== IFACE.KEYBOARD || e.dir !== 0) return;
-      if (!typingRef.current || !connectedRef.current) return;
+      if (suspendedRef.current || !connectedRef.current) return;
       if (e.bytes.length !== REPORT_BYTES) return;
 
       /*
@@ -152,7 +228,15 @@ export function useBtKeyboard(): BtKeyboard {
         })
         .catch(() => {});
     });
-    return off;
+    return () => {
+      off();
+      /*
+       * Let go of whatever was held. This runs when the ACTIVE KEY CHANGES as
+       * well as on unmount - and a key switch mid-keystroke is exactly the
+       * case that strands a key down on the host.
+       */
+      NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+    };
   }, [backend]);
 
   const refreshHosts = useCallback(async () => {
@@ -161,17 +245,33 @@ export function useBtKeyboard(): BtKeyboard {
       setHosts(list);
 
       /*
-       * The list is the PROFILE's view, and it outranks ours.
+       * THIS POLL MAY PROMOTE, NEVER DEMOTE.
        *
-       * onConnectionStateChanged is a notification, and a connection made
-       * while the app was re-registering - or before this screen mounted -
-       * arrives without one. That happened: the profile listed a connected
-       * host while the banner still read "connecting", which would have left
-       * the Typing section hidden over a keyboard that was ready.
+       * It exists for one case: a connection made while the app was
+       * re-registering, or before this screen mounted, arrives with no
+       * onConnectionStateChanged at all. That happened - the profile listed a
+       * connected host while the banner still read "connecting", which hid the
+       * Typing section over a keyboard that was ready. So finding a live host
+       * here is still worth acting on.
+       *
+       * What it must NOT do is clear `connectedRef` when the list looks empty,
+       * which is what it used to do, every three seconds. The two sides do not
+       * mean the same thing: this list is built from the profile's
+       * `connectedDevices` (NativeBtKeyboardModule.kt:337-343), while the thing
+       * that actually sends is `currentHost()` - the device the connection
+       * callback handed us (:307). Measured: `connectedDevices` came back empty
+       * while the callback's host was live and sending, so the ref went false,
+       * the forwarder stopped, and NOTHING on screen changed - the banner still
+       * said `connected` while the forwarder was dead, because only the ref was
+       * touched. A keyboard that had quietly stopped being a keyboard.
+       *
+       * Disconnection has an authority already, and it is the callback:
+       * onStatus moves the ref and the banner together, so the two cannot
+       * disagree. See FINDING-the-keyboard-silently-disarmed-itself.md.
        */
       const live = list.find(h => h.connected);
-      connectedRef.current = Boolean(live);
       if (live) {
+        connectedRef.current = true;
         setState('connected');
         setHost(live.name || live.address);
       }
@@ -221,8 +321,8 @@ export function useBtKeyboard(): BtKeyboard {
     setBusy(true);
     setError(null);
     try {
-      typingRef.current = false;
-      setTypingState(false);
+      /* Nothing held, before the profile goes away and cannot say so. */
+      await NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
       await NativeBtKeyboard.unregister();
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
@@ -243,6 +343,47 @@ export function useBtKeyboard(): BtKeyboard {
     }
   }, []);
 
+  /**
+   * Choose the host to type to, or clear the choice with null.
+   *
+   * Choosing connects straight away rather than waiting for the next poll,
+   * because someone who just picked a computer means now.
+   */
+  const chooseHost = useCallback(
+    async (address: string | null) => {
+      setChosenHost(address);
+      if (address === null) {
+        await AsyncStorage.removeItem(HOST_KEY);
+        return;
+      }
+      await AsyncStorage.setItem(HOST_KEY, address);
+      if (!connectedRef.current) void connect(address);
+    },
+    [connect],
+  );
+
+  /*
+   * AUTO-CONNECT, but only to the host that was chosen.
+   *
+   * A keyboard that dials whatever it finds is a keyboard that types a
+   * password into the wrong computer, so this never guesses: no choice, no
+   * attempt. With a choice it is safe to be persistent, which is the whole
+   * point of asking for one.
+   *
+   * Piggy-backs on the host poll that already runs while published rather than
+   * adding a second timer, and only fires while disconnected - `connect()` on a
+   * live link is at best a no-op and at worst tears it down.
+   */
+  useEffect(() => {
+    if (state === 'unregistered' || state === 'unsupported') return undefined;
+    if (!chosenHost) return undefined;
+    const timer = setInterval(() => {
+      if (connectedRef.current || busyRef.current) return;
+      void connect(chosenHost);
+    }, HOST_POLL_MS);
+    return () => clearInterval(timer);
+  }, [state, chosenHost, connect]);
+
   const makeDiscoverable = useCallback(async () => {
     setBusy(true);
     setError(null);
@@ -258,9 +399,48 @@ export function useBtKeyboard(): BtKeyboard {
     }
   }, []);
 
-  const setTyping = useCallback((on: boolean) => {
-    typingRef.current = on && connectedRef.current;
-    setTypingState(typingRef.current);
+  /*
+   * Deliberately NOT gated on `typing`. That flag governs whether the KEY's
+   * keystrokes are forwarded, which is a standing state someone arms and
+   * disarms; this is one explicit action with its own button, and requiring
+   * both would mean arming the live path to test the dead one.
+   *
+   * Still gated on a connected host: sendReport against nothing throws per
+   * report, and a hundred rejected promises is not a useful error message.
+   */
+  /*
+   * A ref, not state, for the same reason the other two are: the subscription
+   * is attached once and reads this live. Restoring in `finally` so a failed
+   * capture cannot leave the bridge muted for the rest of the session.
+   */
+  const suspend = useCallback(async (during: () => Promise<any>): Promise<any> => {
+    suspendedRef.current = true;
+    try {
+      return await during();
+    } finally {
+      /* Whatever the key was holding when it stopped, it is not held now. */
+      NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+      suspendedRef.current = false;
+    }
+  }, []);
+
+  const sendText = useCallback(async (text: string) => {
+    const {reports, skipped} = reportsFor(text);
+    if (!connectedRef.current) {
+      throw new Error('no host is connected');
+    }
+    let sentNow = 0;
+    for (const report of reports) {
+      /*
+       * Awaited here, unlike the forwarder. Nothing is racing this - it is a
+       * button, not a stream - and a test that reports "12 sent" should mean
+       * the host acknowledged twelve.
+       */
+      const ok = await NativeBtKeyboard.sendReport(okbytes.toHex(report));
+      if (ok) sentNow += 1;
+    }
+    setSent(n => n + sentNow);
+    return {sent: sentNow, skipped};
   }, []);
 
   return {
@@ -270,7 +450,6 @@ export function useBtKeyboard(): BtKeyboard {
     host,
     localName,
     hosts,
-    typing,
     sent,
     busy,
     error,
@@ -279,6 +458,9 @@ export function useBtKeyboard(): BtKeyboard {
     refreshHosts,
     connect,
     makeDiscoverable,
-    setTyping,
+    sendText,
+    suspend,
+    chosenHost,
+    chooseHost,
   };
 }
