@@ -106,6 +106,46 @@ const rngloopStirsAddressesNotValues = {
   ],
 };
 
+/**
+ * The 32-bit flash stride, spelled for the 2019 tree.
+ *
+ * IDENTICAL IN KIND to `_shared.js:flashWalkStride`, which every 2.x and 3.x
+ * script imports and whose comment reads "without this the PIN never
+ * matches". It cannot simply be imported here: this release predates the
+ * rename, so its functions are `onlykey_flashget_common` /
+ * `onlykey_flashset_common` where later ones are `okcore_*`, and stage.js
+ * refuses a literal that does not match.
+ *
+ * Kept version-local rather than added to _shared.js on that file's own rule:
+ * it holds patches MORE THAN ONE release needs, and exactly one release uses
+ * this spelling.
+ *
+ * WHY IT IS ALMOST CERTAINLY WHAT AILS THIS RELEASE. v2.1.2 was staged with
+ * an empty patch list and showed precisely the symptom recorded below -
+ * boots, provisions, reports INITIALIZED, every button arrives as itself, and
+ * the unlock times out. Dumping flash.bin off the phone showed the nonce and
+ * the PIN hash present at the right offsets with every other 32-bit word
+ * missing, because `unsigned long` is 8 bytes on a 64-bit host and the walk
+ * advances twice as far as the byte buffer beside it. Importing the shared
+ * list took that release from blocked to 87 passed.
+ * ok-rn/FINDING-v2.1.2-sets-a-pin-it-will-not-accept.md
+ */
+const flashWalkStride2019 = {
+  file: 'libraries/onlykey/okcore.cpp',
+  edits: [
+    ['void onlykey_flashget_common(uint8_t *ptr, unsigned long *adr, int len)\n{\n',
+     'void onlykey_flashget_common(uint8_t *ptr, unsigned long *adr_in, int len)\n{\n' +
+     '\t/* Injected by ok-rn stage.js - see scripts/versions/v0.2-beta.8.js.\n' +
+     '\t   unsigned long is 8 bytes on a 64-bit host, which walks flash at\n' +
+     '\t   twice the stride of the byte buffer beside it. */\n' +
+     '\tuint32_t *adr = (uint32_t *)adr_in;\n'],
+    ['void onlykey_flashset_common(uint8_t *ptr, unsigned long *adr, int len)\n{\n',
+     'void onlykey_flashset_common(uint8_t *ptr, unsigned long *adr_in, int len)\n{\n' +
+     '\t/* Same 32-bit stride as onlykey_flashget_common above. */\n' +
+     '\tuint32_t *adr = (uint32_t *)adr_in;\n'],
+  ],
+};
+
 module.exports = {
   version: 'v0.2-beta.8',
   pins: { libraries: '307ba86', 'OnlyKey-Firmware': '697c4c0' },
@@ -127,75 +167,39 @@ module.exports = {
   ],
   status: 'boots',
   notes: [
-    'BOOTS, PROVISIONS, DOES NOT UNLOCK. The .so links, the firmware thread',
-    'runs, OKCONNECT completes, the PIN bracket sets a PIN and the next boot',
-    'reports INITIALIZED. All six buttons arrive as themselves. Unlocking with',
-    'that PIN then times out at 20 s, and the main loop stops answering',
-    'afterwards ("button 1 still owes 10 of 10 ticks").',
+    'BOOTS, PROVISIONS, DOES NOT UNLOCK - and the reason is now half known.',
     '',
-    'WHAT THE CRASH WAS. The firmware thread used to die in setup() before',
-    'any of that:',
+    'THE FLASH STRIDE IS FIXED. This release carried no shared patches at all,',
+    'so it never got flashWalkStride - the fix whose own comment in _shared.js',
+    'reads "without this the PIN never matches". It could not simply be',
+    'imported: this tree predates the rename, so its walkers are',
+    'onlykey_flashget_common / onlykey_flashset_common where every later',
+    'release has okcore_*. A version-local copy is above.',
     '',
-    '  F libc: Fatal signal 11 (SIGSEGV), fault addr 0xe7 in (okemu-firmware)',
-    '    #00 RNGClass::stir(unsigned char const*, unsigned long, unsigned int)',
-    '    #01 setup',
+    'PROVED BY THE ARTEFACT, not by reading. flash.bin pulled off the phone',
+    'after a provision now shows a contiguous 64-byte run at sector 118 +0 -',
+    'the nonce and the PIN hash written whole. v2.1.2 without this patch wrote',
+    'four bytes and skipped four, all the way down, and that was exactly why',
+    'it stored a PIN it then refused.',
     '',
-    'The note here used to record 0x2e4 and guess at an unrebased hardware',
-    'register. The two addresses are 231 and 740, and the fact that they DIFFER',
-    'is the answer: they are ADC samples. The sketch writes',
+    'WHAT IS STILL WRONG. With the flash correct the failure MOVED rather than',
+    'went away. It used to time out at 20 s on the unlock and carry on; now',
+    'the app leaves the screen during PIN entry, always after the sixth press',
+    'and before the seventh completes 1234561. Three runs, identical.',
     '',
-    '  RNG.stir((uint8_t *)analog1, sizeof(analog1), sizeof(analog1)*2);',
+    'Ruled out so far: no SIGSEGV, no tombstone, no abort in logcat, and the',
+    'AIRCR trap never fires - so this is NOT the CPU_RESTART path that',
+    'FINDING-cpu-restart-writes-to-unmapped-memory.md covers, and',
+    'CPU_RESTART_ADDR is correctly rebased in the staged tree.',
     '',
-    'where &analog1 was meant, so the reading is used as an address. Ten of',
-    'them - two in setup(), eight more in rngloop(). The firmware fixed it',
-    'itself in OnlyKey-Firmware@926b052 (2020-05-22). Patched above; see',
-    'ok-rn/FINDING-the-beta-seeded-its-rng-from-an-address-that-was-a-number.md',
-    '',
-    'AND ONE THING IN THE HARNESS. The provisioning suite gated on',
-    'capabilities.debugConsole === true. That value is a TRI-STATE and null',
-    'means unknown - firmware older than the -test/-prod keyword, which is',
-    'this one. Refusing on null refused exactly the old devices the bracket',
-    'exists to reach, while their console output was visible in the same log.',
-    'See ok-rn/FINDING-unknown-was-read-as-no-console.md.',
-    '',
-    'THREE THINGS HAD TO CHANGE IN THE TOOLING TO GET THIS FAR, and they are',
-    'the reason this release is worth the trouble even unfinished:',
-    '',
-    '  * The sketch is at OnlyKey_Beta/OnlyKey_Beta.ino. stage.js took the',
-    '    path from the release rather than assuming OnlyKey/OnlyKey.ino.',
-    '  * onlykey.h writes `#define STD_VERSION //Define for US Version',
-    '    Firmare`, where the 3.0 line has a different comment. gateDefine',
-    '    compared whole lines INCLUDING the comment, so it read the define as',
-    '    absent, printed a bare NaN from a broken error message, and reported',
-    '    the build as TRAVEL - a different firmware with no FIDO.',
-    '  * Crypto/SHA256.h and sha256/sha256.h differ only in case, and on a',
-    '    Windows checkout the first one wins the include. Upstream renamed it',
-    '    to SHA256_2.h later; stage.js now does that to the staged copy.',
-    '',
-    'THE NEXT RUNG is the unlock, and it is NOT A CRASH. Logcat across a',
-    'failing unlock carries no SIGSEGV and no tombstone. It carries this:',
-    '',
-    '  [softkey] CPU_RESTART() - firmware thread gone, restart the app',
-    '',
-    'The firmware asks for a reset itself. The only CPU_RESTART on that path',
-    'is the rngloop integrity check (okcore.cpp:2279) - this release is',
-    'threaded',
-    'with paired integrityctr1/integrityctr2 increments as glitch detection,',
-    'and any imbalance left elsewhere is caught on the next pass of the main',
-    'loop. On the emulator that reset ends the firmware thread, which is what',
-    '"the firmware main loop is not running" reports one symptom later.',
-    '',
-    'Reading the PIN handler suggests a press that does not complete a valid',
-    'PIN leaves ctr1 two ahead and ctr2 one - but that cannot be the whole',
-    'story, or hardware would reset on the first digit too. Next measurement,',
-    'named rather than guessed: print both counters at the check. See',
-    'ok-rn/FINDING-the-2019-beta-restarts-itself-during-pin-entry.md',
-    '',
-    'WHY IT IS WORTH FINISHING. This is the only firmware whose OKCONNECT',
-    'reply uses the layout node-onlykey-lib calls legacy - the public key at',
-    'bytes 21..53, the version string in the clear before it. transit.js',
-    'parses it and nothing real has ever answered that way, so the branch is',
-    'covered by a synthetic reply and by nothing else.',
+    'Next measurement: capture logcat across the sixth press with the firmware',
+    'thread named, and find out whether the process dies or is merely',
+    'backgrounded. The distinction decides whether this is the firmware, the',
+    'HAL, or the runner.',
   ].join(String.fromCharCode(10)),
-  patches: [rngStirsAnAddressNotAValue, rngloopStirsAddressesNotValues],
+  patches: [
+    flashWalkStride2019,
+    rngStirsAnAddressNotAValue,
+    rngloopStirsAddressesNotValues,
+  ],
 };
