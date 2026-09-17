@@ -125,7 +125,27 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
       } else if (event.state === 'connecting') {
         setState('starting');
       } else if (event.state === 'error') {
+        /*
+         * AN ERRORED PIPE KNOWS NOTHING, same as an unplugged one.
+         *
+         * This used to set the state and keep everything else, and the result
+         * was the app confidently showing a LOCK STATE IT COULD NO LONGER SEE.
+         * Measured 2026-09-17 on Android 17: a replug killed the pipe, the
+         * re-open errored, and the screen went on saying "Locked" - with a
+         * keypad prompt - for a key the owner had since unlocked. The key was
+         * right, the app was stale, and the only cure was relaunching it.
+         *
+         * The difference between "locked" and "I cannot see it" matters more
+         * here than almost anywhere: one asks the user for a PIN they have
+         * already entered.
+         */
         setState('error');
+        setDevice('unknown');
+        setIdentity(null);
+        setLockedModel(null);
+        setCapabilities(null);
+        setVersion('');
+        setConsoleAnswers(null);
       } else if (event.state === 'disconnected') {
         /*
          * UNPLUGGED, so nothing that was read is true any more. Leaving the

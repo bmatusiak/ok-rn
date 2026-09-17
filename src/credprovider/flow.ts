@@ -18,13 +18,15 @@
  *
  * And nothing opens a CTAPHID channel speculatively. A channel against a LOCKED
  * key is the thing that preceded a bench key having to be physically replugged
- * (FINDING-a-ctaphid-channel-on-a-locked-key-wedged-it.md). Here the key is the
- * soft key, which cannot be damaged that way, but the shape of the code should
- * not have to change when milestone 4 points it at real hardware.
+ * (FINDING-a-ctaphid-channel-on-a-locked-key-wedged-it.md). That applies for
+ * real now: chooseTarget() prefers a hard key whenever one is on the bus, so
+ * the locked check below is protecting hardware, not just producing a better
+ * error message for the emulator.
  */
 import {bytes, device as deviceLib, protocol} from 'node-onlykey-lib';
 import {getOnlyKey} from '../onlykey';
 import OkEmu from '../transport/OkEmu';
+import UsbPipe, {PRODUCT_ID, VENDOR_ID} from '../transport/UsbPipe';
 import {
   authenticationResponseJSON,
   getAssertionParams,
@@ -42,10 +44,80 @@ const {FidoAdmin} = (deviceLib as any).fido;
 const {version} = deviceLib as any;
 const {fromBase64Url} = bytes as any;
 
-export const pressSoftKey = () => OkEmu.pressButton(1);
+/**
+ * Which key this request is going to, and what can be done to it.
+ *
+ * A hard key wins when one is on the bus, because someone who has plugged a
+ * key into the phone means to use THAT key - the soft key is the stand-in for
+ * when there is none.
+ */
+export type Target = {
+  backend: 'usb' | 'embedded';
+  /** True for a physical key, which changes who does the pressing. */
+  hard: boolean;
+  /**
+   * Whether the app can press this key's buttons at all.
+   *
+   * Three-valued in the app proper, two here because by this point we have
+   * asked. A production key answers false and then the screen must say "press
+   * the button on your key" rather than drawing a control that cannot work
+   * (useHardKey.ts:34). A developer build with the debug console answers true.
+   */
+  canPress: boolean;
+};
 
-/** One button on the soft key. PIN entry is taps, and taps ARE presses. */
-export const pressSoftKeyButton = (button: number) => OkEmu.pressButton(button);
+export async function chooseTarget(): Promise<Target> {
+  let onBus = false;
+  try {
+    const devices = await UsbPipe.listDevices();
+    onBus = devices.some(
+      d => d.vendorId === VENDOR_ID && d.productId === PRODUCT_ID,
+    );
+  } catch {
+    /* No USB at all is a soft-key answer, not an error. */
+  }
+
+  if (!onBus) {
+    return {backend: 'embedded', hard: false, canPress: true};
+  }
+
+  /* start() is idempotent, so this cannot disturb a pipe the app already has. */
+  if (!UsbPipe.isRunning()) {
+    await UsbPipe.start();
+  }
+
+  /*
+   * ASK THE CONSOLE, NEVER PRESS TO FIND OUT. consoleAnswers() writes one
+   * inert byte and watches for the firmware's echo; it presses nothing, so it
+   * cannot spend a PIN attempt. Ten spent attempts wipe a key
+   * (FINDING #43), which makes "probe by pressing" the most expensive possible
+   * way to answer this question.
+   */
+  let canPress = false;
+  try {
+    const {device} = await getOnlyKey('usb');
+    canPress = (await device.consoleAnswers()) === true;
+  } catch {
+    canPress = false;
+  }
+  return {backend: 'usb', hard: true, canPress};
+}
+
+/** One button press, on whichever key this request is talking to. */
+export async function pressKeyButton(target: Target, button: number) {
+  if (target.backend === 'embedded') {
+    return OkEmu.pressButton(button);
+  }
+  if (!target.canPress) {
+    /* The finger is the user's. Nothing to send. */
+    return;
+  }
+  const {device} = await getOnlyKey('usb');
+  await device.press(String(button));
+}
+
+/** The user-presence press, which is always button 1 on a soft key. */
+export const pressForPresence = (target: Target) => pressKeyButton(target, 1);
 
 /**
  * What the key says it is, right now.
@@ -55,8 +127,8 @@ export const pressSoftKeyButton = (button: number) => OkEmu.pressButton(button);
  * announces UNLOCKED the moment it matches - there is no "submit" to wait on,
  * and no length to count up to, so the only way to know is to look.
  */
-export async function readKeyState() {
-  const app = await getOnlyKey('embedded');
+export async function readKeyState(target: Target) {
+  const app = await getOnlyKey(target.backend);
   const connected = await app.device.connect();
   return version.parseStatus(String(connected?.status ?? '').trim());
 }
@@ -76,7 +148,7 @@ export type AskPin = (retriesLeft: number | null) => Promise<string>;
  * comparable stand-in for the hard key, it is a different thing wearing its
  * name. The screen decides how to ask; this file only says when.
  */
-export type AskPresence = () => Promise<void>;
+export type AskPresence = (target: Target) => Promise<void>;
 
 /**
  * The key is locked. Resolves once the person has unlocked it.
@@ -85,7 +157,7 @@ export type AskPresence = () => Promise<void>;
  * another app first, so the ceremony the browser started carries the unlock
  * too.
  */
-export type AskUnlock = (state: string) => Promise<void>;
+export type AskUnlock = (state: string, target: Target) => Promise<void>;
 
 export async function runCredentialFlow(
   request: PendingCredRequest,
@@ -128,9 +200,16 @@ export async function runCredentialFlow(
 
   /* ---- 2. the key ------------------------------------------------------ */
 
-  emit('open soft key', 'run');
-  const {transport} = await getOnlyKey('embedded');
-  emit('open soft key', 'ok');
+  emit('open key', 'run');
+  const target = await chooseTarget();
+  const {transport} = await getOnlyKey(target.backend);
+  emit(
+    'open key',
+    'ok',
+    target.hard
+      ? 'hard key over USB' + (target.canPress ? ' (console presses)' : ' (press it yourself)')
+      : 'soft key',
+  );
 
   /*
    * ASK BEFORE KNOCKING.
@@ -150,7 +229,7 @@ export async function runCredentialFlow(
    * milestone 4 and the shape of it should not have to change then.
    */
   emit('key state', 'run');
-  let status = await readKeyState();
+  let status = await readKeyState(target);
 
   if (status.state !== 'unlocked') {
     /*
@@ -175,9 +254,9 @@ export async function runCredentialFlow(
     }
 
     emit('key state', 'run', status.state + ' - waiting for the PIN');
-    await askUnlock(status.state);
+    await askUnlock(status.state, target);
 
-    status = await readKeyState();
+    status = await readKeyState(target);
     if (status.state !== 'unlocked') {
       emit('key state', 'fail', status.state);
       throw new Error('the key is still ' + status.state + '; it was not unlocked.');
@@ -245,14 +324,23 @@ export async function runCredentialFlow(
       presenceTimeoutMs: 60000,
       onKeepAlive: async () => {
         emit('touch the key', 'run');
-        await askPresence();
+        await askPresence(target);
         emit('touch the key', 'ok');
       },
     });
     emit('makeCredential', 'ok');
 
     emit('assemble response', 'run');
-    const json = registrationResponseJSON(reply);
+    /*
+     * The transport hint is claimed only for a hard key, where it is true. The
+     * relying party stores it and replays it in allowCredentials forever, so a
+     * guess here is a credential that stops working later.
+     */
+    const json = registrationResponseJSON(
+      reply,
+      undefined,
+      target.hard ? ['usb'] : undefined,
+    );
     emit('assemble response', 'ok', JSON.parse(json).id);
     return json;
   }
@@ -272,7 +360,7 @@ export async function runCredentialFlow(
       presenceTimeoutMs: 60000,
       onKeepAlive: async () => {
         emit('touch the key', 'run');
-        await askPresence();
+        await askPresence(target);
         emit('touch the key', 'ok');
       },
     });

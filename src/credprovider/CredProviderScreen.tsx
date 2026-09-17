@@ -22,6 +22,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -29,14 +30,16 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import NativeCredProvider from '../../specs/NativeCredProvider';
 import {Keypad} from '../ui/Keypad';
 import {
-  pressSoftKey,
-  pressSoftKeyButton,
+  pressForPresence,
+  pressKeyButton,
   readKeyState,
   runCredentialFlow,
   type StepStatus,
+  type Target,
 } from './flow';
 
 type Step = {label: string; status: StepStatus; detail?: string};
@@ -52,11 +55,11 @@ export default function CredProviderScreen() {
   const pinResolve = useRef<((pin: string) => void) | null>(null);
 
   /* The key is waiting for a finger; the flow is parked until one arrives. */
-  const [presenceAsked, setPresenceAsked] = useState(false);
+  const [presenceAsked, setPresenceAsked] = useState<Target | null>(null);
   const presenceResolve = useRef<(() => void) | null>(null);
 
   /* The key is locked; the flow is parked until the PIN goes in. */
-  const [unlockAsked, setUnlockAsked] = useState<string | null>(null);
+  const [unlockAsked, setUnlockAsked] = useState<{state: string; target: Target} | null>(null);
   const [digits, setDigits] = useState(0);
   const unlockResolve = useRef<(() => void) | null>(null);
   const checkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -96,8 +99,20 @@ export default function CredProviderScreen() {
     [],
   );
 
-  const askPresence = useCallback(() => {
-    setPresenceAsked(true);
+  const askPresence = useCallback((target: Target) => {
+    setPresenceAsked(target);
+    /*
+     * A KEY WE CANNOT PRESS MUST NOT BLOCK HERE.
+     *
+     * This runs inside the CTAPHID keepalive handler, which the library awaits
+     * before it goes back to reading. On a production key there is no control
+     * to tap - the finger goes on the key itself - so waiting for a UI event
+     * would wait forever AND stop us reading the reply that the press produces.
+     * Show the instruction, return immediately, let the device answer.
+     */
+    if (!target.canPress) {
+      return Promise.resolve();
+    }
     return new Promise<void>(resolve => {
       presenceResolve.current = resolve;
     });
@@ -109,10 +124,10 @@ export default function CredProviderScreen() {
    * automatically would make the soft key a different thing from the hard key
    * rather than a stand-in for it.
    */
-  const doPress = useCallback(async () => {
-    setPresenceAsked(false);
+  const doPress = useCallback(async (target: Target) => {
+    setPresenceAsked(null);
     try {
-      await pressSoftKey();
+      await pressForPresence(target);
     } catch {
       /* A hard key is pressed with a finger; there is nothing to call. */
     }
@@ -120,8 +135,8 @@ export default function CredProviderScreen() {
     presenceResolve.current = null;
   }, []);
 
-  const askUnlock = useCallback((state: string) => {
-    setUnlockAsked(state);
+  const askUnlock = useCallback((state: string, target: Target) => {
+    setUnlockAsked({state, target});
     setDigits(0);
     return new Promise<void>(resolve => {
       unlockResolve.current = resolve;
@@ -139,10 +154,10 @@ export default function CredProviderScreen() {
    * again later, so a seven-digit PIN costs one status read rather than seven.
    */
   const onDigit = useCallback(
-    async (button: number) => {
+    async (target: Target, button: number) => {
       setDigits(n => n + 1);
       try {
-        await pressSoftKeyButton(button);
+        await pressKeyButton(target, button);
       } catch {
         /* A hard key is pressed with a finger; there is nothing to call. */
       }
@@ -153,7 +168,7 @@ export default function CredProviderScreen() {
       checkTimer.current = setTimeout(async () => {
         checkTimer.current = null;
         try {
-          const state = await readKeyState();
+          const state = await readKeyState(target);
           if (state.state === 'unlocked') {
             setUnlockAsked(null);
             unlockResolve.current?.();
@@ -166,6 +181,38 @@ export default function CredProviderScreen() {
     },
     [],
   );
+
+  /**
+   * A key we cannot press unlocks without telling us, so ask.
+   *
+   * When the keypad is drawn, each digit schedules its own check and no polling
+   * is needed. When it is not - a production key, pressed by a finger - nothing
+   * in this app knows a digit happened, so the only way to notice the unlock is
+   * to keep asking. One second is well under the time it takes to press seven
+   * buttons, and this runs only while the unlock panel is up.
+   */
+  useEffect(() => {
+    if (!unlockAsked || unlockAsked.target.canPress) {
+      return;
+    }
+    let alive = true;
+    const timer = setInterval(async () => {
+      try {
+        const state = await readKeyState(unlockAsked.target);
+        if (alive && state.state === 'unlocked') {
+          setUnlockAsked(null);
+          unlockResolve.current?.();
+          unlockResolve.current = null;
+        }
+      } catch {
+        /* Busy or still locked; the next tick asks again. */
+      }
+    }, 1000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [unlockAsked]);
 
   /* A pending question outlives the screen otherwise. */
   useEffect(
@@ -211,7 +258,34 @@ export default function CredProviderScreen() {
   }, [emit, askPin, askPresence, askUnlock]);
 
   return (
-    <View style={styles.screen}>
+    /*
+     * KeyboardAvoidingView, not just a bottom-anchored View.
+     *
+     * The panels below are meant to sit at the bottom, and they did - under the
+     * keyboard. android:windowSoftInputMode="adjustResize" is set on the
+     * activity and is NOT enough on its own here: the app draws edge to edge,
+     * so the window does not shrink when the IME opens and the PIN field, the
+     * Cancel and the Unlock buttons were all off-screen with no way to reach
+     * them. Measured on the bench.
+     *
+     * "padding" rather than "height" keeps the step log scrollable while the
+     * keyboard is up, so the diagnostic list does not get squashed away at the
+     * moment someone is being asked to trust it.
+     */
+    /*
+     * ITS OWN SafeAreaProvider.
+     *
+     * This root is mounted by CredProviderActivity, not by App, so it inherits
+     * nothing from the provider App.tsx sets up - and without one the header
+     * drew straight over the status bar clock. A second provider is correct
+     * rather than wasteful: these are two independent React roots that happen
+     * to share a ReactHost.
+     */
+    <SafeAreaProvider>
+      <SafeAreaView
+        style={styles.screen}
+        edges={['top', 'left', 'right', 'bottom']}>
+        <KeyboardAvoidingView style={styles.fill} behavior="padding">
       <Text style={styles.title}>OnlyKey</Text>
       <Text style={styles.subtitle}>
         {done ? 'Answered' : error ? 'Failed' : 'Talking to the key'}
@@ -237,16 +311,27 @@ export default function CredProviderScreen() {
       {!!unlockAsked && (
         <View style={styles.pinBox}>
           <Text style={styles.label}>
-            The key is {unlockAsked}. Enter your PIN on the keypad.
+            The key is {unlockAsked.state}.{' '}
+            {unlockAsked.target.canPress
+              ? 'Enter your PIN on the keypad.'
+              : "Enter your PIN on the key's own buttons."}
           </Text>
           <Text style={styles.detail}>
             {digits === 0
-              ? 'Each tap is a real button press on the key. It unlocks itself the moment the PIN matches — there is no submit.'
+              ? 'It unlocks itself the moment the PIN matches — there is no submit.'
               : `${digits} digit${digits === 1 ? '' : 's'} pressed`}
           </Text>
-          <View style={styles.pad}>
-            <Keypad onPress={onDigit} />
-          </View>
+          {/*
+            No keypad for a key the app cannot press. The same rule the rest of
+            the app follows (useHardKey.ts:34): a production key takes presses
+            from a finger and nothing else, and drawing a pad that silently does
+            nothing is worse than drawing none.
+          */}
+          {unlockAsked.target.canPress && (
+            <View style={styles.pad}>
+              <Keypad onPress={button => void onDigit(unlockAsked.target, button)} />
+            </View>
+          )}
           <View style={styles.buttons}>
             <Pressable
               style={styles.button}
@@ -265,14 +350,19 @@ export default function CredProviderScreen() {
         <View style={styles.pinBox}>
           <Text style={styles.label}>The key is waiting for a touch</Text>
           <Text style={styles.detail}>
-            A security key signs because a person asked it to. Press the key to
-            complete the ceremony.
+            {presenceAsked.canPress
+              ? 'A security key signs because a person asked it to. Press the key to complete the ceremony.'
+              : 'Touch any button on your OnlyKey to complete the ceremony.'}
           </Text>
-          <View style={styles.buttons}>
-            <Pressable style={[styles.button, styles.primary]} onPress={doPress}>
-              <Text style={styles.buttonText}>Press the key</Text>
-            </Pressable>
-          </View>
+          {presenceAsked.canPress && (
+            <View style={styles.buttons}>
+              <Pressable
+                style={[styles.button, styles.primary]}
+                onPress={() => void doPress(presenceAsked)}>
+                <Text style={styles.buttonText}>Press the key</Text>
+              </Pressable>
+            </View>
+          )}
         </View>
       )}
 
@@ -288,7 +378,13 @@ export default function CredProviderScreen() {
             onChangeText={setPinValue}
             secureTextEntry
             autoFocus
-            keyboardType="default"
+            /*
+             * A number pad, because an OnlyKey's FIDO PIN is digits - the same
+             * button numbers the key itself takes. The full QWERTY keyboard was
+             * both wrong for the input and twice the height, which is what put
+             * the field behind it in the first place.
+             */
+            keyboardType="number-pad"
             placeholder="PIN"
             placeholderTextColor="#667"
             onSubmitEditing={() => submitPin(pinValue)}
@@ -315,7 +411,9 @@ export default function CredProviderScreen() {
           <Text style={styles.buttonText}>Cancel</Text>
         </Pressable>
       )}
-    </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
@@ -330,7 +428,8 @@ function markStyle(status: StepStatus) {
 }
 
 const styles = StyleSheet.create({
-  screen: {flex: 1, backgroundColor: '#0b1016', padding: 20},
+  screen: {flex: 1, backgroundColor: '#0b1016'},
+  fill: {flex: 1, padding: 20},
   title: {color: '#e8eef5', fontSize: 22, fontWeight: '600'},
   subtitle: {color: '#8aa', fontSize: 14, marginBottom: 16},
   log: {flex: 1},

@@ -214,6 +214,7 @@ function requireHash(hash: Uint8Array) {
 export function registrationResponseJSON(
   response: Map<number, unknown>,
   clientDataJSON?: string,
+  transports?: string[],
 ): string {
   const fmt = response.get(1) as string;
   const authData = response.get(2) as Uint8Array;
@@ -270,9 +271,13 @@ export function registrationResponseJSON(
    * unplug and carry. "hybrid" describes a different ceremony altogether.
    *
    * The field is optional, an empty list is legal, and an absent hint makes a
-   * browser offer everything rather than the wrong thing. When milestone 4
-   * reaches a hard key over OTG, "usb" becomes true and can be said then.
+   * browser offer everything rather than the wrong thing. So the CALLER passes
+   * one only when it knows: milestone 4 reached a hard key over OTG, and for
+   * that key "usb" is simply true.
    */
+  if (transports?.length) {
+    out.response.transports = transports;
+  }
   const alg = coseAlgorithm(parsed.credentialPublicKey);
   if (alg !== undefined) {
     out.response.publicKeyAlgorithm = alg;

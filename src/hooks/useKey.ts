@@ -325,6 +325,46 @@ export function useKey({
      */
   }, [backend, start, connectHard, hardState, hardBusy]);
 
+  /**
+   * AN ERRORED PIPE IS RETRIED, WITH BACKOFF.
+   *
+   * The effect above deliberately retries only from 'stopped', on the grounds
+   * that retrying an error in a loop is worse than not retrying. That was half
+   * right: not retrying AT ALL means one failed open strands the app until it
+   * is relaunched, with a key sitting plugged in and the bus reporting it.
+   *
+   * Measured 2026-09-17, Android 17, key behind a powered hub: a replug killed
+   * the pipe, the re-open errored once, and nothing ever tried again. Android
+   * had the device enumerated at /dev/bus/usb/001/003 with matching vid/pid and
+   * permission already granted - a manual Connect opened all four interfaces
+   * first time. Nothing was wrong except that no one asked twice.
+   *
+   * So: ask again, but slower each time - 2s, 4s, 8s, up to 30s - and only
+   * while a matching key is actually on the bus, so an unplugged key costs
+   * nothing. The counter resets once the pipe runs, so a key that fails, is
+   * fixed and comes back does not inherit the old delay.
+   */
+  const errorRetries = useRef(0);
+  useEffect(() => {
+    if (backend !== 'usb' || hardState === 'running') {
+      errorRetries.current = 0;
+      return;
+    }
+    /* Only an error is retried here; 'stopped' belongs to the effect above. */
+    if (hardState !== 'error' || attached !== true || hardBusy) {
+      return;
+    }
+
+    const wait = Math.min(30000, 2000 * 2 ** errorRetries.current);
+    const timer = setTimeout(() => {
+      errorRetries.current += 1;
+      if (!UsbPipe.isRunning()) {
+        void start().then(() => connectHard());
+      }
+    }, wait);
+    return () => clearTimeout(timer);
+  }, [backend, hardState, hardBusy, attached, start, connectHard]);
+
   const chosen = backend === 'usb' ? hard : soft;
   /*
    * The soft key's LED is exact - yellow for the whole window - so the timer
