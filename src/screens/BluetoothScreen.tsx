@@ -90,6 +90,41 @@ export function BluetoothScreen({
   );
 
   /*
+   * PAIRING IS THE ONE MOMENT A HOST LOOKS, AND IT LOOKS AT BOTH TRANSPORTS.
+   *
+   * makeDiscoverable already publishes the HID profile before asking to be
+   * visible, for the reason written where it is defined: a computer reads a
+   * device's service list exactly once, when it pairs, and never asks again.
+   * That argument was never about the keyboard. It is about the HOST'S
+   * RECORD - and the authenticator lives in the same record.
+   *
+   * So pairing with only the keyboard up produced a half-built bond. Measured
+   * against Windows on 2026-09-17, the phone's own stack reported:
+   *
+   *   NITRO16 [ DUAL ] [ACL BR/EDR:Y LE:N]
+   *           [ Encryption status(BR/EDR): keySize=16 ... LE: N/A ]
+   *
+   * marked dual-mode, a classic link up, and NO LE KEY AT ALL. The FIDO
+   * characteristics require an encrypted LE link, so every later connection
+   * from the host failed discovery outright (GetGattServices -> Unreachable),
+   * no matter that this phone was advertising 0xFFFD connectably the whole
+   * time. The only cure was to unpair and pair again - which then cost the
+   * keyboard, because whichever feature happened to be up at pair time was
+   * the one the host kept. That is the "fix one, break the other" loop.
+   *
+   * Starting the GATT server and its connectable advertisement BEFORE the
+   * phone becomes discoverable is what lets a single pairing serve both.
+   * fido.start() swallows its own failures and is safe to call when it is
+   * already advertising, and it does NOT need a chosen target - which matters,
+   * because at pair time there is no target yet. That bootstrap order is the
+   * whole point of this button.
+   */
+  const pairNewComputer = useCallback(async () => {
+    if (fido.supported !== false) await fido.start();
+    await bt.makeDiscoverable();
+  }, [bt, fido]);
+
+  /*
    * CHOOSING "NONE" STANDS BOTH FEATURES DOWN.
    *
    * Not tidiness - the switches below are disabled without a target, so a
@@ -237,7 +272,7 @@ export function BluetoothScreen({
             <Btn
               title={bt.busy ? 'Asking…' : 'Pair a new computer'}
               disabled={bt.busy}
-              onPress={bt.makeDiscoverable}
+              onPress={pairNewComputer}
             />
           </Section>
 

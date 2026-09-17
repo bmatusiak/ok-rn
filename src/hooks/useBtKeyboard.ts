@@ -156,6 +156,14 @@ export function useBtKeyboard(): BtKeyboard {
   const [chosenHost, setChosenHost] = useState<string | null>(null);
 
   /*
+   * Read from inside refreshHosts, which must keep a stable identity - it is
+   * the body of a poll that is torn down and rebuilt whenever its deps change,
+   * and rebuilding it every time a choice is made would restart the interval.
+   */
+  const chosenHostRef = useRef<string | null>(null);
+  chosenHostRef.current = chosenHost;
+
+  /*
    * Read from inside the auto-connect timer for the same reason as the two
    * above: it must not tear the interval down and rebuild it every time a
    * connect attempt flips `busy`.
@@ -246,6 +254,33 @@ export function useBtKeyboard(): BtKeyboard {
     try {
       const list = await NativeBtKeyboard.hosts();
       setHosts(list);
+
+      /*
+       * A TARGET THAT NO LONGER EXISTS IS NOT A TARGET.
+       *
+       * The choice is remembered in storage and was never reconciled against
+       * what is actually bonded, so unpairing the computer left the app
+       * pointing at an address that is gone. Nothing on screen was selected -
+       * not the vanished host, which is no longer in the list, and not "None",
+       * which is a distinct stored value - so the radio group showed no
+       * selection at all, while the auto-connect timer went on dialling the
+       * ghost every few seconds.
+       *
+       * Demoting to None here is safe because this list is
+       * `adapter.bondedDevices` (NativeBtKeyboardModule.kt:340), not a scan and
+       * not the profile's connectedDevices: absence means the BOND is gone,
+       * which is exactly the thing that cannot come back on its own. An empty
+       * list is therefore meaningful rather than suspicious - it is what
+       * unpairing the only computer looks like - and every caller of this
+       * function runs with the profile registered, which cannot be true with
+       * the radio off. That is the difference from the promote-only rule
+       * below, which guards a list that CAN be transiently empty.
+       */
+      const chosen = chosenHostRef.current;
+      if (chosen && !list.some(h => h.address === chosen)) {
+        setChosenHost(null);
+        void AsyncStorage.removeItem(HOST_KEY);
+      }
 
       /*
        * THIS POLL MAY PROMOTE, NEVER DEMOTE.

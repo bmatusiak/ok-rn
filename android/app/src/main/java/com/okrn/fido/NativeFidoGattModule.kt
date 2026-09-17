@@ -84,14 +84,42 @@ class NativeFidoGattModule(
   private val bluetoothManager: BluetoothManager? =
     reactContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
 
-  private var gattServer: BluetoothGattServer? = null
-  private var advertiser: BluetoothLeAdvertiser? = null
-  private var statusCharacteristic: BluetoothGattCharacteristic? = null
-  private var connectedDevice: BluetoothDevice? = null
+  /*
+   * EVERY PIECE OF AUTHENTICATOR STATE LIVES IN `Held`, NOT ON THIS INSTANCE.
+   *
+   * A React module instance dies with its JS bridge - reload, activity
+   * destroyed, app swiped from recents - and a fresh one is built for the next
+   * bridge. The GATT server, the advertiser, the half-assembled CTAP frame
+   * and the notification queue must NOT die with it, or the phone stops being
+   * a security key every time the app blinks (see invalidate()). So the
+   * fields below are accessors onto one process-wide holder, and the rest of
+   * this file reads exactly as it did when they were plain fields.
+   *
+   * It also means the callback object the server was opened with may belong
+   * to an EARLIER instance than the one JS is currently talking to. That is
+   * fine: it reads and writes the same Held state, and emit() routes every
+   * event to whichever instance is live now.
+   */
+  init {
+    Held.live = this
+  }
 
-  private val assembler = CtapBleAssembler()
-  private val pendingRequests = ConcurrentHashMap<String, Int>()
-  private val requestCounter = AtomicInteger(0)
+  private var gattServer: BluetoothGattServer?
+    get() = Held.gattServer
+    set(value) { Held.gattServer = value }
+  private var advertiser: BluetoothLeAdvertiser?
+    get() = Held.advertiser
+    set(value) { Held.advertiser = value }
+  private var statusCharacteristic: BluetoothGattCharacteristic?
+    get() = Held.statusCharacteristic
+    set(value) { Held.statusCharacteristic = value }
+  private var connectedDevice: BluetoothDevice?
+    get() = Held.connectedDevice
+    set(value) { Held.connectedDevice = value }
+
+  private val assembler get() = Held.assembler
+  private val pendingRequests get() = Held.pendingRequests
+  private val requestCounter get() = Held.requestCounter
 
   /*
    * ANDROID ALLOWS ONE OUTSTANDING NOTIFICATION PER CONNECTION.
@@ -108,24 +136,41 @@ class NativeFidoGattModule(
    * arriving as its first twenty bytes and then nothing. It presents as the
    * host timing out, which reads like the authenticator never answered.
    */
-  private val notifyQueue = ArrayDeque<ByteArray>()
-  private var notifyInFlight = false
-  private var pendingRespond: Promise? = null
-  private val notifyLock = Any()
+  private val notifyQueue get() = Held.notifyQueue
+  private var notifyInFlight: Boolean
+    get() = Held.notifyInFlight
+    set(value) { Held.notifyInFlight = value }
+  private var pendingRespond: Promise?
+    get() = Held.pendingRespond
+    set(value) { Held.pendingRespond = value }
+  private val notifyLock get() = Held.notifyLock
 
   /*
    * What the central last wrote to the Status CCCD. Read back by
    * onDescriptorReadRequest - a host that subscribes and then reads is
    * entitled to see what it wrote, and some check.
    */
-  @Volatile private var notificationsEnabled = false
+  private var notificationsEnabled: Boolean
+    get() = Held.notificationsEnabled
+    set(value) { Held.notificationsEnabled = value }
 
   /** Latched by onServiceAdded; advertising waits for it. */
-  @Volatile private var serviceAdded = false
+  private var serviceAdded: Boolean
+    get() = Held.serviceAdded
+    set(value) { Held.serviceAdded = value }
 
-  @Volatile private var state: String = STATE_IDLE
-  @Volatile private var mtu: Int = DEFAULT_MTU
-  @Volatile private var config = AuthenticatorConfig()
+  /* The JVM names are set because the spec already owns getState(). */
+  @get:JvmName("heldState")
+  @set:JvmName("setHeldState")
+  private var state: String
+    get() = Held.state
+    set(value) { Held.state = value }
+  private var mtu: Int
+    get() = Held.mtu
+    set(value) { Held.mtu = value }
+  private var config: AuthenticatorConfig
+    get() = Held.config
+    set(value) { Held.config = value }
 
   private data class AuthenticatorConfig(
     val displayName: String = "OnlyKey Mobile",
@@ -136,8 +181,33 @@ class NativeFidoGattModule(
 
   // ---------------------------------------------------------------- lifecycle
 
+  /*
+   * DO NOT TAKE THE AUTHENTICATOR DOWN WITH THE JS BRIDGE.
+   *
+   * invalidate() fires whenever the React instance goes away - a Metro
+   * reload, a Fast Refresh that cannot be applied incrementally, the activity
+   * being destroyed, the app swiped out of recents. None of those mean the
+   * phone stopped being a security key: the GATT server belongs to the
+   * PROCESS, and FidoGattService is a CONNECTED_DEVICE foreground service
+   * holding that process up precisely so it can outlive any particular mount.
+   *
+   * Tearing it down here made 0xFFFD vanish and reappear on every one of those
+   * events, which is the exact thing the comment on configure() says Windows
+   * punishes: it keeps a PnP node per service, stops trusting one that keeps
+   * disappearing, and once that node is dead the WebAuthn stack no longer
+   * enumerates this phone as a security key AT ALL - measured with the service
+   * still answering over the air. That is why the browser offered no other
+   * device to use while this screen cheerfully said "advertising", and why it
+   * got worse the more the app was restarted rather than better.
+   *
+   * Nothing is leaked by staying up. configure() already ADOPTS a server that
+   * is still good (`gattServer != null && serviceAdded`) and restarts only the
+   * advertisement, so the next JS instance reattaches to the running one
+   * instead of building a second. stopAdvertising() remains the one way to
+   * actually stand the authenticator down, and that is a deliberate act.
+   */
   override fun invalidate() {
-    stopEverything()
+    if (Held.live === this) Held.live = null
     super.invalidate()
   }
 
@@ -1027,16 +1097,53 @@ class NativeFidoGattModule(
   }
 
   private fun emit(map: WritableMap, isStatus: Boolean) {
+    /*
+     * Route to the LIVE instance, not `this`. The GATT callback that raised
+     * this event may belong to an instance whose bridge is long gone - the
+     * server outlives the module on purpose - and the JS that needs to hear
+     * about the request is attached to the newest one.
+     */
+    val sink = Held.live ?: this
     // Events raised before JS subscribes (or after teardown) have no listener;
     // dropping them is correct.
     try {
-      if (isStatus) emitOnGattStatus(map) else emitOnCtapRequest(map)
+      if (isStatus) sink.emitOnGattStatus(map) else sink.emitOnCtapRequest(map)
     } catch (_: Exception) {
       // No JS listener attached.
     }
   }
 
   companion object {
+    /*
+     * THE AUTHENTICATOR IS OWNED BY THE PROCESS.
+     *
+     * One holder, for the life of the process, no matter how many module
+     * instances React builds and discards over it. FidoGattService keeps the
+     * process alive as a CONNECTED_DEVICE foreground service so this can be
+     * true; the instance-level accessors above make the rest of the file
+     * unaware of it. See the comment on invalidate() for what it cost when
+     * the server was torn down with every bridge instead.
+     */
+    private object Held {
+      @Volatile var live: NativeFidoGattModule? = null
+      var gattServer: BluetoothGattServer? = null
+      var advertiser: BluetoothLeAdvertiser? = null
+      var statusCharacteristic: BluetoothGattCharacteristic? = null
+      var connectedDevice: BluetoothDevice? = null
+      val assembler = CtapBleAssembler()
+      val pendingRequests = ConcurrentHashMap<String, Int>()
+      val requestCounter = AtomicInteger(0)
+      val notifyQueue = ArrayDeque<ByteArray>()
+      var notifyInFlight = false
+      var pendingRespond: Promise? = null
+      val notifyLock = Any()
+      @Volatile var notificationsEnabled = false
+      @Volatile var serviceAdded = false
+      @Volatile var state: String = STATE_IDLE
+      @Volatile var mtu: Int = DEFAULT_MTU
+      @Volatile var config = AuthenticatorConfig()
+    }
+
     /** FIDO Bluetooth Service, 16-bit UUID 0xFFFD in the Bluetooth base range. */
     private val FIDO_SERVICE_UUID: UUID = UUID.fromString("0000fffd-0000-1000-8000-00805f9b34fb")
     private val FIDO_CONTROL_POINT_UUID: UUID = UUID.fromString("f1d0fff1-deaa-ecee-b42f-c9ba7ed623bb")
