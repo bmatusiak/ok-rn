@@ -436,6 +436,39 @@ export function useBtKeyboard(): BtKeyboard {
     setBusy(true);
     setError(null);
     try {
+      /*
+       * PUBLISH BEFORE BECOMING VISIBLE, or the pairing is born broken.
+       *
+       * A HOST READS A DEVICE'S SERVICE LIST EXACTLY ONCE, WHEN IT PAIRS, and
+       * does not ask again. So if this phone is discoverable while the HID
+       * profile is not published, the computer records a device with no
+       * keyboard in it - and no amount of publishing afterwards changes that
+       * record. The phone then advertises a keyboard the host has no node to
+       * accept, asks to connect every few seconds, and is ignored. Measured
+       * against Windows 2026-09-17: BTHENUM\{00001124-...} simply absent,
+       * every other profile present, and the only cure was unpairing and
+       * pairing again with the keyboard already up.
+       *
+       * The flow made that the DEFAULT outcome rather than an edge case:
+       * publishing is gated on choosing a target, the target list only holds
+       * computers already paired, so a new user had to pair first - which is
+       * precisely the order that breaks it. Publishing here is what makes
+       * "Pair a new computer" mean what it says.
+       *
+       * requestPermissions and register are both safe to call when they have
+       * already happened; register() resolves true if the profile is up.
+       */
+      const granted = await NativeBtKeyboard.requestPermissions();
+      if (!granted) {
+        setError('Bluetooth permission is needed before this phone can be a keyboard.');
+        return;
+      }
+      const published = await NativeBtKeyboard.register();
+      if (!published) {
+        setError('This phone does not offer the Bluetooth HID Device profile.');
+        return;
+      }
+
       const ok = await NativeBtKeyboard.requestDiscoverable(DISCOVERABLE_SECONDS);
       if (!ok) {
         setError('Staying hidden means no computer can find this keyboard to pair with.');
