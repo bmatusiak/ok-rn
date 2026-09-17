@@ -38,7 +38,7 @@ import {
 } from './ctapTranslate';
 import type {PendingCredRequest} from './types';
 
-const {CtapHid} = (protocol as any).ctaphid;
+const {CtapHid, KEEPALIVE} = (protocol as any).ctaphid;
 const {clientpin} = protocol as any;
 const {FidoAdmin} = (deviceLib as any).fido;
 const {version} = deviceLib as any;
@@ -64,9 +64,23 @@ export type Target = {
    * (useHardKey.ts:34). A developer build with the debug console answers true.
    */
   canPress: boolean;
+  /**
+   * Whether a hard key is on the bus at all.
+   *
+   * Not the same as `hard`: someone may be deliberately using the soft key
+   * WHILE a hard key is plugged in, and the screen needs to know a switch back
+   * is possible. The soft key is always available, so there is no matching
+   * flag for it.
+   */
+  hardOnBus: boolean;
 };
 
-export async function chooseTarget(): Promise<Target> {
+/** What to call this key in front of a person. */
+export function targetLabel(target: Target): string {
+  return target.hard ? 'Hard key' : 'Soft Key';
+}
+
+export async function chooseTarget(force?: 'usb' | 'embedded'): Promise<Target> {
   let onBus = false;
   try {
     const devices = await UsbPipe.listDevices();
@@ -77,8 +91,14 @@ export async function chooseTarget(): Promise<Target> {
     /* No USB at all is a soft-key answer, not an error. */
   }
 
-  if (!onBus) {
-    return {backend: 'embedded', hard: false, canPress: true};
+  /*
+   * A hard key wins by default, but never against an explicit choice. `force`
+   * is someone saying "the credential is on the OTHER one" - which the app
+   * cannot work out for itself, because a credential it cannot see is exactly
+   * the case where it would have to ask.
+   */
+  if (!onBus || force === 'embedded') {
+    return {backend: 'embedded', hard: false, canPress: true, hardOnBus: onBus};
   }
 
   /* start() is idempotent, so this cannot disturb a pipe the app already has. */
@@ -100,7 +120,7 @@ export async function chooseTarget(): Promise<Target> {
   } catch {
     canPress = false;
   }
-  return {backend: 'usb', hard: true, canPress};
+  return {backend: 'usb', hard: true, canPress, hardOnBus: true};
 }
 
 /** One button press, on whichever key this request is talking to. */
@@ -165,6 +185,7 @@ export async function runCredentialFlow(
   askPin: AskPin,
   askPresence: AskPresence,
   askUnlock: AskUnlock,
+  opts: {force?: 'usb' | 'embedded'; onTarget?: (target: Target) => void} = {},
 ): Promise<string> {
   /* ---- 1. the request itself ------------------------------------------- */
 
@@ -201,14 +222,15 @@ export async function runCredentialFlow(
   /* ---- 2. the key ------------------------------------------------------ */
 
   emit('open key', 'run');
-  const target = await chooseTarget();
+  const target = await chooseTarget(opts.force);
+  opts.onTarget?.(target);
   const {transport} = await getOnlyKey(target.backend);
   emit(
     'open key',
     'ok',
     target.hard
-      ? 'hard key over USB' + (target.canPress ? ' (console presses)' : ' (press it yourself)')
-      : 'soft key',
+      ? 'over USB' + (target.canPress ? ', console presses' : ', press it yourself')
+      : 'the firmware running inside this app',
   );
 
   /*
@@ -322,7 +344,30 @@ export async function runCredentialFlow(
        * already returned, too late and the window has shut.
        */
       presenceTimeoutMs: 60000,
-      onKeepAlive: async () => {
+      onKeepAlive: async (status: number) => {
+        /*
+         * ONLY UP_NEEDED MEANS A FINGER.
+         *
+         * A keepalive carries a status and there are two of them
+         * (ctaphid.js:148): PROCESSING 0x01, the key saying it is busy, and
+         * UP_NEEDED 0x02, the key saying it is waiting for a touch. This
+         * handler used to ignore the byte and prompt for BOTH, so every
+         * ceremony asked for a second press it did not need - the key sends
+         * PROCESSING while it computes the signature, immediately after the
+         * press that satisfied it. Reported from the bench as "I press it, and
+         * then I have to press it again", and blamed on the firmware, which
+         * was doing exactly what it should.
+         *
+         * The stray press was harmless here only because nothing was waiting
+         * on it. Asking a person to touch a security key when nothing is
+         * asking for a touch is worse than a wasted tap: it teaches them to
+         * confirm prompts they have not read.
+         */
+        if (status !== KEEPALIVE.UP_NEEDED) {
+          emit('key is working', 'run');
+          return;
+        }
+        emit('key is working', 'ok');
         emit('touch the key', 'run');
         await askPresence(target);
         emit('touch the key', 'ok');
@@ -358,7 +403,30 @@ export async function runCredentialFlow(
        * already returned, too late and the window has shut.
        */
       presenceTimeoutMs: 60000,
-      onKeepAlive: async () => {
+      onKeepAlive: async (status: number) => {
+        /*
+         * ONLY UP_NEEDED MEANS A FINGER.
+         *
+         * A keepalive carries a status and there are two of them
+         * (ctaphid.js:148): PROCESSING 0x01, the key saying it is busy, and
+         * UP_NEEDED 0x02, the key saying it is waiting for a touch. This
+         * handler used to ignore the byte and prompt for BOTH, so every
+         * ceremony asked for a second press it did not need - the key sends
+         * PROCESSING while it computes the signature, immediately after the
+         * press that satisfied it. Reported from the bench as "I press it, and
+         * then I have to press it again", and blamed on the firmware, which
+         * was doing exactly what it should.
+         *
+         * The stray press was harmless here only because nothing was waiting
+         * on it. Asking a person to touch a security key when nothing is
+         * asking for a touch is worse than a wasted tap: it teaches them to
+         * confirm prompts they have not read.
+         */
+        if (status !== KEEPALIVE.UP_NEEDED) {
+          emit('key is working', 'run');
+          return;
+        }
+        emit('key is working', 'ok');
         emit('touch the key', 'run');
         await askPresence(target);
         emit('touch the key', 'ok');

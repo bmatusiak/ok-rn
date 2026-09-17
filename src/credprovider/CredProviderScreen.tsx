@@ -38,6 +38,7 @@ import {
   pressKeyButton,
   readKeyState,
   runCredentialFlow,
+  targetLabel,
   type StepStatus,
   type Target,
 } from './flow';
@@ -64,8 +65,17 @@ export default function CredProviderScreen() {
   const unlockResolve = useRef<(() => void) | null>(null);
   const checkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* Guards double-run under StrictMode and any remount. */
-  const started = useRef(false);
+  /**
+   * Which key this attempt is using, and which one the person asked for.
+   *
+   * `force` is null until someone switches. The app cannot work out on its own
+   * which key holds a credential - a credential it cannot see is precisely the
+   * case where it has to ask - so switching is a person's decision and the
+   * flow simply starts again on the other one.
+   */
+  const [target, setTarget] = useState<Target | null>(null);
+  const [force, setForce] = useState<'usb' | 'embedded' | null>(null);
+  const [runKey, setRunKey] = useState(0);
 
   const emit = useCallback((label: string, status: StepStatus, detail?: string) => {
     setSteps(prev => {
@@ -225,10 +235,15 @@ export default function CredProviderScreen() {
   );
 
   useEffect(() => {
-    if (started.current) {
-      return;
-    }
-    started.current = true;
+    let cancelled = false;
+
+    /* A switch starts over, so nothing from the last key is left on screen. */
+    setSteps([]);
+    setError(null);
+    setDone(false);
+    setPinAsked(null);
+    setPresenceAsked(null);
+    setUnlockAsked(null);
 
     (async () => {
       try {
@@ -239,23 +254,52 @@ export default function CredProviderScreen() {
           askPin,
           askPresence,
           askUnlock,
+          {
+            force: force ?? undefined,
+            onTarget: chosen => {
+              if (!cancelled) {
+                setTarget(chosen);
+              }
+            },
+          },
         );
+        if (cancelled) {
+          return;
+        }
         setDone(true);
         await NativeCredProvider.respond(json);
       } catch (e) {
-        const message = String((e as Error)?.message ?? e);
-        setError(message);
+        if (cancelled) {
+          return;
+        }
         /*
-         * Told to the caller straight away rather than on a button: the sheet
-         * is modal over Chrome, and leaving it sitting there with an error the
-         * user must dismiss keeps the page blocked for no reason. The log stays
-         * on screen for the moment before the activity closes, and the same
-         * text is in logcat under the okcredprovider tag.
+         * A FAILURE DOES NOT CLOSE THE SHEET ANY MORE.
+         *
+         * It used to answer Chrome immediately, on the grounds that leaving a
+         * modal sitting over a blocked page helps nobody. That was right until
+         * there were two keys: the commonest failure is now "this key does not
+         * hold that credential", and the fix for it is one tap on the other
+         * key. Closing first would make the person start the whole ceremony
+         * again from the browser.
+         *
+         * Cancel still answers, so Chrome is never left waiting by accident -
+         * and the error is on screen and in logcat under okcredprovider either
+         * way.
          */
-        await NativeCredProvider.fail(message).catch(() => {});
+        setError(String((e as Error)?.message ?? e));
       }
     })();
-  }, [emit, askPin, askPresence, askUnlock]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [emit, askPin, askPresence, askUnlock, force, runKey]);
+
+  /** Start again on the other key. */
+  const switchKey = useCallback(() => {
+    setForce(prev => (prev === 'embedded' ? 'usb' : 'embedded'));
+    setRunKey(n => n + 1);
+  }, []);
 
   return (
     /*
@@ -287,9 +331,29 @@ export default function CredProviderScreen() {
         edges={['top', 'left', 'right', 'bottom']}>
         <KeyboardAvoidingView style={styles.fill} behavior="padding">
       <Text style={styles.title}>OnlyKey</Text>
-      <Text style={styles.subtitle}>
-        {done ? 'Answered' : error ? 'Failed' : 'Talking to the key'}
-      </Text>
+      {/*
+        WHICH KEY, ABOVE THE FOLD.
+        It was only ever in the "open key" step's detail line, and that is not
+        where anyone looks - reported from the bench as "it says hard key over
+        USB but I didn't see that right away". Two keys means the question
+        "which one is this talking to" is asked on every single request.
+      */}
+      <View style={styles.headRow}>
+        <Text style={styles.subtitle}>
+          <Text style={styles.keyName}>
+            {target ? targetLabel(target) : 'Finding a key'}
+          </Text>
+          {'  ·  '}
+          {done ? 'Answered' : error ? 'Failed' : 'Talking to the key'}
+        </Text>
+        {!!target && (target.hard || target.hardOnBus) && !done && (
+          <Pressable style={styles.switchBtn} onPress={switchKey}>
+            <Text style={styles.switchText}>
+              Use {target.hard ? 'Soft Key' : 'Hard key'}
+            </Text>
+          </Pressable>
+        )}
+      </View>
 
       <ScrollView style={styles.log} contentContainerStyle={styles.logInner}>
         {steps.map(step => (
@@ -402,7 +466,13 @@ export default function CredProviderScreen() {
         </View>
       )}
 
-      {!pinAsked && !presenceAsked && !unlockAsked && !done && !error && (
+      {/*
+        Cancel survives an error on purpose. Since a failure now leaves the
+        sheet open so the other key can be tried, this is the only thing that
+        answers Chrome - without it a failed attempt would strand the page
+        until the framework's own timeout.
+      */}
+      {!pinAsked && !presenceAsked && !unlockAsked && !done && (
         <Pressable
           style={styles.button}
           onPress={() => {
@@ -431,7 +501,23 @@ const styles = StyleSheet.create({
   screen: {flex: 1, backgroundColor: '#0b1016'},
   fill: {flex: 1, padding: 20},
   title: {color: '#e8eef5', fontSize: 22, fontWeight: '600'},
-  subtitle: {color: '#8aa', fontSize: 14, marginBottom: 16},
+  subtitle: {color: '#8aa', fontSize: 14, flexShrink: 1},
+  keyName: {color: '#e8eef5', fontWeight: '600'},
+  headRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  switchBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#2b3a4a',
+    marginLeft: 12,
+  },
+  switchText: {color: '#8fc7ff', fontSize: 12, fontWeight: '500'},
   log: {flex: 1},
   logInner: {paddingBottom: 12},
   row: {flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10},
