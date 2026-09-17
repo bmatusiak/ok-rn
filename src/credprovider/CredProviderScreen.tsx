@@ -34,6 +34,7 @@ import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import NativeCredProvider from '../../specs/NativeCredProvider';
 import {Keypad} from '../ui/Keypad';
 import {
+  dropChannel,
   pressForPresence,
   pressKeyButton,
   readKeyState,
@@ -55,9 +56,12 @@ export default function CredProviderScreen() {
   const [pinValue, setPinValue] = useState('');
   const pinResolve = useRef<((pin: string) => void) | null>(null);
 
-  /* The key is waiting for a finger; the flow is parked until one arrives. */
+  /*
+   * The key is waiting for a finger. NOT a promise the flow waits on - see
+   * AskPresence in flow.ts. The panel is a prompt, and the ceremony completes
+   * because the key was pressed, not because this screen said so.
+   */
   const [presenceAsked, setPresenceAsked] = useState<Target | null>(null);
-  const presenceResolve = useRef<(() => void) | null>(null);
 
   /* The key is locked; the flow is parked until the PIN goes in. */
   const [unlockAsked, setUnlockAsked] = useState<{state: string; target: Target} | null>(null);
@@ -111,21 +115,6 @@ export default function CredProviderScreen() {
 
   const askPresence = useCallback((target: Target) => {
     setPresenceAsked(target);
-    /*
-     * A KEY WE CANNOT PRESS MUST NOT BLOCK HERE.
-     *
-     * This runs inside the CTAPHID keepalive handler, which the library awaits
-     * before it goes back to reading. On a production key there is no control
-     * to tap - the finger goes on the key itself - so waiting for a UI event
-     * would wait forever AND stop us reading the reply that the press produces.
-     * Show the instruction, return immediately, let the device answer.
-     */
-    if (!target.canPress) {
-      return Promise.resolve();
-    }
-    return new Promise<void>(resolve => {
-      presenceResolve.current = resolve;
-    });
   }, []);
 
   /*
@@ -135,14 +124,16 @@ export default function CredProviderScreen() {
    * rather than a stand-in for it.
    */
   const doPress = useCallback(async (target: Target) => {
-    setPresenceAsked(null);
     try {
       await pressForPresence(target);
     } catch {
       /* A hard key is pressed with a finger; there is nothing to call. */
     }
-    presenceResolve.current?.();
-    presenceResolve.current = null;
+    /*
+     * The panel is NOT cleared here. It clears when the flow marks the touch
+     * done, which is when the KEY answered - so a press that the firmware did
+     * not accept leaves the prompt up instead of pretending it worked.
+     */
   }, []);
 
   const askUnlock = useCallback((state: string, target: Target) => {
@@ -224,6 +215,20 @@ export default function CredProviderScreen() {
     };
   }, [unlockAsked]);
 
+  /*
+   * The touch prompt comes down when the key answers, not when a button is
+   * tapped. Either kind of press - the on-screen one or a finger on real
+   * hardware - ends the same way, with the flow marking the step done.
+   */
+  useEffect(() => {
+    if (
+      presenceAsked &&
+      steps.some(step => step.label === 'touch the key' && step.status === 'ok')
+    ) {
+      setPresenceAsked(null);
+    }
+  }, [steps, presenceAsked]);
+
   /* A pending question outlives the screen otherwise. */
   useEffect(
     () => () => {
@@ -286,7 +291,18 @@ export default function CredProviderScreen() {
          * and the error is on screen and in logcat under okcredprovider either
          * way.
          */
-        setError(String((e as Error)?.message ?? e));
+        const message = String((e as Error)?.message ?? e);
+        /*
+         * A held CTAPHID channel survives a CTAP2 refusal - a wrong PIN, a
+         * missing credential - and must be kept, or a run of failures would
+         * allocate a channel each time and exhaust the firmware's ten. It does
+         * NOT survive the transport going away, and reusing a dead one would
+         * fail forever without ever trying to reopen.
+         */
+        if (/no CTAPHID reply|No open transport|endpoint|detached/i.test(message)) {
+          dropChannel();
+        }
+        setError(message);
       }
     })();
 
@@ -415,7 +431,9 @@ export default function CredProviderScreen() {
           <Text style={styles.label}>The key is waiting for a touch</Text>
           <Text style={styles.detail}>
             {presenceAsked.canPress
-              ? 'A security key signs because a person asked it to. Press the key to complete the ceremony.'
+              ? presenceAsked.hard
+                ? 'Touch a button on the key, or press it from here.'
+                : 'A security key signs because a person asked it to. Press the key to complete the ceremony.'
               : 'Touch any button on your OnlyKey to complete the ceremony.'}
           </Text>
           {presenceAsked.canPress && (

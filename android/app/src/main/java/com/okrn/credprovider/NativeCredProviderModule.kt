@@ -22,8 +22,15 @@ class NativeCredProviderModule(reactContext: ReactApplicationContext) :
 
   override fun getName() = NAME
 
+  /*
+   * The activity tracks itself (CredProviderActivity.current) rather than being
+   * looked up through currentActivity. React's idea of the current activity
+   * lags the one that just launched, and the credential surface asks for its
+   * request the instant it mounts - so the lookup raced, and lost.
+   */
   private fun activity(): CredProviderActivity? =
-    reactApplicationContext.currentActivity as? CredProviderActivity
+    CredProviderActivity.current
+      ?: reactApplicationContext.currentActivity as? CredProviderActivity
 
   override fun getPendingRequest(promise: Promise) {
     val act = activity()

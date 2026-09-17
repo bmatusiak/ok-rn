@@ -43,7 +43,8 @@ const {protocol, device: deviceLib} = require('node-onlykey-lib');
 const UsbPipeModule = require('../src/transport/UsbPipe');
 const UsbPipe = UsbPipeModule.default || UsbPipeModule.UsbPipe;
 
-const {CtapHid} = protocol.ctaphid;
+const {CtapHid, KEEPALIVE} = protocol.ctaphid;
+const {clientpin} = protocol;
 const {FidoAdmin} = deviceLib.fido;
 
 /**
@@ -273,6 +274,115 @@ module.exports = function hardKeyFido({describe, it}) {
         for (const site of sites) listed += site.credentials.length;
         assert.equal(listed, counts.stored,
           `metadata said ${counts.stored} but the walk produced ${listed}`);
+      });
+
+    /*
+     * A WHOLE CEREMONY, ON REAL HARDWARE.
+     *
+     * Added 2026-09-17 because nothing in this repo had ever done one. 14a
+     * makes a credential against the SOFT key; this suite covered PIN state,
+     * retries and credential listing but never a makeCredential or a
+     * getAssertion; and getAssertion had no coverage anywhere at all. The
+     * Credential Manager work walked straight into that gap - the key took the
+     * PIN, issued a token, asked for a touch, and then never answered - and
+     * there was no test to say whether that was the app, the press, or the
+     * firmware.
+     *
+     * These two answer it without a browser in the way.
+     */
+    let made = null;
+
+    it('makes a credential, with presence satisfied by a console press',
+      async ({log, assert, skip}) => {
+        if (!armed) skip('not armed - see the first test');
+
+        const s = await ready(log);
+        const state = await s.fido.pinState({timeoutMs: 10000});
+        if (!state.set) skip('no FIDO2 PIN on this key - an earlier test sets one');
+
+        const token = await s.fido.getPinToken(FIDO_PIN, {timeoutMs: 10000});
+        const clientDataHash = new Uint8Array(32).fill(0x11);
+
+        const params = new Map([
+          [1, clientDataHash],
+          [2, new Map([['id', 'okrn.hardkey.test'], ['name', 'ok-rn hard key']])],
+          [3, new Map([
+            ['id', new Uint8Array(16).fill(0x77)],
+            ['name', 'assert-e2e'],
+            ['displayName', 'assert-e2e'],
+          ])],
+          [4, [new Map([['alg', -7], ['type', 'public-key']])]],
+          [7, new Map([['rk', true]])],
+          [8, clientpin.pinTokenAuth(token, clientDataHash)],
+          [9, clientpin.PIN_PROTOCOL],
+        ]);
+
+        const prompts = [];
+        let pressed = 0;
+        const credential = await s.ctap.makeCredential(params, {
+          timeoutMs: 10000,
+          presenceTimeoutMs: 30000,
+          onKeepAlive: async status => {
+            prompts.push(status);
+            log(`keepalive 0x${status.toString(16)}`);
+            /* Only UP_NEEDED wants a finger; PROCESSING just means busy. */
+            if (status !== KEEPALIVE.UP_NEEDED) return;
+            await delay(300);
+            await s.device.press('1');
+            pressed += 1;
+          },
+        });
+
+        log(`prompts: ${prompts.length}, console presses: ${pressed}`);
+        assert.ok(credential instanceof Map, 'makeCredential returned no CBOR map');
+
+        const authData = credential.get(2);
+        assert.ok(authData && authData.length >= 55,
+          'no attested credential data, so there is no credential id');
+        const idLen = (authData[53] << 8) | authData[54];
+        made = authData.slice(55, 55 + idLen);
+        log(`credential id: ${idLen} bytes`);
+        assert.ok(idLen > 0, 'the credential id is empty');
+      });
+
+    it('asserts with the credential it just made',
+      async ({log, assert, skip}) => {
+        if (!armed) skip('not armed - see the first test');
+        if (!made) skip('the previous test made no credential to assert with');
+
+        const s = await ready(log);
+        const token = await s.fido.getPinToken(FIDO_PIN, {timeoutMs: 10000});
+        const clientDataHash = new Uint8Array(32).fill(0x22);
+
+        const params = new Map([
+          [1, 'okrn.hardkey.test'],
+          [2, clientDataHash],
+          [3, [new Map([['id', made], ['type', 'public-key']])]],
+          [5, new Map([['up', true]])],
+          [6, clientpin.pinTokenAuth(token, clientDataHash)],
+          [7, clientpin.PIN_PROTOCOL],
+        ]);
+
+        const prompts = [];
+        let pressed = 0;
+        const assertion = await s.ctap.getAssertion(params, {
+          timeoutMs: 10000,
+          presenceTimeoutMs: 30000,
+          onKeepAlive: async status => {
+            prompts.push(status);
+            log(`keepalive 0x${status.toString(16)}`);
+            if (status !== KEEPALIVE.UP_NEEDED) return;
+            await delay(300);
+            await s.device.press('1');
+            pressed += 1;
+          },
+        });
+
+        log(`prompts: ${prompts.length}, console presses: ${pressed}`);
+        assert.ok(assertion instanceof Map, 'getAssertion returned no CBOR map');
+        assert.ok(assertion.get(2) instanceof Uint8Array, 'no authData in the assertion');
+        assert.ok(assertion.get(3) instanceof Uint8Array, 'no signature in the assertion');
+        log(`signature: ${assertion.get(3).length} bytes`);
       });
 
     it('and the key is handed back to the phone', async ({log, assert, skip}) => {

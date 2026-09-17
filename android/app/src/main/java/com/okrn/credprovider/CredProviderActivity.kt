@@ -60,6 +60,7 @@ class CredProviderActivity : ReactActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    current = this
 
     if (!CredProviderGate.enabled()) {
       failGet("the OnlyKey credential provider experiment is switched off")
@@ -83,6 +84,33 @@ class CredProviderActivity : ReactActivity() {
       "${p.action} from ${p.callerPackage} clientDataHash=" +
         if (p.clientDataHashB64.isEmpty()) "NULL" else "present",
     )
+  }
+
+  /**
+   * A SECOND REQUEST REUSES THIS ACTIVITY.
+   *
+   * launchMode is singleTask, so Android does not build a new instance for the
+   * next credential request - it delivers the intent here. Without this the
+   * activity kept answering the FIRST request forever, which shows up as a
+   * screen describing a ceremony the browser has already given up on.
+   */
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    current = this
+    pending = when (intent.action) {
+      OkCredentialProviderService.ACTION_GET -> readGet()
+      OkCredentialProviderService.ACTION_CREATE -> readCreate()
+      else -> null
+    }
+    Log.i(CredProviderGate.TAG, "new intent: ${pending?.action ?: "none"}")
+  }
+
+  override fun onDestroy() {
+    if (current === this) {
+      current = null
+    }
+    super.onDestroy()
   }
 
   private fun readGet(): Pending? {
@@ -167,5 +195,25 @@ class CredProviderActivity : ReactActivity() {
     PendingIntentHandler.setCreateCredentialException(result, CreateCredentialUnknownException(why))
     setResult(RESULT_OK, result)
     finish()
+  }
+
+  companion object {
+    /**
+     * The live instance, for the TurboModule.
+     *
+     * `reactApplicationContext.currentActivity` is NOT reliable here: the JS
+     * surface mounts and asks for its request the instant it appears, and at
+     * that moment React's idea of the current activity can still be the one
+     * being replaced. That raced, and lost, showing a valid request as "the
+     * credential activity is no longer in the foreground".
+     *
+     * Set in onCreate before any JS runs, and cleared in onDestroy - and only
+     * when the instance being destroyed is still the one recorded, so a new
+     * activity replacing an old one does not have its reference wiped by the
+     * old one's teardown.
+     */
+    @JvmStatic
+    var current: CredProviderActivity? = null
+      private set
   }
 }

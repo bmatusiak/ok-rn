@@ -136,6 +136,40 @@ export async function pressKeyButton(target: Target, button: number) {
   await device.press(String(button));
 }
 
+/**
+ * ONE CTAPHID CHANNEL, KEPT.
+ *
+ * CTAPHID_INIT allocates a channel record; the firmware keeps ten and frees
+ * NONE (ctaphid.cpp:67). Opening one per request therefore works perfectly for
+ * the first several requests and then stops working altogether - the key goes
+ * on answering the vendor interface, so it looks alive, while CTAPHID says
+ * nothing at all and every attempt dies on an 8s timeout. Measured on the bench
+ * after a day of testing against one hard key.
+ *
+ * useFidoAdmin.ts:8 already carried this warning for the app's own screens.
+ * This file ignored it. So: one channel per backend, held for the life of the
+ * process, exactly as that hook holds one for the life of its screen.
+ *
+ * A key that is unplugged takes its channel with it, so any failure drops the
+ * cache and the next request opens a fresh one.
+ */
+let held: {backend: string; ctap: any} | null = null;
+
+async function openChannel(target: Target, transport: any) {
+  if (held && held.backend === target.backend) {
+    return held.ctap;
+  }
+  const ctap = new CtapHid(transport);
+  await ctap.init({timeoutMs: 8000});
+  held = {backend: target.backend, ctap};
+  return ctap;
+}
+
+/** Forget the channel, so the next request opens one. */
+export function dropChannel() {
+  held = null;
+}
+
 /** The user-presence press, which is always button 1 on a soft key. */
 export const pressForPresence = (target: Target) => pressKeyButton(target, 1);
 
@@ -160,15 +194,23 @@ export type Emit = (label: string, status: StepStatus, detail?: string) => void;
 export type AskPin = (retriesLeft: number | null) => Promise<string>;
 
 /**
- * The key is waiting for a finger. Resolves once the person has provided one.
+ * Tell the screen the key is waiting for a finger. Returns NOTHING and is
+ * never awaited.
  *
- * A callback rather than an automatic press, even though the soft key could
- * press its own pad. User presence is the one part of the ceremony that exists
- * to be a HUMAN act - a soft key that satisfies it by itself is not a
- * comparable stand-in for the hard key, it is a different thing wearing its
- * name. The screen decides how to ask; this file only says when.
+ * It used to return a promise that this file awaited, and that was a design
+ * mistake with real consequences. The call happens inside the CTAPHID keepalive
+ * handler, which the library awaits before it resumes READING - so blocking
+ * there stops us hearing the device. Someone who pressed the physical key
+ * instead of the on-screen button satisfied the firmware, the firmware
+ * answered, and the app sat there still showing "waiting for a touch" because
+ * it was waiting on a button nobody had any reason to press. Measured on the
+ * bench with a hard key.
+ *
+ * The rule it cost: THE UI MUST NEVER GATE THE PROTOCOL. Raise the prompt,
+ * return, keep reading. A press - finger or button - reaches the key by its own
+ * path, and the answer arrives when the key is satisfied.
  */
-export type AskPresence = (target: Target) => Promise<void>;
+export type AskPresence = (target: Target) => void;
 
 /**
  * The key is locked. Resolves once the person has unlocked it.
@@ -287,9 +329,14 @@ export async function runCredentialFlow(
   emit('key state', 'ok', status.version ?? status.state);
 
   emit('CTAPHID init', 'run');
-  const ctap = new CtapHid(transport);
-  await ctap.init({timeoutMs: 8000});
-  emit('CTAPHID init', 'ok');
+  let ctap;
+  try {
+    ctap = await openChannel(target, transport);
+  } catch (e) {
+    dropChannel();
+    throw e;
+  }
+  emit('CTAPHID init', 'ok', held ? 'channel reused where possible' : undefined);
 
   const admin = new FidoAdmin(ctap);
 
@@ -330,6 +377,9 @@ export async function runCredentialFlow(
 
   /* ---- 4. the one CTAP2 call that matters ------------------------------ */
 
+  /* Whether a touch was ever asked for, so it can be marked done afterwards. */
+  let raisedPresence = false;
+
   if (request.action === 'CREATE') {
     const creation = options as CreationOptionsJSON;
     emit('makeCredential', 'run', creation.rp?.id ?? '');
@@ -369,10 +419,14 @@ export async function runCredentialFlow(
         }
         emit('key is working', 'ok');
         emit('touch the key', 'run');
-        await askPresence(target);
-        emit('touch the key', 'ok');
+        /* Not awaited - see AskPresence. The read loop must not stop here. */
+        askPresence(target);
+        raisedPresence = true;
       },
     });
+    if (raisedPresence) {
+      emit('touch the key', 'ok');
+    }
     emit('makeCredential', 'ok');
 
     emit('assemble response', 'run');
@@ -428,10 +482,14 @@ export async function runCredentialFlow(
         }
         emit('key is working', 'ok');
         emit('touch the key', 'run');
-        await askPresence(target);
-        emit('touch the key', 'ok');
+        /* Not awaited - see AskPresence. The read loop must not stop here. */
+        askPresence(target);
+        raisedPresence = true;
       },
     });
+  if (raisedPresence) {
+    emit('touch the key', 'ok');
+  }
   emit('getAssertion', 'ok');
 
   emit('assemble response', 'run');
