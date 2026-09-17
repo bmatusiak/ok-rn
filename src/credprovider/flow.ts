@@ -98,6 +98,25 @@ export async function chooseTarget(force?: 'usb' | 'embedded'): Promise<Target> 
    * the case where it would have to ask.
    */
   if (!onBus || force === 'embedded') {
+    /*
+     * START THE SOFT KEY IF NOBODY ELSE HAS.
+     *
+     * The firmware is started by the MAIN app's startup path, and this screen
+     * is not that - the system launches CredProviderActivity directly, and it
+     * can be the first thing in the process to run. Without this the flow got
+     * as far as "open key: the firmware running inside this app" and then
+     * "key state: firmware is not running", which is an accurate message about
+     * a situation nobody should be in.
+     *
+     * isRunning() first, because start() on a running firmware is not free and
+     * the main app may well have started it already. A firmware that has been
+     * STOPPED cannot be restarted in this process (see the Testing tab), so
+     * this can only help the never-started case - which is the one a credential
+     * request arriving cold actually hits.
+     */
+    if (!OkEmu.isRunning()) {
+      await OkEmu.start();
+    }
     return {backend: 'embedded', hard: false, canPress: true, hardOnBus: onBus};
   }
 
