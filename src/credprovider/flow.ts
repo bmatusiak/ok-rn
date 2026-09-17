@@ -431,14 +431,14 @@ export async function runCredentialFlow(
 
     emit('assemble response', 'run');
     /*
-     * The transport hint is claimed only for a hard key, where it is true. The
-     * relying party stores it and replays it in allowCredentials forever, so a
-     * guess here is a credential that stops working later.
+     * Chrome refuses a registration response with no `transports`, so one is
+     * always sent - and it is true either way: a hard key is reached over USB,
+     * and the soft key is firmware inside this phone, which is "internal".
      */
     const json = registrationResponseJSON(
       reply,
       undefined,
-      target.hard ? ['usb'] : undefined,
+      target.hard ? ['usb'] : ['internal'],
     );
     emit('assemble response', 'ok', JSON.parse(json).id);
     return json;

@@ -256,28 +256,27 @@ export function registrationResponseJSON(
   };
 
   /*
-   * `transports` is DELIBERATELY NOT CLAIMED.
+   * `transports` IS ALWAYS SENT, because Chrome requires it.
    *
-   * It is not cosmetic. The relying party stores whatever we say here and
-   * replays it in allowCredentials on every later sign-in, and a browser uses
-   * it to decide which authenticators to even offer. So a wrong value does not
-   * show up as a wrong label - it shows up months later as a credential the
-   * user cannot use.
+   * It was briefly made conditional - claimed only for a hard key, on the
+   * reasoning that an absent hint is safer than a wrong one, since the relying
+   * party stores whatever we say and replays it in allowCredentials forever.
+   * That reasoning was WRONG in the only way that matters: Chrome's Android
+   * CredMan bridge refuses the entire response without the field.
    *
-   * And there is no right value available. "usb" was here first and was simply
-   * false: nothing is on USB, the request arrived through Credential Manager.
-   * "internal" is what the platform sees but would assert the credential is
-   * bound to this phone, which is the opposite of true for a key you can
-   * unplug and carry. "hybrid" describes a different ceremony altogether.
+   *   MojoClassFromJSON failed to convert JSON: field missing or invalid: transports
+   *   (fido2credentialrequest_native_android.cc:59)
    *
-   * The field is optional, an empty list is legal, and an absent hint makes a
-   * browser offer everything rather than the wrong thing. So the CALLER passes
-   * one only when it knows: milestone 4 reached a hard key over OTG, and for
-   * that key "usb" is simply true.
+   * measured 2026-09-17 on a soft-key registration, which took the omitted
+   * branch. That is the THIRD field Chrome demands and the W3C serialization
+   * marks optional, after `publicKey` and `userHandle` - see
+   * FINDING-chrome-rejects-a-webauthn-response-over-two-json-fields.
+   *
+   * So the caller says which, and says it truthfully: a hard key is reached
+   * over USB, and the soft key really is firmware running inside this phone,
+   * which is what "internal" means.
    */
-  if (transports?.length) {
-    out.response.transports = transports;
-  }
+  out.response.transports = transports?.length ? transports : ['internal'];
   const alg = coseAlgorithm(parsed.credentialPublicKey);
   if (alg !== undefined) {
     out.response.publicKeyAlgorithm = alg;

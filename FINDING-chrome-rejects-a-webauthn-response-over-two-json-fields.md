@@ -45,6 +45,21 @@ write. Chrome's JSON-to-Mojo converter rejects the null and wants the key gone.
 It is legitimately absent whenever the assertion was answered from an
 allowList rather than a discoverable credential.
 
+**3. `response.transports` is required on registration** - and the title of this
+file undercounts, because this one was found later, on 2026-09-17, by REMOVING
+it. It had been made conditional: claimed for a hard key, omitted for the soft
+key, on the reasoning that the relying party stores the hint and replays it in
+allowCredentials forever, so an absent hint is safer than a wrong one. That
+reasoning is sound about relying parties and irrelevant here, because Chrome
+will not accept the response at all without the field:
+
+    MojoClassFromJSON failed to convert JSON: field missing or invalid: transports
+
+The lesson is not about transports. It is that this converter treats OPTIONAL in
+the W3C serialization as REQUIRED, three times over, and the only way to find
+out is to send a response without the field and read Chrome's log. Before
+leaving any optional field out of a response, check it against a real Chrome.
+
 ## Why it is written down
 
 Both fields are ones the spec says you may leave out or null, and both are
