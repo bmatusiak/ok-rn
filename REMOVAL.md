@@ -30,8 +30,8 @@ the user dismiss an error.
 
 - `android/app/src/main/java/com/okrn/credprovider/` (the entire directory)
 - `android/app/src/main/res/xml/provider_config.xml`
-- `src/credprovider/` (the entire directory — milestone 2 onward)
-- `specs/NativeCredProvider.ts` (milestone 2 onward)
+- `src/credprovider/` (the entire directory: `authData.ts`, `ctapTranslate.ts`, `flow.ts`, `types.ts`, `CredProviderScreen.tsx`)
+- `specs/NativeCredProvider.ts`
 - this file
 
 **Revert these edits — each is one contiguous, commented block:**
@@ -40,8 +40,8 @@ the user dismiss an error.
 |---|---|
 | `android/app/src/main/AndroidManifest.xml` | the block marked `EXPERIMENT: Android Credential Manager` — one `<service>`, one `<activity>` |
 | `android/app/build.gradle` | the commented `androidx.credentials:credentials` line in `dependencies` |
-| `android/app/src/main/java/com/okrn/OkRnPackage.kt` | the `NativeCredProviderSpec` import, its `getModule` branch and its `moduleInfo` entry (milestone 2 onward) |
-| `index.js` | the second `AppRegistry.registerComponent` for the cred-provider surface (milestone 2 onward) |
+| `android/app/src/main/java/com/okrn/OkRnPackage.kt` | the `NativeCredProviderSpec` and `NativeCredProviderModule` imports, its `getModule` branch and its `moduleInfo` entry |
+| `index.js` | the commented second `AppRegistry.registerComponent("OkRNCredProvider", ...)` block |
 
 **Nothing else is touched.** In particular the experiment does not modify
 `node-onlykey-lib` at all — it only calls it. `protocol/bridge.js` especially is

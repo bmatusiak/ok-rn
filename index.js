@@ -36,3 +36,17 @@ import App from './App';
 import { name as appName } from './app.json';
 
 AppRegistry.registerComponent(appName, () => App);
+
+/*
+ * EXPERIMENT - see REMOVAL.md. Remove this import and registration to drop it.
+ *
+ * A SECOND registered root on the same bundle. The Credential Manager sheet
+ * launches CredProviderActivity, which renders this root instead of App, so a
+ * WebAuthn request handed over by Chrome gets its own screen rather than the
+ * whole app. Both activities share one ReactHost (MainApplication.reactHost),
+ * so this costs a component, not a second runtime.
+ */
+AppRegistry.registerComponent(
+  "OkRNCredProvider",
+  () => require("./src/credprovider/CredProviderScreen").default,
+);

@@ -116,13 +116,16 @@
         excludeFromRecents give the task isolation that is actually wanted here
         without splitting the process.
 
-        Translucent while this is milestone 1 and the activity only reports and
-        finishes; it becomes a ReactActivity with AppTheme once it has a UI.
+        AppTheme, not translucent: this is a ReactActivity and React needs a
+        real window to draw into. configChanges/windowSoftInputMode mirror
+        MainActivity so the PIN field is not covered by the keyboard.
       -->
       <activity
         android:name=".credprovider.CredProviderActivity"
         android:exported="false"
-        android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        android:theme="@style/AppTheme"
+        android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+        android:windowSoftInputMode="adjustResize"
         android:excludeFromRecents="true"
         android:taskAffinity=""
         android:launchMode="singleTask" />

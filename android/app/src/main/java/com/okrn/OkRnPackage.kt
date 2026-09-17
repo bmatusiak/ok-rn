@@ -6,12 +6,15 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.model.ReactModuleInfo
 import com.facebook.react.module.model.ReactModuleInfoProvider
 import com.okrn.specs.NativeBtKeyboardSpec
+import com.okrn.specs.NativeCredProviderSpec
 import com.okrn.specs.NativeFidoGattSpec
 import com.okrn.specs.NativeOkEmuSpec
 import com.okrn.specs.NativeSecretsSpec
 import com.okrn.specs.NativeShareSpec
 import com.okrn.specs.NativeUsbHidSpec
 import com.okrn.btkbd.NativeBtKeyboardModule
+// EXPERIMENT - see REMOVAL.md
+import com.okrn.credprovider.NativeCredProviderModule
 import com.okrn.emu.NativeOkEmuModule
 import com.okrn.fido.NativeFidoGattModule
 import com.okrn.secrets.NativeSecretsModule
@@ -35,6 +38,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeSecretsSpec.NAME -> NativeSecretsModule(reactContext)
       NativeShareSpec.NAME -> NativeShareModule(reactContext)
       NativeBtKeyboardSpec.NAME -> NativeBtKeyboardModule(reactContext)
+      NativeCredProviderSpec.NAME -> NativeCredProviderModule(reactContext)
       else -> null
     }
 
@@ -46,6 +50,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeSecretsSpec.NAME to moduleInfo(NativeSecretsSpec.NAME),
       NativeShareSpec.NAME to moduleInfo(NativeShareSpec.NAME),
       NativeBtKeyboardSpec.NAME to moduleInfo(NativeBtKeyboardSpec.NAME),
+      NativeCredProviderSpec.NAME to moduleInfo(NativeCredProviderSpec.NAME),
     )
   }
 
