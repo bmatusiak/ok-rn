@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What this app claims it can handle as a credential provider.
+
+  Public-key credentials only. Declaring the password capability too would put
+  OnlyKey in the "save password" sheet for every login form on the phone, which
+  is not what this experiment is, and a provider that appears where it cannot
+  help is worse than one that does not appear.
+
+  The capability string is the ANDROIDX one, not "android.credentials.*".
+  Getting that wrong is silent: the provider installs, is listed by
+  `cmd package query-services`, can be enabled in Settings, and is then
+  passed over at request time with one line in logcat -
+
+      CredentialManager: Service does not have the required capabilities:
+        ComponentInfo{com.okrn/...OkCredentialProviderService}
+
+  and nothing at all in the passkey sheet. The matching string is the same one
+  the framework logs for the option it is trying to place:
+  "Option of type: androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL".
+-->
+<credential-provider xmlns:android="http://schemas.android.com/apk/res/android">
+    <capabilities>
+        <capability name="androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL" />
+    </capabilities>
+</credential-provider>

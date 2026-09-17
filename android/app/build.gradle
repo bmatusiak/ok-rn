@@ -167,6 +167,18 @@ dependencies {
      */
     implementation("androidx.biometric:biometric:1.1.0")
 
+    /*
+     * EXPERIMENT (see com.okrn.credprovider + REMOVAL.md). Lets the app register
+     * as a system credential provider so Chrome ON THIS PHONE can hand it a
+     * WebAuthn call. The provider half of this library is API 34+ only, which is
+     * why every class under credprovider is @RequiresApi(34) while minSdk stays
+     * at 24 - the library is safe to LINK on an older phone, it is only unsafe
+     * to instantiate, and CredProviderGate.enabled() is what guarantees that.
+     *
+     * Delete this one line to remove the experiment from the build.
+     */
+    implementation("androidx.credentials:credentials:1.5.0")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

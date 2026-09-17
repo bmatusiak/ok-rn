@@ -82,6 +82,51 @@
         android:taskAffinity=""
         android:exported="false" />
 
+      <!--
+        ==========  EXPERIMENT: Android Credential Manager  ==========
+        One contiguous block on purpose. Deleting it, the credprovider package,
+        src/credprovider and the androidx.credentials line in build.gradle
+        removes the experiment completely. See REMOVAL.md.
+
+        exported="true" with the BIND_CREDENTIAL_PROVIDER_SERVICE permission is
+        the required pair: the service has to be visible for the system to bind
+        it, and the permission is what stops anything BUT the system from doing
+        so. Exported without it would let any app on the phone drive the key.
+      -->
+      <service
+        android:name=".credprovider.OkCredentialProviderService"
+        android:exported="true"
+        android:label="OnlyKey"
+        android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE"
+        tools:targetApi="34">
+        <intent-filter>
+          <action android:name="android.service.credentials.CredentialProviderService" />
+        </intent-filter>
+        <meta-data
+          android:name="android.credentials.provider"
+          android:resource="@xml/provider_config" />
+      </service>
+
+      <!--
+        Launched by the system PendingIntent once the user picks OnlyKey.
+
+        NOT its own process - unlike RestartActivity above. A second process
+        means a second ReactHost and a second okemu writing the same flash.bin,
+        which is data loss, not a performance question. taskAffinity and
+        excludeFromRecents give the task isolation that is actually wanted here
+        without splitting the process.
+
+        Translucent while this is milestone 1 and the activity only reports and
+        finishes; it becomes a ReactActivity with AppTheme once it has a UI.
+      -->
+      <activity
+        android:name=".credprovider.CredProviderActivity"
+        android:exported="false"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar"
+        android:excludeFromRecents="true"
+        android:taskAffinity=""
+        android:launchMode="singleTask" />
+
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
