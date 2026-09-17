@@ -7,6 +7,13 @@ import {useKeyName} from '../hooks/KeyContext';
 import type {FidoSession} from '../hooks/useFidoGatt';
 import type {BtAuto} from '../hooks/useBtAuto';
 
+/** Seconds as m:ss - a pairing window is minutes, and "287s" is not a clock. */
+function mmss(total: number): string {
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 /*
  * ONE TAB, ONE FLOW: turn it on, choose a target, use it.
  *
@@ -20,19 +27,31 @@ import type {BtAuto} from '../hooks/useBtAuto';
  *
  *   1. Bluetooth      - on or off; nothing below exists while it is off
  *   2. Target         - WHICH computer, chosen once
- *   3. Keyboard       - on or off, for that target
- *   4. Authenticator  - on or off, for that target
+ *   3. Keyboard       - whether the key's typing crosses the link
+ *   4. Authenticator  - whether a browser's request reaches the key
  *
  * The target is shared and comes FIRST because it is shared: a host is bonded
  * to the phone, not to a feature, and both of these type into the same chosen
  * computer. Saying it twice on one screen was most of why the tab read as two
  * apps bolted together.
  *
- * Neither feature can be switched on before a target is chosen. That is not a
- * restriction, it is the flow made visible - a keyboard with nowhere to type
- * is the state this app spent a day being confused by.
+ * ## The switches are IO, not existence
+ *
+ * They used to publish and withdraw the services themselves, and both of this
+ * tab's long-running bugs came out of that. A host reads a device's service
+ * list EXACTLY ONCE, when it pairs: gating publication on a target made the
+ * first pairing with a new computer the one pairing that recorded neither
+ * service, and the target list only holds computers already paired, so that
+ * was the ordinary path. And switching a feature off tore its service down,
+ * which teaches Windows to distrust a node that keeps vanishing until it stops
+ * offering this phone at all.
+ *
+ * So both services are present for as long as Bluetooth is on, and these
+ * switches decide whether anything flows through them. That is also the
+ * question someone is really answering when they turn one off - not "stop
+ * existing", but "not right now" - and it can be answered without touching
+ * what any host has already written down.
  */
-
 
 export function BluetoothScreen({
   fido,
@@ -90,57 +109,61 @@ export function BluetoothScreen({
   );
 
   /*
-   * PAIRING IS THE ONE MOMENT A HOST LOOKS, AND IT LOOKS AT BOTH TRANSPORTS.
+   * PAIRING ONLY HAS TO MAKE THE PHONE VISIBLE NOW.
    *
-   * makeDiscoverable already publishes the HID profile before asking to be
-   * visible, for the reason written where it is defined: a computer reads a
-   * device's service list exactly once, when it pairs, and never asks again.
-   * That argument was never about the keyboard. It is about the HOST'S
-   * RECORD - and the authenticator lives in the same record.
-   *
-   * So pairing with only the keyboard up produced a half-built bond. Measured
-   * against Windows on 2026-09-17, the phone's own stack reported:
+   * A HOST READS A DEVICE'S SERVICE LIST EXACTLY ONCE, WHEN IT PAIRS, so this
+   * button used to have to bring both services up first - and before that, it
+   * brought up only the keyboard, which is how a pairing came out half-built.
+   * Measured against Windows on 2026-09-17 the phone's own stack reported:
    *
    *   NITRO16 [ DUAL ] [ACL BR/EDR:Y LE:N]
    *           [ Encryption status(BR/EDR): keySize=16 ... LE: N/A ]
    *
-   * marked dual-mode, a classic link up, and NO LE KEY AT ALL. The FIDO
-   * characteristics require an encrypted LE link, so every later connection
-   * from the host failed discovery outright (GetGattServices -> Unreachable),
-   * no matter that this phone was advertising 0xFFFD connectably the whole
-   * time. The only cure was to unpair and pair again - which then cost the
-   * keyboard, because whichever feature happened to be up at pair time was
-   * the one the host kept. That is the "fix one, break the other" loop.
+   * dual-mode, a classic link up, and NO LE KEY AT ALL - so the FIDO
+   * characteristics were unreachable from that moment on, no matter that the
+   * phone was advertising 0xFFFD connectably the whole time. Windows offered
+   * no security key to use, and the only cure was to pair again, which then
+   * cost the keyboard. Whichever feature was up at pair time was the one that
+   * survived.
    *
-   * Starting the GATT server and its connectable advertisement BEFORE the
-   * phone becomes discoverable is what lets a single pairing serve both.
-   * fido.start() swallows its own failures and is safe to call when it is
-   * already advertising, and it does NOT need a chosen target - which matters,
-   * because at pair time there is no target yet. That bootstrap order is the
-   * whole point of this button.
+   * Presence follows the radio now (see App), so both are already up whenever
+   * this button can be pressed, and there is nothing left for it to arrange.
    */
   const pairNewComputer = useCallback(async () => {
-    if (fido.supported !== false) await fido.start();
     await bt.makeDiscoverable();
-  }, [bt, fido]);
+  }, [bt]);
 
   /*
-   * CHOOSING "NONE" STANDS BOTH FEATURES DOWN.
+   * CANCEL CLOSES THE WINDOW, AND DELIBERATELY NOTHING ELSE.
    *
-   * Not tidiness - the switches below are disabled without a target, so a
-   * keyboard left published under "None" would be running behind a control
-   * that can no longer turn it off. The invariant is the simple one the tab is
-   * built on: a feature is on FOR a target, or it is not on.
+   * It does NOT take the services down. The system's discoverable window
+   * cannot be revoked by an app without BLUETOOTH_PRIVILEGED, so the phone
+   * stays findable until it lapses either way - and withdrawing the keyboard
+   * or the GATT server to look decisive would be the exact vanishing act that
+   * teaches a host to distrust this phone. Ending the countdown is the honest
+   * extent of it: the invitation is over, the phone is still a keyboard and
+   * still a security key for the computers that already know it.
+   */
+  const cancelPairing = useCallback(() => {
+    bt.endDiscoverable();
+  }, [bt]);
+
+  /*
+   * CHOOSING "NONE" FORGETS THE TARGET, AND NOTHING ELSE.
+   *
+   * It used to stand both features down, because the switches were disabled
+   * without a target and a feature left on under "None" would have been
+   * running behind a control that could no longer turn it off. Neither half
+   * of that is true now: the switches are IO and always reachable, and
+   * presence follows the radio. A keyboard with no target simply has nobody
+   * connected to type to, which is a state the panel can say plainly instead
+   * of a state that had to be prevented.
    */
   const setTarget = useCallback(
     async (address: string | null) => {
       await bt.chooseHost(address);
-      if (address === null) {
-        if (published) void bt.withdraw();
-        if (advertising) void fido.stop();
-      }
     },
-    [bt, fido, published, advertising],
+    [bt],
   );
 
   /*
@@ -196,18 +219,6 @@ export function BluetoothScreen({
               hint="Turn Bluetooth on when the app opens."
               value={auto.autos.start}
               onChange={v => auto.setAuto('start', v)}
-            />
-            <AutoRow
-              label="Start keyboard"
-              hint="Publish as a keyboard once a target is chosen."
-              value={auto.autos.keyboard}
-              onChange={v => auto.setAuto('keyboard', v)}
-            />
-            <AutoRow
-              label="Start authenticator"
-              hint="Advertise as a security key once a target is chosen."
-              value={auto.autos.authenticator}
-              onChange={v => auto.setAuto('authenticator', v)}
             />
           </Section>
 
@@ -269,10 +280,25 @@ export function BluetoothScreen({
             })}
 
             {/* No Refresh button: the list refreshes itself while this is on. */}
+            {/*
+              * One button with three readings: the invitation, the window
+              * counting down, and the way out of it. The remaining time is on
+              * the button itself because it is the only thing on this panel
+              * that is running out - a pairing that has to be finished on the
+              * OTHER computer is exactly when someone needs to know how long
+              * they have, without looking back at the phone.
+              */}
             <Btn
-              title={bt.busy ? 'Asking…' : 'Pair a new computer'}
-              disabled={bt.busy}
-              onPress={pairNewComputer}
+              title={
+                bt.discoverableFor
+                  ? `Cancel · visible for ${mmss(bt.discoverableFor)}`
+                  : bt.busy
+                    ? 'Asking…'
+                    : 'Pair a new computer'
+              }
+              tone={bt.discoverableFor ? 'danger' : 'default'}
+              disabled={bt.busy && !bt.discoverableFor}
+              onPress={bt.discoverableFor ? cancelPairing : pairNewComputer}
             />
           </Section>
 
@@ -281,15 +307,15 @@ export function BluetoothScreen({
             title="Keyboard"
             right={
               <Switch
-                value={published}
-                disabled={bt.busy || !bt.chosenHost}
-                onValueChange={next => (next ? bt.publish() : bt.withdraw())}
+                value={bt.forwarding}
+                disabled={bt.state === 'unsupported'}
+                onValueChange={bt.setForwarding}
               />
             }>
             <View style={styles.stateRow}>
               <View style={[styles.dot, dotStyle(bt.state)]} />
               <Text style={styles.stateText}>
-                {bt.chosenHost ? bt.state : 'choose a target first'}
+                {bt.state}
               </Text>
             </View>
             {bt.message ? <Text style={styles.note}>{bt.message}</Text> : null}
@@ -316,18 +342,18 @@ export function BluetoothScreen({
             title="Authenticator"
             right={
               <Switch
-                value={advertising}
-                disabled={fido.supported === false || !bt.chosenHost}
-                onValueChange={next => (next ? fido.start() : fido.stop())}
+                value={fido.relaying}
+                disabled={fido.supported === false}
+                onValueChange={fido.setRelaying}
               />
             }>
             <View style={styles.stateRow}>
               <StatusPill state={fido.state} />
             </View>
             <Text style={styles.note}>
-              {bt.chosenHost
+              {fido.relaying
                 ? `A browser can use this phone as a security key. ${keyName} must be unlocked — the firmware answers, not this screen.`
-                : 'Choose a target first.'}
+                : 'Offered to paired computers, but requests are turned away. Switch this on to let a browser reach the key.'}
             </Text>
             {fido.supported === false ? (
               <Text style={styles.error}>

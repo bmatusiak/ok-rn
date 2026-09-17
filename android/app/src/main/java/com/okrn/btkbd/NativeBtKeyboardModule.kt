@@ -68,6 +68,9 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
   /** The promise waiting on the system's discoverability dialog, if any. */
   private var pendingDiscoverable: Promise? = null
 
+  /** What was asked for, kept for the devices that consent without saying. */
+  private var requestedDiscoverableSeconds: Int = 0
+
   private val activityListener: ActivityEventListener =
     object : BaseActivityEventListener() {
       override fun onActivityResult(
@@ -81,9 +84,21 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
         pendingDiscoverable = null
         /*
          * RESULT_CANCELED means declined. Anything else is the number of
-         * seconds granted, which the system may have shortened.
+         * seconds granted, which the system may have shortened - and that
+         * figure is passed on, because a countdown built from what we ASKED
+         * for keeps offering a pairing window after the phone has already
+         * gone back into hiding.
+         *
+         * Some devices answer RESULT_OK (-1) rather than a duration. That is
+         * consent without a figure, so fall back to what was requested rather
+         * than reporting a nonsense negative.
          */
-        promise.resolve(resultCode != Activity.RESULT_CANCELED)
+        val granted = when {
+          resultCode == Activity.RESULT_CANCELED -> 0
+          resultCode > 0 -> resultCode
+          else -> requestedDiscoverableSeconds
+        }
+        promise.resolve(granted.toDouble())
       }
     }
 
@@ -280,12 +295,11 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
         return
       }
 
+      val wanted = seconds.toInt().coerceIn(1, MAX_DISCOVERABLE_SECONDS)
       val intent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
-        putExtra(
-          BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION,
-          seconds.toInt().coerceIn(1, MAX_DISCOVERABLE_SECONDS),
-        )
+        putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, wanted)
       }
+      requestedDiscoverableSeconds = wanted
       pendingDiscoverable = promise
       activity.startActivityForResult(intent, DISCOVERABLE_REQUEST_CODE)
     } catch (e: Exception) {

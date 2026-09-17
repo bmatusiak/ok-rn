@@ -1,4 +1,5 @@
-import {useCallback, useEffect, useState} from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import FidoGatt, {
   type CtapRequestEvent,
   type GattState,
@@ -7,6 +8,9 @@ import OkEmu from '../transport/OkEmu';
 import {startFidoBridge} from '../fidoBridge';
 import type {OnlyKeyApp} from '../onlykey';
 import type {LogLevel} from './useLog';
+
+/** Shared with useBtAuto's old auto-authenticator preference: same question. */
+const RELAY_KEY = 'ok-rn/bt/auto-authenticator';
 
 type Options = {
   log: (level: LogLevel, text: string) => void;
@@ -54,6 +58,29 @@ export function useFidoGatt({log, getKey, getBackend}: Options) {
       return 'idle';
     }
   });
+  /*
+   * THE AUTHENTICATOR'S IO SWITCH, remembered across launches.
+   *
+   * Separate from `state`, which is presence. The GATT service is offered for
+   * as long as Bluetooth is on - tearing it down is what taught Windows to
+   * stop trusting the node - so this is the control that means "answer a
+   * browser", and it is the one the switch on the screen drives.
+   */
+  const [relaying, setRelayingState] = useState(false);
+  const relayingRef = useRef(false);
+  relayingRef.current = relaying;
+
+  useEffect(() => {
+    AsyncStorage.getItem(RELAY_KEY)
+      .then(value => setRelayingState(value === '1'))
+      .catch(() => {});
+  }, []);
+
+  const setRelaying = useCallback((next: boolean) => {
+    setRelayingState(next);
+    void AsyncStorage.setItem(RELAY_KEY, next ? '1' : '0');
+  }, []);
+
   const [mtu, setMtu] = useState(0);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [pending, setPending] = useState<CtapRequestEvent | null>(null);
@@ -81,6 +108,7 @@ export function useFidoGatt({log, getKey, getBackend}: Options) {
       log,
       onPending: setPending,
       onPresence: setPresenceNeeded,
+      isRelaying: () => relayingRef.current,
     });
 
     FidoGatt.isSupported()
@@ -173,5 +201,16 @@ export function useFidoGatt({log, getKey, getBackend}: Options) {
     }
   }, [getBackend, getKey, log]);
 
-  return {state, mtu, supported, pending, presenceNeeded, start, stop, confirm};
+  return {
+    state,
+    mtu,
+    supported,
+    pending,
+    presenceNeeded,
+    start,
+    stop,
+    confirm,
+    relaying,
+    setRelaying,
+  };
 }

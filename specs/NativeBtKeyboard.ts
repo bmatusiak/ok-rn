@@ -101,9 +101,12 @@ export interface Spec extends TurboModule {
    * an app cannot make the choice on the user's behalf.
    *
    * @param seconds how long to stay visible; the platform caps this at 300.
-   * @returns false if the user declined the system dialog.
+   * @returns the seconds actually granted, or 0 if the user declined. The
+   *   system MAY SHORTEN what was asked for, so this is the only honest basis
+   *   for a countdown - assuming the requested figure shows a window that is
+   *   still open after the phone has gone back into hiding.
    */
-  requestDiscoverable(seconds: number): Promise<boolean>;
+  requestDiscoverable(seconds: number): Promise<number>;
 
   /**
    * The name a host will see this phone under.

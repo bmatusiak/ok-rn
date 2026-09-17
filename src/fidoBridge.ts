@@ -70,12 +70,33 @@ type Options = {
    * rather than a default nobody sees.
    */
   getKey: () => Promise<OnlyKeyApp>;
+
+  /**
+   * Whether requests should be answered at all - the bridge's IO switch.
+   *
+   * PRESENCE AND CONSENT ARE DIFFERENT QUESTIONS, and this app used to answer
+   * both with one control. Switching the authenticator off tore down the GATT
+   * server, which made 0xFFFD vanish from a host that had already recorded it,
+   * and a host records a device's services once. So the phone stays advertised
+   * for as long as Bluetooth is on, and this decides whether anything is
+   * relayed to the key.
+   *
+   * Read through a function rather than captured, because the bridge is
+   * attached once and the answer changes under it.
+   */
+  isRelaying?: () => boolean;
 };
 
 /**
  * Connect the GATT server to the firmware. Returns an unsubscribe function.
  */
-export function startFidoBridge({log, onPending, onPresence, getKey}: Options): () => void {
+export function startFidoBridge({
+  log,
+  onPending,
+  onPresence,
+  getKey,
+  isRelaying,
+}: Options): () => void {
   let bridge: ReturnType<typeof protocol.bridge.createCtapBridge> | null = null;
   /* Which transport the cached bridge was built on - see ensureBridge. */
   let boundTo: unknown = null;
@@ -126,6 +147,20 @@ export function startFidoBridge({log, onPending, onPresence, getKey}: Options): 
      */
     if ((event.command & CMD_MASK) !== CMD_MSG) {
       log('info', `ignoring CTAP BLE command ${label} - not a CTAP2 message`);
+      return;
+    }
+
+    /*
+     * Answered, not ignored. Silence makes a browser sit on "talking to your
+     * security key" until it times out, which reads as a broken authenticator
+     * rather than one that is switched off; DENIED tells it to move on.
+     */
+    if (isRelaying && !isRelaying()) {
+      log('info', `refusing ${label} - the bridge to the key is switched off`);
+      await FidoGatt.respondToRequest(
+        event.requestId,
+        CTAP2_ERR_OPERATION_DENIED.toString(16).padStart(2, '0'),
+      );
       return;
     }
 

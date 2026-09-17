@@ -115,32 +115,35 @@ function RadioStatus({
   }, [auto.ready, auto.autos.start]);
 
   /*
-   * The features, and they need every condition the manual path needs - a
-   * target especially. Without one, publishing offers this phone to whatever
-   * was ever bonded with it, and the whole tab is built on "a feature is on
-   * FOR a target". This reaches the state the user would have reached by hand,
-   * never one they could not.
+   * PRESENCE FOLLOWS THE RADIO, and nothing else.
+   *
+   * This used to wait for a chosen target before publishing the keyboard or
+   * advertising 0xFFFD, which sounded careful and was the source of most of
+   * this tab's trouble. A HOST READS A DEVICE'S SERVICE LIST EXACTLY ONCE,
+   * WHEN IT PAIRS. Gating presence on a target made the first pairing with any
+   * new computer the one pairing guaranteed to record neither service - and
+   * the target list only holds computers already paired, so that was the
+   * ordinary path, not an edge case. Worse, switching a feature off tore the
+   * GATT server down, and Windows stops trusting a service node that keeps
+   * vanishing: once dead, the WebAuthn stack stopped offering this phone at
+   * all.
+   *
+   * So both services are offered for as long as Bluetooth is on. What the
+   * switches on the Bluetooth tab now control is IO - whether keystrokes
+   * cross the link, whether a request is relayed to the key - which is the
+   * question someone was actually answering when they turned one off, and it
+   * can be answered without ever changing what a host has recorded.
    *
    * Guarded on current state rather than run once, because the honest trigger
-   * is "on, targeted, and not started yet" - which is also true after a host
-   * drops and comes back.
+   * is "on, and not up yet" - which is also true after a host drops, after a
+   * reload, and after the app is swiped away and reopened.
    */
   useEffect(() => {
-    if (!auto.ready || !on || !btk.chosenHost) return;
-    if (auto.autos.keyboard && !published && !btk.busy) void btk.publish();
-    if (auto.autos.authenticator && !advertising && fido.supported !== false) {
-      void fido.start();
-    }
+    if (!auto.ready || !on) return;
+    if (!published && !btk.busy) void btk.publish();
+    if (!advertising && fido.supported !== false) void fido.start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    auto.ready,
-    auto.autos.keyboard,
-    auto.autos.authenticator,
-    on,
-    btk.chosenHost,
-    published,
-    advertising,
-  ]);
+  }, [auto.ready, on, published, advertising]);
 
   const color = (enabled: boolean, connected: boolean) =>
     connected ? theme.ok : enabled ? theme.accentHover : theme.textDim;
@@ -351,6 +354,18 @@ function Shell() {
       }
       // It relocked while we were inside.
       if (prev === 'main') {
+        /*
+         * WHY THE DOOR CLOSED, to logcat.
+         *
+         * Reported 2026-09-17: leave the app and come back and it asks to log
+         * in again, with the key still unlocked. This transition is the only
+         * thing that can produce that, and it left no trace - so from outside
+         * "the firmware relocked" and "the app lost track of the firmware"
+         * looked identical, which is the same hole the Bluetooth keyboard had.
+         */
+        console.log(
+          `[door] main -> login: device=${emu.device} state=${emu.state} testing=${testing.enabled}`,
+        );
         return 'login';
       }
       return prev;

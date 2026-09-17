@@ -1,4 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
+import {AppState} from 'react-native';
 import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
@@ -342,6 +343,46 @@ export function useOkEmu({log, autoStart = false}: Options) {
    * against the published NaCl vectors rather than a second implementation
    * that happens to live in this app.
    */
+  /**
+   * ASK THE KEY AGAIN WHEN THE APP COMES BACK.
+   *
+   * `device` is only ever set from the firmware's once-a-second broadcast, and
+   * that stream does not survive the app being backgrounded - Android freezes a
+   * cached process, the broadcasts stop, and nothing restarts them on the way
+   * back. So the app kept whatever it last heard, FOREVER: switch away from an
+   * unlocked key, switch back, and the door was shut against a key that had
+   * never locked. Reported from the bench 2026-09-17, and "stuck" was the
+   * telling word - a key that had really relocked would open again on the next
+   * broadcast, and this never did.
+   *
+   * connect() already asks the device what it is and was already being called
+   * elsewhere; it simply never wrote the answer back into `device`. Now it
+   * does, on every resume, which is exactly when the broadcast is least
+   * trustworthy.
+   *
+   * Only ever promotes from a stale reading to a fresh one - it reads the
+   * device's own status word, so a key that really is locked stays locked.
+   */
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async next => {
+      if (next !== 'active') {
+        return;
+      }
+      try {
+        const {device} = await getOnlyKey('embedded');
+        const result = await device.connect();
+        const info = device_.version.parseStatus(String(result?.status ?? '').trim());
+        console.log(`[softkey] resume: device says "${info.raw}" -> ${info.state}`);
+        if (info.state !== 'unknown') {
+          setDevice(info.state as DeviceState);
+        }
+      } catch (error) {
+        console.log(`[softkey] resume: could not ask the key: ${String(error)}`);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   const connect = useCallback(async () => {
     setBusy(true);
     try {
@@ -651,16 +692,41 @@ export function useOkEmu({log, autoStart = false}: Options) {
     if (!autoStart || started.current) {
       return;
     }
-    if (!OkEmu.isAvailable() || OkEmu.isRunning()) {
+    if (!OkEmu.isAvailable()) {
       return;
     }
     started.current = true;
 
     (async () => {
-      await start();
-      if (!OkEmu.isRunning()) {
-        console.log('[softkey] firmware did not start');
-        return;
+      /*
+       * A FIRMWARE THAT IS ALREADY RUNNING MUST BE ADOPTED, NOT SKIPPED.
+       *
+       * This used to bail out whenever OkEmu.isRunning() was true, on the
+       * reasoning that there was nothing to start. But starting is not the only
+       * thing this does - it is also the ONLY place `state` and `device` are
+       * first set, and skipping it left them at their initial 'stopped' and
+       * 'unknown'. The splash clears on `state !== 'stopped'`, so the app sat
+       * on "Waiting for the key..." forever, against a firmware that was alive
+       * and unlocked the whole time.
+       *
+       * The way in is swiping the app off the recents list: Android destroys
+       * the ACTIVITY but keeps the PROCESS, so the firmware survives while the
+       * React tree is rebuilt from scratch - and the rebuilt tree knows nothing
+       * about the key it inherited. Reported from the bench 2026-09-17, and it
+       * looked like a lock-state bug for hours because the screen says the same
+       * thing either way.
+       *
+       * So: adopt it. The OKCONNECT below then tells us what it actually is.
+       */
+      if (OkEmu.isRunning()) {
+        setState('running');
+        console.log('[softkey] adopting a firmware that is already running');
+      } else {
+        await start();
+        if (!OkEmu.isRunning()) {
+          console.log('[softkey] firmware did not start');
+          return;
+        }
       }
       // setup() runs on its own thread; let it reach the main loop.
       await new Promise<void>(resolve => {
