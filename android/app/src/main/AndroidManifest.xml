@@ -96,7 +96,7 @@
       <service
         android:name=".credprovider.OkCredentialProviderService"
         android:exported="true"
-        android:label="OnlyKey"
+        android:label="Onlykey App"
         android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE"
         tools:targetApi="34">
         <intent-filter>

@@ -167,8 +167,16 @@ class OkCredentialProviderService : CredentialProviderService() {
     const val ACTION_GET = "com.okrn.credprovider.GET"
     const val ACTION_CREATE = "com.okrn.credprovider.CREATE"
 
-    /** What the row in the system sheet says. */
-    private const val ENTRY_USERNAME = "OnlyKey"
+    /**
+     * What the row in the system sheet says, and it matches android:label on
+     * the service so the name in Settings and the name in the sheet are the
+     * same one.
+     *
+     * NOT the same thing as the authenticator name a relying party shows. That
+     * comes from the AAGUID inside authData, which the firmware chooses and
+     * which a site looks up in a public list - nothing here can set it.
+     */
+    private const val ENTRY_USERNAME = "Onlykey App"
 
     private const val REQUEST_CODE_BASE = 4200
   }

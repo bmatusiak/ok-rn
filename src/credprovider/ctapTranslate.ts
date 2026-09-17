@@ -251,9 +251,28 @@ export function registrationResponseJSON(
     response: {
       attestationObject: toBase64Url(attestationObject),
       authenticatorData: toBase64Url(authData),
-      transports: ['usb'],
     },
   };
+
+  /*
+   * `transports` is DELIBERATELY NOT CLAIMED.
+   *
+   * It is not cosmetic. The relying party stores whatever we say here and
+   * replays it in allowCredentials on every later sign-in, and a browser uses
+   * it to decide which authenticators to even offer. So a wrong value does not
+   * show up as a wrong label - it shows up months later as a credential the
+   * user cannot use.
+   *
+   * And there is no right value available. "usb" was here first and was simply
+   * false: nothing is on USB, the request arrived through Credential Manager.
+   * "internal" is what the platform sees but would assert the credential is
+   * bound to this phone, which is the opposite of true for a key you can
+   * unplug and carry. "hybrid" describes a different ceremony altogether.
+   *
+   * The field is optional, an empty list is legal, and an absent hint makes a
+   * browser offer everything rather than the wrong thing. When milestone 4
+   * reaches a hard key over OTG, "usb" becomes true and can be said then.
+   */
   const alg = coseAlgorithm(parsed.credentialPublicKey);
   if (alg !== undefined) {
     out.response.publicKeyAlgorithm = alg;

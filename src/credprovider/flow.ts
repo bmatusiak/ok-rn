@@ -44,6 +44,23 @@ const {fromBase64Url} = bytes as any;
 
 export const pressSoftKey = () => OkEmu.pressButton(1);
 
+/** One button on the soft key. PIN entry is taps, and taps ARE presses. */
+export const pressSoftKeyButton = (button: number) => OkEmu.pressButton(button);
+
+/**
+ * What the key says it is, right now.
+ *
+ * Exported because the unlock panel has to ask again after every digit. The
+ * firmware evaluates the PIN hash after each press (OnlyKey.ino:697) and
+ * announces UNLOCKED the moment it matches - there is no "submit" to wait on,
+ * and no length to count up to, so the only way to know is to look.
+ */
+export async function readKeyState() {
+  const app = await getOnlyKey('embedded');
+  const connected = await app.device.connect();
+  return version.parseStatus(String(connected?.status ?? '').trim());
+}
+
 export type StepStatus = 'run' | 'ok' | 'fail';
 export type Emit = (label: string, status: StepStatus, detail?: string) => void;
 
@@ -61,11 +78,21 @@ export type AskPin = (retriesLeft: number | null) => Promise<string>;
  */
 export type AskPresence = () => Promise<void>;
 
+/**
+ * The key is locked. Resolves once the person has unlocked it.
+ *
+ * A passkey is not worth much if using it requires having already opened
+ * another app first, so the ceremony the browser started carries the unlock
+ * too.
+ */
+export type AskUnlock = (state: string) => Promise<void>;
+
 export async function runCredentialFlow(
   request: PendingCredRequest,
   emit: Emit,
   askPin: AskPin,
   askPresence: AskPresence,
+  askUnlock: AskUnlock,
 ): Promise<string> {
   /* ---- 1. the request itself ------------------------------------------- */
 
@@ -102,8 +129,7 @@ export async function runCredentialFlow(
   /* ---- 2. the key ------------------------------------------------------ */
 
   emit('open soft key', 'run');
-  const app = await getOnlyKey('embedded');
-  const {transport} = app;
+  const {transport} = await getOnlyKey('embedded');
   emit('open soft key', 'ok');
 
   /*
@@ -124,15 +150,38 @@ export async function runCredentialFlow(
    * milestone 4 and the shape of it should not have to change then.
    */
   emit('key state', 'run');
-  const connected = await app.device.connect();
-  const status = version.parseStatus(String(connected?.status ?? '').trim());
+  let status = await readKeyState();
+
   if (status.state !== 'unlocked') {
-    emit('key state', 'fail', status.state);
-    throw new Error(
-      'the key is ' + status.state + ', not unlocked. A locked key drops ' +
-        'security-key packets without answering, so asking anyway would simply ' +
-        'wait. Unlock it in the OnlyKey app first.',
-    );
+    /*
+     * BEING LOCKED IS NOT A REFUSAL.
+     *
+     * Sending the PIN belongs to this ceremony. The browser asked for a
+     * credential, the key wants to know who is asking, and making the person
+     * leave for another app to answer that is a worse version of the same
+     * question - it also means a passkey can only be used by someone who
+     * remembered to unlock beforehand, which is not how a security key is
+     * meant to feel.
+     *
+     * An UNINITIALIZED key is genuinely different: there is no PIN yet, so no
+     * keypad would help. That one is still reported rather than prompted for.
+     */
+    if (status.state === 'uninitialized') {
+      emit('key state', 'fail', status.state);
+      throw new Error(
+        'this key has never been set up, so it has no PIN and cannot hold a ' +
+          'credential yet. Set it up in the OnlyKey app first.',
+      );
+    }
+
+    emit('key state', 'run', status.state + ' - waiting for the PIN');
+    await askUnlock(status.state);
+
+    status = await readKeyState();
+    if (status.state !== 'unlocked') {
+      emit('key state', 'fail', status.state);
+      throw new Error('the key is still ' + status.state + '; it was not unlocked.');
+    }
   }
   emit('key state', 'ok', status.version ?? status.state);
 

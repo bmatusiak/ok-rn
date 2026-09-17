@@ -30,7 +30,14 @@ import {
   View,
 } from 'react-native';
 import NativeCredProvider from '../../specs/NativeCredProvider';
-import {pressSoftKey, runCredentialFlow, type StepStatus} from './flow';
+import {Keypad} from '../ui/Keypad';
+import {
+  pressSoftKey,
+  pressSoftKeyButton,
+  readKeyState,
+  runCredentialFlow,
+  type StepStatus,
+} from './flow';
 
 type Step = {label: string; status: StepStatus; detail?: string};
 
@@ -47,6 +54,12 @@ export default function CredProviderScreen() {
   /* The key is waiting for a finger; the flow is parked until one arrives. */
   const [presenceAsked, setPresenceAsked] = useState(false);
   const presenceResolve = useRef<(() => void) | null>(null);
+
+  /* The key is locked; the flow is parked until the PIN goes in. */
+  const [unlockAsked, setUnlockAsked] = useState<string | null>(null);
+  const [digits, setDigits] = useState(0);
+  const unlockResolve = useRef<(() => void) | null>(null);
+  const checkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* Guards double-run under StrictMode and any remount. */
   const started = useRef(false);
@@ -107,6 +120,63 @@ export default function CredProviderScreen() {
     presenceResolve.current = null;
   }, []);
 
+  const askUnlock = useCallback((state: string) => {
+    setUnlockAsked(state);
+    setDigits(0);
+    return new Promise<void>(resolve => {
+      unlockResolve.current = resolve;
+    });
+  }, []);
+
+  /**
+   * One PIN digit: a real button press on the key.
+   *
+   * There is no submit, because the firmware has no concept of one - it hashes
+   * what it has after every press and announces UNLOCKED the moment it matches
+   * (OnlyKey.ino:697). So the only way to know the PIN is complete is to ask
+   * the key after the presses stop, which is what the debounce below is: a
+   * digit typed 400ms after the last one cancels the pending question and asks
+   * again later, so a seven-digit PIN costs one status read rather than seven.
+   */
+  const onDigit = useCallback(
+    async (button: number) => {
+      setDigits(n => n + 1);
+      try {
+        await pressSoftKeyButton(button);
+      } catch {
+        /* A hard key is pressed with a finger; there is nothing to call. */
+      }
+
+      if (checkTimer.current) {
+        clearTimeout(checkTimer.current);
+      }
+      checkTimer.current = setTimeout(async () => {
+        checkTimer.current = null;
+        try {
+          const state = await readKeyState();
+          if (state.state === 'unlocked') {
+            setUnlockAsked(null);
+            unlockResolve.current?.();
+            unlockResolve.current = null;
+          }
+        } catch {
+          /* Still locked, or busy. The next digit asks again. */
+        }
+      }, 400);
+    },
+    [],
+  );
+
+  /* A pending question outlives the screen otherwise. */
+  useEffect(
+    () => () => {
+      if (checkTimer.current) {
+        clearTimeout(checkTimer.current);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (started.current) {
       return;
@@ -116,7 +186,13 @@ export default function CredProviderScreen() {
     (async () => {
       try {
         const request = await NativeCredProvider.getPendingRequest();
-        const json = await runCredentialFlow(request, emit, askPin, askPresence);
+        const json = await runCredentialFlow(
+          request,
+          emit,
+          askPin,
+          askPresence,
+          askUnlock,
+        );
         setDone(true);
         await NativeCredProvider.respond(json);
       } catch (e) {
@@ -132,7 +208,7 @@ export default function CredProviderScreen() {
         await NativeCredProvider.fail(message).catch(() => {});
       }
     })();
-  }, [emit, askPin, askPresence]);
+  }, [emit, askPin, askPresence, askUnlock]);
 
   return (
     <View style={styles.screen}>
@@ -157,6 +233,33 @@ export default function CredProviderScreen() {
 
         {!!error && <Text style={styles.error}>{error}</Text>}
       </ScrollView>
+
+      {!!unlockAsked && (
+        <View style={styles.pinBox}>
+          <Text style={styles.label}>
+            The key is {unlockAsked}. Enter your PIN on the keypad.
+          </Text>
+          <Text style={styles.detail}>
+            {digits === 0
+              ? 'Each tap is a real button press on the key. It unlocks itself the moment the PIN matches — there is no submit.'
+              : `${digits} digit${digits === 1 ? '' : 's'} pressed`}
+          </Text>
+          <View style={styles.pad}>
+            <Keypad onPress={onDigit} />
+          </View>
+          <View style={styles.buttons}>
+            <Pressable
+              style={styles.button}
+              onPress={() => {
+                NativeCredProvider.fail(
+                  'the key was not unlocked on the OnlyKey screen',
+                ).catch(() => {});
+              }}>
+              <Text style={styles.buttonText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
 
       {presenceAsked && (
         <View style={styles.pinBox}>
@@ -203,7 +306,7 @@ export default function CredProviderScreen() {
         </View>
       )}
 
-      {!pinAsked && !presenceAsked && !done && !error && (
+      {!pinAsked && !presenceAsked && !unlockAsked && !done && !error && (
         <Pressable
           style={styles.button}
           onPress={() => {
@@ -239,6 +342,7 @@ const styles = StyleSheet.create({
   detail: {color: '#8aa', fontSize: 12, marginTop: 2},
   error: {color: '#ff6b6b', fontSize: 13, marginTop: 12},
   pinBox: {borderTopWidth: 1, borderTopColor: '#1d2630', paddingTop: 14},
+  pad: {marginTop: 12},
   input: {
     backgroundColor: '#121a24',
     color: '#e8eef5',
