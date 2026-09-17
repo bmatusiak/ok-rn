@@ -131,6 +131,9 @@ export function useBtKeyboard(): BtKeyboard {
   const backend = useBackend();
   const [supported, setSupported] = useState<boolean | null>(null);
   const [state, setState] = useState('unregistered');
+
+  /* Asked at most once per mount; a refusal must not become a prompt loop. */
+  const askedPermission = useRef(false);
   const [message, setMessage] = useState('');
   const [host, setHost] = useState('');
   const [hosts, setHosts] = useState<BtHost[]>([]);
@@ -276,7 +279,52 @@ export function useBtKeyboard(): BtKeyboard {
         setHost(live.name || live.address);
       }
     } catch (e) {
-      setError(String((e as Error)?.message ?? e));
+      const message = String((e as Error)?.message ?? e);
+
+      /*
+       * THE PERMISSION IS ASKED FOR HERE, AND THIS IS THE ONLY PLACE IT CAN BE.
+       *
+       * It used to be asked for only inside publish(), which produced a
+       * deadlock a fresh install could not escape:
+       *
+       *   hosts() rejects without BLUETOOTH_CONNECT
+       *     -> the host list is empty
+       *       -> the publish switch is disabled, because it is disabled until a
+       *          host is chosen
+       *         -> publish() never runs
+       *           -> the permission is never requested
+       *
+       * From the outside that reads as "my computer is paired but the app does
+       * not show it, and the keyboard never connects" - which is exactly how it
+       * was reported, and it sent us looking at the HID descriptor, the Bluetooth
+       * profile and the pairing, none of which were involved. Measured on a
+       * factory-reset phone 2026-09-17; every grant before that was inherited
+       * from an older install, so nobody had ever seen a first run.
+       *
+       * Asked once per mount, on the screen that needs it, which is what an
+       * Android app is supposed to do. A refusal is reported as something a
+       * person can act on rather than as the raw rejection.
+       */
+      if (/not been granted|permission/i.test(message) && !askedPermission.current) {
+        askedPermission.current = true;
+        const granted = await NativeBtKeyboard.requestPermissions().catch(() => false);
+        if (granted) {
+          try {
+            const list = await NativeBtKeyboard.hosts();
+            setHosts(list);
+            setError(null);
+            return;
+          } catch {
+            /* Fall through to the message below. */
+          }
+        }
+        setError(
+          'Bluetooth permission is needed before this phone can be a keyboard, ' +
+            'and before it can list the computers it is paired with.',
+        );
+        return;
+      }
+      setError(message);
     }
   }, []);
 

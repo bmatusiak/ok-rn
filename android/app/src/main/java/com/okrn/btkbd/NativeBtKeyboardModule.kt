@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothHidDeviceAppSdpSettings
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.app.Activity
+import android.util.Log
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -464,6 +465,16 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
 
   private fun setState(next: String, message: String) {
     state = next
+    /*
+     * TO LOGCAT AS WELL AS TO JS, for the same reason the hard key does it
+     * (useHardKey.ts:116): the in-app log cannot be read from a terminal, and
+     * every state this keyboard passes through - unsupported, registering,
+     * registered, connecting, connected, disconnected - was previously
+     * invisible to anyone not looking at the screen. A report of "it does not
+     * connect" could not be told apart from "it never tried", because nothing
+     * anywhere recorded which. tools/logwatch.js watches for these.
+     */
+    Log.i(TAG, "$next: $message")
     val event: WritableMap = Arguments.createMap()
     event.putString("state", next)
     event.putString("message", message)
@@ -497,6 +508,8 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
     private const val REPORT_BYTES = 8
 
     private const val SDP_NAME = "OnlyKey"
+    private const val TAG = "btkbd"
+
     private const val SDP_DESCRIPTION = "OnlyKey soft key"
     private const val SDP_PROVIDER = "OnlyKey"
 

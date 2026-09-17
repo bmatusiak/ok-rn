@@ -94,6 +94,40 @@ android {
     namespace "com.okrn"
 
     /*
+     * WHERE THE C++ OBJECT TREE LIVES, AND WHY IT IS NOT UNDER THE PROJECT.
+     *
+     * Windows still enforces MAX_PATH at 260 characters unless LongPathsEnabled
+     * is set, and it is not set on this bench. The generated object files embed
+     * the whole mangled source path, e.g.
+     *
+     *   <staging>/safeareacontext_autolinked_build/CMakeFiles/
+     *     react_codegen_safeareacontext.dir/C_/Users/.../node_modules/
+     *     react-native-safe-area-context/common/cpp/react/renderer/components/
+     *     safeareacontext/RNCSafeAreaViewShadowNode.cpp.o
+     *
+     * which is about 130 characters before the staging directory is counted.
+     * Debug survives it; RELEASE DOES NOT, because ".cxx/RelWithDebInfo" is
+     * eleven characters longer than ".cxx/Debug" - so the app built and
+     * installed happily for weeks and only fell over the first time anyone
+     * asked for an APK to hand to somebody else. ninja says
+     * "Filename longer than 260 characters" and nothing else.
+     *
+     * Staging on a short path buys back the ~65 characters the default
+     * "<project>/android/app/.cxx" costs. Windows only, and skipped when the
+     * drive is absent, so Linux and the Pi build exactly as before. Override
+     * with OKRN_CXX_DIR if D: is not where your spare room is.
+     */
+    externalNativeBuild {
+        cmake {
+            def onWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+            def staging = System.getenv('OKRN_CXX_DIR') ?: 'D:/okcxx'
+            if (onWindows && file(staging).parentFile?.exists()) {
+                buildStagingDirectory = file(staging)
+            }
+        }
+    }
+
+    /*
      * The signed firmware releases are bundled straight out of the repo folder.
      *
      * ONE SOURCE, not a copy anybody maintains: `ok-rn/signed_firmware/` is
