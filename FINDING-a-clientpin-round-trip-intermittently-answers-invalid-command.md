@@ -150,3 +150,64 @@ Three runs on the Pixel against the working-tree soft key:
 | full suite | `a wrong PIN spends exactly one attempt` fails, INVALID_COMMAND |
 | `--only fidoPin` | 8 passed, 0 failed |
 | `--only ctapFlow,fidoPin` | 11 passed, 1 failed - `a PIN can be changed` fails, INVALID_COMMAND |
+
+## Narrowed, 2026-09-18 — it is the BUFFER, not the command
+
+The instrumentation paid off: a run failed with the bus tap armed, and the
+capture plus the firmware source rules out most of the field.
+
+The wire, around the failing exchange:
+
+```
++364ms fido>  init frame, 188-byte clientPin changePIN (subcommand 0x04)
++381ms fido>  seq 0
++504ms fido>  seq 1        <- a 123ms gap mid-message
++520ms fido>  seq 2
++521ms fido<  01           <- CTAP1_ERR_INVALID_COMMAND
+```
+
+**Where that byte comes from.** `CTAP1_ERR_INVALID_COMMAND` is reachable from
+exactly one place on this path — the `default:` arm of the top-level dispatch
+in `ctap.cpp:2452-2454`:
+
+```c
+default:
+    status = CTAP1_ERR_INVALID_COMMAND;
+    printf2(TAG_ERR,"error, invalid cmd: 0x%02x\n", cmd);
+```
+
+`cmd` is the **first byte of the reassembled CBOR buffer**. We sent `06`,
+`CTAP_CLIENT_PIN`, which has its own case immediately above. So the device did
+not reject our command: **it read a different first byte than we sent.**
+
+**What it is not.**
+
+- *Not the CTAPHID transaction timeout.* `ctaphid_check_timeouts()` fires at
+  750ms per CID (`ctaphid.cpp:348-356`) and answers `CTAP1_ERR_TIMEOUT`. The
+  stall was 123ms and the error was not TIMEOUT.
+- *Not a sequencing fault.* The reassembly path raises `CTAP1_ERR_INVALID_SEQ`
+  for an out-of-order or restarted message and `CTAP1_ERR_CHANNEL_BUSY` for a
+  crossed channel (`ctaphid.cpp:462-506`). Neither came back. **The frames
+  arrived in order and reassembly believed it had succeeded.**
+- *Not the device forgetting the command.* The same subcommand succeeded
+  seconds earlier in the same session.
+
+**So: right sequencing, wrong contents.** The buffer was accepted as complete
+while holding something other than what was sent — which is the signature of
+the assembly globals (`ctap_buffer`, `ctap_buffer_offset`, `ctap_buffer_bcnt`)
+being reset or written from elsewhere between the init frame and the dispatch,
+rather than of frames being lost on the way in.
+
+That is the same "clobbering a global" theory as above, but now with the global
+identified and, more usefully, with two competing explanations eliminated by
+the device's own choice of error code.
+
+**The one measurement still missing** is what byte it actually read. The
+firmware prints it — `error, invalid cmd: 0x%02x` — on the debug console, so a
+debug build that captures `[fw]` output across the failure answers it outright.
+A stale byte from the previous exchange and a truncated-then-misread payload
+look identical on the wire and different in that one line.
+
+Still intermittent: it did **not** reproduce in either full run on 2026-09-18
+(`passed=99 failed=0`), so catching it needs repetition rather than a
+particular sequence.
