@@ -39,33 +39,59 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
 
   private val adapter: BluetoothAdapter? get() = manager?.adapter
 
-  /**
-   * The profile proxy, once the platform hands it over.
-   *
-   * `getProfileProxy` is asynchronous and, on a build without the HID Device
-   * profile, NEVER CALLS BACK AT ALL - it just returns false, or returns true
-   * and stays silent. So everything that needs the proxy waits on a promise
-   * with a deadline rather than assuming it will arrive.
-   */
-  private var proxy: BluetoothHidDevice? = null
-  private var registered = false
-  private var host: BluetoothDevice? = null
+  init {
+    Held.live = this
+  }
 
-  /**
-   * Callbacks arrive on this, and reports are sent from it.
-   *
-   * A dedicated single thread rather than the main looper: `sendReport` blocks
-   * on the radio, and a slot being typed is dozens of reports back to back.
+  /*
+   * EVERY FIELD BELOW LIVES IN `Held`, and these are accessors onto it. Same
+   * shape as NativeFidoGattModule.kt:111-122, and for the same reason - see
+   * the comment on `Held` at the bottom of this file, which is the whole
+   * reason the keyboard used to disappear from Windows.
    */
-  private val worker = Executors.newSingleThreadExecutor()
+  private var proxy: BluetoothHidDevice?
+    get() = Held.proxy
+    set(value) { Held.proxy = value }
 
-  private var state = "unregistered"
+  private var registered: Boolean
+    get() = Held.registered
+    set(value) { Held.registered = value }
+
+  private var host: BluetoothDevice?
+    get() = Held.host
+    set(value) { Held.host = value }
+
+  private val worker get() = Held.worker
+  private val callback get() = Held.callback
+
+  private var state: String
+    get() = Held.state
+    set(value) { Held.state = value }
 
   // --------------------------------------------------------------- lifecycle
 
+  /**
+   * THE SDP RECORD OUTLIVES THE JS BRIDGE, and that is the point.
+   *
+   * This used to call unregisterInternal() - disconnect plus unregisterApp() -
+   * and shut the worker down. invalidate() runs on EVERY bridge teardown: a
+   * Metro reload, a rotation, the activity being destroyed. So in development
+   * the keyboard's SDP record was absent more often than it was present.
+   *
+   * That is invisible until you notice what Windows does with it. Windows
+   * reads a Classic device's SDP record ONCE, when it bonds, and never again.
+   * Bond during one of those windows and the host caches a phone with no
+   * keyboard - permanently, for that bond, whatever the app does afterwards.
+   * Re-pair at a luckier moment and it works again, which is why this looked
+   * like it was being fixed and broken by unrelated changes for two days.
+   * tools/btcache.js reads the host's side of it; tools/btpurge.ps1 clears it.
+   *
+   * So teardown drops the JS pointer and nothing else, exactly as
+   * NativeFidoGattModule does. unregisterApp() is now reachable only from
+   * unregister(), which the master switch calls - a deliberate act.
+   */
   override fun invalidate() {
-    runCatching { unregisterInternal() }
-    runCatching { worker.shutdownNow() }
+    if (Held.live === this) Held.live = null
     super.invalidate()
   }
 
@@ -356,56 +382,14 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
 
   // --------------------------------------------------------------- callbacks
 
-  private val callback = object : BluetoothHidDevice.Callback() {
-    override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, isRegistered: Boolean) {
-      registered = isRegistered
-      if (isRegistered) {
-        setState("registered", "the keyboard is published; pair from the other device")
-      } else {
-        host = null
-        setState("unregistered", "the keyboard is no longer published")
-      }
-    }
-
-    override fun onConnectionStateChanged(device: BluetoothDevice?, newState: Int) {
-      when (newState) {
-        BluetoothProfile.STATE_CONNECTED -> {
-          host = device
-          setState("connected", "typing to ${nameOf(device)}")
-        }
-        BluetoothProfile.STATE_CONNECTING ->
-          setState("connecting", "connecting to ${nameOf(device)}")
-        BluetoothProfile.STATE_DISCONNECTED -> {
-          if (device == null || device.address == host?.address) host = null
-          setState("disconnected", "${nameOf(device)} is not connected")
-        }
-      }
-    }
-
-    /*
-     * A host may ask the keyboard for its current state, and it may set the
-     * LEDs (caps lock and friends). Neither is answered with anything real:
-     * the firmware owns the key state and has no LED report to give, and
-     * inventing one here would be inventing keyboard state the key does not
-     * have. Replying with an empty report is well-formed and says nothing.
-     */
-    override fun onGetReport(device: BluetoothDevice?, type: Byte, id: Byte, bufferSize: Int) {
-      val p = proxy ?: return
-      if (device != null) p.replyReport(device, type, id, ByteArray(REPORT_BYTES))
-    }
-
-    override fun onSetReport(device: BluetoothDevice?, type: Byte, id: Byte, data: ByteArray?) {
-      /* LED state from the host. Nothing here consumes it. */
-    }
-  }
-
-  private fun nameOf(device: BluetoothDevice?): String =
-    device?.let { runCatching { it.name }.getOrNull() ?: it.address } ?: "the host"
-
   // ------------------------------------------------------------------ events
 
   private fun setState(next: String, message: String) {
-    state = next
+    Held.setState(next, message)
+  }
+
+  /** Put one status on the JS bridge. Called by `Held`, which owns the state. */
+  internal fun emitStatus(next: String, message: String) {
     /*
      * TO LOGCAT AS WELL AS TO JS, for the same reason the hard key does it
      * (useHardKey.ts:116): the in-app log cannot be read from a terminal, and
@@ -442,7 +426,8 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
     private const val PROXY_TIMEOUT_MS = 4000L
 
     /** [modifiers, reserved, usage x 6] - the boot keyboard report. */
-    private const val REPORT_BYTES = 8
+    /* internal, not private: `Held`'s callback replies with an empty one. */
+    internal const val REPORT_BYTES = 8
 
     private const val SDP_NAME = "OnlyKey"
     private const val TAG = "btkbd"
@@ -521,5 +506,118 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
       0x81.toByte(), 0x00,    //   Input (Data, Array)               keys
       0xC0.toByte(),          // End Collection
     )
+  }
+}
+
+private fun nameOf(device: BluetoothDevice?): String =
+  device?.let { runCatching { it.name }.getOrNull() ?: it.address } ?: "the host"
+
+/**
+ * The keyboard, for as long as the PROCESS lives rather than the JS bridge.
+ *
+ * ## Why any of this is here
+ *
+ * All of this state used to be instance fields on the module, and the module
+ * is recreated on every Metro reload, rotation and activity restart. Its
+ * invalidate() unregistered the HID app each time, which removes the phone's
+ * SDP record from the adapter - so the keyboard blinked out of existence
+ * constantly while the authenticator, which already holds its GATT server this
+ * way (NativeFidoGattModule `Held`), stayed up throughout.
+ *
+ * That asymmetry is what made the two roles look like they were fighting. They
+ * share no transport at all: the authenticator is BLE GATT, this is Bluetooth
+ * Classic HID with an SDP record. Nothing here can break that one. What broke
+ * was the host's CACHE - Windows reads a Classic SDP record once, at bond
+ * time, and if the record is missing then, that bond has no keyboard forever.
+ * Fixing "the other role" and re-pairing appeared to fix it, every time.
+ *
+ * ## What this changes
+ *
+ * The record is published once and stays published until something deliberate
+ * takes it down. The worker is process-scoped too - a per-instance executor
+ * shut down on reload is the same bug wearing a different hat, and it would
+ * have stopped reports mid-type.
+ */
+private object Held {
+  /** The module JS is currently talking to. Null between teardown and remount. */
+  var live: NativeBtKeyboardModule? = null
+
+  var proxy: BluetoothHidDevice? = null
+  var registered = false
+  var host: BluetoothDevice? = null
+  var state = "unregistered"
+
+  /**
+   * Callbacks arrive on this, and reports are sent from it.
+   *
+   * A dedicated single thread rather than the main looper: `sendReport` blocks
+   * on the radio, and a slot being typed is dozens of reports back to back.
+   * Process-scoped, so a reload mid-slot does not drop the rest of it.
+   */
+  val worker: java.util.concurrent.ExecutorService = Executors.newSingleThreadExecutor()
+
+  /**
+   * ONE callback object for the life of the process.
+   *
+   * registerApp() binds this instance; a per-module one would mean the object
+   * that registered no longer being the object still receiving - and the
+   * unregisterApp() that matched it gone with the previous module.
+   */
+  val callback = object : BluetoothHidDevice.Callback() {
+    override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, isRegistered: Boolean) {
+      registered = isRegistered
+      if (isRegistered) {
+        setState("registered", "the keyboard is published; pair from the other device")
+      } else {
+        host = null
+        setState("unregistered", "the keyboard is no longer published")
+      }
+    }
+
+    override fun onConnectionStateChanged(device: BluetoothDevice?, newState: Int) {
+      when (newState) {
+        BluetoothProfile.STATE_CONNECTED -> {
+          host = device
+          setState("connected", "typing to ${nameOf(device)}")
+        }
+        BluetoothProfile.STATE_CONNECTING ->
+          setState("connecting", "connecting to ${nameOf(device)}")
+        BluetoothProfile.STATE_DISCONNECTED -> {
+          if (device == null || device.address == host?.address) host = null
+          setState("disconnected", "${nameOf(device)} is not connected")
+        }
+      }
+    }
+
+    /*
+     * A host may ask the keyboard for its current state, and it may set the
+     * LEDs (caps lock and friends). Neither is answered with anything real:
+     * the firmware owns the key state and has no LED report to give, and
+     * inventing one here would be inventing keyboard state the key does not
+     * have. Replying with an empty report is well-formed and says nothing.
+     */
+    override fun onGetReport(device: BluetoothDevice?, type: Byte, id: Byte, bufferSize: Int) {
+      val p = proxy ?: return
+      if (device != null) {
+        p.replyReport(device, type, id, ByteArray(NativeBtKeyboardModule.REPORT_BYTES))
+      }
+    }
+
+    override fun onSetReport(device: BluetoothDevice?, type: Byte, id: Byte, data: ByteArray?) {
+      /* LED state from the host. Nothing here consumes it. */
+    }
+  }
+
+  /**
+   * The state is kept HERE, and only the telling of it needs a live module.
+   *
+   * A status raised while JS is away - which is exactly when a reload-induced
+   * bounce would happen - updates the truth and is simply not delivered. The
+   * next mount reads getState() and sees where things actually stand, rather
+   * than inheriting "unregistered" from a fresh instance's initialiser.
+   */
+  fun setState(next: String, message: String) {
+    state = next
+    live?.emitStatus(next, message)
   }
 }
