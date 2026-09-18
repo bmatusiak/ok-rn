@@ -197,7 +197,12 @@ module.exports = function keystrokeCapture({describe, it}) {
       const {device} = await ready(log);
 
       const read = await device.readSlot('2a', {
-        press: (button, ticks) => OkEmu.holdTicks(button, ticks),
+        /*
+         * HANDED to the firmware, not sensed. A slot read is a tap or a
+         * b-profile hold - never a gesture - so no allowGesture, and the
+         * default refusal past 72 still stands.
+         */
+        press: (button, ticks) => OkEmu.pressQueue(String(button), ticks),
       });
 
       log(`readSlot: button ${read.button}, ${read.band}, slot ${read.slot}, `
@@ -238,7 +243,12 @@ module.exports = function keystrokeCapture({describe, it}) {
       log(`slot 2b password: ${JSON.stringify(B_SECRET)}`);
 
       const read = await device.readSlot('2b', {
-        press: (button, ticks) => OkEmu.holdTicks(button, ticks),
+        /*
+         * HANDED to the firmware, not sensed. A slot read is a tap or a
+         * b-profile hold - never a gesture - so no allowGesture, and the
+         * default refusal past 72 still stands.
+         */
+        press: (button, ticks) => OkEmu.pressQueue(String(button), ticks),
       });
 
       log(`readSlot: button ${read.button}, ${read.band}, slot ${read.slot}, `

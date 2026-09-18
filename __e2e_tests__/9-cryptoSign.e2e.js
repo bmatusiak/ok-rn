@@ -298,8 +298,14 @@ module.exports = function cryptoSign({describe, it}) {
          * different gesture went unnoticed until a DUO was emulated.
          */
         await device.enterConfigMode({
+          /*
+           * HANDED to the firmware, not sensed. enterConfigMode holds button 6
+           * past 72 - ~76 sense rounds at TIME_POLL=50ms, near four seconds,
+           * and it retries up to three times. key_press IS the duration
+           * payload() bands on, so the gesture is the same one.
+           */
           hold: (button, ticks) =>
-            OkEmu.holdTicks(button, ticks, {allowGesture: true}),
+            OkEmu.pressQueue(String(button), ticks, {allowGesture: true}),
           settle: delay,
           attempts: 3,
         });

@@ -113,7 +113,14 @@ module.exports = function backupCapture({describe, it}) {
       let result;
       try {
         result = await device.captureBackup({
-          trigger: () => OkEmu.holdTicks(backup.button, backup.ticks, {allowGesture: true}),
+          /*
+           * HANDED to the firmware, not sensed. A 100-tick gesture emulated as a
+           * finger is ~104 sense rounds at TIME_POLL=50ms - about five seconds
+           * before the backup even starts. key_press IS the duration payload()
+           * bands on, so the band is identical and the wait is not.
+           */
+          trigger: () =>
+            OkEmu.pressQueue(String(backup.button), backup.ticks, {allowGesture: true}),
           timeoutMs: 120000,
           onProgress: null,
         });

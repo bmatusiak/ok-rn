@@ -88,7 +88,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function pressChallenge(digits, log, isAnswered = () => false) {
   const pressed = [];
   for (const d of digits) {
-    await OkEmu.holdTicks(d, TAP);
+    /* HANDED to the firmware, not sensed - one sense round rather than ~14. */
+    await OkEmu.pressQueue(String(d), TAP);
     pressed.push(d);
     /*
      * payload() runs a press only once key_off has passed two further loop
@@ -295,7 +296,9 @@ module.exports = function pqcSlots({describe, it}) {
        * a DUO's different gesture went unnoticed once.
        */
       await s.device.enterConfigMode({
-        hold: (button, ticks) => OkEmu.holdTicks(button, ticks, {allowGesture: true}),
+        /* HANDED to the firmware; key_press IS what payload() bands on. */
+        hold: (button, ticks) =>
+          OkEmu.pressQueue(String(button), ticks, {allowGesture: true}),
         settle: delay,
         attempts: 3,
       });
