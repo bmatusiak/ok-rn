@@ -461,21 +461,48 @@ module.exports = function derive({describe, it}) {
           refused = String(e && e.message);
         }
         log(`refusal: ${refused}`);
-        assert.ok(refused, 'this firmware cannot derive touch-free, so the seal must fail');
+
         /*
-         * Either message is correct and they come from different layers. The
-         * vault's own translation fires when the firmware returns
-         * EXTENSION_NOT_SUPPORTED cleanly; the derive's status guard fires when
-         * the refusal arrives with a stale buffer behind it, which is the same
-         * refusal wearing different clothes. What must NOT happen is a
-         * plausible-looking key coming back from a device that refused.
+         * SUCCEEDING HERE IS ALLOWED, and it took a faster press to notice.
+         *
+         * This used to assert the seal MUST fail, and it did fail - but not
+         * for the reason written down. `opts` above passes requirePress and a
+         * keepalive handler that presses the button, so this is a TOUCHED
+         * derive, not a touch-free one. touchFreeDerive === 'broken' says the
+         * device cannot derive WITHOUT a press; it says nothing about a derive
+         * that supplies one.
+         *
+         * What actually failed was timing. A press cost ~855ms while the app
+         * emulated a finger, which missed the firmware's keepalive window, so
+         * the derive was refused and the suite recorded that refusal as a
+         * property of the firmware. Presses are handed to the loop now, land
+         * in ~96ms, and the same seal completes - `refusal: null`.
+         *
+         * So the assertion was encoding a limitation of the HARNESS as a
+         * limitation of the DEVICE. Both outcomes are now legitimate and each
+         * is checked for what it should be, which keeps the matrix's point:
+         * a version that refuses must refuse in a recognisable way, and a
+         * version that seals must actually produce a blob.
          */
-        assert.ok(
-          /cannot do a touch-free derive|did not answer this derive/.test(refused),
-          'the refusal must name the firmware or say the device did not ' +
-            'answer - not surface as a framing complaint several layers up',
-        );
-        return;
+        if (refused) {
+          /*
+           * The three forms are one refusal from different layers. The vault's
+           * translation fires when the firmware returns EXTENSION_NOT_SUPPORTED
+           * cleanly; the derive's status guard fires when the refusal arrives
+           * with a stale buffer behind it. What must NOT happen is a
+           * plausible-looking key coming back from a device that refused.
+           */
+          assert.ok(
+            /cannot do a touch-free derive|did not answer this derive|answered the derive with no data/
+              .test(refused),
+            'the refusal must name the firmware or say the device did not ' +
+              'answer - not surface as a framing complaint several layers up',
+          );
+          return;
+        }
+
+        log('the seal succeeded with a press supplied, which is not touch-free');
+        /* Fall through: a seal that worked must still round-trip. */
       }
 
       /*
@@ -536,9 +563,18 @@ module.exports = function derive({describe, it}) {
           refused = String(e && e.message);
         }
         log(`refusal: ${refused}`);
+        /*
+         * NO PRESS IS SUPPLIED HERE - save() is called without a keepalive
+         * handler - so this one IS a touch-free derive, and a firmware whose
+         * touch-free path is broken must still refuse it. The assertion stands;
+         * only the accepted WORDING grows, by the third form of the same
+         * refusal: the derive's status guard, which fires when the refusal
+         * arrives with a stale buffer behind it. See the sibling test above.
+         */
         assert.ok(
-          /cannot do a touch-free derive|did not answer this derive/.test(String(refused)),
-          'this firmware cannot seal, and must say so');
+          /cannot do a touch-free derive|did not answer this derive|answered the derive with no data/
+            .test(String(refused)),
+          'this firmware cannot seal without a press, and must say so');
         return;
       }
 
