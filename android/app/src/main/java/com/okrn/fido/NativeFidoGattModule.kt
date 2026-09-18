@@ -18,6 +18,10 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import android.provider.Settings
 import android.net.Uri
 import android.content.Intent
@@ -373,7 +377,20 @@ class NativeFidoGattModule(
        *
        * So if the service is registered, only the advertisement is restarted.
        */
-      if (gattServer != null && serviceAdded) {
+      /*
+       * ...AND DO NOT ADOPT A SERVER THAT IS NO LONGER SERVING.
+       *
+       * The flag remembers that addService() once succeeded; it does not know
+       * that the adapter has restarted since. Android drops an app's GATT
+       * registration when Bluetooth bounces - a toggle, an unpair that
+       * restarts the stack - and the remembered server object is then dead
+       * while `serviceAdded` stays true. Adopting it restarted the ADVERTISER
+       * (a fresh object, happy to comply) over a GATT table with no FIDO
+       * service in it. Measured 2026-09-17 from the host: 0xFFFD in the
+       * advertisement, absent from the live table with the cache bypassed,
+       * and Windows' picker offering no security key. So the server is ASKED.
+       */
+      if (gattServer != null && serviceAdded && serviceIsLive()) {
         if (!beginAdvertising()) {
           throw IllegalStateException("startAdvertising was refused by the adapter")
         }
@@ -382,6 +399,34 @@ class NativeFidoGattModule(
         return
       }
 
+      rebuildAndAdvertise(manager, adapter)
+      promise.resolve(null)
+    } catch (e: Exception) {
+      stopEverything()
+      setState(STATE_ERROR, e.message ?: "startAdvertising failed")
+      promise.reject(ERR_ADVERTISE, e.message ?: "startAdvertising failed", e)
+    }
+  }
+
+  /**
+   * Start (or restart) the advertisement. Separate from startAdvertising()
+   * because it has to run again after every disconnect, without tearing down
+   * the GATT server and its registered service.
+   */
+
+  /** Whether the server we hold still has the FIDO service registered. */
+  private fun serviceIsLive(): Boolean =
+    runCatching { gattServer?.getService(FIDO_SERVICE_UUID) != null }.getOrDefault(false)
+
+  /**
+   * Tear down and bring up: open a server, register 0xFFFD, wait for it to
+   * land, then advertise. Throws on any failure; the caller decides the state.
+   * Shared by startAdvertising() and the watchdog, so a service the adapter
+   * dropped comes back the same way it was first built.
+   */
+  @SuppressLint("MissingPermission")
+  private fun rebuildAndAdvertise(manager: BluetoothManager, adapter: android.bluetooth.BluetoothAdapter) {
+    try {
       stopEverything()
 
       val server = manager.openGattServer(reactContext, gattCallback)
@@ -426,19 +471,11 @@ class NativeFidoGattModule(
         throw IllegalStateException("startAdvertising was refused by the adapter")
       }
       setState(STATE_ADVERTISING, "service 0xFFFD")
-      promise.resolve(null)
     } catch (e: Exception) {
-      stopEverything()
-      setState(STATE_ERROR, e.message ?: "startAdvertising failed")
-      promise.reject(ERR_ADVERTISE, e.message ?: "startAdvertising failed", e)
+      throw e
     }
   }
 
-  /**
-   * Start (or restart) the advertisement. Separate from startAdvertising()
-   * because it has to run again after every disconnect, without tearing down
-   * the GATT server and its registered service.
-   */
   @SuppressLint("MissingPermission")
   private fun beginAdvertising(): Boolean {
     val leAdvertiser = advertiser ?: return false
@@ -449,6 +486,7 @@ class NativeFidoGattModule(
         leAdvertiser.stopAdvertising(advertiseCallback)
       } catch (_: Exception) {
       }
+      Held.advertisingOn = false
 
       val settings = AdvertiseSettings.Builder()
         .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
@@ -463,9 +501,131 @@ class NativeFidoGattModule(
         .build()
 
       leAdvertiser.startAdvertising(settings, data, advertiseCallback)
+      Held.wantAdvertising = true
+      armWatchdog()
       true
     } catch (e: Exception) {
       false
+    }
+  }
+
+  /*
+   * THE RADIO IS ASKED, NOT TRUSTED.
+   *
+   * A legacy connectable advertisement is stopped BY THE CONTROLLER the moment
+   * a central connects - and not every connection reaches this GATT server's
+   * callbacks. Windows pairs through a connection the STACK makes for SMP, so
+   * onConnectionStateChange never fires here, the advertisement dies with that
+   * link, and this module goes on reporting "advertising" for an authenticator
+   * that is no longer on the air. Measured 2026-09-17: the screen said
+   * advertising, the stack listed no advertisement from com.okrn, no
+   * onStartFailure had fired, and Windows could not connect - right after the
+   * first pairing that had produced a proper LE key.
+   *
+   * So while advertising is WANTED and nothing is connected, it is re-issued on
+   * a short cadence. beginAdvertising() stops first, so re-issuing over a live
+   * advertisement is a brief blink rather than ALREADY_STARTED; a controller
+   * that silently dropped it simply gets it back within a few seconds. The
+   * ACL-disconnect broadcast makes the common case immediate instead of
+   * waiting for the next tick.
+   *
+   * Armed once per process, on the process-owned handler, so it outlives the
+   * module instance like everything else the authenticator depends on.
+   */
+  /**
+   * Put the authenticator back the way it is supposed to be: the service
+   * served, the advertisement on the air. Cheap when both already hold - a
+   * brief blink of the advertisement - and a full rebuild when the adapter
+   * has dropped the service under us.
+   */
+  @SuppressLint("MissingPermission")
+  private fun reassert() {
+    val manager = bluetoothManager ?: return
+    val adapter = manager.adapter ?: return
+    if (!adapter.isEnabled || !hasPermissions()) return
+    try {
+      if (gattServer != null && serviceAdded && serviceIsLive()) {
+        /*
+         * PASSIVE. beginAdvertising() stops before it starts, and calling it
+         * on every tick blinked the advertisement every six seconds - a host
+         * mid-connect had it pulled away, over and over (measured: start/stop
+         * pairs at :34, :40, :46, :52). So a healthy advertisement is left
+         * alone; only one the controller has stopped is re-armed.
+         */
+        if (!Held.advertisingOn) beginAdvertising()
+      } else {
+        rebuildAndAdvertise(manager, adapter)
+      }
+    } catch (e: Exception) {
+      setState(STATE_ERROR, e.message ?: "could not restore the authenticator")
+    }
+  }
+
+  private fun armWatchdog() {
+    if (Held.watchdogArmed) return
+    Held.watchdogArmed = true
+    val tick = object : Runnable {
+      override fun run() {
+        try {
+          if (Held.wantAdvertising && Held.connectedDevice == null) {
+            Held.live?.reassert()
+          }
+        } catch (_: Exception) {
+        }
+        Held.main.postDelayed(this, WATCHDOG_MS)
+      }
+    }
+    Held.main.postDelayed(tick, WATCHDOG_MS)
+    try {
+      val receiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+          val action = intent.action
+          /*
+           * LE TRANSPORT ONLY. A classic ACL is not our link: a phone bonded
+           * to a laptop keeps trying to be its headset, fails every few
+           * seconds, and each attempt bounces the BR/EDR ACL. Treating those
+           * as "our advertisement was stopped" restarted it on the same
+           * cadence - measured as start/stop pairs six seconds apart, in step
+           * with HEADSET/A2DP CONNECTING -> DISCONNECTED in the stack log -
+           * which is precisely the blink this watchdog exists to prevent.
+           */
+          val isAcl = action == BluetoothDevice.ACTION_ACL_CONNECTED ||
+            action == BluetoothDevice.ACTION_ACL_DISCONNECTED
+          if (isAcl) {
+            val transport = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+              intent.getIntExtra(BluetoothDevice.EXTRA_TRANSPORT, BluetoothDevice.TRANSPORT_AUTO)
+            } else {
+              BluetoothDevice.TRANSPORT_AUTO
+            }
+            if (transport != BluetoothDevice.TRANSPORT_LE) return
+          }
+          if (action == BluetoothDevice.ACTION_ACL_CONNECTED) {
+            /* Legacy advertising stops on an LE connect, whoever made it. */
+            Held.advertisingOn = false
+            return
+          }
+          val adapterOn = action == android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED &&
+            intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1) ==
+              android.bluetooth.BluetoothAdapter.STATE_ON
+          if ((action == BluetoothDevice.ACTION_ACL_DISCONNECTED || adapterOn) &&
+              Held.wantAdvertising && Held.connectedDevice == null) {
+            Held.live?.reassert()
+          }
+        }
+      }
+      val app = reactContext.applicationContext
+      val filter = IntentFilter(BluetoothDevice.ACTION_ACL_DISCONNECTED).apply {
+        addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+        addAction(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED)
+      }
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        app.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+      } else {
+        @Suppress("UnspecifiedRegisterReceiverFlag")
+        app.registerReceiver(receiver, filter)
+      }
+    } catch (_: Exception) {
+      // The tick alone is enough; the broadcast only makes recovery faster.
     }
   }
 
@@ -481,6 +641,8 @@ class NativeFidoGattModule(
 
   @SuppressLint("MissingPermission")
   private fun stopEverything() {
+    Held.wantAdvertising = false
+    Held.advertisingOn = false
     try {
       advertiser?.stopAdvertising(advertiseCallback)
     } catch (_: Exception) {
@@ -569,11 +731,7 @@ class NativeFidoGattModule(
     return service
   }
 
-  private val advertiseCallback = object : AdvertiseCallback() {
-    override fun onStartFailure(errorCode: Int) {
-      setState(STATE_ERROR, "advertising failed with code $errorCode")
-    }
-  }
+  private val advertiseCallback get() = Held.advertiseCallback
 
   @SuppressLint("MissingPermission")
   private val gattCallback = object : BluetoothGattServerCallback() {
@@ -587,6 +745,7 @@ class NativeFidoGattModule(
 
     override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
       if (newState == BluetoothGatt.STATE_CONNECTED) {
+        Held.advertisingOn = false
         connectedDevice = device
         setState(STATE_CONNECTED, "central connected")
       } else {
@@ -1126,6 +1285,29 @@ class NativeFidoGattModule(
      */
     private object Held {
       @Volatile var live: NativeFidoGattModule? = null
+      /** True from a successful start until stopAdvertising: what SHOULD be true. */
+      @Volatile var wantAdvertising = false
+      /** What IS true: set by onStartSuccess, cleared when the controller stops it. */
+      @Volatile var advertisingOn = false
+      /*
+       * The callback belongs to the PROCESS, not the instance: stopAdvertising()
+       * only stops the set that was started with the same callback object, so
+       * a per-instance callback let every new module instance start a second
+       * set it could not stop. Measured: two ongoing advertisements from
+       * com.okrn after one reload.
+       */
+      val advertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
+          advertisingOn = true
+        }
+        override fun onStartFailure(errorCode: Int) {
+          advertisingOn = false
+          live?.setState(STATE_ERROR, "advertising failed with code $errorCode")
+        }
+      }
+      /** Armed once per process; see armWatchdog(). */
+      @Volatile var watchdogArmed = false
+      val main = Handler(Looper.getMainLooper())
       var gattServer: BluetoothGattServer? = null
       var advertiser: BluetoothLeAdvertiser? = null
       var statusCharacteristic: BluetoothGattCharacteristic? = null
@@ -1152,6 +1334,9 @@ class NativeFidoGattModule(
     private val FIDO_SERVICE_REVISION_UUID: UUID = UUID.fromString("f1d0fff4-deaa-ecee-b42f-c9ba7ed623bb")
     private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID =
       UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+    /** How often the watchdog re-asks the radio. Short enough that a host retrying sees us. */
+    private const val WATCHDOG_MS = 6_000L
 
     const val STATE_IDLE = "idle"
     const val STATE_ADVERTISING = "advertising"

@@ -7,13 +7,6 @@ import {useKeyName} from '../hooks/KeyContext';
 import type {FidoSession} from '../hooks/useFidoGatt';
 import type {BtAuto} from '../hooks/useBtAuto';
 
-/** Seconds as m:ss - a pairing window is minutes, and "287s" is not a clock. */
-function mmss(total: number): string {
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
 /*
  * ONE TAB, ONE FLOW: turn it on, choose a target, use it.
  *
@@ -109,46 +102,6 @@ export function BluetoothScreen({
   );
 
   /*
-   * PAIRING ONLY HAS TO MAKE THE PHONE VISIBLE NOW.
-   *
-   * A HOST READS A DEVICE'S SERVICE LIST EXACTLY ONCE, WHEN IT PAIRS, so this
-   * button used to have to bring both services up first - and before that, it
-   * brought up only the keyboard, which is how a pairing came out half-built.
-   * Measured against Windows on 2026-09-17 the phone's own stack reported:
-   *
-   *   NITRO16 [ DUAL ] [ACL BR/EDR:Y LE:N]
-   *           [ Encryption status(BR/EDR): keySize=16 ... LE: N/A ]
-   *
-   * dual-mode, a classic link up, and NO LE KEY AT ALL - so the FIDO
-   * characteristics were unreachable from that moment on, no matter that the
-   * phone was advertising 0xFFFD connectably the whole time. Windows offered
-   * no security key to use, and the only cure was to pair again, which then
-   * cost the keyboard. Whichever feature was up at pair time was the one that
-   * survived.
-   *
-   * Presence follows the radio now (see App), so both are already up whenever
-   * this button can be pressed, and there is nothing left for it to arrange.
-   */
-  const pairNewComputer = useCallback(async () => {
-    await bt.makeDiscoverable();
-  }, [bt]);
-
-  /*
-   * CANCEL CLOSES THE WINDOW, AND DELIBERATELY NOTHING ELSE.
-   *
-   * It does NOT take the services down. The system's discoverable window
-   * cannot be revoked by an app without BLUETOOTH_PRIVILEGED, so the phone
-   * stays findable until it lapses either way - and withdrawing the keyboard
-   * or the GATT server to look decisive would be the exact vanishing act that
-   * teaches a host to distrust this phone. Ending the countdown is the honest
-   * extent of it: the invitation is over, the phone is still a keyboard and
-   * still a security key for the computers that already know it.
-   */
-  const cancelPairing = useCallback(() => {
-    bt.endDiscoverable();
-  }, [bt]);
-
-  /*
    * CHOOSING "NONE" FORGETS THE TARGET, AND NOTHING ELSE.
    *
    * It used to stand both features down, because the switches were disabled
@@ -224,11 +177,37 @@ export function BluetoothScreen({
 
           {/* 3 ─ the target, shared by both features */}
           <Section title="Target">
-            <Text style={styles.note}>
-              {bt.hosts.length === 0
-                ? `No computer paired yet. Make the phone visible, then add ${bt.localName || 'this phone'} from its Bluetooth settings.`
-                : 'The computer both features below talk to. Chosen once, then reconnected on its own.'}
-            </Text>
+            {/*
+              * PAIRING IS DONE FROM THE COMPUTER, and the panel says so in
+              * steps rather than in a verb. There is no button here on
+              * purpose: the phone is already findable whenever Bluetooth is
+              * on, and a "pair" button used to make the CLASSIC side
+              * discoverable, which steered Windows into a pairing that had no
+              * LE key and could never reach the security key. The one thing
+              * the user has to do is on the other machine, so that is what is
+              * written down - by the name the computer will actually show.
+              */}
+            {bt.hosts.length === 0 ? (
+              <>
+                <Text style={styles.note}>No computer is paired yet. Pair from the computer:</Text>
+                <Text style={styles.step}>1.  Keep this screen open.</Text>
+                <Text style={styles.step}>
+                  2.  On the computer, open Bluetooth settings and choose “Add device” (Windows) or
+                  look in the device list (Mac).
+                </Text>
+                <Text style={styles.step}>
+                  3.  Pick <Text style={styles.strong}>{bt.localName || 'this phone'}</Text> and
+                  accept the pairing on both.
+                </Text>
+                <Text style={styles.step}>4.  It appears here — select it, and you're done.</Text>
+              </>
+            ) : (
+              <Text style={styles.note}>
+                The computer both features below talk to. Chosen once, then reconnected on its own.
+                To add another computer, pair from that computer — pick “
+                {bt.localName || 'this phone'}” in its Bluetooth settings.
+              </Text>
+            )}
 
             {/*
              * PICK ONE, then it is trusted - selecting connects now and keeps
@@ -280,26 +259,6 @@ export function BluetoothScreen({
             })}
 
             {/* No Refresh button: the list refreshes itself while this is on. */}
-            {/*
-              * One button with three readings: the invitation, the window
-              * counting down, and the way out of it. The remaining time is on
-              * the button itself because it is the only thing on this panel
-              * that is running out - a pairing that has to be finished on the
-              * OTHER computer is exactly when someone needs to know how long
-              * they have, without looking back at the phone.
-              */}
-            <Btn
-              title={
-                bt.discoverableFor
-                  ? `Cancel · visible for ${mmss(bt.discoverableFor)}`
-                  : bt.busy
-                    ? 'Asking…'
-                    : 'Pair a new computer'
-              }
-              tone={bt.discoverableFor ? 'danger' : 'default'}
-              disabled={bt.busy && !bt.discoverableFor}
-              onPress={bt.discoverableFor ? cancelPairing : pairNewComputer}
-            />
           </Section>
 
           {/* 4 ─ keyboard */}
@@ -460,6 +419,17 @@ const styles = StyleSheet.create({
   content: {padding: 16, gap: 16, paddingBottom: 48},
   body: {color: theme.text, fontSize: 14, lineHeight: 20},
   note: {color: theme.textDim, fontSize: 12, lineHeight: 17},
+  step: {
+    color: theme.textDim,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+    paddingLeft: 4,
+  },
+  strong: {
+    color: theme.text,
+    fontWeight: '600',
+  },
   error: {color: theme.error, fontSize: 12, lineHeight: 17},
   name: {fontFamily: theme.mono, color: theme.textSecondary},
 

@@ -91,22 +91,6 @@ export interface Spec extends TurboModule {
   /** Withdraw it. The host sees the keyboard disappear. */
   unregister(): Promise<void>;
 
-  /**
-   * Ask the system to make this phone visible to other devices for a while.
-   *
-   * Required, and easy to miss: publishing the keyboard makes the phone
-   * ANSWER to a host, not findable by one. A host that has never seen this
-   * phone cannot add it as a keyboard until it turns up in a scan, and Android
-   * is not discoverable by default. The system shows its own consent dialog -
-   * an app cannot make the choice on the user's behalf.
-   *
-   * @param seconds how long to stay visible; the platform caps this at 300.
-   * @returns the seconds actually granted, or 0 if the user declined. The
-   *   system MAY SHORTEN what was asked for, so this is the only honest basis
-   *   for a countdown - assuming the requested figure shows a window that is
-   *   still open after the phone has gone back into hiding.
-   */
-  requestDiscoverable(seconds: number): Promise<number>;
 
   /**
    * The name a host will see this phone under.

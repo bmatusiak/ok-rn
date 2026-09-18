@@ -57,15 +57,6 @@ const RELEASE_ALL = '0000000000000000';
  */
 const HOST_KEY = 'ok-rn/bt-keyboard/host';
 
-/**
- * How long to stay visible while a host is being paired.
- *
- * The platform's own ceiling, and pairing is a one-off - a keyboard that
- * announces itself to the room indefinitely is not what a security key should
- * do.
- */
-const DISCOVERABLE_SECONDS = 300;
-
 /** Was useBtAuto's auto-keyboard preference; it is the same question. */
 const FORWARD_KEY = 'ok-rn/bt/auto-keyboard';
 
@@ -91,14 +82,9 @@ export type BtKeyboard = {
   withdraw: () => Promise<void>;
   refreshHosts: () => Promise<void>;
   connect: (address: string) => Promise<void>;
-  makeDiscoverable: () => Promise<void>;
   /** Whether the key's keystrokes cross the link - the keyboard's IO switch. */
   forwarding: boolean;
   setForwarding: (next: boolean) => void;
-  /** Seconds left in the pairing window, or 0 when the phone is not visible. */
-  discoverableFor: number;
-  /** Ends the app's part of the pairing window; see the note on the impl. */
-  endDiscoverable: () => void;
   /** The host address chosen to type to, or null if none has been chosen. */
   chosenHost: string | null;
   /** Choose the host to type to; null forgets the choice. */
@@ -203,43 +189,6 @@ export function useBtKeyboard(): BtKeyboard {
    */
   const chosenHostRef = useRef<string | null>(null);
   chosenHostRef.current = chosenHost;
-
-  /*
-   * THE PAIRING WINDOW, AS A DEADLINE.
-   *
-   * Set from the seconds the SYSTEM granted rather than the seconds asked
-   * for - see requestDiscoverable - and ticked down for display only.
-   */
-  const [discoverableUntil, setDiscoverableUntil] = useState<number | null>(null);
-  const [discoverableFor, setDiscoverableFor] = useState(0);
-
-  useEffect(() => {
-    if (discoverableUntil === null) {
-      setDiscoverableFor(0);
-      return undefined;
-    }
-    const tick = () => {
-      const left = Math.max(0, Math.round((discoverableUntil - Date.now()) / 1000));
-      setDiscoverableFor(left);
-      if (left === 0) setDiscoverableUntil(null);
-    };
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, [discoverableUntil]);
-
-  /*
-   * Stops PRESENTING, which is all an app can do.
-   *
-   * There is no way to revoke the system's discoverable window without
-   * BLUETOOTH_PRIVILEGED, so the phone stays visible until it lapses on its
-   * own. What this does end is the app's part - the countdown, and whatever
-   * the caller turned on to be paired with - and that is the part the screen
-   * is offering to undo.
-   */
-  const endDiscoverable = useCallback(() => {
-    setDiscoverableUntil(null);
-  }, []);
 
   /*
    * Read from inside the auto-connect timer for the same reason as the two
@@ -546,62 +495,6 @@ export function useBtKeyboard(): BtKeyboard {
     return () => clearInterval(timer);
   }, [state, chosenHost, connect]);
 
-  const makeDiscoverable = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      /*
-       * PUBLISH BEFORE BECOMING VISIBLE, or the pairing is born broken.
-       *
-       * A HOST READS A DEVICE'S SERVICE LIST EXACTLY ONCE, WHEN IT PAIRS, and
-       * does not ask again. So if this phone is discoverable while the HID
-       * profile is not published, the computer records a device with no
-       * keyboard in it - and no amount of publishing afterwards changes that
-       * record. The phone then advertises a keyboard the host has no node to
-       * accept, asks to connect every few seconds, and is ignored. Measured
-       * against Windows 2026-09-17: BTHENUM\{00001124-...} simply absent,
-       * every other profile present, and the only cure was unpairing and
-       * pairing again with the keyboard already up.
-       *
-       * The flow made that the DEFAULT outcome rather than an edge case:
-       * publishing is gated on choosing a target, the target list only holds
-       * computers already paired, so a new user had to pair first - which is
-       * precisely the order that breaks it. Publishing here is what makes
-       * "Pair a new computer" mean what it says.
-       *
-       * requestPermissions and register are both safe to call when they have
-       * already happened; register() resolves true if the profile is up.
-       */
-      const granted = await NativeBtKeyboard.requestPermissions();
-      if (!granted) {
-        setError('Bluetooth permission is needed before this phone can be a keyboard.');
-        return;
-      }
-      const published = await NativeBtKeyboard.register();
-      if (!published) {
-        setError('This phone does not offer the Bluetooth HID Device profile.');
-        return;
-      }
-
-      const visibleFor = await NativeBtKeyboard.requestDiscoverable(DISCOVERABLE_SECONDS);
-      if (!visibleFor) {
-        setError('Staying hidden means no computer can find this keyboard to pair with.');
-        return;
-      }
-      /*
-       * The DEADLINE is stored, not the remaining seconds, so the countdown
-       * cannot drift: a ticker that decrements its own number loses whatever
-       * time the JS thread spent elsewhere, and this window is the one thing
-       * on screen that has to agree with what the system is actually doing.
-       */
-      setDiscoverableUntil(Date.now() + visibleFor * 1000);
-    } catch (e) {
-      setError(String((e as Error)?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
-
   /*
    * Deliberately NOT gated on `typing`. That flag governs whether the KEY's
    * keystrokes are forwarded, which is a standing state someone arms and
@@ -660,11 +553,8 @@ export function useBtKeyboard(): BtKeyboard {
     withdraw,
     refreshHosts,
     connect,
-    makeDiscoverable,
     forwarding,
     setForwarding,
-    discoverableFor,
-    endDiscoverable,
     sendText,
     suspend,
     chosenHost,
