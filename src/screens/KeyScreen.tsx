@@ -130,7 +130,19 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
    * mode can land here without ever passing the login flow.
    */
   if (emu.device === 'uninitialized') {
-    return <SetupScreen onPress={emu.press} led={emu.led} />;
+    /*
+     * `model` is not optional here even though the prop is. It defaults to
+     * 'classic', and omitting it put a DUO - which has no six-button keypad
+     * and takes its whole PIN set in one OKSETPIN body - in front of the
+     * classic pad on its first run.
+     */
+    return (
+      <SetupScreen
+        onProvision={emu.provision}
+        model={emu.model}
+        led={emu.led}
+      />
+    );
   }
 
   /*

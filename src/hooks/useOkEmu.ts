@@ -69,8 +69,14 @@ const PIN_SETTLE_MS = 1200;
 const UNLOCK_GRACE_MS = 1500;
 
 
-/** Between two PIN digits, so the firmware sees two presses and not one long one. */
-const PRESS_GAP_MS = 180;
+/*
+ * A gap between two PIN digits used to live here, so the firmware saw two
+ * presses rather than one long one. Nothing needs it now: the only caller
+ * pressed through okemu_set_button, where a press ends only at an idle scan,
+ * and every PIN path goes through pressQueue instead - which hands each press
+ * over as a finished duration and will not hand over the next until the loop
+ * has taken the last.
+ */
 
 const IFACE_NAME: Record<number, string> = {
   [IFACE.KEYBOARD]: 'kbd',
@@ -489,7 +495,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
    * same bracket ungated, and the library reads that now.
    */
   const provision = useCallback(
-    async (pin: string) => {
+    async (pin: string, {kind}: {kind?: 'primary' | 'secondary' | 'selfDestruct'} = {}) => {
       setBusy(true);
       let offProgress: (() => void) | undefined;
       try {
@@ -515,17 +521,23 @@ export function useOkEmu({log, autoStart = false}: Options) {
          * stored. The presses are necessary and nowhere near sufficient.
          */
         await device.setPin(pin, {
-          enterDigits: async (digits: string) => {
-            for (const digit of [...digits].map(Number)) {
-              await OkEmu.holdTicks(digit, PRESS_TICKS.TAP);
-              /*
-               * touch_sense_loop ends a press only after an idle scan, so two
-               * taps with no gap merge into one longer press - a different
-               * digit, or a gesture.
-               */
-              await new Promise<void>(resolve => setTimeout(() => resolve(), PRESS_GAP_MS));
-            }
-          },
+          kind,
+          /*
+           * THE WHOLE PASS IN ONE CROSSING, handed to the firmware.
+           *
+           * This used to hold each digit with holdTicks() and then sleep
+           * PRESS_GAP_MS, because a sensed press only ENDS after an idle scan
+           * and two taps with no gap merge into one longer press - a different
+           * digit, or, past 72 ticks, a gesture. That cost 757-855ms per digit,
+           * so a seven-digit pass took five to six seconds and both passes of
+           * the bracket took twelve.
+           *
+           * pressQueue has no such hazard: each press is handed over as a
+           * finished duration and okemu_press_take() refuses to hand over the
+           * next one until the loop has taken the last, so the separation is
+           * structural rather than a sleep. See android/okemu/src/okemu_press.h.
+           */
+          enterDigits: (digits: string) => OkEmu.pressQueue(digits),
         });
 
         /*

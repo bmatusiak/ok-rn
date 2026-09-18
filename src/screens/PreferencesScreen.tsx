@@ -271,7 +271,7 @@ export function PreferencesScreen({
         mode="change"
         only={changing}
         model={emu.model}
-        onPress={emu.press}
+        onProvision={emu.provision}
         led={emu.led}
         onDone={() => {
           setChanging(null);

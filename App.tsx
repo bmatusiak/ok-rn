@@ -587,7 +587,7 @@ function Shell() {
             <SetupScreen
               onDone={() => setPhase('login')}
               model={emu.model}
-              onPress={emu.press}
+              onProvision={emu.provision}
               led={keys.backend === 'embedded' ? emu.led : undefined}
             />
           ) : phase === 'pin' ? (
