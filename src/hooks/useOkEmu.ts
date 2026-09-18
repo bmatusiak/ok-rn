@@ -68,6 +68,7 @@ const PIN_SETTLE_MS = 1200;
 
 const UNLOCK_GRACE_MS = 1500;
 
+
 /** Between two PIN digits, so the firmware sees two presses and not one long one. */
 const PRESS_GAP_MS = 180;
 
@@ -197,8 +198,29 @@ export function useOkEmu({log, autoStart = false}: Options) {
              * the indicator GREEN on a locked device, which is the one thing
              * it must never say. Activity relights it: the firmware drives the
              * pixel on a press and the event arrives as usual.
+             *
+             * ONLY ON THE WAY IN, and that matters. This broadcast repeats
+             * once a SECOND for as long as the key is locked, while the
+             * firmware's own LED events arrive about twenty times a second
+             * saying 000000 - so clearing on every broadcast had the two
+             * fighting: the row read "off" (an EMPTY array, which is what
+             * describeLed calls off) and then "#000000 #000000" (two black
+             * pixels) and back, for ever. That is the flicker, and it also
+             * denied uiautomator the idle second it needs, which is what made
+             * the whole e2e suite unrunnable.
+             *
+             * So ALREADY DARK IS NOTHING TO DO, and dark means either - an
+             * empty array or one that is all zeros. Both render as no light;
+             * the difference is only whether the firmware has said so yet.
+             * With that, a locked key settles on whatever the firmware last
+             * sent (000000) and stays there, while a key that locks while lit
+             * still gets its stale colour cleared. Which is the whole reason
+             * this line exists: after a CPU_RESTART no event is coming, so
+             * nothing else would ever take the green away.
              */
-            setLed([]);
+            setLed(prev =>
+              prev.length === 0 || prev.every(v => v === 0) ? prev : [],
+            );
           }
         }
       }
@@ -212,7 +234,39 @@ export function useOkEmu({log, autoStart = false}: Options) {
       );
     });
 
-    const offLed = OkEmu.on('led', pixels => setLed(pixels));
+    /*
+     * ONLY WHEN THE COLOUR ACTUALLY CHANGES.
+     *
+     * The firmware calls okemu_led_show() on every sense round whether or not
+     * anything moved, so this fires about twenty times a second forever. The
+     * pixels arrive as a fresh array each time, so comparing by identity says
+     * nothing and setState always re-rendered - every screen showing the LED
+     * repainted twenty times a second while the light sat still.
+     *
+     * That is not a cosmetic waste. `uiautomator dump` calls waitForIdle and
+     * needs about a second with no accessibility content-change events; a
+     * screen that repaints on a timer never gives it one, the dump writes
+     * NOTHING, and tools/e2e.js cannot find RUN TESTS to press - the whole
+     * suite becomes unrunnable. That is the wall
+     * FINDING-uiautomator-cannot-dump-a-screen-that-never-idles.md describes.
+     * It fixed useLog's copy of it and said plainly that any other live panel
+     * would meet it again; this is that panel.
+     *
+     * MEASURED before choosing this over a timer: 6s of a locked, idle key is
+     * 79 frames, every one of them `000000 000000`. The only frames that ever
+     * differ are a brief red-to-green sweep at boot. So comparing by VALUE
+     * quiets the steady state completely while still showing a real change the
+     * moment it happens - which a flush interval would have delayed by up to
+     * its own length, on the two screens that read this light to tell someone
+     * what the key is doing.
+     */
+    const offLed = OkEmu.on('led', pixels => {
+      setLed(prev =>
+        prev.length === pixels.length && prev.every((v, i) => v === pixels[i])
+          ? prev
+          : pixels,
+      );
+    });
 
     /*
    * CPU_RESTART() ENDS THE FIRMWARE, and there is no coming back in this
