@@ -331,6 +331,29 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
   );
 
   /**
+   * A RUN of presses - a PIN, a challenge - in one line.
+   *
+   * The soft key has an equivalent that hands the whole run to its firmware in
+   * one crossing (useOkEmu.pressRun). A hard key has no such shortcut and does
+   * not want one: it is a real device on a wire, and the console already takes
+   * a whole line of digits and replays them one press per loop iteration. So
+   * this is the same console call the single press makes, with every digit in
+   * it - one write rather than one per digit.
+   */
+  const pressRun = useCallback(
+    async (buttons: number[] | string) => {
+      if (!canPress) {
+        throw new Error(unsupported('press a button'));
+      }
+      const digits = Array.isArray(buttons) ? buttons.join('') : String(buttons);
+      if (!digits) return;
+      const {device: dev} = await getOnlyKey('usb');
+      await dev.press(digits);
+    },
+    [canPress],
+  );
+
+  /**
    * A HELD press, by tick count.
    *
    * The console takes an explicit duration - `N#<ticks>` - which reaches any
@@ -477,6 +500,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
      * buttons under a finger. Calling it anyway says why by name.
      */
     press,
+    pressRun,
     beginHold,
     endHold,
     holdTicks,

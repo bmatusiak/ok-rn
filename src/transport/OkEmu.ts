@@ -185,6 +185,19 @@ class OkEmuClient {
     /*
      * THE SENSED PATH, and it is kept deliberately.
      *
+     * TWO WAYS TO PRESS, and they differ in kind rather than degree:
+     *
+     *   pressQueue()  hands the press to the firmware. Use it for anything
+     *                 that just needs the press to LAND - a PIN, a challenge,
+     *                 user presence. ~96ms, one sense round.
+     *   pressButton() / holdTicks()  emulate a finger on the pad. Use them
+     *                 when the SENSING is the subject: 2-buttonProbe proving
+     *                 every button arrives as itself, 7-pressBands proving the
+     *                 band boundaries, and the held press behind KeyScreen's
+     *                 Buttons panel whose counter you watch count down.
+     *                 ~855ms, fifteen rounds - which is the cost of being a
+     *                 faithful emulation.
+     *
      * This is what 2-buttonProbe and 7-pressBands exercise - the only tests of
      * touch_sense_loop's own counting - and it is the honest emulation of a
      * finger. It is also slow for exactly that reason: ~757-855ms a press,

@@ -283,7 +283,12 @@ export function CryptoScreen({
    */
   const pressChallenge = useCallback(async () => {
     if (!opChallenge) return;
-    for (const digit of opChallenge) await emu.press(digit);
+    /*
+     * ONE CALL, not one per digit. pressQueue hands the whole run to the
+     * firmware in a single crossing; pressing them in a loop was three round
+     * trips while the key sat waiting for its challenge.
+     */
+    await emu.pressRun(opChallenge);
   }, [opChallenge, emu]);
 
   const slotOperation = useCallback(async (kind: 'sign' | 'decrypt') => {

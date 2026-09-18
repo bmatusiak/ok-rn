@@ -559,7 +559,8 @@ export function KeysScreen({
   /** Press the challenge on the key's behalf, where the key takes presses. */
   const pressGenChallenge = useCallback(async () => {
     if (!genChallenge) return;
-    for (const digit of genChallenge) await emu.press(digit);
+    /* One crossing for the whole challenge - see CryptoScreen.pressChallenge. */
+    await emu.pressRun(genChallenge);
   }, [genChallenge, emu]);
 
   /* Config mode locks the key; the PIN has to go back in before anything else. */

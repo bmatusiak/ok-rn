@@ -580,12 +580,54 @@ export function useOkEmu({log, autoStart = false}: Options) {
   const press = useCallback(
     async (button: number) => {
       try {
-        await OkEmu.holdTicks(button, PRESS_TICKS.TAP);
+        /*
+         * HANDED to the firmware, not sensed - this is the pad someone is
+         * standing at, and the difference is the whole of how it feels.
+         *
+         * holdTicks() emulates a finger: the pad reads high for ten rounds
+         * and touch_sense_loop() counts them, then four more idle rounds so
+         * the firmware sees the release - and a round only happens when
+         * SoftTimer runs checkKey(), at TIME_POLL = 50ms. Measured at
+         * 757-855ms PER DIGIT, so a seven-digit PIN was five to six seconds
+         * of tapping at something that looked frozen.
+         *
+         * pressQueue writes the duration into the loop instead: one round,
+         * ~96ms, and the same press - key_press IS what payload() bands on.
+         * See OkEmu.pressQueue and android/okemu/src/okemu_press.h.
+         *
+         * holdTicks stays for the sensing tests and for gestures, which are
+         * real holds and are the one case where emulating the finger is the
+         * point.
+         */
+        await OkEmu.pressQueue(String(button));
         lastPressAt.current = Date.now();
         setPressTick(t => t + 1);
-        log('info', `button ${button} (${PRESS_TICKS.TAP} ticks)`);
+        log('info', `button ${button}`);
       } catch (error) {
         log('error', `button ${button}: ${String(error)}`);
+      }
+    },
+    [log],
+  );
+
+  /**
+   * Press a RUN of buttons - a PIN, a challenge - in one crossing.
+   *
+   * Same path as press() below, and the same reason to prefer it: the queue
+   * exists so a sequence costs one bridge call rather than one per digit.
+   * Anything that already knows every button it wants should use this.
+   */
+  const pressRun = useCallback(
+    async (buttons: number[] | string) => {
+      const digits = Array.isArray(buttons) ? buttons.join('') : String(buttons);
+      if (!digits) return;
+      try {
+        await OkEmu.pressQueue(digits);
+        lastPressAt.current = Date.now();
+        setPressTick(t => t + 1);
+        log('info', `buttons ${digits.split('').join(' ')}`);
+      } catch (error) {
+        log('error', `buttons ${digits}: ${String(error)}`);
       }
     },
     [log],
@@ -886,6 +928,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
     connect,
     provision,
     press,
+    pressRun,
     beginHold,
     endHold,
     pressTicks,

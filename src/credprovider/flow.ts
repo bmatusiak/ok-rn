@@ -145,7 +145,14 @@ export async function chooseTarget(force?: 'usb' | 'embedded'): Promise<Target> 
 /** One button press, on whichever key this request is talking to. */
 export async function pressKeyButton(target: Target, button: number) {
   if (target.backend === 'embedded') {
-    return OkEmu.pressButton(button);
+    /*
+     * Handed to the firmware, not sensed. This runs while a BROWSER is
+     * waiting on user presence, which is the worst moment to spend the ~855ms
+     * an emulated finger costs; pressQueue lands it in about 96ms. Same press
+     * either way - see OkEmu.pressQueue.
+     */
+    await OkEmu.pressQueue(String(button));
+    return;
   }
   if (!target.canPress) {
     /* The finger is the user's. Nothing to send. */

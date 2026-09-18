@@ -196,7 +196,8 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
         }
         await device.press('1');
       } else {
-        await OkEmu.pressButton(1);
+        /* Handed over rather than sensed - a browser is waiting. */
+        await OkEmu.pressQueue('1');
       }
       log('tx', 'button pressed');
     } catch (error) {
