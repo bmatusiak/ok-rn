@@ -15,15 +15,22 @@ Two build options are gates rather than patches, because the sources arrive on
 both sides of both defines:
 
 ```bash
-OKEMU_DEBUG=1        force the DEBUG gate ON  - required to provision a release
+OKEMU_DEBUG=1        force the DEBUG gate ON  - the console, not a requirement
 OKEMU_PRODUCTION=1   force it OFF, the way the firmware ships
 OKEMU_STD=1          force the STANDARD edition on
 OKEMU_STD=0          force the IN TRVL edition (STD_VERSION off)
 ```
 
-**A release cannot be provisioned without `OKEMU_DEBUG=1`.** Every pinned
-release except v2.1.0 ships with the gate off, and the PIN bracket is a
-conversation held entirely in `Serial.println`.
+**A release provisions with the gate OFF.** This used to say the opposite, and
+it was wrong: the PIN bracket is not held entirely in `Serial.println`. The
+firmware announces every step that matters with `hidprint` on the vendor
+interface, ungated, in all nine pinned versions, and the library waits on those
+— racing the console only where it exists. Verified on 2026-09-18 against a
+working-tree build with the gate off. See
+`FINDING-provisioning-needs-a-debug-build.md`, which is now resolved.
+
+`OKEMU_DEBUG=1` still buys the debug console, which `pressLine()` and the
+firmware's own `printf` output need. It is a convenience, not a prerequisite.
 
 Sources come out of the pinned commit's **object database** - `git ls-tree` and
 `git cat-file`, never a checkout - into `.stage-src/<version>/`, cached by
