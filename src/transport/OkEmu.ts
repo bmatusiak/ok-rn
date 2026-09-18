@@ -182,7 +182,98 @@ class OkEmuClient {
    * duration is no longer theirs to pick. Use holdTicks() for anything else.
    */
   pressButton(button: number): Promise<void> {
+    /*
+     * THE SENSED PATH, and it is kept deliberately.
+     *
+     * This is what 2-buttonProbe and 7-pressBands exercise - the only tests of
+     * touch_sense_loop's own counting - and it is the honest emulation of a
+     * finger. It is also slow for exactly that reason: ~757-855ms a press,
+     * because every round waits for SoftTimer.
+     *
+     * Anything entering a PIN should use pressQueue() instead, which hands the
+     * presses to the loop rather than sensing them and costs one round each.
+     */
     return this.holdTicks(button, PRESS_TICKS.TAP);
+  }
+
+  /**
+   * Press a run of buttons by HANDING them to the firmware, not sensing them.
+   *
+   * This is the fast path, and the difference is not small. setButtonTicks
+   * emulates a finger: the pad reads high for N rounds and touch_sense_loop()
+   * counts them, but a round only happens when SoftTimer runs checkKey() and
+   * `#define TIME_POLL 50`. A ten-tick tap plus the four idle rounds the
+   * firmware needs to see the release is fourteen scheduler periods - measured
+   * at 757-855ms for ONE press, so a seven-digit PIN took five to six seconds.
+   * Handing a press over costs one round, and the whole run crosses the bridge
+   * in a single call.
+   *
+   * It is the same press either way. `key_press` IS what touch_sense_loop
+   * returns and payload() bands on, so the tick count means exactly what the
+   * band table says it means.
+   *
+   * NOT the firmware's debug console - see android/okemu/src/okemu_press.h.
+   * That parser is behind `#ifdef DEBUG` and exists only in the development
+   * tree; this is our own code, compiled unconditionally, and it works against
+   * a firmware staged exactly as it ships.
+   *
+   * @param buttons one digit per press, '1'-'6'
+   * @param ticks the duration each press gets, default a tap
+   * @returns how many the firmware accepted
+   */
+  async pressQueue(
+    buttons: string,
+    ticks: number = PRESS_TICKS.TAP,
+    {allowGesture = false}: {allowGesture?: boolean} = {},
+  ): Promise<number> {
+    /*
+     * REFUSED BEFORE ANYTHING IS QUEUED, so a bad duration cannot land half a
+     * run. Injection writes key_press directly, which reaches backup(), lock +
+     * CPU_RESTART() and config mode exactly as a held finger does - the guard
+     * matters more here, not less.
+     */
+    for (const digit of buttons) {
+      const refusal = device.press.gestureRefusal(Number(digit), ticks, {allowGesture});
+      if (refusal) throw new Error(refusal);
+    }
+    this.ensureSubscribed();
+    const accepted = await NativeOkEmu.pressQueue(buttons, ticks);
+    if (accepted !== buttons.length) {
+      throw new Error(
+        `queued ${accepted} of ${buttons.length} presses - the queue was full ` +
+          'or a character was not a button 1-6',
+      );
+    }
+    await this.pressesDrained();
+    return accepted;
+  }
+
+  /** Queued but not yet taken by the firmware. */
+  pressPending(): Promise<number> {
+    return NativeOkEmu.pressPending();
+  }
+
+  /*
+   * Wait until the firmware has TAKEN every queued press.
+   *
+   * Resolving when they were queued would let a caller send the next message
+   * while digits were still waiting - which is the same mistake the sensed
+   * path made, and the firmware's PIN buffer cannot be cleared except by
+   * running it to its rollover.
+   *
+   * Polled at 10ms rather than the sensed path's 25ms because a press is taken
+   * on the next sense round, not after fourteen of them; the wait here is
+   * tens of milliseconds, so a coarse poll would dominate what it measures.
+   */
+  private async pressesDrained(timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if ((await this.pressPending()) === 0) return;
+      if (Date.now() > deadline) {
+        throw new Error('the firmware did not take the queued presses');
+      }
+      await new Promise<void>(resolve => setTimeout(() => resolve(), 10));
+    }
   }
 
   /**

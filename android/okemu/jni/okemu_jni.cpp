@@ -28,9 +28,11 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 extern "C" {
 #include "ok_hal.h"
+#include "okemu_press.h"
 }
 
 #define LOG_TAG "okemu"
@@ -312,6 +314,44 @@ Java_com_okrn_okemu_OkEmuNative_nativeSetButtonTicks(JNIEnv *, jclass,
                                                      jint button, jint ticks) {
   if (!g_running) return;
   okemu_set_button_ticks((int)button, (int)ticks);
+}
+
+/*
+ * Queue presses to be HANDED to the firmware rather than sensed.
+ *
+ * `buttons` is one digit per press, '1'-'6', so a whole PIN is one call and
+ * one crossing of the bridge. `ticks` is the duration every one of them gets -
+ * the firmware's own unit, the number payload() bands on. Refusing a duration
+ * that would be a gesture is done in TS, where device.press.gestureRefusal is.
+ *
+ * Returns how many were accepted; short of the string's length means the
+ * queue was full or a character was not a button.
+ */
+JNIEXPORT jint JNICALL
+Java_com_okrn_okemu_OkEmuNative_nativePressQueue(JNIEnv *env, jclass,
+                                                 jstring buttons, jint ticks) {
+  if (!g_running) return 0;
+  const std::string digits = jstr(env, buttons);
+  if (digits.empty() || ticks <= 0) return 0;
+
+  std::vector<uint8_t> b;
+  std::vector<uint16_t> t;
+  b.reserve(digits.size());
+  t.reserve(digits.size());
+  for (char c : digits) {
+    if (c < '1' || c > '6') continue;
+    b.push_back((uint8_t)(c - '0'));
+    t.push_back((uint16_t)ticks);
+  }
+  if (b.empty()) return 0;
+  return (jint)okemu_press_queue(b.data(), t.data(), (int)b.size());
+}
+
+/* Queued but not yet taken by the loop. 0 means the firmware has them all. */
+JNIEXPORT jint JNICALL
+Java_com_okrn_okemu_OkEmuNative_nativePressPending(JNIEnv *, jclass) {
+  if (!g_running) return 0;
+  return (jint)okemu_press_pending();
 }
 
 /* Samples still owed on a counted hold - the press timer the UI shows. */

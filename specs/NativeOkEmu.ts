@@ -97,6 +97,34 @@ export interface Spec extends TurboModule {
    */
   setButtonTicks(button: number, ticks: number): Promise<void>;
 
+  /**
+   * Queue presses to be HANDED to the firmware instead of sensed.
+   *
+   * The other way to press is setButtonTicks, which emulates a finger: the pad
+   * reads high for N rounds and touch_sense_loop() counts them. A round only
+   * happens when SoftTimer runs checkKey(), and `#define TIME_POLL 50` - so a
+   * ten-tick tap plus the four idle rounds the firmware needs to see the
+   * release is fourteen scheduler periods. Measured at 757-855ms for ONE
+   * press, which made a seven-digit PIN a five-second act.
+   *
+   * This writes the duration into the loop instead. `key_press` IS what
+   * touch_sense_loop returns and payload() bands on, so the press means
+   * exactly what its tick count says - there is simply nothing to sense.
+   *
+   * Nothing here is the firmware's DEBUG console. That parser lives behind
+   * `#ifdef DEBUG`, exists only in the development tree, and reads a Serial
+   * channel a production build does not compile. See android/okemu/src/
+   * okemu_press.h.
+   *
+   * @param buttons one digit per press, '1'-'6'; a whole PIN in one call.
+   * @param ticks the duration every one of them gets.
+   * @returns how many were accepted - short means the queue was full.
+   */
+  pressQueue(buttons: string, ticks: number): Promise<number>;
+
+  /** Queued but not yet taken by the loop. 0 means the firmware has them. */
+  pressPending(): Promise<number>;
+
   /** Iterations still owed on a counted hold; 0 when idle or stopped. */
   buttonTicksLeft(button: number): Promise<number>;
 

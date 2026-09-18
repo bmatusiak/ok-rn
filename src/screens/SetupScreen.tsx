@@ -189,6 +189,24 @@ export function SetupScreen({
   const setEntered = stage === 'confirm' ? setAgain : setPin;
 
   /*
+   * WHAT HAS BEEN TYPED, IN A REF, because a setState updater is not a place
+   * to make decisions from.
+   *
+   * press() used to set a `counted` flag inside setEntered(prev => ...) and
+   * then read it on the next line to decide whether to send the press. React
+   * does not run that updater synchronously - it runs it in the render phase -
+   * so `counted` was usually still false and THE PRESS WAS NEVER SENT. It
+   * dropped digits at random: measured 1,2,3,5,1 reaching the firmware while
+   * the screen counted all seven of 1234561, and the device then refused the
+   * pass with "Error PIN is not between 7 - 10 digits".
+   *
+   * The ref updates synchronously, so a burst of taps decides against the
+   * truth even when no render has happened between them. The state is for
+   * drawing; this is for deciding.
+   */
+  const enteredRef = useRef('');
+
+  /*
    * A TAP HERE PRESSES THE DEVICE'S BUTTON, exactly as the unlock pad does.
    *
    * It used to only collect digits into a string, because the library sent
@@ -242,6 +260,8 @@ export function SetupScreen({
     if (armingFor.current === `${kind}:${label}`) return;
     armingFor.current = `${kind}:${label}`;
     setArmed(false);
+    /* A new pass, so the count starts again with the device's own buffer. */
+    enteredRef.current = '';
     let alive = true;
     (async () => {
       try {
@@ -273,18 +293,15 @@ export function SetupScreen({
   const press = useCallback(
     (button: number) => {
       setError(null);
-      let counted = false;
-      setEntered(prev => {
-        if (prev.length >= MAX_PIN) return prev;
-        counted = true;
-        return prev + String(button);
-      });
+      if (enteredRef.current.length >= MAX_PIN) return;
+      enteredRef.current += String(button);
+      setEntered(enteredRef.current);
       /*
-       * Never counted without being sent. A disagreement here puts the screen
-       * ahead of the device, and the firmware's buffer cannot be cleared
-       * except by running it to its rollover.
+       * Counted and sent in the same breath. A disagreement either way puts
+       * the screen out of step with the device, and the firmware's PIN buffer
+       * cannot be cleared except by running it to its rollover.
        */
-      if (counted) sendPress(button);
+      sendPress(button);
     },
     [setEntered, sendPress],
   );
@@ -297,7 +314,8 @@ export function SetupScreen({
    */
   const back = useCallback(() => {
     setError(null);
-    setEntered(prev => prev.slice(0, -1));
+    enteredRef.current = enteredRef.current.slice(0, -1);
+    setEntered(enteredRef.current);
   }, [setEntered]);
 
   /** Start collecting the next PIN, or move on when there are none left. */

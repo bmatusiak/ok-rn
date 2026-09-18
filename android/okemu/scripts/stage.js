@@ -759,6 +759,53 @@ const PATCHES = [
        '                     uECC_Curve curve);'],
     ],
   },
+
+  /*
+   * THE ONLY PATCH HERE THAT ADDS A CAPABILITY, and it is deliberate.
+   *
+   * Everything else in this array exists to make the firmware COMPILE hosted.
+   * This one gives the host a way to PRESS A BUTTON without emulating a
+   * finger, which the hardware has no equivalent of, so it is called out
+   * rather than slipped in among the compile fixes.
+   *
+   * Why it earns the exception: a sensed press costs fourteen scheduler
+   * periods, because a sense round only happens when SoftTimer runs
+   * checkKey() and `#define TIME_POLL 50`. Measured at 757-855ms for ONE
+   * press, which made entering a seven-digit PIN a five-second act and made
+   * the pad feel broken. Handing a press over directly costs one round.
+   *
+   * THIS IS NOT THE FIRMWARE'S DEBUG CONSOLE. That parser is behind
+   * `#ifdef DEBUG`, exists only in the development tree, and reads a Serial
+   * channel a production build does not compile - so it could not be used
+   * here even if we wanted it. This line is compiled unconditionally and runs
+   * on a firmware staged exactly as it ships. Nothing here touches the DEBUG
+   * gate. okemu_press_take() is declared in shim/okemu_prelude.h, which is
+   * force-included into every firmware translation unit, so okcore.cpp gains
+   * no #include either.
+   *
+   * The anchor is the dispatch itself, kept to ONE line on purpose: it is
+   * byte-identical, unique in the file, and at conditional-compilation depth
+   * zero in all nine pinned versions and in the working tree. The line AFTER
+   * it is none of those - `onlykeyhw==OK_HW_DUO` does not exist on the 2.1
+   * line - so a longer anchor would break the older half of the matrix.
+   *
+   * key_press and key_off are function-local statics inside
+   * touch_sense_loop(), which is why the hand-over happens in here and why
+   * they are passed by pointer. It also means it happens on the FIRMWARE
+   * THREAD, so writing an int that the same thread is about to read is safe.
+   */
+  {
+    file: 'libraries/onlykey/okcore.cpp',
+    edits: [
+      ['\tif ((key_press > 0) && (key_off > 2)) {',
+       '\t/* Injected by ok-rn/android/okemu/scripts/stage.js - see\n' +
+       '\t   src/okemu_press.h. Hands over a queued press when the loop is not\n' +
+       '\t   already holding one; does nothing when nothing is queued. */\n' +
+       '\tokemu_press_take(&button_selected, &key_press);\n' +
+       '\tif ((key_press > 0) && (key_off > 2)) {'],
+    ],
+  },
+
 ];
 
 /* ------------------------------------------------ staging a RELEASED version */

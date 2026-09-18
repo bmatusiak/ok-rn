@@ -40,7 +40,8 @@ const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
  */
 function pressDigits({log} = {}) {
   return async digits => {
-    for (const ch of String(digits)) {
+    const text = String(digits);
+    for (const ch of text) {
       const button = Number(ch);
       if (!Number.isInteger(button) || button < 1 || button > 6) {
         throw new Error(
@@ -48,9 +49,19 @@ function pressDigits({log} = {}) {
             'because the digits ARE the buttons',
         );
       }
-      await OkEmu.pressButton(button);
-      if (log) log(`pressed ${button}`);
     }
+
+    /*
+     * HANDED OVER, NOT SENSED, and the whole run in one call.
+     *
+     * This pressed them one at a time through pressButton(), which emulates a
+     * finger and waits out the rounds: ~757-855ms EACH, so a seven-digit PIN
+     * cost five to six seconds of every suite that unlocks. pressQueue writes
+     * the durations into the loop instead and returns when the firmware has
+     * taken them all. Same presses, same bands - see OkEmu.pressQueue.
+     */
+    await OkEmu.pressQueue(text);
+    if (log) log(`pressed ${text.split('').join(' ')}`);
   };
 }
 

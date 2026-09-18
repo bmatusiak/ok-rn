@@ -68,6 +68,20 @@
 extern "C" {
 #endif
 extern uintptr_t okemu_flash_base;
+
+/*
+ * Presses handed to the loop instead of sensed - see src/okemu_press.h.
+ *
+ * Declared here for the same reason okemu_flash_base is: okcore.cpp includes
+ * nothing of ours, and the one line stage.js injects into touch_sense_loop()
+ * has to name this without an #include of its own. This prelude is force-
+ * included into every firmware translation unit (CMakeLists, -include), so
+ * the declaration is simply there.
+ *
+ * Nothing about this is the DEBUG console. It is compiled unconditionally and
+ * is reached on a production build, which is the whole point of it existing.
+ */
+void okemu_press_take(int *button_selected, int *key_press);
 #ifdef __cplusplus
 }
 #endif

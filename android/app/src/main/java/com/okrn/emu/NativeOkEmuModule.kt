@@ -262,6 +262,48 @@ class NativeOkEmuModule(
   }
 
   /**
+   * Queue presses to be handed to the loop rather than sensed.
+   *
+   * On the executor like every other mutating call. The whole run crosses in
+   * one call on purpose - a seven-digit PIN was seven presses, each with its
+   * own polled settle, and that is what made entering one take five seconds.
+   */
+  override fun pressQueue(buttons: String, ticks: Double, promise: Promise) {
+    executor.execute {
+      try {
+        if (!isRunning()) {
+          promise.reject(ERR_NOT_RUNNING, "firmware is not running")
+          return@execute
+        }
+        val n = ticks.toInt()
+        if (n <= 0) {
+          promise.reject(ERR_WRITE, "ticks must be positive, got $n")
+          return@execute
+        }
+        promise.resolve(OkEmuNative.nativePressQueue(buttons, n).toDouble())
+      } catch (e: Exception) {
+        promise.reject(ERR_WRITE, e.message ?: "pressQueue failed", e)
+      }
+    }
+  }
+
+  /**
+   * How many presses are still waiting to be taken.
+   *
+   * NOT on the executor, deliberately - the same reason buttonTicksLeft is
+   * not. A caller asks this WHILE the firmware thread is busy consuming the
+   * queue, and queueing it behind the work it is asking about would answer
+   * only once that work had finished.
+   */
+  override fun pressPending(promise: Promise) {
+    try {
+      promise.resolve(if (isRunning()) OkEmuNative.nativePressPending().toDouble() else 0.0)
+    } catch (e: Exception) {
+      promise.reject(ERR_WRITE, e.message ?: "pressPending failed", e)
+    }
+  }
+
+  /**
    * Iterations still owed on a counted hold - the press timer, and the only
    * honest way to know a hold has finished.
    *

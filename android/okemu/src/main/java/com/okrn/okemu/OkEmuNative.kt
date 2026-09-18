@@ -95,6 +95,18 @@ object OkEmuNative {
      */
     external fun nativeSetButtonTicks(button: Int, ticks: Int)
 
+    /**
+     * Queue presses to be HANDED to the firmware rather than sensed.
+     *
+     * `buttons` is one digit per press, '1'-'6', so a whole PIN crosses in one
+     * call. `ticks` is the duration each gets, in the firmware's own unit.
+     * Returns how many were accepted. See src/okemu_press.h.
+     */
+    external fun nativePressQueue(buttons: String, ticks: Int): Int
+
+    /** Queued but not yet taken by the loop; 0 means the firmware has them. */
+    external fun nativePressPending(): Int
+
     /** Iterations still owed on a counted hold; 0 when not counting. */
     external fun nativeButtonTicksLeft(button: Int): Int
 
