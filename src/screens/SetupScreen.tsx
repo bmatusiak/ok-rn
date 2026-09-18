@@ -1,11 +1,12 @@
-import React, {useCallback, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import OkEmu from '../transport/OkEmu';
 import {useActiveKey} from '../hooks/KeyContext';
 import {Logo} from '../ui/Logo';
 import {DuoPinForm} from '../ui/DuoPinForm';
 import {Btn, LedCircle} from '../ui/components';
-import {Keypad, PinDots} from '../ui/Keypad';
+import {Keypad, QueueDots} from '../ui/Keypad';
+import {usePressQueue} from '../hooks/usePressQueue';
 import {theme} from '../ui/theme';
 
 /** The firmware refuses anything outside this, and says so by name. */
@@ -18,25 +19,45 @@ const MIN_PASSPHRASE = 25;
 /**
  * First-time setup: choosing the PIN a blank key will use, and what follows.
  *
- * EVERY DIGIT IS PRESSED ON THE DEVICE, exactly as on the unlock pad. This is
- * the same act a person performs standing at a real key: a PIN is a sequence of
- * button presses, entered once and then again, and the firmware commits when
- * the two agree.
+ * MODELLED ON OnlyKey-App's WIZARD, because that is the app that has always
+ * done this. Its Step2/Step3 send an OKSETPIN at each boundary and the person
+ * presses the key in between (OnlyKeyWizard.js:171-190); the host never sends
+ * a digit. This screen is the same shape, with the phone's own buttons.
  *
- * It did not used to be. This pad only COLLECTED digits, and the library sent
- * them afterwards through device.setPin() - a six-step bracket that waits on
- * "Enter PIN", "Storing PIN", "Confirm PIN" and "Both PINs Match", every one a
- * Serial.println inside `#ifdef DEBUG`, writing the digits to IFACE.SEREMU.
- * Both halves are compiled out of the firmware AS IT SHIPS, so setup worked on
- * a development build and silently timed out on a production one, against a
- * device behaving perfectly. See FINDING-provisioning-needs-a-debug-build.md.
- * unlock() had already been moved onto real presses for this reason; setup was
- * the half left behind.
+ * ## Entry is only open between the messages, and that governs everything
  *
- * It still asks twice, but the second pass is no longer a local check - it is
- * the firmware's own confirm step, pressed. So a typo is caught by the DEVICE,
- * which is the only thing that can catch it once the first pass has been
- * pressed into it, and the LED is how that verdict arrives.
+ * set_primary_pin is a state machine advanced by the MESSAGE, not by presses:
+ *
+ *   msg -> case 0   password.reset(), "OnlyKey is ready, enter your PIN"
+ *          ...the person presses; the firmware appends each one...
+ *   msg -> case 1   keeps what was pressed, "Successful PIN entry"
+ *   msg -> case 2   "OnlyKey is ready, re-enter your PIN to confirm"
+ *          ...the person presses again...
+ *   msg -> case 3   password.evaluate(), commit, "Successfully set PIN"
+ *
+ * So a press BEFORE the arming message is wiped by that reset, and a press
+ * after the next one lands in the following pass. The pad is therefore
+ * disabled until arming has been answered, and the advance button is disabled
+ * while any press is still in flight - the queue's depth is drawn as the dots.
+ *
+ * ## Two things this screen does NOT do
+ *
+ * It does not send the digits. A first version pressed them and sent no
+ * messages at all, which left the firmware parked at case 0 with nothing ever
+ * stored; a second collected them and let device.setPin() press the lot, which
+ * works but is not how anyone types a PIN.
+ *
+ * It does not compare the two passes. Both are in the device and
+ * password.evaluate() is what decides; comparing our own strings would only
+ * check that the screen counted the same taps twice, and would disagree with
+ * the device the moment a press was dropped.
+ *
+ * ## Why none of this needs the debug console
+ *
+ * Every prompt above is a hidprint, ungated, identical in all nine pinned
+ * firmware versions. The Serial.println twins the library used to wait on are
+ * inside `#ifdef DEBUG`, which is why setup worked in development and timed
+ * out against every release (FINDING-provisioning-needs-a-debug-build.md).
  *
  * ## The rest of the wizard
  *
@@ -119,10 +140,11 @@ export function SetupScreen({
   /** In change mode, how to restart this key so config mode ends. */
   onRestart?: () => void;
   /**
-   * Press a button ON THE DEVICE - the same function the unlock pad uses.
+   * Press a button ON THE DEVICE - the same handler the unlock pad uses.
    *
-   * Required for the reason in the header comment: a PIN is set by pressing
-   * it, and nothing else reaches a production firmware.
+   * A tap here is a real press, because the device is where a PIN is typed.
+   * See the header: entry is only open between the bracket's messages, and
+   * this screen is what opens and closes it.
    */
   onPress: (button: number) => Promise<void> | void;
   /**
@@ -177,16 +199,94 @@ export function SetupScreen({
    * The count kept here is for the dots and nothing else. What the firmware
    * holds is the presses, and it is the firmware that compares the two passes.
    */
+  /*
+   * COLLECTED HERE, PRESSED BY setPin - and the order is not a preference.
+   *
+   * The device only captures a PIN between the bracket's messages: case 0 of
+   * set_primary_pin calls password.reset() as it arms, so anything pressed
+   * before that message is wiped and anything pressed after the next one
+   * lands in the following pass. This pad cannot know where in that bracket
+   * the device is; setPin does, because it is the thing sending the messages.
+   *
+   * So a tap here is counted, and the digits are pressed - through the same
+   * okemu_set_button the unlock pad uses - once entry is actually open. A
+   * version of this screen pressed live and sent no messages at all, which
+   * left the firmware parked at case 0 with nothing ever stored.
+   *
+   * Counted with the updater form because taps outrun renders: React batches,
+   * so two taps in one render both computing from the same captured string
+   * lose one, and seven taps counted three.
+   */
+  const {press: sendPress, pending} = usePressQueue(onPress);
+
+  /*
+   * OPEN THE DEVICE'S ENTRY BEFORE ANY DIGIT IS PRESSED.
+   *
+   * set_primary_pin case 0 calls password.reset() as it arms, so a press that
+   * happens before this message is WIPED, and a press after the next message
+   * lands in the following pass. The pad cannot be honest about a digit unless
+   * the bracket is where the pad thinks it is - so the message that opens
+   * entry is sent when the pad appears, and the pad is disabled until it has
+   * been answered.
+   *
+   * Sent once per pass, keyed on the stage. Re-arming would reset the buffer
+   * and silently discard everything already typed.
+   */
+  const [armed, setArmed] = useState(false);
+  const armingFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (stage !== 'choose' && stage !== 'confirm') return;
+    /* 'choose' is opened by `armed`; 'confirm' by `confirming`. */
+    const label = stage === 'choose' ? 'armed' : 'confirming';
+    if (armingFor.current === `${kind}:${label}`) return;
+    armingFor.current = `${kind}:${label}`;
+    setArmed(false);
+    let alive = true;
+    (async () => {
+      try {
+        const {device} = await getKey();
+        await device.pinStep(label, {kind});
+        if (alive) setArmed(true);
+      } catch (e) {
+        if (!alive) return;
+        setError(String((e as Error)?.message ?? e));
+        setStage('failed');
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, kind]);
+
+  /*
+   * A TAP PRESSES THE DEVICE, and is counted only so the screen can say how
+   * many have gone in. Entry is open - `armed` or `confirming` has already
+   * been sent - so the firmware is appending each press to its own buffer,
+   * and that buffer is the only copy that matters.
+   *
+   * Counted with the updater form because taps outrun renders: React batches,
+   * so two taps in one render both computing from the same captured string
+   * lose one, and seven taps counted three.
+   */
   const press = useCallback(
     (button: number) => {
-      if (entered.length >= MAX_PIN) {
-        return;
-      }
       setError(null);
-      setEntered(entered + String(button));
-      void onPress(button);
+      let counted = false;
+      setEntered(prev => {
+        if (prev.length >= MAX_PIN) return prev;
+        counted = true;
+        return prev + String(button);
+      });
+      /*
+       * Never counted without being sent. A disagreement here puts the screen
+       * ahead of the device, and the firmware's buffer cannot be cleared
+       * except by running it to its rollover.
+       */
+      if (counted) sendPress(button);
     },
-    [entered, setEntered, onPress],
+    [setEntered, sendPress],
   );
 
   /*
@@ -197,8 +297,8 @@ export function SetupScreen({
    */
   const back = useCallback(() => {
     setError(null);
-    setEntered(entered.slice(0, -1));
-  }, [entered, setEntered]);
+    setEntered(prev => prev.slice(0, -1));
+  }, [setEntered]);
 
   /** Start collecting the next PIN, or move on when there are none left. */
   const advance = useCallback((from: Kind) => {
@@ -232,22 +332,17 @@ export function SetupScreen({
           setSteps(prev => [...prev, e.step]),
         );
         /*
-         * NOTHING IS SENT HERE. Both passes were pressed on the device as they
-         * were typed, which is the whole of setting a PIN - the firmware
-         * compares them itself and commits when they agree.
+         * THE LAST TWO STEPS. `matched` is what makes the device compare the
+         * two passes and commit; it answers "Successfully set PIN" AFTER the
+         * flash write, or refuses with "Error PINs Don't Match", and either
+         * way that is the device's verdict rather than the screen's.
          *
-         * device.setPin() used to be called at this point and it is exactly
-         * what could not work: its six-step bracket waits on "Enter PIN",
-         * "Storing PIN", "Confirm PIN" and "Both PINs Match", every one a
-         * Serial.println inside `#ifdef DEBUG`, and it writes the digits to
-         * IFACE.SEREMU. Both are compiled out of a shipping firmware, so this
-         * waited ten seconds for a prompt that was never coming.
-         * See FINDING-provisioning-needs-a-debug-build.md.
-         *
-         * `digits` is kept only to confirm the two passes were the same length;
-         * the device is the authority on whether they matched.
+         * `committed` has nothing left to wait for on the wire and is run for
+         * its progress line, so the summary reads the same as the suite's.
          */
         void digits;
+        await device.pinStep('matched', {kind});
+        await device.pinStep('committed', {kind});
         setSet(prev => [...prev, kind]);
         advance(kind);
       } catch (e) {
@@ -280,17 +375,33 @@ export function SetupScreen({
 
   const next = useCallback(() => {
     if (stage === 'choose') {
-      setStage('confirm');
-      setAgain('');
+      /*
+       * `stored` closes entry and makes the device keep what was pressed; the
+       * effect above then sends `confirming`, which opens it again. Splitting
+       * them that way keeps one rule: the message that OPENS a pass is sent by
+       * whatever puts the pad on screen for that pass.
+       */
+      void (async () => {
+        try {
+          const {device} = await getKey();
+          await device.pinStep('stored', {kind});
+          setAgain('');
+          setStage('confirm');
+        } catch (e) {
+          setError(String((e as Error)?.message ?? e));
+          setStage('failed');
+        }
+      })();
       return;
     }
-    if (again !== pin) {
-      setError('Those did not match. Try the second one again.');
-      setAgain('');
-      return;
-    }
+    /*
+     * NO LOCAL COMPARISON. Both passes are in the device, and password.evaluate
+     * is what decides whether they agree - comparing our own two strings would
+     * only be checking that the screen counted the same taps twice, and would
+     * disagree with the device the moment a press was dropped.
+     */
     void apply(pin);
-  }, [again, apply, pin, stage]);
+  }, [apply, getKey, kind, pin, stage]);
 
   const applyPassphrase = useCallback(async () => {
     setStage('applying');
@@ -494,13 +605,39 @@ export function SetupScreen({
               <LedCircle pixels={led} />
             </View>
           ) : null}
-          <PinDots count={entered.length} max={MAX_PIN} />
+          {/*
+            * THE DOTS ARE THE QUEUE, not the PIN.
+            *
+            * One goes on as a button is tapped and comes off as that press
+            * reaches the device, so typing fast makes the row GROW and then
+            * drain. That is the only thing on screen that separates "the key
+            * has my digits" from "my digits are still on their way" - a press
+            * takes about 400ms, and a row that filled per tap claimed the work
+            * was done the moment the finger lifted.
+            *
+            * How many have been entered is a different question, and it is
+            * answered in words below rather than by the same row.
+            */}
+          <QueueDots count={pending} />
+          <Text style={styles.count}>
+            {entered.length === 0
+              ? 'No presses yet'
+              : `${entered.length} press${entered.length === 1 ? '' : 'es'}` +
+                (entered.length < MIN_PIN
+                  ? ` — ${MIN_PIN - entered.length} more needed`
+                  : '')}
+          </Text>
         </View>
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <View style={styles.pad}>
-          <Keypad onPress={press} />
+          {/*
+            * DISABLED UNTIL ENTRY IS OPEN. Until the arming message has been
+            * answered the firmware is not capturing, so a tap would be a press
+            * the device discards while this screen counts it.
+            */}
+          <Keypad onPress={press} disabled={!armed} />
         </View>
 
         <View style={styles.action}>
@@ -511,7 +648,13 @@ export function SetupScreen({
             <Btn
               title={stage === 'choose' ? 'Next' : 'Set the PIN'}
               tone="primary"
-              disabled={!ready}
+              /*
+               * `pending` matters here: the last tap is still travelling to
+               * the device when a fast finger reaches this button, and the
+               * next message CLOSES entry - so advancing early leaves that
+               * digit in the following pass, or in no pass at all.
+               */
+              disabled={!ready || pending > 0 || !armed}
               onPress={next}
             />
           </View>
@@ -556,6 +699,7 @@ const styles = StyleSheet.create({
 
   dots: {marginTop: 20, marginBottom: 20},
   pad: {width: '100%', maxWidth: 320},
+  count: {color: theme.textDim, fontSize: 13, textAlign: 'center', marginTop: 8},
   ledRow: {alignItems: 'center', marginBottom: 12},
   action: {flexDirection: 'row', gap: 10, marginTop: 18, width: '100%', maxWidth: 320},
   cell: {flex: 1},

@@ -95,6 +95,28 @@ export function Keypad({
  * `max` is the longest PIN the firmware accepts, so the row does not resize as
  * you type - a pad that reflows under your thumb is a pad you mis-tap.
  */
+/**
+ * One dot per press still on its way to the device. No placeholders.
+ *
+ * A row of empty outlines would be saying how many presses are EXPECTED, and
+ * nothing here knows that - a PIN is 7 to 10 and the queue is however far
+ * behind the finger it happens to be. So the row is exactly as long as the
+ * backlog: it grows as buttons are tapped and shrinks as each press lands,
+ * which is the one thing worth showing while a press takes ~400ms.
+ *
+ * The row keeps its height at zero dots so the pad below does not jump as it
+ * drains.
+ */
+export function QueueDots({count}: {count: number}) {
+  return (
+    <View style={styles.queueDots}>
+      {Array.from({length: count}, (_, i) => (
+        <View key={i} style={[styles.dot, styles.dotFilled]} />
+      ))}
+    </View>
+  );
+}
+
 export function PinDots({count, max = 10}: {count: number; max?: number}) {
   return (
     <View style={styles.dots}>
@@ -130,6 +152,13 @@ const styles = StyleSheet.create({
    */
 
   dots: {flexDirection: 'row', gap: 8, justifyContent: 'center'},
+  queueDots: {
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    height: 10,
+  },
   dot: {
     width: 10,
     height: 10,

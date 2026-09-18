@@ -1,7 +1,8 @@
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
 import OkEmu from '../transport/OkEmu';
 import {Keypad} from '../ui/Keypad';
+import {usePressQueue} from '../hooks/usePressQueue';
 import {Logo} from '../ui/Logo';
 import {Btn, LedCircle, Segmented} from '../ui/components';
 import * as biometrics from '../biometrics';
@@ -108,7 +109,6 @@ export function PinScreen({
    */
   led?: number[];
 }) {
-  const [, setWorking] = useState(false);
 
   /* The DUO path: the library's unlock() types the PIN for a DUO. */
   const getKey = useActiveKey();
@@ -130,24 +130,9 @@ export function PinScreen({
     [getKey],
   );
 
-  /*
-   * Presses are QUEUED, NOT DROPPED
-   * (FINDING-pin-taps-are-dropped-not-queued.md).
-   *
-   * A press is not instantaneous: it is ten firmware loop iterations at
-   * ~36ms each, plus the poll that notices the release, so about 400ms. A
-   * finger moving between two keys takes half that. Ignoring a tap that
-   * arrives mid-press - which is what a `working` guard does - threw away
-   * roughly every second digit, and the buffer this feeds CANNOT BE CLEARED
-   * except by running it to its rollover, so one lost digit costs the entry
-   * twice over.
-   *
-   * Serialising is still required - okemu_set_button_ticks holds one counter
-   * per button, and a second press starting before the first is released
-   * overwrites the count being aged - but a chain serialises without
-   * discarding anything.
-   */
-  const queue = useRef<Promise<void>>(Promise.resolve());
+  /* The queue lives in usePressQueue now; setup needed the same code. */
+  const {press} = usePressQueue(onPress);
+
 
   /*
    * Whether a PIN is saved behind a biometric. Asked WITHOUT prompting, so the
@@ -172,43 +157,6 @@ export function PinScreen({
       alive = false;
     };
   }, []);
-
-  /** How many are still in flight, so the screen knows when it has drained. */
-  const outstanding = useRef(0);
-
-  const press = useCallback(
-    (button: number) => {
-      /*
-       * NOTHING COUNTS PRESSES HERE ANY MORE. There used to be a cap at ten
-       * digits, a row of dots, and a "Start over" button that ran the buffer
-       * to its rollover. All three are gone.
-       *
-       * A PIN is 7 to 10 digits and this screen cannot know which, so the dots
-       * were always a guess; a wrong PIN gets no feedback from the device
-       * either way; and the cap turned into a trap the moment Start over went,
-       * because after ten presses nothing would reach the key at all.
-       *
-       * A key in your hand takes presses forever and rolls its own buffer over
-       * (pass_keypress, OnlyKey.ino). This does the same: press, send, that is
-       * the whole contract.
-       */
-      outstanding.current += 1;
-      setWorking(true);
-
-      queue.current = queue.current
-        .then(() => onPress(button))
-        .then(
-          () => {},
-          () => {
-          },
-        )
-        .then(() => {
-          outstanding.current -= 1;
-          if (outstanding.current === 0) setWorking(false);
-        });
-    },
-    [onPress],
-  );
 
   /*
    * THE BUFFER CANNOT BE CLEARED, so this does not pretend to.

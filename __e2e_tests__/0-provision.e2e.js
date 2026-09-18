@@ -13,14 +13,19 @@
  * starts UNINITIALIZED, and provisioning each of them by hand is the thing that
  * would stop the matrix from ever being run.
  *
- * ## It needs a DEBUG build, and says so rather than timing out
+ * ## It runs on a production build, which it did not used to
  *
- * The PIN bracket is a CONVERSATION: setPin waits for "Enter PIN", "Storing
- * PIN", "Confirm PIN" and "Both PINs Match", and every one of those is a
- * Serial.println inside `#ifdef DEBUG`
- * (FINDING-provisioning-needs-a-debug-build.md). A release ships with that gate
- * OFF - v3.0.2's onlykey.h has `//#define DEBUG` - so a pinned version has to
- * be staged with OKEMU_DEBUG=1 or it cannot be given a PIN at all.
+ * The PIN bracket is a CONVERSATION, and the host used to hold it over the
+ * DEBUG console: setPin waited for "Enter PIN", "Storing PIN", "Confirm PIN"
+ * and "Both PINs Match", every one a Serial.println inside `#ifdef DEBUG`
+ * (FINDING-provisioning-needs-a-debug-build.md). A release ships with that
+ * gate off, so every pinned version had to be staged with OKEMU_DEBUG=1 or it
+ * could not be given a PIN at all - and the app's own first-time setup could
+ * not work on a build anyone would ship.
+ *
+ * The same four messages are answered on the WIRE, ungated, and the library
+ * reads those now (pin.js HID_PROMPTS). So this suite provisions a -prodc
+ * device as readily as a -testc one.
  *
  * ## Two runs, not one
  *
@@ -98,29 +103,25 @@ module.exports = function provision({describe, it}) {
       }
 
       /*
-       * A production build cannot be provisioned, and the reason is worth
-       * naming here rather than fifteen seconds later in a message about the
-       * PIN possibly being wrong.
-       */
-      /*
-       * NOT-FALSE, not true. debugConsole has three values and null is
-       * UNKNOWN - firmware older than the -test/-prod keyword the 3.0 line
-       * encodes, which is every release before it. Asserting `=== true`
-       * refused exactly the old devices the bracket exists to reach, and did
-       * it while their console output was visible in the same log.
-       * ok-rn/FINDING-unknown-was-read-as-no-console.md
+       * A PRODUCTION BUILD IS PROVISIONED HERE TOO, and this used to refuse.
        *
-       * An unknown build tries, and fails at the first prompt if the console
-       * really is absent - a worse message than this one, but a true one.
+       * The refusal was right about the bracket and wrong about the channel.
+       * setPin waited on "Enter PIN", "Storing PIN", "Confirm PIN" and "Both
+       * PINs Match", every one a Serial.println inside `#ifdef DEBUG`, so a
+       * release device timed out at the first step and the only advice worth
+       * giving was "stage it with OKEMU_DEBUG=1".
+       *
+       * The firmware also hidprints at each of those points and does NOT gate
+       * those: "OnlyKey is ready, enter your PIN", "Successful PIN entry",
+       * "...re-enter your PIN to confirm", "Successfully set PIN". The library
+       * reads those now (pin.js HID_PROMPTS), which is the channel the
+       * OnlyKey-App wizard has always used, so the bracket runs on either
+       * build and the version matrix no longer needs a debug stage to be
+       * given a PIN.
+       *
+       * Left asserted the other way round: the console is no longer required,
+       * so nothing here may depend on it.
        */
-      const caps = device.capabilities;
-      assert.notEqual(
-        caps && caps.debugConsole,
-        false,
-        'this is a production build: the PIN bracket is a conversation in ' +
-          'Serial.println and a production build compiles those out. Stage ' +
-          'the version with OKEMU_DEBUG=1',
-      );
 
       /*
        * A DUO IS PROVISIONED BY A MESSAGE, not by the six-step bracket.
