@@ -43,7 +43,7 @@ const {protocol} = require('node-onlykey-lib');
 
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
-const {IFACE, PRESS_TICKS} = OkEmuModule;
+const {IFACE} = OkEmuModule;
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -198,7 +198,9 @@ async function probeKey(device, log, slot = SLOT) {
 async function pressChallenge(digits, log, isAnswered = () => false) {
   const pressed = [];
   for (const d of digits) {
-    await OkEmu.holdTicks(d, PRESS_TICKS.TAP);
+    /* A tap. The challenge digits go in one at a time here on purpose -
+       each answers a separate prompt - but each is handed over, not sensed. */
+    await OkEmu.pressQueue(String(d));
     pressed.push(d);
     /*
      * payload() only runs a press once key_off has passed two further loop

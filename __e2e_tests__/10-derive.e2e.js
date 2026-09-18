@@ -92,7 +92,7 @@ function pressing(log, capabilities = null) {
   const press = async (why) => {
     if (pressed) return;
     pressed += 1;
-    await OkEmu.pressButton(1);
+    await OkEmu.pressQueue('1');
     log(`pressed button 1 for the derive (${why})`);
   };
 

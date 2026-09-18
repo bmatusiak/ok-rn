@@ -31,7 +31,7 @@ const {waitForLedClear} = require('./helpers/ledSettled');
 
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
-const {IFACE, PRESS_TICKS} = OkEmuModule;
+const {IFACE} = OkEmuModule;
 
 const {keystrokes} = okdevice;
 
@@ -89,7 +89,8 @@ module.exports = function keystrokeCapture({describe, it}) {
 
       const tap = keyboardTap();
       try {
-        await OkEmu.holdTicks(2, PRESS_TICKS.TAP);
+        /* A tap, so handed to the loop rather than sensed - see OkEmu.pressQueue. */
+        await OkEmu.pressQueue('2');
         /*
          * Typing is paced by the slot's TYPESPEED, two delays per character
          * (OnlyKey.ino:619-623), so a short password still takes a second or

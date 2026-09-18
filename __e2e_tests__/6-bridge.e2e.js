@@ -156,7 +156,7 @@ module.exports = function bridgeFlow({describe, it}) {
           relayed.push(status);
           if (status === 0x02) {
             await delay(300);
-            await OkEmu.pressButton(1);
+            await OkEmu.pressQueue('1');
           }
         },
       });

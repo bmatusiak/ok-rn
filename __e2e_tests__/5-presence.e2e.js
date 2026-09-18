@@ -128,7 +128,7 @@ module.exports = function presence({describe, it}) {
           // A short settle first: the presence loop has to reach its `do`
           // before a press can be seen by it.
           await delay(300);
-          await OkEmu.pressButton(1);
+          await OkEmu.pressQueue('1');
           pressed += 1;
         },
       });

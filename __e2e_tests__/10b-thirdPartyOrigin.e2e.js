@@ -66,7 +66,7 @@ async function deriveUnder(transport, rpId, log) {
      onKeepAlive: async () => {
        if (pressed) return;
        pressed += 1;
-       await OkEmu.pressButton(1);
+       await OkEmu.pressQueue('1');
        log(`  pressed button 1 for the ${rpId} derive`);
      }});
   if (!answer || !answer.data || !answer.data.length) {

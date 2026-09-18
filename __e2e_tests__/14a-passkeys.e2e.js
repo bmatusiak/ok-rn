@@ -164,7 +164,7 @@ module.exports = function passkeys({describe, it}) {
               if (status !== 0x02 || pressed.length) return;
               pressed.push(1);
               await delay(300);
-              await OkEmu.pressButton(1);
+              await OkEmu.pressQueue('1');
             },
           },
         );
@@ -267,7 +267,7 @@ module.exports = function passkeys({describe, it}) {
             if (status !== 0x02 || pressed.length) return;
             pressed.push(1);
             await delay(300);
-            await OkEmu.pressButton(1);
+            await OkEmu.pressQueue('1');
           },
         });
         log(`reset done, presses: ${pressed.length}`);
