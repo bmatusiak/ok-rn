@@ -214,13 +214,22 @@ function Shell() {
   const backendRef = useRef<Backend>('embedded');
   const getActiveKey = useCallback(() => getOnlyKey(backendRef.current), []);
   const getActiveBackend = useCallback(() => backendRef.current as string, []);
+  /*
+   * WHETHER THE ACTIVE KEY IS UNLOCKED, through a ref for the same reason as
+   * the backend above: useKey() is built BELOW this line - it needs
+   * fido.pending - so the value cannot be read here, only pointed at.
+   */
+  const unlockedRef = useRef(false);
+  const isUnlocked = useCallback(() => unlockedRef.current, []);
   const fido = useFidoGatt({
     log: fidoLog.log,
     getKey: getActiveKey,
     getBackend: getActiveBackend,
+    isUnlocked,
   });
   const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log, fidoPending: fido.pending});
   backendRef.current = keys.backend;
+  unlockedRef.current = keys.key.device === 'unlocked';
   const emu = keys.key;
 
   /*

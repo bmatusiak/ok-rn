@@ -1350,8 +1350,20 @@ class NativeFidoGattModule(
       UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
     /** How often the watchdog re-asks the radio. Short enough that a host retrying sees us. */
-    /** See armWatchdog(). Flip on only with a real ceremony to measure against. */
-    private const val WATCHDOG_ENABLED = false
+    /*
+     * ON, and earned it. Switched off once on the theory that untestable code
+     * restarting the advertisement was the regression; the phone then proved
+     * why it exists. At 21:20 on 2026-09-17 the Bluetooth stack restarted,
+     * Android dropped this app's GATT service registration with it, and the
+     * authenticator stayed down - 0xFFFD served nowhere, nothing advertising -
+     * while the screen still read "advertising" and Windows' WebAuthn dialog
+     * sat waiting for a key that was no longer on the air.
+     *
+     * The blinking that made it look harmful was the FIRST version, which
+     * re-issued the advertisement every tick; this one only acts when the
+     * advertisement is not on the air or the service is gone.
+     */
+    private const val WATCHDOG_ENABLED = true
     private const val WATCHDOG_MS = 6_000L
 
     const val STATE_IDLE = "idle"

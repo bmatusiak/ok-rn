@@ -18,6 +18,8 @@ type Options = {
   getKey: () => Promise<OnlyKeyApp>;
   /** Which backend that is, for the one decision that differs between them. */
   getBackend: () => string;
+  /** Whether the active key is unlocked; see the gate in fidoBridge. */
+  isUnlocked?: () => boolean;
 };
 
 export type FidoSession = ReturnType<typeof useFidoGatt>;
@@ -26,7 +28,7 @@ export type FidoSession = ReturnType<typeof useFidoGatt>;
  * The BLE authenticator session. Call this ONCE, at app scope - it owns the
  * GATT server's lifetime and the bridge that answers requests.
  */
-export function useFidoGatt({log, getKey, getBackend}: Options) {
+export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
   /*
    * THE KEY GETTER IS PASSED IN, and it has to be.
    *
@@ -109,6 +111,7 @@ export function useFidoGatt({log, getKey, getBackend}: Options) {
       onPending: setPending,
       onPresence: setPresenceNeeded,
       isRelaying: () => relayingRef.current,
+      isUnlocked,
     });
 
     FidoGatt.isSupported()

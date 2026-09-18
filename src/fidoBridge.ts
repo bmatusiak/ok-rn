@@ -85,6 +85,21 @@ type Options = {
    * attached once and the answer changes under it.
    */
   isRelaying?: () => boolean;
+
+  /**
+   * Whether the active key is unlocked.
+   *
+   * A LOCKED KEY IS SILENT, NOT SLOW. okcore.cpp:639,651 gate FIDO dispatch on
+   * `unlocked == true` and DROP the packet with no error frame, so a ceremony
+   * against a locked key hangs until this bridge's own timeout and the browser
+   * reports a generic failure. Measured 2026-09-17: getInfo and a 217-byte
+   * makeCredential both arrived, nothing answered for eleven seconds, Chrome
+   * retried getInfo and gave up - indistinguishable, from the outside, from a
+   * broken authenticator, and hours were spent treating it as one.
+   *
+   * Answering DENIED immediately makes the difference visible.
+   */
+  isUnlocked?: () => boolean;
 };
 
 /**
@@ -96,6 +111,7 @@ export function startFidoBridge({
   onPresence,
   getKey,
   isRelaying,
+  isUnlocked,
 }: Options): () => void {
   let bridge: ReturnType<typeof protocol.bridge.createCtapBridge> | null = null;
   /* Which transport the cached bridge was built on - see ensureBridge. */
@@ -157,6 +173,15 @@ export function startFidoBridge({
      */
     if (isRelaying && !isRelaying()) {
       log('info', `refusing ${label} - the bridge to the key is switched off`);
+      await FidoGatt.respondToRequest(
+        event.requestId,
+        CTAP2_ERR_OPERATION_DENIED.toString(16).padStart(2, '0'),
+      );
+      return;
+    }
+
+    if (isUnlocked && !isUnlocked()) {
+      log('error', `refusing ${label} - the key is locked, so it would answer nothing`);
       await FidoGatt.respondToRequest(
         event.requestId,
         CTAP2_ERR_OPERATION_DENIED.toString(16).padStart(2, '0'),
