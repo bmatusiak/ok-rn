@@ -562,6 +562,20 @@ class NativeFidoGattModule(
   }
 
   private fun armWatchdog() {
+    /*
+     * OFF, DELIBERATELY, UNTIL A REAL CEREMONY SAYS OTHERWISE.
+     *
+     * Written to re-arm an advertisement the controller had stopped, and it
+     * cannot be verified from this machine at all: Windows reserves GATT
+     * 0xFFFD for its own WebAuthn stack and refuses every script
+     * (FINDING-windows-reserves-the-fido-service.md), so the only test is a
+     * browser doing a real ceremony. Untestable code that RESTARTS the
+     * advertisement is the wrong thing to have running underneath that test -
+     * an early version blinked it every six seconds, and a restart mid-
+     * ceremony ends the ceremony. The service already survives a JS reload by
+     * living in Held; this was belt and braces, and the braces were unproven.
+     */
+    if (WATCHDOG_ENABLED.not()) return
     if (Held.watchdogArmed) return
     Held.watchdogArmed = true
     val tick = object : Runnable {
@@ -1336,6 +1350,8 @@ class NativeFidoGattModule(
       UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
     /** How often the watchdog re-asks the radio. Short enough that a host retrying sees us. */
+    /** See armWatchdog(). Flip on only with a real ceremony to measure against. */
+    private const val WATCHDOG_ENABLED = false
     private const val WATCHDOG_MS = 6_000L
 
     const val STATE_IDLE = "idle"

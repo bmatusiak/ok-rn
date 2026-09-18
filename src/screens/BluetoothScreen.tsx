@@ -251,8 +251,19 @@ export function BluetoothScreen({
                   </View>
                   {h.connected ? (
                     <Text style={styles.connected}>connected</Text>
-                  ) : chosen ? (
+                  ) : chosen && published ? (
                     <Text style={styles.note}>connecting…</Text>
+                  ) : chosen ? (
+                    /*
+                     * "connecting…" was shown whenever a target was chosen and
+                     * the keyboard was not on it - including when the keyboard
+                     * was not published at all, where nothing is connecting
+                     * and nothing will. This row is about the KEYBOARD link;
+                     * the security key never shows as connected anywhere until
+                     * a browser is mid-ceremony, and saying "connecting…" here
+                     * sent people re-pairing to fix a link that was not broken.
+                     */
+                    <Text style={styles.note}>keyboard off</Text>
                   ) : null}
                 </Pressable>
               );
