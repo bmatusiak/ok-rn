@@ -130,7 +130,7 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
    * mode can land here without ever passing the login flow.
    */
   if (emu.device === 'uninitialized') {
-    return <SetupScreen />;
+    return <SetupScreen onPress={emu.press} led={emu.led} />;
   }
 
   /*

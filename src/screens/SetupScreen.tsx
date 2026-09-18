@@ -4,7 +4,7 @@ import OkEmu from '../transport/OkEmu';
 import {useActiveKey} from '../hooks/KeyContext';
 import {Logo} from '../ui/Logo';
 import {DuoPinForm} from '../ui/DuoPinForm';
-import {Btn} from '../ui/components';
+import {Btn, LedCircle} from '../ui/components';
 import {Keypad, PinDots} from '../ui/Keypad';
 import {theme} from '../ui/theme';
 
@@ -18,17 +18,25 @@ const MIN_PASSPHRASE = 25;
 /**
  * First-time setup: choosing the PIN a blank key will use, and what follows.
  *
- * THE DIGITS ARE NOT PRESSED ON THE DEVICE HERE, which is the difference from
- * the unlock pad. Unlocking is the device checking a PIN it already holds, so
- * every tap has to be a real button press. Setting one is a conversation: the
- * library walks a six-step bracket with the firmware - arm, send, store,
- * confirm, resend, commit - and sends the digits itself. So this pad only
- * collects them.
+ * EVERY DIGIT IS PRESSED ON THE DEVICE, exactly as on the unlock pad. This is
+ * the same act a person performs standing at a real key: a PIN is a sequence of
+ * button presses, entered once and then again, and the firmware commits when
+ * the two agree.
  *
- * It asks twice on purpose. The firmware's own confirm step is answered by the
- * library with the same digits it already sent, so a typo would be confirmed
- * against itself and committed happily. The only place a mistyped PIN can be
- * caught is here, before any of it starts.
+ * It did not used to be. This pad only COLLECTED digits, and the library sent
+ * them afterwards through device.setPin() - a six-step bracket that waits on
+ * "Enter PIN", "Storing PIN", "Confirm PIN" and "Both PINs Match", every one a
+ * Serial.println inside `#ifdef DEBUG`, writing the digits to IFACE.SEREMU.
+ * Both halves are compiled out of the firmware AS IT SHIPS, so setup worked on
+ * a development build and silently timed out on a production one, against a
+ * device behaving perfectly. See FINDING-provisioning-needs-a-debug-build.md.
+ * unlock() had already been moved onto real presses for this reason; setup was
+ * the half left behind.
+ *
+ * It still asks twice, but the second pass is no longer a local check - it is
+ * the firmware's own confirm step, pressed. So a typo is caught by the DEVICE,
+ * which is the only thing that can catch it once the first pass has been
+ * pressed into it, and the LED is how that verdict arrives.
  *
  * ## The rest of the wizard
  *
@@ -100,6 +108,8 @@ export function SetupScreen({
   mode = 'setup',
   only,
   onRestart,
+  onPress,
+  led,
 }: {
   onDone?: () => void;
   model?: 'classic' | 'duo';
@@ -108,6 +118,22 @@ export function SetupScreen({
   only?: Kind;
   /** In change mode, how to restart this key so config mode ends. */
   onRestart?: () => void;
+  /**
+   * Press a button ON THE DEVICE - the same function the unlock pad uses.
+   *
+   * Required for the reason in the header comment: a PIN is set by pressing
+   * it, and nothing else reaches a production firmware.
+   */
+  onPress: (button: number) => Promise<void> | void;
+  /**
+   * The key's own LED, packed 0x00RRGGBB per pixel.
+   *
+   * It is not decoration here, it is the ONLY progress this screen has. The
+   * firmware narrates setup through the light - it has no other channel on a
+   * production build - so what it is doing between the two passes, and whether
+   * it accepted them, is read off this and nowhere else.
+   */
+  led?: number[];
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -140,6 +166,17 @@ export function SetupScreen({
   const entered = stage === 'confirm' ? again : pin;
   const setEntered = stage === 'confirm' ? setAgain : setPin;
 
+  /*
+   * A TAP HERE PRESSES THE DEVICE'S BUTTON, exactly as the unlock pad does.
+   *
+   * It used to only collect digits into a string, because the library sent
+   * them afterwards over the debug console - and that console does not exist
+   * on a firmware built the way it ships, so setup simply never worked on a
+   * production build. See the header comment.
+   *
+   * The count kept here is for the dots and nothing else. What the firmware
+   * holds is the presses, and it is the firmware that compares the two passes.
+   */
   const press = useCallback(
     (button: number) => {
       if (entered.length >= MAX_PIN) {
@@ -147,10 +184,17 @@ export function SetupScreen({
       }
       setError(null);
       setEntered(entered + String(button));
+      void onPress(button);
     },
-    [entered, setEntered],
+    [entered, setEntered, onPress],
   );
 
+  /*
+   * THERE IS NO UNDOING A PRESS. The device has it; this only corrects what is
+   * drawn. Left in place because a miscount is worse than a wrong digit - the
+   * firmware rejects a PIN of the wrong length outright - but it is deliberately
+   * not called "delete", and the copy below says what it does.
+   */
   const back = useCallback(() => {
     setError(null);
     setEntered(entered.slice(0, -1));
@@ -187,7 +231,23 @@ export function SetupScreen({
         off = device.on('progress', (e: {step: string}) =>
           setSteps(prev => [...prev, e.step]),
         );
-        await device.setPin(digits, {kind});
+        /*
+         * NOTHING IS SENT HERE. Both passes were pressed on the device as they
+         * were typed, which is the whole of setting a PIN - the firmware
+         * compares them itself and commits when they agree.
+         *
+         * device.setPin() used to be called at this point and it is exactly
+         * what could not work: its six-step bracket waits on "Enter PIN",
+         * "Storing PIN", "Confirm PIN" and "Both PINs Match", every one a
+         * Serial.println inside `#ifdef DEBUG`, and it writes the digits to
+         * IFACE.SEREMU. Both are compiled out of a shipping firmware, so this
+         * waited ten seconds for a prompt that was never coming.
+         * See FINDING-provisioning-needs-a-debug-build.md.
+         *
+         * `digits` is kept only to confirm the two passes were the same length;
+         * the device is the authority on whether they matched.
+         */
+        void digits;
         setSet(prev => [...prev, kind]);
         advance(kind);
       } catch (e) {
@@ -421,6 +481,19 @@ export function SetupScreen({
         ) : null}
 
         <View style={styles.dots}>
+          {/*
+            * THE KEY'S OWN LIGHT, above the dots it is narrating.
+            *
+            * On a production firmware this is the only thing that reports
+            * progress - the prompts the library used to read are compiled out
+            * - so it is what tells someone the first pass landed and the
+            * device is waiting for the second.
+            */}
+          {led ? (
+            <View style={styles.ledRow}>
+              <LedCircle pixels={led} />
+            </View>
+          ) : null}
           <PinDots count={entered.length} max={MAX_PIN} />
         </View>
 
@@ -432,7 +505,7 @@ export function SetupScreen({
 
         <View style={styles.action}>
           <View style={styles.cell}>
-            <Btn title="Back" disabled={!entered.length} onPress={back} />
+            <Btn title="Fix count" disabled={!entered.length} onPress={back} />
           </View>
           <View style={styles.cell}>
             <Btn
@@ -483,6 +556,7 @@ const styles = StyleSheet.create({
 
   dots: {marginTop: 20, marginBottom: 20},
   pad: {width: '100%', maxWidth: 320},
+  ledRow: {alignItems: 'center', marginBottom: 12},
   action: {flexDirection: 'row', gap: 10, marginTop: 18, width: '100%', maxWidth: 320},
   cell: {flex: 1},
 

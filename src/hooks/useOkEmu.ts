@@ -68,6 +68,12 @@ const PIN_SETTLE_MS = 1200;
 
 const UNLOCK_GRACE_MS = 1500;
 
+/** Between two PIN digits, so the firmware sees two presses and not one long one. */
+const PRESS_GAP_MS = 180;
+
+/** Between the entering pass and the confirming pass. */
+const PASS_GAP_MS = 600;
+
 const IFACE_NAME: Record<number, string> = {
   [IFACE.KEYBOARD]: 'kbd',
   [IFACE.FIDO]: 'fido',
@@ -410,25 +416,52 @@ export function useOkEmu({log, autoStart = false}: Options) {
   }, [log]);
 
   /**
-   * Set a PIN.
+   * Set a PIN, BY PRESSING THE BUTTONS.
    *
-   * The six-step bracket, the one-line digit burst and the per-digit
-   * acknowledgement counting all live in the library now. This reports its
-   * progress: the library emits one event per transition, which is the only
-   * way to tell a device waiting for a button press from a wedged one.
+   * This used to call device.setPin(), and that only ever worked on a DEBUG
+   * firmware. The library's six-step bracket waits on prompts - "Enter PIN",
+   * "Storing PIN", "Confirm PIN", "Both PINs Match" - which are every one of
+   * them a Serial.println inside `#ifdef DEBUG` (okcore.cpp:894-897, :912-914,
+   * :963-965), and it sends the digits over IFACE.SEREMU, the debug console.
+   * Both halves are compiled out of the firmware as it ships, so setup on a
+   * production build sat waiting for a prompt that was never coming, against a
+   * device behaving perfectly.
+   * See FINDING-provisioning-needs-a-debug-build.md.
+   *
+   * A PIN IS A SEQUENCE OF BUTTON PRESSES. That is the entire input surface of
+   * the real device, it is how a person sets a PIN standing at one, and
+   * okemu_set_button() drives it on any build. unlock() was moved onto it for
+   * exactly this reason (see PinScreen); setup was left behind on the console.
+   *
+   * The firmware wants the PIN twice - enter, then confirm - and commits when
+   * the two agree. Nothing here reads a prompt to know that; whether it took
+   * is answered by what the device announces after the restart.
+   *
+   * The gap between presses is not politeness. touch_sense_loop() ends a press
+   * only after an idle scan, so two taps with no gap merge into ONE longer
+   * press - a different digit, or a gesture.
+   * See FINDING-holds-were-timed-against-a-counted-band.md.
    */
   const provision = useCallback(
     async (pin: string) => {
       setBusy(true);
-      let offProgress: (() => void) | undefined;
       try {
-        log('info', `provisioning with a ${pin.length}-digit PIN`);
-        const {device} = await getOnlyKey('embedded');
+        const digits = [...pin].map(Number);
+        if (digits.some(d => !Number.isInteger(d) || d < 1 || d > 6)) {
+          log('error', `provision: a PIN is buttons 1-6, not "${pin}"`);
+          return false;
+        }
+        log('info', `provisioning with a ${digits.length}-digit PIN`);
 
-        offProgress = device.on('progress', (e: {step: string}) =>
-          log('info', `  ${e.step}`),
-        );
-        await device.setPin(pin);
+        for (const pass of ['entering', 'confirming']) {
+          log('info', `  ${pass}`);
+          for (const digit of digits) {
+            await OkEmu.holdTicks(digit, PRESS_TICKS.TAP);
+            await new Promise<void>(resolve => setTimeout(() => resolve(), PRESS_GAP_MS));
+          }
+          /* Let the firmware finish one pass before the next begins. */
+          await new Promise<void>(resolve => setTimeout(() => resolve(), PASS_GAP_MS));
+        }
 
         /*
          * No restart here. `initialized` is only recomputed from flash in
@@ -437,15 +470,14 @@ export function useOkEmu({log, autoStart = false}: Options) {
          * so an in-process restart would start a second one alongside it.
          * Restart the app instead; flash.bin is file-backed and survives.
          */
-        log('info', 'PIN committed - restart the app to load it');
-        console.log('[softkey] PIN COMMITTED - restart the app to verify it persisted');
+        log('info', 'PIN entered twice - restart the app to load it');
+        console.log('[softkey] PIN ENTERED - restart the app to verify it persisted');
         return true;
       } catch (error) {
         log('error', `provision: ${String(error)}`);
         console.log(`[softkey] provision failed: ${String(error)}`);
         return false;
       } finally {
-        offProgress?.();
         setBusy(false);
       }
     },
