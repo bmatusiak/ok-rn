@@ -26,7 +26,10 @@ import {useCallback, useRef, useState} from 'react';
  * screens are the same act - someone typing a PIN on six buttons - so they are
  * now the same code, and a third caller cannot repeat the mistake.
  */
-export function usePressQueue(onPress: (button: number) => Promise<void> | void) {
+export function usePressQueue(
+  onPress: (button: number) => Promise<void> | void,
+  onPressRun?: (buttons: string) => Promise<void> | void,
+) {
   const queue = useRef<Promise<void>>(Promise.resolve());
 
   /**
@@ -66,5 +69,43 @@ export function usePressQueue(onPress: (button: number) => Promise<void> | void)
     [onPress],
   );
 
-  return {press, pending, working: pending > 0};
+  /**
+   * Enter a whole run of digits as ONE queued item.
+   *
+   * For a PIN the caller already holds - a biometric unlock replaying what is
+   * in the Keystore - where pressing them one at a time is N crossings of the
+   * bridge for a sequence that was never uncertain.
+   *
+   * It goes through the SAME chain as a tap, deliberately. A biometric unlock
+   * can overlap with someone reaching for the pad, and the firmware's PIN
+   * buffer cannot be cleared except by running it to its rollover - so the
+   * two must not interleave. Queued as one entry, the run is atomic against
+   * any tap before or after it.
+   *
+   * Falls back to pressing digit by digit when no run handler was given, so a
+   * caller that has not been wired for it still works.
+   */
+  const pressRun = useCallback(
+    (buttons: string) => {
+      const digits = [...buttons].filter(c => c >= '1' && c <= '6').join('');
+      if (!digits) return;
+
+      if (!onPressRun) {
+        for (const c of digits) press(Number(c));
+        return;
+      }
+
+      setPending(n => n + digits.length);
+      queue.current = queue.current
+        .then(() => onPressRun(digits))
+        .then(
+          () => {},
+          () => {},
+        )
+        .then(() => setPending(n => n - digits.length));
+    },
+    [onPressRun, press],
+  );
+
+  return {press, pressRun, pending, working: pending > 0};
 }

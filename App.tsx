@@ -593,6 +593,7 @@ function Shell() {
           ) : phase === 'pin' ? (
             <PinScreen
               onPress={emu.press}
+              onPressRun={emu.pressRun}
               canPress={emu.canPress}
               model={emu.model}
               settling={emu.settling}

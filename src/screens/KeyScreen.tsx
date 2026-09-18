@@ -162,7 +162,7 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         showsVerticalScrollIndicator={false}>
         <KeySource keys={keys} />
         <View style={styles.locked}>
-          <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} led={keys.backend === 'embedded' ? emu.led : undefined} />
+          <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} led={keys.backend === 'embedded' ? emu.led : undefined} />
         </View>
       </ScrollView>
     );

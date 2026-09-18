@@ -576,7 +576,7 @@ export function KeysScreen({
           checking={checking}
           purpose="load keys"
         />
-        <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
+        <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
       </ScrollView>
     );
   }

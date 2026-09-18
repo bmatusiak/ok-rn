@@ -51,6 +51,7 @@ const PICK_OPTIONS: readonly KeyPick[] = ['Hard key', 'Soft Key'];
 
 export function PinScreen({
   onPress,
+  onPressRun,
   onBack,
   busy = false,
   canPress = true,
@@ -83,6 +84,13 @@ export function PinScreen({
   /** Why a press would be dropped right now (useKey / useOkEmu.settling), or null. */
   settling?: string | null;
   onPress: (button: number) => Promise<void> | void;
+  /**
+   * Enter a whole PIN at once, for the biometric unlock.
+   *
+   * Optional: without it the digits go in one at a time, which still works and
+   * is what a caller that has not been wired for it gets.
+   */
+  onPressRun?: (buttons: string) => Promise<void> | void;
   onBack?: () => void;
   busy?: boolean;
   /**
@@ -131,7 +139,7 @@ export function PinScreen({
   );
 
   /* The queue lives in usePressQueue now; setup needed the same code. */
-  const {press} = usePressQueue(onPress);
+  const {press, pressRun} = usePressQueue(onPress, onPressRun);
 
 
   /*
@@ -194,12 +202,15 @@ export function PinScreen({
         'Unlock your OnlyKey',
         'Your PIN is stored on this phone behind your biometric.',
       );
-      for (const ch of pin) {
-        const button = Number(ch);
-        if (Number.isInteger(button) && button >= 1 && button <= 6) {
-          press(button);
-        }
-      }
+      /*
+       * The whole PIN as ONE queued run. It used to go in digit by digit,
+       * which was right when every press was a sensed ~855ms and the queue's
+       * pacing was the only thing keeping them from merging. The presses are
+       * handed to the firmware now, so there is nothing to merge and nothing
+       * to pace - and this is a PIN we already hold in full, so sending it as
+       * seven separate crossings was seven chances to interleave with a tap.
+       */
+      pressRun(pin);
     } catch (e) {
       /*
        * The enrolment case is not a retry. The key is destroyed on purpose
@@ -215,7 +226,7 @@ export function PinScreen({
     } finally {
       setBioBusy(false);
     }
-  }, [press]);
+  }, [pressRun]);
 
   return (
     <View style={styles.root}>

@@ -259,7 +259,7 @@ export function PreferencesScreen({
           checking={checking}
           purpose="change a PIN"
         />
-        <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
+        <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
       </ScrollView>
     );
   }

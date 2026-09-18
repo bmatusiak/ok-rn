@@ -531,7 +531,7 @@ export function BackupScreen({
                 purpose="set a backup passphrase"
               />
               {configMode ? (
-                <PinScreen onPress={emu.press} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
+                <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
               ) : null}
             </>
           ) : (
