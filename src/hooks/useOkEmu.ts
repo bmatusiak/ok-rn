@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState} from 'react-native';
 import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
-import OkEmu, {DIR, IFACE, PRESS_TICKS, type Iface} from '../transport/OkEmu';
+import OkEmu, {DIR, IFACE, PRESS_TICKS, bandFor, type Iface} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
 import {buildInfo} from '../buildInfo';
 
@@ -77,6 +77,42 @@ const UNLOCK_GRACE_MS = 1500;
  * over as a finished duration and will not hand over the next until the loop
  * has taken the last.
  */
+
+/*
+ * THE CLOCK DECIDES THE BAND; THE BAND IS WHAT GETS SENT.
+ *
+ * Not the measured count. How long a finger was down is an analogue thing with
+ * a JS interval's jitter on top, and the firmware does not care about the
+ * number - it cares which side of 20 and 72 the number falls on. So the
+ * elapsed time is read for its BAND and the canonical duration for that band
+ * goes to the firmware. A press meant as a slot read cannot arrive as 71 ticks
+ * because a timer fired late, and one meant as a gesture cannot arrive as 70
+ * and quietly type a password instead.
+ */
+
+/** checkKey() runs at `#define TIME_POLL 50`, so the firmware counts at this rate. */
+const HOLD_TICK_MS = 50;
+
+/*
+ * Past REJECTED the firmware stops banding a press and refuses it outright, so
+ * the counter stops one tick short. Holding longer does nothing - it does not
+ * creep into the rejected band and it does not send twice.
+ */
+const HOLD_CEILING = PRESS_TICKS.REJECTED - 1;
+
+/**
+ * What each band is worth once it is the firmware's turn to read it.
+ *
+ * Three bands are reachable by holding: a tap types slot N, a hold types slot
+ * N+6 (the b profile), and a gesture stops typing and does something - backup
+ * on 1, labels on 2, lock on 3, config mode on 6. bandFor's fourth answer,
+ * 'rejected', is not a band anyone can ask for: HOLD_CEILING stops below it.
+ */
+const BAND_TICKS: Record<string, number> = {
+  tap: PRESS_TICKS.TAP,
+  hold: PRESS_TICKS.HOLD,
+  gesture: PRESS_TICKS.GESTURE,
+};
 
 const IFACE_NAME: Record<number, string> = {
   [IFACE.KEYBOARD]: 'kbd',
@@ -701,12 +737,28 @@ export function useOkEmu({log, autoStart = false}: Options) {
   }, [device, pressTick, log]);
 
   /*
-   * A held press, with the count the firmware is actually seeing.
+   * A held press: the finger is timed here, and the press is handed over once.
    *
-   * Armed at one tick BELOW the gesture band rather than held open, so the
-   * ceiling is enforced by the emulator instead of by the user letting go in
-   * time. Holding past the end of the counter does nothing at all; there is
-   * no path from this control to backup() or CPU_RESTART().
+   * WHAT CHANGED. This used to arm a real sensed press for 89 ticks up front
+   * and then poll buttonTicksLeft() to draw the counter, cancelling on
+   * release. That was the only way to get a live count while the firmware was
+   * doing the counting - but it put the trigger in the wrong place twice.
+   *
+   * It fired at the ceiling, not on release. touch_sense_loop() dispatches on
+   * `(key_press > 0) && (key_off > 2)` - after the button has been LET GO for
+   * two idle rounds - so on a key in your hand a gesture happens when you stop
+   * holding. Armed at 89 it happened AT 89, with the finger still down.
+   *
+   * And the count it reported was not quite the count it sent: endHold read
+   * buttonTicksLeft() and then released, two JNI calls apart, so the band in
+   * the log could differ from the band that was dispatched.
+   *
+   * Now the interval below is the clock - one tick per TIME_POLL, the rate the
+   * firmware itself counts at, so the counter climbs exactly as it did - and
+   * the press goes in on release as ONE pressQueue call carrying the duration
+   * that was actually shown. key_press IS what payload() bands on, so a hold
+   * past 72 still reaches backup() on 1, lock on 3 and config mode on 6,
+   * exactly as a held finger does.
    *
    * The counter is what the LED is on hardware: the only way to tell which
    * band a press is in while it is still happening.
@@ -723,72 +775,82 @@ export function useOkEmu({log, autoStart = false}: Options) {
     }
   }, []);
 
+  /**
+   * When the finger went down, and the tick count derived from it.
+   *
+   * THE CLOCK IS THE WALL, NOT THE INTERVAL. Counting how many times a
+   * setInterval fired looked equivalent and was not: React Native's timers run
+   * late under load, and a hold measured that way came out ~30% short - a
+   * four-second press on a 50ms interval counted 60 ticks rather than 80, so
+   * the gesture band sat at nearly five seconds of holding instead of 3.6 and
+   * the counter disagreed with the firmware it was supposed to be mirroring.
+   *
+   * Elapsed time divided by TIME_POLL cannot drift that way. The interval is
+   * now only there to repaint.
+   */
+  const holdStartedAt = useRef(0);
+  const heldTicks = useRef(0);
+
   const beginHold = useCallback(
-    async (button: number) => {
-      try {
-        /*
-         * A HOLD REACHES THE GESTURE BAND. It used to arm at GESTURE - 1, one
-         * tick short, so no hold from this keypad could ever fire one - button
-         * 3 held for five seconds counted to 71 and did nothing, which is not
-         * what the key in your hand does.
-         *
-         * Armed one tick below REJECTED instead: past 90 the firmware stops
-         * banding the press and rejects it, so that is the ceiling worth
-         * having. Between 72 and 89 the gesture fires - backup on 1, lock on
-         * 3, config mode on 6 - exactly as it would on hardware.
-         */
-        const armed = PRESS_TICKS.REJECTED - 1;
-        /*
-         * `allowGesture` IS REQUIRED HERE, and leaving it off is what made the
-         * counter invisible. setButtonTicks refuses any count at or past
-         * GESTURE unless the caller asks for it (OkEmu.ts:205) - a slot read
-         * never wants one by accident. Arming at 89 put this call in that
-         * range, so it rejected before setPressTicks ran and a held button
-         * showed nothing at all while still highlighting under the finger.
-         *
-         * A finger on a pad is the one caller that does mean it: the band is
-         * the point of the control.
-         */
-        await OkEmu.setButtonTicks(button, armed, {allowGesture: true});
-        setPressTicks({button, ticks: 0});
-        stopPolling();
-        holdPoll.current = setInterval(async () => {
-          try {
-            const left = await OkEmu.buttonTicksLeft(button);
-            setPressTicks({button, ticks: armed - left});
-            if (left <= 0) stopPolling();
-          } catch {
-            stopPolling();
-          }
-        }, 60);
-      } catch (error) {
-        log('error', `button ${button}: ${String(error)}`);
-      }
+    (button: number) => {
+      /*
+       * NOTHING IS SENT YET. The finger is only being timed - the press goes
+       * in once, on release, which is also when the firmware would dispatch
+       * it: touch_sense_loop() waits for `key_off > 2` before it reads a
+       * press at all, so on a key in your hand a gesture happens when you
+       * stop holding, not part-way through.
+       */
+      stopPolling();
+      holdStartedAt.current = Date.now();
+      heldTicks.current = 0;
+      setPressTicks({button, ticks: 0});
+      holdPoll.current = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - holdStartedAt.current) / HOLD_TICK_MS);
+        heldTicks.current = Math.min(elapsed, HOLD_CEILING);
+        setPressTicks({button, ticks: heldTicks.current});
+        /* Nothing left to draw once the ceiling is reached. */
+        if (heldTicks.current >= HOLD_CEILING) stopPolling();
+      }, HOLD_TICK_MS);
     },
-    [log, stopPolling],
+    [stopPolling],
   );
 
   const endHold = useCallback(
     async (button: number) => {
       stopPolling();
+      /*
+       * Read from the clock rather than from the last repaint, which can be up
+       * to one interval stale - a release landing between firings would
+       * otherwise lose a tick, and at a boundary that is a whole band.
+       */
+      const held = Math.min(
+        Math.floor((Date.now() - holdStartedAt.current) / HOLD_TICK_MS),
+        HOLD_CEILING,
+      );
+      setPressTicks(null);
       try {
         /*
-         * Cancels the counted hold as well as releasing the pad. The armed
-         * count MUST match beginHold's or the subtraction below reports a
-         * band that never happened - it read GESTURE - 1 while beginHold
-         * armed at REJECTED - 1, eighteen ticks apart.
+         * THE BAND THE COUNTER WAS SHOWING IS THE BAND THAT GOES IN.
+         *
+         * bandFor() is the library's, the same one the suites and the hard-key
+         * path read, so this cannot drift from the firmware's boundaries by a
+         * tick. The ceiling keeps `held` under REJECTED, so 'rejected' is not
+         * reachable from here and a hold that long is simply a gesture.
+         *
+         * `allowGesture` is set because this control is the one place it is
+         * meant: a finger deliberately held past 72 is asking for the backup
+         * on 1, the lock on 3 or config mode on 6. Everywhere else the default
+         * refusal stands.
          */
-        const armed = PRESS_TICKS.REJECTED - 1;
-        const left = await OkEmu.buttonTicksLeft(button);
-        await OkEmu.setButton(button, false);
-        const held = armed - left;
-        const band =
-          held <= 20 ? 'tap' : held < PRESS_TICKS.GESTURE ? 'hold' : 'gesture';
-        log('info', `button ${button} held ${held} ticks (${band})`);
+        const band = bandFor(held);
+        const ticks = BAND_TICKS[band] ?? PRESS_TICKS.TAP;
+        await OkEmu.pressQueue(String(button), ticks, {allowGesture: true});
+        lastPressAt.current = Date.now();
+        setPressTick(t => t + 1);
+        log('info', `button ${button} held ${held} ticks — sent as ${band}`);
       } catch (error) {
         log('error', `button ${button}: ${String(error)}`);
       }
-      setPressTicks(null);
     },
     [log, stopPolling],
   );

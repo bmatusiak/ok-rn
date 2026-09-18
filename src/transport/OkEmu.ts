@@ -51,6 +51,9 @@ type Listener<K extends keyof OkEmuEvents> = OkEmuEvents[K];
  * Re-exported rather than re-imported at each call site, so nothing else moves.
  */
 export const PRESS_TICKS = device.press.PRESS_TICKS;
+/** Which band a count falls in: 'tap', 'hold', 'gesture' or 'rejected'. */
+export const bandFor: (ticks: number) => 'tap' | 'hold' | 'gesture' | 'rejected' =
+  device.press.bandFor;
 const RELEASE_ROUNDS = device.press.RELEASE_ROUNDS;
 
 
