@@ -27,6 +27,8 @@ type Staged = {
   /** 'duo' or 'classic' - which model the staged firmware reports as. */
   model?: string | null;
   stagedAt?: string;
+  /** True when staged from an unpinned tree - see stage.js. */
+  unreleased?: boolean;
 };
 
 /*
@@ -62,6 +64,16 @@ export type BuildInfo = {
   edition: string | null;
   /** 'duo' or 'classic'. A DUO is a different device, not a setting. */
   model: string;
+  /**
+   * Whether this firmware is AHEAD of every release rather than being one.
+   *
+   * Read from `staged` DIRECTLY, never from `version === null` above: that
+   * field is coalesced with `?? null`, and `staged` is `{}` when the
+   * generated file is missing - so "working tree" and "never staged" would
+   * be indistinguishable. A build with no metadata must not claim to be an
+   * unreleased tree and switch on features that may not be there.
+   */
+  unreleased: boolean;
 };
 
 export const buildInfo: BuildInfo = {
@@ -76,6 +88,7 @@ export const buildInfo: BuildInfo = {
   production: staged.production === true,
   edition: staged.edition ?? null,
   model: staged.model === 'duo' ? 'duo' : 'classic',
+  unreleased: staged.unreleased === true,
   builtFor: '',
 };
 

@@ -47,6 +47,7 @@ const {pressDigits} = require('./helpers/pressDigits');
 const {device: deviceLib} = require('node-onlykey-lib');
 
 const OkEmuModule = require('../src/transport/OkEmu');
+const {buildInfo} = require('../src/buildInfo');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 
 const {KEY_TYPE} = deviceLib.keys;
@@ -125,7 +126,17 @@ async function ready(log) {
     log(`unlocked: ${String(state.status).trim()}`);
   }
 
-  const caps = deviceLib.version.capabilities(String(state.status).trim());
+  /*
+   * THE HINT, or this suite skips itself on a production working tree.
+   *
+   * Its first test gates the whole suite on `postQuantum`, and a working tree
+   * built with OKEMU_PRODUCTION=1 reports v3.0.4-prodc - indistinguishable on
+   * the wire from the release, which has none. Without this the run reports
+   * green while exercising nothing, which is the worst answer available.
+   */
+  const caps = deviceLib.version.capabilities(String(state.status).trim(), {
+    unreleased: buildInfo.unreleased,
+  });
   shared = {device, caps, configMode: false, generated: null, stored: null};
   return shared;
 }

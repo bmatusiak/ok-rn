@@ -1331,6 +1331,23 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel) {
      * not report it as one. src/buildInfo.ts turns this into the storage slot.
      */
     version: release.pins ? release.version : null,
+    /**
+     * Whether this build is AHEAD of every release, rather than being one.
+     *
+     * The same fact as `version: null`, named so a caller does not have to
+     * infer provenance from an absence - and, more importantly, so it can be
+     * told apart from "no staging metadata at all". buildInfo coalesces a
+     * missing file to `{}`, where `version` would also read null; an explicit
+     * flag lets that case default to "released" rather than claim to be an
+     * unreleased tree and switch on features that may not exist.
+     *
+     * It exists because the wire cannot answer this. The firmware's version
+     * macros have read 3/0/4 since 2022, so a working tree built as production
+     * reports v3.0.4-prodc - byte-identical to the release it is ahead of,
+     * while carrying post-quantum work no release has. The build keyword used
+     * to separate the two lines and no longer can.
+     */
+    unreleased: !release.pins,
     production: !debugOn,
     /**
      * 'standard' or 'travel'. The IN TRVL edition compiles out set_private,

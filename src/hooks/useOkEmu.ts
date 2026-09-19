@@ -207,7 +207,20 @@ export function useOkEmu({log, autoStart = false}: Options) {
           setDevice('unlocked');
           const info = device_.version.parseStatus(String(parsed.raw));
           setIdentity(info);
-          setCapabilities(device_.version.capabilities(info));
+          setCapabilities(
+            device_.version.capabilities(info, {
+              /*
+               * THE SOFT KEY'S FIRMWARE IS OURS, so the app knows what the
+               * wire cannot say: whether this build is ahead of every
+               * release. A working tree built as production reports
+               * v3.0.4-prodc, byte-identical to the release, and without
+               * this the post-quantum sections fade on firmware that has
+               * them. useHardKey must NOT pass it - the app did not stage
+               * that firmware and knows nothing about its tree.
+               */
+              unreleased: buildInfo.unreleased,
+            }),
+          );
           setVersion(info.version ?? '');
         } else if (parsed.state === 'uninitialized') {
           setDevice('uninitialized');
@@ -724,7 +737,20 @@ export function useOkEmu({log, autoStart = false}: Options) {
         setDevice('unlocked');
         const info = device_.version.parseStatus(status);
         setIdentity(info);
-        setCapabilities(device_.version.capabilities(info));
+        setCapabilities(
+            device_.version.capabilities(info, {
+              /*
+               * THE SOFT KEY'S FIRMWARE IS OURS, so the app knows what the
+               * wire cannot say: whether this build is ahead of every
+               * release. A working tree built as production reports
+               * v3.0.4-prodc, byte-identical to the release, and without
+               * this the post-quantum sections fade on firmware that has
+               * them. useHardKey must NOT pass it - the app did not stage
+               * that firmware and knows nothing about its tree.
+               */
+              unreleased: buildInfo.unreleased,
+            }),
+          );
         setVersion(info.version ?? '');
       } catch {
         /* Still locked, or busy. The broadcast remains the primary signal. */
