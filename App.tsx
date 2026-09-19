@@ -342,6 +342,51 @@ function Shell() {
   }, [configMode, emu.device]);
 
   /*
+   * SWITCHING TO THE HARD KEY WHILE IN CONFIG MODE RESTARTS THE APP.
+   *
+   * `configMode` is one app-wide flag and it describes the SOFT key, while
+   * `emu` is whichever key is ACTIVE. The moment the hard key becomes active
+   * the app would be carrying a belief about one device onto another: graying
+   * what works and offering what does not.
+   *
+   * Clearing the flag instead would be worse. The soft key really IS still in
+   * config mode - the firmware assigns `configmode` in exactly two places, the
+   * boot initializer and the button-6 gesture, with no `configmode = false`
+   * anywhere - and it cannot boot in place, because the emulator thread only
+   * exits through the AIRCR trap. A new process resolves both, and restarting
+   * is what the panel has been saying all along.
+   *
+   * ON THE ACTIVE BACKEND, NOT ON ATTACHMENT, and the difference matters. An
+   * earlier version fired when `keys.attached` became true; useKey.ts:258
+   * resolves `override > (auto && attached) > embedded`, so in manual mode or
+   * with an 'embedded' override a plugged-in key leaves the soft key active -
+   * and that version threw the session away for a switch that never happened.
+   * In auto mode with no override, inserting a key IS switching to it, which
+   * is the case this is for.
+   *
+   * Launch is not a switch: `backend` starts 'embedded', so a key already
+   * attached produces embedded -> usb on the first poll - but the state is OFF
+   * at launch, so nothing fires. The guard is the flag, not the edge.
+   */
+  const previousBackend = useRef(keys.backend);
+  useEffect(() => {
+    const becameHard =
+      previousBackend.current !== 'usb' && keys.backend === 'usb';
+    previousBackend.current = keys.backend;
+    if (!becameHard || configMode === OFF) return;
+    /*
+     * THE ONLY AUTOMATIC RESTART IN THE APP - every other caller is a button
+     * somebody pressed. It kills this process and relaunches, so it says why
+     * on the way out; a screen that vanishes with no explanation reads as a
+     * crash.
+     */
+    console.log(
+      `[app] switched to the hard key at config state ${configMode} - restarting`,
+    );
+    void OkEmu.restartApp();
+  }, [keys.backend, configMode]);
+
+  /*
    * Ask whether the PIN went back in, because the key will not say.
    *
    * OKGETLABELS is on the config-mode allowlist (okcore.cpp:334 in every
