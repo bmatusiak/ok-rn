@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {ScrollView, StyleSheet, Text, View} from 'react-native';
+import {ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import OkEmu from '../transport/OkEmu';
 import {theme} from '../ui/theme';
@@ -34,6 +34,8 @@ const TEST_PIN = '1234561';
  * changes meaning underneath you.
  */
 export function TestingScreen({
+  configMode,
+  setConfigMode,
   emu,
   hard,
   active,
@@ -43,12 +45,15 @@ export function TestingScreen({
   clearUsb,
 }: {
   /**
-   * What the APP believes about config mode, and how to change it.
+   * The app's config-mode flag, and the only way to change it.
    *
-   * The key never reports this - entering config mode only locks the device -
-   * so the belief is set here rather than read from anywhere. This switch is
-   * how it gets set while the flow is being built.
+   * Not a reading of the key and not pretending to be one - see App.tsx. It is
+   * here because this is a developer tab and the flag is being rebuilt from
+   * nothing: a switch, so the banner and whatever gets attached to it later
+   * can be seen working before any of it depends on a device.
    */
+  configMode: boolean;
+  setConfigMode: (on: boolean) => void;
   emu: EmuSession;
   /** The hard key, for the one bench operation this tab offers on it. */
   hard: HardKeySession;
@@ -90,6 +95,36 @@ export function TestingScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      {/*
+        THE ONLY WRITER IN THE APP, and it is behind testing mode.
+
+        Config mode decides which features the app offers - things usable in
+        it, things not. Nothing is attached yet; this turns the flag on so the
+        banner and, later, each feature put behind it can be watched working
+        before any of it depends on a key.
+
+        Deliberately NOT a claim about the device. The version removed in
+        98f8760 had a switch here too, and its note explained how the KEY
+        enters config mode - which made this look like a mirror of the
+        hardware while being nothing of the sort.
+      */}
+      <Section title="Config mode">
+        <View style={styles.row}>
+          <View style={styles.cell}>
+            <Text style={styles.note}>
+              {configMode
+                ? 'The app is in config mode.'
+                : 'The app is not in config mode.'}
+            </Text>
+          </View>
+          <Switch value={configMode} onValueChange={setConfigMode} />
+        </View>
+        <Text style={styles.note}>
+          The app's own flag. It shows the banner and nothing else — no feature
+          reads it yet, and the key is neither asked nor told.
+        </Text>
+      </Section>
+
       {/*
         "Soft Key firmware", not "Firmware". Both keys run firmware, and this
         panel can only ever be about one of them.

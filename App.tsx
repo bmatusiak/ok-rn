@@ -300,6 +300,24 @@ function Shell() {
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
 
+  /*
+   * CONFIG MODE — step one of putting it back, and it is the APP'S OWN FLAG.
+   *
+   * The idea it serves: config mode decides which features the app offers.
+   * Some things can be used in it, some cannot. That is what it is for.
+   *
+   * At THIS step it decides nothing. Nothing reads it, nothing is gated, no
+   * device is asked about it. It can be switched in testing mode and it shows
+   * a banner. That is the whole of it, deliberately.
+   *
+   * IT IS NOT A READING OF THE KEY, and the comment that used to sit here said
+   * it was. The version removed in 98f8760 carried a flag four different things
+   * could set, interpreted by six screens, none of which agreed - and on a
+   * production hard key one tap turned it all on with the key untouched. So
+   * this one claims nothing it cannot back up: it is a switch with a light on
+   * it, and each thing it controls gets attached on purpose, one at a time.
+   */
+  const [configMode, setConfigMode] = useState(false);
 
   const [tab, setTab] = useState<Tab>('This Key');
 
@@ -470,6 +488,21 @@ function Shell() {
             <Text style={styles.testingText}>
               Testing mode — PIN bypassed, developer tools shown
             </Text>
+          </View>
+        ) : null}
+
+        {/*
+          TWO WORDS, and that is the point.
+
+          The banner this replaces said the key would not sign or type and that
+          only a restart would end it. Neither is something an app flag knows,
+          and saying it anyway is how the old one came to describe a key nobody
+          had touched. Consequences get added to this line as features are
+          actually put behind the flag - never in advance of them.
+        */}
+        {configMode ? (
+          <View style={styles.configBanner}>
+            <Text style={styles.configBannerText}>Config mode</Text>
           </View>
         ) : null}
 
@@ -652,9 +685,8 @@ function Shell() {
               Start button over a device that cannot be started.
             */
             <TestingScreen
-             
-             
-             
+              configMode={configMode}
+              setConfigMode={setConfigMode}
               emu={keys.soft}
               hard={keys.hard}
               active={keys.key}
@@ -751,6 +783,17 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(252, 211, 77, 0.10)',
   },
   testingText: {color: theme.warn, fontSize: 11, fontWeight: '600'},
+  /* The testing banner's shape in the error colour, as it was before. */
+  configBanner: {
+    marginHorizontal: 16,
+    marginBottom: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: theme.radius,
+    borderWidth: 1,
+    borderColor: theme.error,
+  },
+  configBannerText: {color: theme.error, fontSize: 12, fontWeight: '600'},
 
   prompt: {
     flexDirection: 'row',
