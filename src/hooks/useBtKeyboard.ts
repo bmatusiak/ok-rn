@@ -465,6 +465,21 @@ export function useBtKeyboard(): BtKeyboard {
       setChosenHost(address);
       if (address === null) {
         await AsyncStorage.removeItem(HOST_KEY);
+        /*
+         * AND DROP THE LINK. Forgetting the preference used to be all this
+         * did, so the panel said "nothing is targeted" while the HID
+         * connection stayed up and the key went on typing at that computer.
+         *
+         * That is not a cosmetic disagreement. The same panel says
+         * "Everything <key> types goes to NITRO16", so someone choosing None
+         * to STOP typing at a machine was told it had worked when it had not -
+         * and the next slot they pressed went there anyway.
+         *
+         * Release first, for the same reason withdraw() does: a modifier held
+         * when the link goes is a modifier stuck down on the host.
+         */
+        await NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+        await NativeBtKeyboard.disconnect().catch(() => {});
         return;
       }
       await AsyncStorage.setItem(HOST_KEY, address);

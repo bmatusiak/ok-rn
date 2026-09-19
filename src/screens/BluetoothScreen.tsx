@@ -102,15 +102,18 @@ export function BluetoothScreen({
   );
 
   /*
-   * CHOOSING "NONE" FORGETS THE TARGET, AND NOTHING ELSE.
+   * CHOOSING "NONE" FORGETS THE TARGET AND DROPS THE LINK.
    *
-   * It used to stand both features down, because the switches were disabled
+   * It used to stand both FEATURES down, because the switches were disabled
    * without a target and a feature left on under "None" would have been
-   * running behind a control that could no longer turn it off. Neither half
-   * of that is true now: the switches are IO and always reachable, and
-   * presence follows the radio. A keyboard with no target simply has nobody
-   * connected to type to, which is a state the panel can say plainly instead
-   * of a state that had to be prevented.
+   * running behind a control that could no longer turn it off. That is no
+   * longer true - the switches are IO and always reachable, and presence
+   * follows the radio - so the features are left alone.
+   *
+   * The CONNECTION is a different question, and forgetting the preference
+   * while leaving it up was wrong: the panel read "nothing is targeted" while
+   * the key went on typing at the computer just deselected. See
+   * useBtKeyboard.chooseHost, which now releases and disconnects.
    */
   const setTarget = useCallback(
     async (address: string | null) => {
