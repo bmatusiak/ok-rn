@@ -279,8 +279,36 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
        * Asked once the device is answering, and BEFORE anything needs it.
        * Unlocking is the first thing that will, and it cannot wait for a
        * version that only arrives after unlocking.
+       *
+       * ## This must never fail the connection
+       *
+       * It used to be a bare `await` in this try block, so on a PRODUCTION
+       * hard key - which has no SEREMU interface at all - the write threw,
+       * the throw skipped `return result`, and connect() answered null after
+       * an OKCONNECT that had plainly succeeded. The log said
+       * "OKCONNECT failed: write to seremu failed on usb" about a message that
+       * worked, and the app lost a key that was sitting there unlocked.
+       *
+       * The probe is INFORMATIONAL - it decides whether presses can be driven
+       * over the console - so its failure is an answer ("no console"), not an
+       * error. Hence its own try, and `return result` outside it.
+       *
+       * Skipped outright when the build has already said it has no console:
+       * `-prod` firmware is compiled without SEREMU, so probing it is a write
+       * into an interface that does not exist. debugConsole is null on a build
+       * that has not said, and there the probe is still the way to find out.
        */
-      const answers = await dev.consoleAnswers();
+      let answers = false;
+      try {
+        const caps = device_.version.capabilities(
+          device_.version.parseStatus(String(result?.status ?? '')),
+        );
+        answers =
+          caps.debugConsole === false ? false : await dev.consoleAnswers();
+      } catch (e) {
+        answers = false;
+        log('info', `console probe did not answer: ${String(e)}`);
+      }
       setConsoleAnswers(answers);
       log('info', `console ${answers ? 'answers' : 'is write-only'}`);
       console.log(`[hardkey] console ${answers ? 'answers' : 'is write-only'}`);

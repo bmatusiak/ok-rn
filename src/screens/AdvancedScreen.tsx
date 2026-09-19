@@ -150,7 +150,22 @@ export function AdvancedScreen({
         if (!alive) return;
         setDetected(device.detectedType ?? null);
         setOverride(device.deviceType ?? null);
-        setAnswers(await device.consoleAnswers());
+        /*
+         * NOT PROBED WHEN THE BUILD HAS SAID IT HAS NO CONSOLE.
+         *
+         * consoleAnswers() writes a byte to SEREMU, and `-prod` firmware is
+         * compiled without that interface - so on a production hard key this
+         * wrote into something that does not exist, every time the tab was
+         * opened. Opening a tab should not poke a key at all, let alone an
+         * interface it does not have.
+         *
+         * debugConsole is null on a build that has not said which it is, and
+         * there the probe is still the only way to find out.
+         */
+        const caps = device.capabilities;
+        setAnswers(
+          caps?.debugConsole === false ? false : await device.consoleAnswers(),
+        );
       } catch {
         if (alive) setAnswers(false);
       }
