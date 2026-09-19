@@ -36,7 +36,7 @@
 import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section} from '../ui/components';
-import {NOT_IN_CONFIG_MODE} from '../ui/configModeNotes';
+import {NOT_IN_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
 import {theme} from '../ui/theme';
 import {protocol, device as deviceLib} from 'node-onlykey-lib';
 import {useFidoAdmin} from '../hooks/useFidoAdmin';
@@ -101,7 +101,7 @@ export function PasskeysScreen({
    * panel rather than by wrapping the tab, so one that stops being CTAPHID
    * later does not gray by inheritance.
    */
-  configMode: boolean;
+  configMode: ConfigState;
 }) {
   const keyName = useKeyName();
   const unlocked = emu.device === 'unlocked';
@@ -320,7 +320,7 @@ export function PasskeysScreen({
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
       <Section title={`Passkeys — ${keyName}`}
-        unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
+        unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
         <Text style={styles.body}>
           The resident credentials this key carries: one per account that chose
           to keep its key on the device rather than on the site. The key holds
@@ -360,7 +360,7 @@ export function PasskeysScreen({
 
       {fido && pinSet ? (
         <Section title="Unlock with the PIN"
-          unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
+          unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
           <Text style={styles.note}>
             This is the security-key PIN, not the one that unlocks the key
             itself. They are different PINs and this one is far less forgiving.
@@ -392,7 +392,7 @@ export function PasskeysScreen({
 
       {fido && pinSet === false ? (
         <Section title="Set a security-key PIN"
-          unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
+          unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
           <Text style={styles.body}>
             This key has none, so nothing can list or manage its passkeys.
             Setting one costs no attempts — there is no current PIN to be
@@ -439,7 +439,7 @@ export function PasskeysScreen({
 
       {fido && pinSet ? (
         <Section title="Change the security-key PIN"
-          unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
+          unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
           <Text style={styles.note}>
             The current PIN is checked, so getting it wrong SPENDS ONE of the
             attempts above. The new one replaces it everywhere at once.
@@ -484,7 +484,7 @@ export function PasskeysScreen({
 
       {info ? (
         <Section title="What this authenticator says it is"
-          unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
+          unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
           <Text style={styles.note}>
             Straight from the key's own getInfo, which is the first thing any
             browser asks it. Read once when connecting; it costs nothing.
@@ -500,7 +500,7 @@ export function PasskeysScreen({
 
       {token ? (
         <Section title="What is on the key"
-          unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
+          unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
           <Btn
             title={busy === 'list' ? 'Reading…' : 'List the passkeys'}
             tone="primary"
@@ -563,7 +563,7 @@ export function PasskeysScreen({
 
       {fido ? (
         <Section title="Reset the security-key side"
-          unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
+          unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
           <Text style={styles.body}>
             This erases every passkey on the key and unsets the security-key
             PIN. Each account that trusted this key stops recognising it, and

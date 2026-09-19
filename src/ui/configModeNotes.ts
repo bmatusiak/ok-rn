@@ -22,3 +22,32 @@ export const NEEDS_CONFIG_MODE = 'Needs config mode';
 
 /** Grayed because config mode is ON and the firmware refuses this in it. */
 export const NOT_IN_CONFIG_MODE = 'Not while in config mode';
+
+/*
+ * THE FOUR STATES, and why it is not a boolean.
+ *
+ * Getting into config mode is not one event. The key has to be held, it locks
+ * itself on the way in, the PIN has to go back in, and the unlock that follows
+ * is never announced - so the app passes through three distinguishable waits
+ * before it can honestly say a key is in config mode.
+ *
+ *   -1 WANTED  the hold was asked for; watching for the lock
+ *    0 OFF
+ *    1 PRE     the key locked. This IS the app's locked view: the PIN screen,
+ *              with "Check config mode" beside the pad.
+ *    2 ON      the check came back
+ *
+ * A boolean forced every one of those waits to be guessed at, and the guesses
+ * are what went wrong - a button that set the flag on the tap, over a key that
+ * had never been touched. Each transition now has one cause and one writer.
+ */
+export type ConfigState = -1 | 0 | 1 | 2;
+
+/** The hold was asked for. Nothing is true about the key yet. */
+export const WANTED: ConfigState = -1;
+/** The ordinary state. */
+export const OFF: ConfigState = 0;
+/** The key locked: the PIN view, where the check button lives. */
+export const PRE: ConfigState = 1;
+/** Confirmed. The only state that changes what a panel offers. */
+export const ON: ConfigState = 2;

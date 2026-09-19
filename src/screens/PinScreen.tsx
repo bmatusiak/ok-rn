@@ -53,6 +53,9 @@ export function PinScreen({
   onPress,
   onPressRun,
   onBack,
+  configMode = false,
+  onCheckConfig,
+  checking = false,
   busy = false,
   canPress = true,
   model = 'classic',
@@ -86,6 +89,10 @@ export function PinScreen({
    */
   onPressRun?: (buttons: string) => Promise<void> | void;
   onBack?: () => void;
+  /** At PRE: the key locked entering config mode and will not report the unlock. */
+  configMode?: boolean;
+  onCheckConfig?: () => void;
+  checking?: boolean;
   busy?: boolean;
   /**
    * A DUO takes its PIN TYPED into the message body, not pressed; the
@@ -291,6 +298,39 @@ export function PinScreen({
             at all. Asking is the only way out, and this is where they are
             standing.
           */}
+          {configMode && onCheckConfig ? (
+            <>
+              <Text style={styles.note}>
+                In config mode the key does not announce the unlock. Enter your
+                PIN, then check.
+              </Text>
+              <View style={styles.footer}>
+                <Btn
+                  title={checking ? 'Checking…' : 'Check config mode'}
+                  tone="primary"
+                  disabled={checking}
+                  onPress={onCheckConfig}
+                />
+              </View>
+            </>
+          ) : null}
+          {/* The same question, for the layout where the app holds the pad. */}
+          {configMode && onCheckConfig ? (
+            <>
+              <Text style={styles.note}>
+                In config mode the key does not announce the unlock. Enter your
+                PIN, then check.
+              </Text>
+              <View style={styles.footer}>
+                <Btn
+                  title={checking ? 'Checking…' : 'Check config mode'}
+                  tone="primary"
+                  disabled={checking}
+                  onPress={onCheckConfig}
+                />
+              </View>
+            </>
+          ) : null}
           {onBack ? (
             <View style={styles.footer}>
               <Btn title="Back" onPress={onBack} />

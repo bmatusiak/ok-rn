@@ -110,11 +110,20 @@ describe('config mode has exactly one writer', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('has no config-mode component back', () => {
-    /* The panels and dimming wrappers that were deleted. Gating comes back as
-       plain conditions on the prop, attached one feature at a time. */
+  it('has no dimming wrapper back', () => {
+    /*
+     * ConfigModeRequired and ConfigModeBlocked stay gone. Gating is a plain
+     * condition on the prop, which is how it was rebuilt: `unavailable={...}`
+     * on the Section that is actually affected, one panel at a time.
+     *
+     * ConfigModePanel came OFF this list on 2026-09-19, when the way into
+     * config mode was rebuilt. It is a different thing from its namesake: the
+     * old one set the flag itself on the tap, which is the defect the whole
+     * removal came from. This one calls onWant() and App decides - which the
+     * two checks above are what actually enforce.
+     */
     const offenders = files.filter(f =>
-      /ConfigModePanel|ConfigModeRequired|ConfigModeBlocked/.test(code(f)),
+      /ConfigModeRequired|ConfigModeBlocked/.test(code(f)),
     );
     expect(offenders).toEqual([]);
   });

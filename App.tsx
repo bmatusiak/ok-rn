@@ -3,6 +3,7 @@ import {Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
 import {Btn, StatusPill} from './src/ui/components';
+import {WANTED, OFF, PRE, ON, type ConfigState} from './src/ui/configModeNotes';
 import OkEmu from './src/transport/OkEmu';
 import {Drawer} from './src/ui/Drawer';
 import {Logo} from './src/ui/Logo';
@@ -317,7 +318,62 @@ function Shell() {
    * this one claims nothing it cannot back up: it is a switch with a light on
    * it, and each thing it controls gets attached on purpose, one at a time.
    */
-  const [configMode, setConfigMode] = useState(false);
+  const [configMode, setConfigMode] = useState<ConfigState>(OFF);
+
+  /*
+   * THE LOCK IS THE ONLY THING CONFIG MODE SAYS ABOUT ITSELF.
+   *
+   * The gesture sets `configmode = true`, sets `unlocked = false` and re-arms
+   * the 1 Hz INITIALIZED broadcast (OnlyKey.ino:898-904, unchanged back to
+   * v3.0.2). So a key that was asked to enter config mode and then announces
+   * that it is locked, has entered it. That is the whole detector.
+   *
+   * Earlier in this rebuild I wrote that `emu.device` never goes to 'locked'
+   * here "so there was no edge to catch" - that was wrong, and checking it
+   * against the pinned firmware rather than against memory is what turned
+   * three states into something the app can actually follow. What IS silent is
+   * the unlock afterwards, which is why state 1 needs a button.
+   *
+   * Guarded on WANTED, so an ordinary lock - the idle timer, button 3 - does
+   * not get read as config mode.
+   */
+  useEffect(() => {
+    if (configMode === WANTED && emu.device === 'locked') setConfigMode(PRE);
+  }, [configMode, emu.device]);
+
+  /*
+   * Ask whether the PIN went back in, because the key will not say.
+   *
+   * OKGETLABELS is on the config-mode allowlist (okcore.cpp:334 in every
+   * pinned release) and is refused while locked, so a label read that succeeds
+   * is positive proof of an unlock - the proof the broadcast never gives,
+   * since the UNLOCKED announcement is suppressed while in config mode
+   * (OnlyKey.ino:707).
+   *
+   * A BUTTON, NEVER A TIMER. This began as a 2.5 s poll and that HURT PIN
+   * ENTRY on a hard key: the probe writes on the vendor interface, and doing
+   * that repeatedly while somebody is pressing buttons interferes with the
+   * digits going in. The person pressing it has just finished their PIN and is
+   * the one who knows.
+   */
+  const [checking, setChecking] = useState(false);
+  const checkConfig = useCallback(async () => {
+    setChecking(true);
+    try {
+      const {device} = await getActiveKey();
+      const ok = await device.configModeReady({timeoutMs: 2500});
+      console.log(`[config] label probe: ${ok ? 'UNLOCKED' : 'locked'}`);
+      if (ok) {
+        /* The app has no other way to learn this. */
+        emu.markUnlocked();
+        setConfigMode(ON);
+      }
+    } catch (e) {
+      console.log(`[config] label probe failed: ${String((e as Error)?.message ?? e)}`);
+    } finally {
+      setChecking(false);
+    }
+  }, [getActiveKey, emu]);
 
   const [tab, setTab] = useState<Tab>('This Key');
 
@@ -345,7 +401,20 @@ function Shell() {
       setPhase('main');
       return;
     }
-    if (emu.device === 'unlocked') {
+    /*
+     * THE DOOR STAYS SHUT AT PRE, and it has to be held shut deliberately.
+     *
+     * Typing the PIN in config mode makes the app see 'unlocked' by itself:
+     * useOkEmu.ts:725-737 sends OKCONNECT once a digit settles while locked,
+     * and the firmware answers UNLOCKED from inside config mode (okcore.cpp
+     * :1317 in v3.0.4, :1315 in v3.0.2 - not a new branch). Without this
+     * clause the tabs would come back the instant the PIN landed, taking the
+     * "Check config mode" button with them before anyone could press it.
+     *
+     * The fallthrough below returns `prev` for 'pin', so the PIN view simply
+     * stays. Pressing the check sets ON and the next run opens the door.
+     */
+    if (emu.device === 'unlocked' && configMode !== PRE) {
       setPhase('main');
       return;
     }
@@ -372,7 +441,13 @@ function Shell() {
       }
       return prev;
     });
-  }, [testing.enabled, emu.device, emu.state]);
+    /*
+     * `configMode` is in here for the clause above: the PRE -> ON flip is the
+     * ONLY thing that changes when the check passes - `emu.device` has been
+     * 'unlocked' since the PIN landed - so without it the door would never
+     * reopen and the check button would look dead.
+     */
+  }, [testing.enabled, emu.device, emu.state, configMode]);
 
   const ready = phase === 'main';
 
@@ -500,7 +575,7 @@ function Shell() {
           had touched. Consequences get added to this line as features are
           actually put behind the flag - never in advance of them.
         */}
-        {configMode ? (
+        {configMode >= PRE ? (
           <View style={styles.configBanner}>
             <Text style={styles.configBannerText}>Config mode</Text>
           </View>
@@ -622,6 +697,9 @@ function Shell() {
                 the key and the unlock will never be announced. The panel on
                 Keys and Backup cannot help from here.
               */
+              configMode={configMode === PRE}
+              onCheckConfig={() => void checkConfig()}
+              checking={checking}
             />
           ) : tab === 'This Key' ? (
             <KeyScreen emu={emu} keys={keys} />
@@ -646,7 +724,7 @@ function Shell() {
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
-            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} />
+            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Crypto' ? (
             <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Messages' ? (

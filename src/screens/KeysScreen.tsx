@@ -1,7 +1,7 @@
 import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
-import {NEEDS_CONFIG_MODE} from '../ui/configModeNotes';
+import {NEEDS_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
 import {theme} from '../ui/theme';
 import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
@@ -144,7 +144,7 @@ export function KeysScreen({
    * Reading a key back is not, so "Loaded keys" and "Read a public key" stay
    * live throughout.
    */
-  configMode: boolean;
+  configMode: ConfigState;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -624,7 +624,7 @@ export function KeysScreen({
         */}
       <Section
         title="Load a key"
-        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
+        unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
         <Segmented
           value={mode}
           options={MODES}
@@ -813,7 +813,7 @@ export function KeysScreen({
 
       <Section
         title="Yubico OTP (legacy)"
-        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
+        unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
         <Text style={styles.note}>
           The device-global Yubico credential — the desktop app&apos;s Advanced
           tab. All three fields are HEX here; the per-slot form is the one that
@@ -894,7 +894,7 @@ export function KeysScreen({
       <Section
         title="Generate a post-quantum key"
         faded={!pqc}
-        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
+        unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
         {pqc ? null : <Text style={styles.note}>{missingNote('postQuantum')}</Text>}
         <Text style={styles.body}>
           The key makes this one itself. A seed is generated inside it,
@@ -958,7 +958,7 @@ export function KeysScreen({
         */}
       <Section
         title="Wipe a slot"
-        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
+        unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
         <Text style={styles.note}>
           Erases the key in one slot. Irreversible, and it also needs config
           mode.

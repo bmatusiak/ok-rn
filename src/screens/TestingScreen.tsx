@@ -1,6 +1,7 @@
 import React, {useState} from 'react';
 import {ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
+import {OFF, ON, type ConfigState} from '../ui/configModeNotes';
 import OkEmu from '../transport/OkEmu';
 import {theme} from '../ui/theme';
 import {E2EScreen} from './E2EScreen';
@@ -52,8 +53,8 @@ export function TestingScreen({
    * nothing: a switch, so the banner and whatever gets attached to it later
    * can be seen working before any of it depends on a device.
    */
-  configMode: boolean;
-  setConfigMode: (on: boolean) => void;
+  configMode: ConfigState;
+  setConfigMode: (next: ConfigState) => void;
   emu: EmuSession;
   /** The hard key, for the one bench operation this tab offers on it. */
   hard: HardKeySession;
@@ -112,12 +113,20 @@ export function TestingScreen({
         <View style={styles.row}>
           <View style={styles.cell}>
             <Text style={styles.note}>
-              {configMode
+              {configMode === ON
                 ? 'The app is in config mode.'
                 : 'The app is not in config mode.'}
             </Text>
           </View>
-          <Switch value={configMode} onValueChange={setConfigMode} />
+          {/*
+            Straight to ON or OFF, skipping -1 and 1. Those two are waits on a
+            key, and this switch exists to look at what config mode CHANGES
+            without needing one - the real path through them is the panel.
+          */}
+          <Switch
+            value={configMode === ON}
+            onValueChange={next => setConfigMode(next ? ON : OFF)}
+          />
         </View>
         <Text style={styles.note}>
           The app's own flag. It shows the banner and nothing else — no feature

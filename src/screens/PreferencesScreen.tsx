@@ -2,7 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {device as okdevice} from 'node-onlykey-lib';
 import {Btn, Section} from '../ui/components';
-import {NEEDS_CONFIG_MODE} from '../ui/configModeNotes';
+import {NEEDS_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
 import {theme} from '../ui/theme';
 import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
@@ -53,7 +53,7 @@ export function PreferencesScreen({
    * Changing a PIN is NOT gated, and it looks like it should be: the three PIN
    * messages are on the config-mode allowlist, so that panel works either way.
    */
-  configMode: boolean;
+  configMode: ConfigState;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -427,7 +427,7 @@ export function PreferencesScreen({
           key={group.title}
           title={group.title}
           unavailable={
-            group.title === 'Advanced' && !configMode ? NEEDS_CONFIG_MODE : null
+            group.title === 'Advanced' && configMode !== ON ? NEEDS_CONFIG_MODE : null
           }>
           <Text style={styles.note}>{group.note}</Text>
 
