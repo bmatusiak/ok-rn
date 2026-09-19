@@ -52,7 +52,7 @@ way**"*. The second is falsifiable by trying another way. The first invites
 nobody to.
 
 The same shape appeared on the Bluetooth side the same week and cost two days —
-`FINDING-removing-a-windows-pairing-does-not-clear-what-windows-cached.md`. The
+`FINDING-a-bond-caches-the-sdp-record-and-the-phone-kept-deleting-it.md`. The
 app reported "registered" truthfully and it meant nothing about the host, so
 every local signal agreed with a conclusion that was wrong.
 

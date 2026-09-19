@@ -1,4 +1,4 @@
-# Removing a Windows pairing does not clear what Windows cached
+# A bond caches the SDP record, and the phone kept deleting it
 
 **Severity:** high — it produces a bug that appears to fix and break itself,
 crediting and blaming unrelated changes. Two days went into the resulting loop.
@@ -51,28 +51,23 @@ GATT server in a process singleton that outlives the bridge, and says so at
 the whole bug — and it is what made the two look coupled, because whichever one
 you had just touched was the one whose bond you had most recently re-made.
 
-**3. "Remove device" does not undo a bond.**
+**3. Only a new bond can fix it, and that is easy to get wrong.**
 
-This is the part that keeps the loop closed, and it is why the fix already
-written down in
-`FINDING-a-published-keyboard-is-neither-visible-nor-reusable.md` — *"remove the
-old pairing, then add the phone again"* — kept appearing not to work.
+Because (1) and (2) together mean the cure is always *pair again*, and the cure
+only works if the record happens to be published at that moment. Re-pair while
+the app is reloading and the new bond is as empty as the old one — so the fix
+looks like it failed, and whatever was changed next got the blame.
 
-Settings → Bluetooth → Remove device drops the bond and **leaves the cached
-service nodes behind**. Measured on the bench PC for one Pixel 6a:
+The stores Windows keeps, for one device, measured on the bench PC:
 
-| Store | Holding |
+| Store | Holds |
 |---|---|
-| `Enum\BTHENUM` | 32 nodes |
-| `Enum\BTHLEDEVICE` | 12 nodes |
-| `Enum\BTHLE` | 3 nodes |
-| `Services\BTHPORT\Parameters\Devices\<mac>` | the link key — **owned by SYSTEM**, so an elevated Administrator is still refused |
+| `Enum\BTHENUM`, `Enum\BTHLEDEVICE`, `Enum\BTHLE` | the cached service list — **cleared** by Remove device |
+| `Services\BTHPORT\Parameters\Devices\<mac>` | the link key — **survives** Remove device, and is owned by SYSTEM, so an elevated Administrator is still refused |
 
-The bond and the cache are cleared by different means and on different
-schedules. Re-pair, and Windows re-attaches the old cached service list rather
-than re-reading SDP. So a "clean" re-pair is not clean, and the state that
-comes back depends on when each store last happened to be emptied — which is
-what produced results that changed overnight with no code change at all.
+The service cache does clear. What lingers is the link key, which is the lesser
+half — an orphaned key does not stop a fresh bond from re-reading SDP. See the
+correction at the foot of this file: an earlier draft had this backwards.
 
 ## The evidence, from both machines
 
@@ -137,8 +132,94 @@ Step 5 is the only step that cannot be fooled.
 
 ## A note on the two days
 
-Three separate things had to be true at once for this to make sense: that the
-roles are on different transports, that the phone was deleting its own record
-on reload, and that the host's cache survives the removal that is supposed to
-clear it. Any two of them without the third still produces contradictory
-results, which is exactly what a fix-and-break loop looks like from inside.
+Two things had to be true at once for this to make sense: that the roles are on
+different transports, so neither could be breaking the other; and that the
+phone was deleting its own SDP record on reload, so the cure — pair again — only
+worked when it happened to be applied at a lucky moment. Either one alone
+produces a coherent-looking wrong theory, which is what a fix-and-break loop
+looks like from inside.
+
+A third claim was in the first draft and was wrong; the correction below says
+so. It is left visible rather than deleted, because a finding that quietly
+edits its own evidence is worth less than one that shows where it went.
+
+---
+
+## Correction, same day — claim 3 was overstated
+
+The heading above originally read *"Remove device does not undo a bond"*, and
+the text asserted that removing the device leaves the cached service nodes
+behind. **That was not measured. It was inferred, and it is wrong.**
+
+What was actually measured was 47 Enum nodes for a device that was **still
+paired** — which is simply a live cache, not a stale one. The inference filled
+in the rest.
+
+When the pairing was then removed for real:
+
+| Store | After "Remove device" |
+|---|---|
+| `Enum\BTHENUM` / `BTHLEDEVICE` / `BTHLE` | **0 nodes** — cleared |
+| `BTHPORT\...\Devices\<mac>` | still present — the link key outlives the removal |
+
+So Windows does clear the service cache. What it keeps is the **link key**,
+which is the lesser half: an orphaned key does not stop a fresh bond from
+re-reading SDP.
+
+**The finding's conclusion is unchanged, because it never needed claim 3.** The
+two measured facts are sufficient on their own:
+
+- the host reads the SDP record once, at bond time, and
+- the phone was deleting that record on every JS bridge teardown.
+
+A bond formed in one of those windows has no keyboard, permanently, and the
+only way out is to pair again. That fully explains the fix-and-break loop
+without any claim about what removal leaves behind.
+
+`tools/btpurge.ps1` is still worth having — it clears the link key, which
+nothing in the UI does, and it makes "start from nothing" a single command
+rather than a hope. It is just not the thing that was breaking this.
+
+## Resolved
+
+After the durability fix, a single pairing captured both roles:
+
+```
+Pixel 6a  24293486EAAF  — 22 cached nodes
+  BR  0x1124  HID keyboard         cached
+  LE  0xFFFD  FIDO authenticator   cached
+```
+
+First time the bond has ever held both.
+
+## And one more thing the recovery found
+
+Unpairing bounced the Bluetooth stack, and the keyboard did not come back:
+
+```
+btkbd: unregistered: the Bluetooth service went away
+```
+
+`onServiceDisconnected` nulled the proxy and stopped. The authenticator rode
+the same bounce out because it has a watchdog; the keyboard had nothing, so a
+stack bounce silently ended it until someone restarted the app — and that is
+precisely the window in which the next bond caches a phone with no keyboard.
+
+`Held` now records the INTENT (`wantRegistered`) separately from the state, and
+re-acquires the profile on both `onServiceDisconnected` and an adapter that
+comes back on. Measured across a Bluetooth off/on:
+
+```
+23:21:43  unregistered: the Bluetooth service went away
+23:21:43  unregistered: Bluetooth is off
+23:21:50  adapter is back; republishing if it should be
+23:21:50  registered: the keyboard is published
+```
+
+Seven seconds, no user action.
+
+That same test exposed a smaller bug worth naming: `register()` answered
+`unsupported — this device does not offer the HID Device profile` when the
+radio was merely **off**. `unsupported` is terminal in the app, which stops
+retrying, so four seconds of Bluetooth being off could latch a permanent lie
+about the hardware. "Off" and "absent" are now different answers.

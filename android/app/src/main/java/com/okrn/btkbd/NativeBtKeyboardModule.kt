@@ -41,6 +41,8 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
 
   init {
     Held.live = this
+    /* Both outlive this module, so they are set up from whichever one is first. */
+    Held.watchAdapter(reactContext.applicationContext)
   }
 
   /*
@@ -185,6 +187,13 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
             registered = false
             host = null
             setState("unregistered", "the Bluetooth service went away")
+            /*
+             * ASK FOR IT BACK. This used to stop here, and the keyboard simply
+             * stayed down until someone restarted the app - which is both a
+             * dead feature and the window in which a host bonds without a
+             * keyboard and caches that forever.
+             */
+            Held.reacquire()
           }
         }
       },
@@ -207,6 +216,21 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
       }
       if (registered) {
         promise.resolve(true)
+        return
+      }
+      /*
+       * "OFF" AND "ABSENT" ARE DIFFERENT ANSWERS, and only one of them is
+       * permanent. ensureProxy() fails for either reason, and this used to
+       * call both of them `unsupported` - a state the app treats as terminal
+       * and stops retrying. Toggling Bluetooth off for four seconds was enough
+       * to latch it: observed at 23:19:41 on 2026-09-18, between the adapter
+       * going down and coming back, on a phone that plainly does offer the
+       * profile and had been publishing a keyboard seconds earlier.
+       */
+      val a = adapter
+      if (a == null || !a.isEnabled) {
+        setState("unregistered", "Bluetooth is off")
+        promise.resolve(false)
         return
       }
       if (!ensureProxy()) {
@@ -233,6 +257,12 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
        * profile is not live until onAppStatusChanged says so, which is where
        * `registered` is actually set.
        */
+      /*
+       * The INTENT, recorded after the request is accepted so recovery cannot
+       * race the first publish. Held.reacquire() reads this to decide whether
+       * a stack bounce should be followed by republishing.
+       */
+      Held.wantRegistered = true
       setState("registering", "publishing the keyboard")
       promise.resolve(true)
     } catch (e: Exception) {
@@ -241,6 +271,8 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
   }
 
   private fun unregisterInternal() {
+    /* A deliberate withdrawal, so nothing should bring it back. */
+    Held.wantRegistered = false
     proxy?.let { p ->
       runCatching { host?.let { p.disconnect(it) } }
       runCatching { p.unregisterApp() }
@@ -423,17 +455,18 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
   companion object {
     const val ERR = "E_BT_KEYBOARD"
     private const val PERMISSION_REQUEST_CODE = 8213
-    private const val PROXY_TIMEOUT_MS = 4000L
+    internal const val PROXY_TIMEOUT_MS = 4000L
 
     /** [modifiers, reserved, usage x 6] - the boot keyboard report. */
     /* internal, not private: `Held`'s callback replies with an empty one. */
     internal const val REPORT_BYTES = 8
 
-    private const val SDP_NAME = "OnlyKey"
-    private const val TAG = "btkbd"
+    internal const val SDP_NAME = "OnlyKey"
+    /* internal, not private: `Held` logs adapter recovery under the same tag. */
+    internal const val TAG = "btkbd"
 
-    private const val SDP_DESCRIPTION = "OnlyKey soft key"
-    private const val SDP_PROVIDER = "OnlyKey"
+    internal const val SDP_DESCRIPTION = "OnlyKey soft key"
+    internal const val SDP_PROVIDER = "OnlyKey"
 
     /**
      * The firmware's own keyboard report descriptor.
@@ -449,7 +482,7 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
      * transfers; there is no such channel here, and declaring a feature report
      * nothing can answer invites a host to ask for one.
      */
-    private val KEYBOARD_DESCRIPTOR = byteArrayOf(
+    internal val KEYBOARD_DESCRIPTOR = byteArrayOf(
       0x05, 0x01,             // Usage Page (Generic Desktop)
       0x09, 0x06,             // Usage (Keyboard)
       0xA1.toByte(), 0x01,    // Collection (Application)
@@ -548,6 +581,32 @@ private object Held {
   var state = "unregistered"
 
   /**
+   * Whether the keyboard is SUPPOSED to be published, as distinct from whether
+   * it currently is.
+   *
+   * Android drops an app's HID registration when the Bluetooth stack bounces -
+   * an adapter toggle, or a device being unpaired - and the profile proxy goes
+   * with it. Observed on 2026-09-18: removing the host pairing produced
+   *
+   *   btkbd: unregistered: the Bluetooth service went away
+   *
+   * and the keyboard stayed down. The authenticator rode the same bounce out,
+   * because NativeFidoGattModule has a watchdog; this had nothing, so the
+   * phone silently stopped being a keyboard and the screen agreed with it.
+   *
+   * That matters beyond development. The window where the SDP record is absent
+   * is exactly the window in which a host bonding with this phone caches a
+   * device with no keyboard - permanently, for that bond. See
+   * FINDING-a-bond-caches-the-sdp-record-and-the-phone-kept-deleting-it.md.
+   */
+  var wantRegistered = false
+
+  /** Outlives the module, so recovery does not need a live JS bridge. */
+  var appContext: android.content.Context? = null
+
+  private var watchingAdapter = false
+
+  /**
    * Callbacks arrive on this, and reports are sent from it.
    *
    * A dedicated single thread rather than the main looper: `sendReport` blocks
@@ -619,5 +678,98 @@ private object Held {
   fun setState(next: String, message: String) {
     state = next
     live?.emitStatus(next, message)
+  }
+
+  private fun adapter(): BluetoothAdapter? =
+    appContext?.getSystemService(BluetoothManager::class.java)?.adapter
+
+  private fun sdp() = BluetoothHidDeviceAppSdpSettings(
+    NativeBtKeyboardModule.SDP_NAME,
+    NativeBtKeyboardModule.SDP_DESCRIPTION,
+    NativeBtKeyboardModule.SDP_PROVIDER,
+    BluetoothHidDevice.SUBCLASS1_KEYBOARD,
+    NativeBtKeyboardModule.KEYBOARD_DESCRIPTOR,
+  )
+
+  /** Publish the record. The caller has already decided that it should be. */
+  fun registerNow(): Boolean {
+    val p = proxy ?: return false
+    return runCatching { p.registerApp(sdp(), null, null, worker, callback) }
+      .getOrDefault(false)
+  }
+
+  /**
+   * Get the profile back and republish, after the stack took both away.
+   *
+   * `getProfileProxy` is asynchronous and gives no failure callback, so this
+   * asks and lets the listener do the work if an answer arrives. Nothing here
+   * blocks: it runs from `onServiceDisconnected`, which is a system callback.
+   */
+  fun reacquire() {
+    if (!wantRegistered || proxy != null) return
+    val a = adapter() ?: return
+    val ctx = appContext ?: return
+    if (!a.isEnabled) return  /* the adapter receiver will come back to this */
+
+    runCatching {
+      a.getProfileProxy(
+        ctx,
+        object : BluetoothProfile.ServiceListener {
+          override fun onServiceConnected(profile: Int, service: BluetoothProfile?) {
+            if (profile != BluetoothProfile.HID_DEVICE) return
+            proxy = service as? BluetoothHidDevice
+            if (wantRegistered && !registered) {
+              setState("registering", "republishing the keyboard")
+              if (!registerNow()) {
+                setState("unregistered", "the platform refused to republish the keyboard")
+              }
+            }
+          }
+
+          override fun onServiceDisconnected(profile: Int) {
+            if (profile != BluetoothProfile.HID_DEVICE) return
+            proxy = null
+            registered = false
+            host = null
+            setState("unregistered", "the Bluetooth service went away")
+            reacquire()
+          }
+        },
+        BluetoothProfile.HID_DEVICE,
+      )
+    }
+  }
+
+  /**
+   * An adapter that comes back on has to be noticed, because the profile
+   * service is not there to disconnect while it is off - so
+   * `onServiceDisconnected` may be the last thing that ever fires.
+   *
+   * Registered once, process-wide, and never unregistered: it is how the
+   * keyboard survives the user toggling Bluetooth.
+   */
+  fun watchAdapter(ctx: android.content.Context) {
+    if (watchingAdapter) return
+    watchingAdapter = true
+    appContext = ctx.applicationContext
+    runCatching {
+      ctx.applicationContext.registerReceiver(
+        object : android.content.BroadcastReceiver() {
+          override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            val next = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)
+            if (next == BluetoothAdapter.STATE_ON) {
+              Log.i(NativeBtKeyboardModule.TAG, "adapter is back; republishing if it should be")
+              reacquire()
+            } else if (next == BluetoothAdapter.STATE_TURNING_OFF) {
+              proxy = null
+              registered = false
+              host = null
+            }
+          }
+        },
+        android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+      )
+    }
   }
 }
