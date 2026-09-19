@@ -342,7 +342,7 @@ function Shell() {
   }, [configMode, emu.device]);
 
   /*
-   * SWITCHING TO THE HARD KEY WHILE IN CONFIG MODE RESTARTS THE APP.
+   * CHANGING KEY WHILE IN CONFIG MODE RESTARTS THE APP - EITHER DIRECTION.
    *
    * `configMode` is one app-wide flag and it describes the SOFT key, while
    * `emu` is whichever key is ACTIVE. The moment the hard key becomes active
@@ -356,13 +356,19 @@ function Shell() {
    * exits through the AIRCR trap. A new process resolves both, and restarting
    * is what the panel has been saying all along.
    *
+   * BOTH DIRECTIONS. Inserting was the case this was built for; pulling the
+   * key back out is the same problem mirrored. On a REMOVAL the hard key's own
+   * config mode died with it - unplugging is a boot - and the app falls back
+   * to the soft key, which is a different device with a different answer. A
+   * flag that survived that would describe neither.
+   *
    * ON THE ACTIVE BACKEND, NOT ON ATTACHMENT, and the difference matters. An
    * earlier version fired when `keys.attached` became true; useKey.ts:258
    * resolves `override > (auto && attached) > embedded`, so in manual mode or
    * with an 'embedded' override a plugged-in key leaves the soft key active -
    * and that version threw the session away for a switch that never happened.
-   * In auto mode with no override, inserting a key IS switching to it, which
-   * is the case this is for.
+   * In auto mode with no override, inserting a key IS switching to it, and
+   * pulling it out IS switching back.
    *
    * Launch is not a switch: `backend` starts 'embedded', so a key already
    * attached produces embedded -> usb on the first poll - but the state is OFF
@@ -370,10 +376,9 @@ function Shell() {
    */
   const previousBackend = useRef(keys.backend);
   useEffect(() => {
-    const becameHard =
-      previousBackend.current !== 'usb' && keys.backend === 'usb';
+    const from = previousBackend.current;
     previousBackend.current = keys.backend;
-    if (!becameHard || configMode === OFF) return;
+    if (from === keys.backend || configMode === OFF) return;
     /*
      * THE ONLY AUTOMATIC RESTART IN THE APP - every other caller is a button
      * somebody pressed. It kills this process and relaunches, so it says why
@@ -381,7 +386,7 @@ function Shell() {
      * crash.
      */
     console.log(
-      `[app] switched to the hard key at config state ${configMode} - restarting`,
+      `[app] key changed ${from} -> ${keys.backend} at config state ${configMode} - restarting`,
     );
     void OkEmu.restartApp();
   }, [keys.backend, configMode]);
