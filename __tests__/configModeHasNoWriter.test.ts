@@ -1,5 +1,15 @@
-import {readFileSync, readdirSync} from 'fs';
-import {join} from 'path';
+/*
+ * The node idiom this repo already uses in a jest file - see
+ * firmwareFile.test.ts. `import {readFileSync} from 'fs'` does not typecheck
+ * here: tsconfig is the React Native one and does not carry node's types.
+ * `require` itself is declared once already, in firmwareFile.test.ts, and the
+ * two files share one TS program - so declaring it again is a duplicate.
+ */
+const {readFileSync, readdirSync} = require('fs') as {
+  readFileSync(p: string, encoding: string): string;
+  readdirSync(p: string, opts: {withFileTypes: true}): {name: string; isDirectory(): boolean}[];
+};
+const {join} = require('path') as {join(...parts: string[]): string};
 
 /*
  * THE APP MUST NOT BE ABLE TO ASSERT CONFIG MODE.

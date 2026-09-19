@@ -94,6 +94,21 @@ export function ConfigModePanel({
     );
   }
 
+  /*
+   * WHETHER THE APP CAN PRESS THIS KEY AT ALL.
+   *
+   * `canPress` is the debug console's probe. The soft key and a developer hard
+   * key answer it; a PRODUCTION hard key does not have the console, so
+   * `holdTicks` throws and the app can never hold button 6 on it.
+   *
+   * That is not a reason to hide config mode - it is a reason to stop
+   * pretending the app is doing the holding. Reported 2026-09-19 on a real
+   * key: the button was offered, the hold could not land, and the app said
+   * config mode was on anyway. The button has stopped lying; this is the other
+   * half - a path that works when the thumb is yours.
+   */
+  const canHold = emu.canPress === true;
+
   /* Not in it yet. */
   return (
     <Section title="Config mode is required">
@@ -102,7 +117,7 @@ export function ConfigModePanel({
         getting there locks it.
       </Text>
       <Text style={styles.steps}>
-        1. hold button 6 — the app does this, or hold it on the key
+        1. {canHold ? 'hold button 6 — the app does this' : 'YOU hold button 6 on the key, about 4 seconds'}
         {'\n'}2. the key locks, and you enter your PIN again at the login screen
         {'\n'}3. you {purpose}
         {'\n'}4. restart the key — config mode ends only there, and until then
@@ -114,11 +129,20 @@ export function ConfigModePanel({
       {confirming ? (
         <>
           <Text style={styles.note}>
-            This locks the key now. You will enter your PIN again, and the key
-            will not sign or type until it is restarted.
+            {canHold
+              ? 'This locks the key now. You will enter your PIN again, and the key will not sign or type until it is restarted.'
+              : 'Hold button 6 on the key until its light changes. This watches for the lock that follows, for a minute, and nothing is assumed if it never comes.'}
           </Text>
           <Btn
-            title={config.entering ? 'Holding…' : 'Yes, enter config mode'}
+            title={
+              config.entering
+                ? canHold
+                  ? 'Holding…'
+                  : 'Waiting for the key to lock…'
+                : canHold
+                  ? 'Yes, enter config mode'
+                  : 'I am holding it — watch for the lock'
+            }
             tone="primary"
             disabled={config.entering}
             /*
@@ -131,9 +155,13 @@ export function ConfigModePanel({
              * back REFUSED - the key locked, and the lock is the only evidence
              * config mode exists, since nothing on the wire reports it. That
              * result is the flag, read back through useInConfigMode.
+             *
+             * `press: false` is the SAME wait with nobody holding for you, so
+             * a key the app cannot touch reaches config mode by the identical
+             * proof rather than by a different, weaker one.
              */
             onPress={async () => {
-              await config.enter();
+              await config.enter({press: canHold});
               setConfirming(false);
             }}
           />
@@ -141,7 +169,7 @@ export function ConfigModePanel({
         </>
       ) : (
         <Btn
-          title="Enter config mode"
+          title={canHold ? 'Enter config mode' : 'Hold button 6 yourself'}
           tone="primary"
           disabled={locked}
           onPress={() => setConfirming(true)}
@@ -150,6 +178,11 @@ export function ConfigModePanel({
 
       {locked ? (
         <Text style={styles.note}>Unlock the key first.</Text>
+      ) : !canHold ? (
+        <Text style={styles.note}>
+          This key has no debug console, so the app cannot press its buttons.
+          Only you can make this gesture.
+        </Text>
       ) : null}
     </Section>
   );
