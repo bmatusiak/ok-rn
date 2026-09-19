@@ -33,10 +33,43 @@ import {useCallback, useState} from 'react';
  * that surviving a relaunch is a setting someone forgets is on. Every launch
  * starts with the gate up.
  */
+/**
+ * IT CANNOT BE TURNED ON IN A RELEASE BUILD, and that is enforced HERE.
+ *
+ * The UI gates were not enough, and the reason is worth keeping: LoginScreen's
+ * way in was correctly wrapped in `__DEV__`, and the drawer's footer button was
+ * not - so a production apk shipped with "Enter testing mode" one tap inside
+ * the menu. In an app whose whole job is a PIN, that is a shipped PIN bypass,
+ * a factory reset and the raw USB surface, behind no gate at all.
+ *
+ * Two call sites, one of them remembered. So the invariant belongs in the mode
+ * itself rather than in whoever renders a button for it: a third entry point
+ * added later cannot reintroduce this, because there is nothing to turn on.
+ *
+ * `__DEV__` is statically false in a release bundle, so the branch below is
+ * dead code the minifier removes - the capability is not merely hidden, it is
+ * not built.
+ */
+const AVAILABLE = __DEV__;
+
 export function useTestingMode() {
   const [enabled, setEnabled] = useState<boolean>(false);
 
-  const toggle = useCallback(() => setEnabled(prev => !prev), []);
+  const toggle = useCallback(() => {
+    if (!AVAILABLE) return;
+    setEnabled(prev => !prev);
+  }, []);
 
-  return {enabled, setEnabled, toggle};
+  const set = useCallback((next: boolean) => {
+    if (!AVAILABLE) return;
+    setEnabled(next);
+  }, []);
+
+  return {
+    enabled: AVAILABLE && enabled,
+    setEnabled: set,
+    toggle,
+    /** Whether to offer a way in at all. False in every release build. */
+    available: AVAILABLE,
+  };
 }

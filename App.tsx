@@ -709,16 +709,26 @@ function Shell() {
           value={tab}
           onChange={setTab}
           onClose={() => setDrawer(false)}
+          /*
+           * NOT IN A RELEASE BUILD. This button was ungated while
+           * LoginScreen's way in was correctly wrapped in `__DEV__`, so a
+           * production apk offered "Enter testing mode" one tap inside the
+           * menu - a PIN bypass, a factory reset and the raw USB surface,
+           * shipped. useTestingMode now refuses to enable in a release
+           * whatever the UI does; this is so there is no dead button.
+           */
           footer={
-            <Btn
-              title={testing.enabled ? 'Leave testing mode' : 'Enter testing mode'}
-              onPress={() => {
-                testing.toggle();
-                if (tab === TESTING_TAB) {
-                  setTab('This Key');
-                }
-              }}
-            />
+            testing.available ? (
+              <Btn
+                title={testing.enabled ? 'Leave testing mode' : 'Enter testing mode'}
+                onPress={() => {
+                  testing.toggle();
+                  if (tab === TESTING_TAB) {
+                    setTab('This Key');
+                  }
+                }}
+              />
+            ) : undefined
           }
         />
       </SafeAreaView>
