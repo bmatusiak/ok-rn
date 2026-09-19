@@ -3,6 +3,7 @@ import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-nat
 import {device as okdevice} from 'node-onlykey-lib';
 import {Btn, Section} from '../ui/components';
 import {NEEDS_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
+import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {theme} from '../ui/theme';
 import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
@@ -41,6 +42,7 @@ function layoutOptions() {
 export function PreferencesScreen({
   emu,
   configMode,
+  onWantConfigMode,
 }: {
   emu: EmuSession;
   /*
@@ -54,6 +56,8 @@ export function PreferencesScreen({
    * messages are on the config-mode allowlist, so that panel works either way.
    */
   configMode: ConfigState;
+  /** Asks App to want config mode. Nothing here writes the flag. */
+  onWantConfigMode: () => void;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -495,6 +499,20 @@ export function PreferencesScreen({
           write it.
         </Text>
       </Section>
+      {/*
+        THE WAY IN, AT THE FOOT - after the panels it unlocks.
+    
+        The Advanced group only. Its preferences carry `requires: configMode`
+        in the library's own table; Settings takes any unlocked key, and the
+        setup-only group is refused here whatever the mode.
+      */}
+      <ConfigModePanel
+        state={configMode}
+        emu={emu}
+        backend={backend}
+        onWant={onWantConfigMode}
+        purpose="change an Advanced preference"
+      />
     </ScrollView>
   );
 }

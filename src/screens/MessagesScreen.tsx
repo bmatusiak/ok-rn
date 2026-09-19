@@ -2,6 +2,7 @@ import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {NEEDS_CONFIG_MODE, NOT_IN_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
+import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {missingNote, supports} from '../firmwareFeatures';
 import type {Overrides} from '../capabilityOverride';
 import {theme} from '../ui/theme';
@@ -17,7 +18,7 @@ import {bytes as okbytes} from 'node-onlykey-lib';
 import okpure from 'node-onlykey-lib/crypto';
 import NativeShare from '../../specs/NativeShare';
 import NativeSecrets from '../../specs/NativeSecrets';
-import {useActiveKey, useKeyName} from '../hooks/KeyContext';
+import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 /**
@@ -90,6 +91,7 @@ const RSA_SLOTS = ['1', '2', '3', '4'] as const;
 export function MessagesScreen({
   emu,
   configMode,
+  onWantConfigMode,
   overrides,
 }: {
   emu: EmuSession;
@@ -101,12 +103,15 @@ export function MessagesScreen({
    * with it is refused during config mode. They sit three panels apart.
    */
   configMode: ConfigState;
+  /** Asks App to want config mode. Nothing here writes the flag. */
+  onWantConfigMode: () => void;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
   /* The ACTIVE key, for the composite key that lives on the device. */
   const getKey = useActiveKey();
   const keyName = useKeyName();
+  const backend = useBackend();
 
   const [mode, setMode] = useState<Mode>('encrypt');
 
@@ -642,6 +647,21 @@ export function MessagesScreen({
           </View>
         </Section>
       ) : null}
+      {/*
+        THE WAY IN, AT THE FOOT - after the panels it unlocks.
+    
+        ONE panel on this tab needs it - the composite key, which calls
+        device.loadKey. The rest of the tab is the opposite case: signing and
+        decrypting are refused WHILE in config mode. A panel for one section,
+        and worth it, because that section is otherwise a dead end.
+      */}
+      <ConfigModePanel
+        state={configMode}
+        emu={emu}
+        backend={backend}
+        onWant={onWantConfigMode}
+        purpose="put the composite key on the device"
+      />
     </ScrollView>
   );
 }

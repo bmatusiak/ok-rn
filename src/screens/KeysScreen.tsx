@@ -2,9 +2,10 @@ import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {NEEDS_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
+import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {theme} from '../ui/theme';
 import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
-import {useActiveKey, useKeyName} from '../hooks/KeyContext';
+import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {missingNote, supports} from '../firmwareFeatures';
 import type {Overrides} from '../capabilityOverride';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -135,6 +136,7 @@ function describeType(name: string): string {
 export function KeysScreen({
   emu,
   configMode,
+  onWantConfigMode,
   overrides,
 }: {
   emu: EmuSession;
@@ -145,6 +147,8 @@ export function KeysScreen({
    * live throughout.
    */
   configMode: ConfigState;
+  /** Asks App to want config mode. Nothing here writes the flag. */
+  onWantConfigMode: () => void;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -152,6 +156,7 @@ export function KeysScreen({
   const getKey = useActiveKey();
   /* Named in every panel that states a fact about it. See useKeyName. */
   const keyName = useKeyName();
+  const backend = useBackend();
 
   const [mode, setMode] = useState<Mode>('PGP');
   const [slot, setSlot] = useState<number>(101);
@@ -982,6 +987,20 @@ export function KeysScreen({
           </Text>
         </Section>
       ) : null}
+      {/*
+        THE WAY IN, AT THE FOOT - after the panels it unlocks.
+    
+        Writing a key to a slot, and wiping one, are the same firmware rule:
+        OKSETPRIV and the wipes are on the config-mode allowlist and refused
+        outside it. Four panels on this tab need it.
+      */}
+      <ConfigModePanel
+        state={configMode}
+        emu={emu}
+        backend={backend}
+        onWant={onWantConfigMode}
+        purpose="load a key, or wipe a slot"
+      />
     </ScrollView>
   );
 }
