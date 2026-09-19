@@ -34,7 +34,6 @@ const TEST_PIN = '1234561';
  * changes meaning underneath you.
  */
 export function TestingScreen({
-  configMode,
   emu,
   hard,
   active,
@@ -50,7 +49,6 @@ export function TestingScreen({
    * so the belief is set here rather than read from anywhere. This switch is
    * how it gets set while the flow is being built.
    */
-  configMode: boolean;
   emu: EmuSession;
   /** The hard key, for the one bench operation this tab offers on it. */
   hard: HardKeySession;
@@ -96,17 +94,6 @@ export function TestingScreen({
         "Soft Key firmware", not "Firmware". Both keys run firmware, and this
         panel can only ever be about one of them.
       */}
-      <Section title="Config mode">
-        <KeyValue label="config mode" value={configMode ? 'YES' : 'no'} />
-        <Text style={styles.note}>
-          Read from the library, not settable. It was a switch until
-          2026-09-19, which made this the fourth thing in the app that could
-          assert config mode without the key agreeing. The key enters config
-          mode by holding button 6, and leaves it only by being unplugged (hard
-          key) or by restarting the app (soft key).
-        </Text>
-      </Section>
-
       <Section title="Soft Key firmware">
         <View style={styles.kv}>
           <KeyValue label="state" value={emu.state} />

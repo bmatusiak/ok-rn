@@ -4,8 +4,6 @@ import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
-import {ConfigModePanel} from '../ui/ConfigModePanel';
-import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
 import {missingNote, supports} from '../firmwareFeatures';
 import type {Overrides} from '../capabilityOverride';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -135,11 +133,9 @@ function describeType(name: string): string {
 
 export function KeysScreen({
   emu,
-  configMode,
   overrides,
 }: {
   emu: EmuSession;
-  configMode: boolean;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -194,17 +190,6 @@ export function KeysScreen({
    * mode ends only at a restart) and the Backup screen needs exactly the same
    * thing to set a passphrase.
    */
-  /*
-   * READY means in config mode AND the PIN is back in.
-   *
-   * Both halves are in hand here. Entering config mode locks the key, and the
-   * door in App follows `emu.device` (App.tsx:448) - so a screen behind the
-   * door is a screen whose key is unlocked, and there is nothing left to probe
-   * for. The probe belongs to the door, which is the only place a locked key
-   * can be standing in front of you.
-   */
-  const configReady = configMode && emu.device === 'unlocked';
-
   /*
    * Post-quantum generation, and whether this firmware has it at all - which
    * NO RELEASE DOES, so on a key from a box this section is faded. See
@@ -621,11 +606,6 @@ export function KeysScreen({
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <ConfigModePanel
-        emu={emu}
-        configMode={configMode}
-        purpose="load keys"
-      />
 
       {/*
         * WRITES ONLY, and only in config mode. Outside it OKSETPRIV is
@@ -633,7 +613,6 @@ export function KeysScreen({
         * symptom is a later signing failure. Dimmed and inert beats offered
         * and ignored.
         */}
-      <ConfigModeRequired ready={configReady}>
       <Section title="Load a key">
         <Segmented
           value={mode}
@@ -682,7 +661,7 @@ export function KeysScreen({
             <Btn
               title={busy === 'pgp' ? 'Loading…' : 'Load PGP key'}
               tone="primary"
-              disabled={busy !== null || !configReady || !armored.trim()}
+              disabled={busy !== null || !armored.trim()}
               onPress={loadPgp}
             />
           </>
@@ -730,7 +709,7 @@ export function KeysScreen({
             <Btn
               title={busy === 'ssh' ? 'Loading…' : 'Load SSH key'}
               tone="primary"
-              disabled={busy !== null || !configReady || !ssh.trim()}
+              disabled={busy !== null || !ssh.trim()}
               onPress={loadSsh}
             />
           </>
@@ -814,7 +793,7 @@ export function KeysScreen({
             <Btn
               title={busy === 'hex' ? 'Writing…' : 'Write to slot'}
               tone="primary"
-              disabled={busy !== null || !configReady || !hex.trim()}
+              disabled={busy !== null || !hex.trim()}
               onPress={loadHex}
             />
           </>
@@ -854,12 +833,11 @@ export function KeysScreen({
         <Btn
           title={busy === 'yubi' ? 'Writing…' : 'Write Yubico credential'}
           tone="primary"
-          disabled={busy !== null || !configReady}
+          disabled={busy !== null}
           onPress={writeYubi}
         />
       </Section>
 
-      </ConfigModeRequired>
 
       <Section title="Read a public key">
         <Text style={styles.body}>
@@ -927,7 +905,7 @@ export function KeysScreen({
         <Btn
           title={busy === 'generate' ? 'Generating\u2026' : `Generate in slot ${genSlot}`}
           tone="primary"
-          disabled={busy !== null || !configReady || !pqc}
+          disabled={busy !== null || !pqc}
           onPress={generate}
         />
 
@@ -962,7 +940,6 @@ export function KeysScreen({
         * treatment as Load a key: dim and inert rather than a live-looking
         * button over a message that will be dropped.
         */}
-      <ConfigModeRequired ready={configReady}>
       <Section title="Wipe a slot">
         <Text style={styles.note}>
           Erases the key in one slot. Irreversible, and it also needs config
@@ -972,12 +949,11 @@ export function KeysScreen({
         <Btn
           title={busy === 'wipe' ? 'Wiping…' : `Wipe slot ${slot}`}
           tone="danger"
-          disabled={busy !== null || !configReady}
+          disabled={busy !== null}
           onPress={wipe}
         />
       </Section>
 
-      </ConfigModeRequired>
 
       {loaded ? (
         <Section title="Restart to finish">

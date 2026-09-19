@@ -4,7 +4,6 @@ import {Btn, Section, Segmented} from '../ui/components';
 import {missingNote, supports} from '../firmwareFeatures';
 import type {Overrides} from '../capabilityOverride';
 import {theme} from '../ui/theme';
-import {ConfigModeBlocked} from '../ui/ConfigModeBlocked';
 import {lookup, type Found, type Source} from '../keySearch';
 import {splitPublicKeys, summarizeKey, type KeySummary} from '../armoredKeys';
 import {bytes as okbytes} from 'node-onlykey-lib';
@@ -89,12 +88,10 @@ const RSA_SLOTS = ['1', '2', '3', '4'] as const;
 
 export function MessagesScreen({
   emu,
-  configMode = false,
   overrides,
 }: {
   emu: EmuSession;
   /** Signing and decryption are refused in config mode - okcore.cpp:347. */
-  configMode?: boolean;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -418,7 +415,6 @@ export function MessagesScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <ConfigModeBlocked active={configMode} what="sign or decrypt">
       <Section title="Messages">
         <Segmented
           options={MODES}
@@ -634,7 +630,6 @@ export function MessagesScreen({
           </View>
         </Section>
       ) : null}
-      </ConfigModeBlocked>
     </ScrollView>
   );
 }

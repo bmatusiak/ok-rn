@@ -6,7 +6,6 @@ import type {Overrides} from '../capabilityOverride';
 import {Keypad} from '../ui/Keypad';
 import {VaultList} from '../ui/VaultList';
 import {theme} from '../ui/theme';
-import {ConfigModeBlocked} from '../ui/ConfigModeBlocked';
 import {bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
 import NativeSecrets from '../../specs/NativeSecrets';
@@ -85,13 +84,11 @@ const hex = (bytes: Uint8Array): string => okbytes.toHex(bytes);
 export function CryptoScreen({
   emu,
   blockScreenshots = true,
-  configMode = false,
   overrides,
 }: {
   emu: EmuSession;
   blockScreenshots?: boolean;
   /** Signing and decryption are refused in config mode - okcore.cpp:347. */
-  configMode?: boolean;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -537,7 +534,6 @@ export function CryptoScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <ConfigModeBlocked active={configMode} what="sign or decrypt">
       <Section title={`Derived secrets — ${keyName}`}>
         <Text style={styles.body}>
           The key computes a secret from a label and a private key that never
@@ -897,7 +893,6 @@ export function CryptoScreen({
           </>
         ) : null}
       </Section>
-      </ConfigModeBlocked>
     </ScrollView>
   );
 }

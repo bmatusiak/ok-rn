@@ -8,8 +8,6 @@ import {useKeyboardLayout} from '../hooks/useKeyboardLayout';
 import {useSharedBtKeyboard} from '../hooks/BtKeyboardContext';
 import NativeShare from '../../specs/NativeShare';
 import {useSecureScreen} from '../hooks/useSecureScreen';
-import {ConfigModePanel} from '../ui/ConfigModePanel';
-import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
 import {summarizeBackup} from '../backupFile';
 import type {BackupSummary} from '../backupFile';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -44,9 +42,7 @@ type BackupSource = (typeof BACKUP_SOURCES)[number];
 export function BackupScreen({
   emu,
   blockScreenshots = true,
-  configMode,
 }: {
-  configMode: boolean;
   emu: EmuSession;
   blockScreenshots?: boolean;
 }) {
@@ -91,46 +87,6 @@ export function BackupScreen({
    * twice - the sequence is three firmware quirks deep and only worth getting
    * right once.
    */
-  /*
-   * IN CONFIG MODE AND UNLOCKED IS THE PROOF. There is nothing left to ask.
-   *
-   * Config mode locks the key, so a key that is unlocked AFTER entering it can
-   * only have got there by the PIN going back in.
-   *
-   * And that is knowable here, because the LOCK IS HANDLED AT THE DOOR. App's
-   * phase follows `emu.device` (App.tsx:448), so a locked key puts the login
-   * screen back - this screen only renders behind an unlocked one.
-   *
-   * The hard key is the reason that is not circular. Production firmware skips
-   * the unlock broadcast while in config mode (OnlyKey.ino:707), so `emu.device`
-   * can sit at something other than 'unlocked' with the PIN plainly in. That is
-   * what the door's "Check config mode" is for: it reads a slot label, and on
-   * an answer calls `emu.markUnlocked()` (App.tsx:413) - which opens the door
-   * and settles this flag in the same move.
-   *
-   * Two earlier attempts are recorded so they are not rebuilt. Demanding
-   * `probe.ok` HERE left the tab dimmed after a successful unlock, with the
-   * thing in the way being a button at the foot that nothing pointed at - and
-   * a second copy of the door's PIN pad beside it, which is the defect this
-   * removes. Hooking the locked -> unlocked TRANSITION never fired at all:
-   * `emu.device` does not go to 'locked' when config mode locks the soft key,
-   * so there was no edge to catch.
-   */
-  const configReady = configMode && emu.device === 'unlocked';
-
-  /*
-   * WHY a section is inert, said where the section is.
-   *
-   * Dimming alone gave no clue what to press. There is only one blocker left
-   * now that the lock is the door's business, and the answer to it is at the
-   * foot of this tab.
-   *
-   * Null when the section is usable, so the caller renders nothing.
-   */
-  const blockedBecause = configReady
-    ? null
-    : 'Needs config mode — the panel at the foot of this tab turns it on.';
-
   /*
    * THE BRIDGE MUST NOT RELAY A BACKUP.
    *
@@ -416,7 +372,6 @@ export function BackupScreen({
         the section below is dimmed, and it carries its own one-line reason.
         A fourth statement of the same fact was noise.
       */}
-      <ConfigModeRequired ready={!configMode}>
       <Section title={`Backup — ${keyName}`}>
         <Text style={styles.body}>
           The key types its backup rather than sending it, so this asks it to
@@ -446,7 +401,6 @@ export function BackupScreen({
         />
         {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
       </Section>
-      </ConfigModeRequired>
 
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
@@ -501,7 +455,6 @@ export function BackupScreen({
         Dimmed, not hidden: the point of the panel being at the foot is that
         you can see what config mode would give you before committing to it.
       */}
-      <ConfigModeRequired ready={configReady}>
         <Section title="Set a backup key">
           {/*
             The flag's remaining job: say why this matters RIGHT NOW, when a
@@ -547,14 +500,12 @@ export function BackupScreen({
                 placeholderTextColor={theme.textDim}
                 style={styles.input}
               />
-              {configReady ? (
-                <Btn
-                  title={busy === 'pgpBackup' ? 'Setting…' : 'Use this key for backups'}
-                  tone="primary"
-                  disabled={busy !== null || !backupArmored.trim()}
-                  onPress={setBackupFromPgp}
-                />
-              ) : null}
+              <Btn
+                title={busy === 'pgpBackup' ? 'Setting…' : 'Use this key for backups'}
+                tone="primary"
+                disabled={busy !== null || !backupArmored.trim()}
+                onPress={setBackupFromPgp}
+              />
             </>
           ) : null}
           {backupSource === 'Passphrase' ? (
@@ -585,23 +536,18 @@ export function BackupScreen({
             The line below says what this section needs; the single panel at
             the foot of the tab is how to get there.
           */}
-          {!configReady ? (
-            <Text style={styles.note}>{blockedBecause}</Text>
-          ) : (
-            <Btn
-              title={busy === 'passphrase' ? 'Setting…' : 'Set passphrase'}
-              tone="primary"
-              disabled={busy !== null || passphrase.length < 25}
-              onPress={setBackupPassphrase}
-            />
-          )}
+          <Btn
+            title={busy === 'passphrase' ? 'Setting…' : 'Set passphrase'}
+            tone="primary"
+            disabled={busy !== null || passphrase.length < 25}
+            onPress={setBackupPassphrase}
+          />
           <Text style={styles.note}>
             {passphrase.length}/25 characters
           </Text>
           </>
           ) : null}
         </Section>
-      </ConfigModeRequired>
 
       {/*
         * RESTORE NEEDS CONFIG MODE on a provisioned key.
@@ -616,21 +562,12 @@ export function BackupScreen({
         * looked like it worked and did nothing is the worst thing this screen
         * could do, so the panel goes dim and inert rather than inviting it.
         */}
-      <ConfigModeRequired ready={configReady}>
       <Section title="Restore">
         <Text style={styles.body}>
           Choose a backup file, or paste one, to write it back. Read it first:
           nothing is sent until the file has passed, and a damaged one is
           refused with nothing changed either way.
         </Text>
-        {/*
-          Restore had NO reason of its own. It relied on the config-mode panel
-          that used to sit directly above it, and moving that panel to the foot
-          left this section dimmed with its explanation a screen away.
-        */}
-        {blockedBecause ? (
-          <Text style={styles.note}>{blockedBecause}</Text>
-        ) : null}
         <Btn
           title={busy === 'pick' ? 'Opening…' : 'Choose a file'}
           disabled={busy !== null}
@@ -710,34 +647,7 @@ export function BackupScreen({
             : 'Read the file first. A restore replaces what is on the key.'}
         </Text>
       </Section>
-      </ConfigModeRequired>
 
-      {/*
-        THE WAY IN, AT THE FOOT - after everything it unlocks.
-        Placed last on purpose. Config mode locks the key and ends only at a
-        restart, so being asked to enter it before you have seen what it is
-        for is a demand made blind. Read the tab, see which parts say they
-        need it, then decide.
-        It also goes QUIET once its job is done: there is nothing to offer
-        somebody already through it, and a control that cannot act must not
-        look like one that can - the sections it unlocked are above it,
-        usable and waiting.
-      */}
-      {configReady ? (
-        <Section title="Config mode">
-          <Text style={styles.note}>
-            The key is in config mode, so the sections above are available.
-            Restart the key when you are done — that is the only way out, and
-            until then it will not sign or type.
-          </Text>
-        </Section>
-      ) : (
-        <ConfigModePanel
-          emu={emu}
-          configMode={configMode}
-          purpose="set a backup key or restore a backup"
-        />
-      )}
     </ScrollView>
   );
 }

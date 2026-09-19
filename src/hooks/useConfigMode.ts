@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useState} from 'react';
 import {useActiveKey} from './KeyContext';
 
 /*
@@ -114,7 +114,7 @@ export function useConfigMode(emu: Holder): ConfigMode {
         lockMs: press ? LOCK_TIMEOUT_MS : WATCH_TIMEOUT_MS,
       });
       setEntered(true);
-    } catch (e) {
+    } catch {
       setError(
         press
           ? 'The key did not enter config mode - it never locked, so the hold ' +

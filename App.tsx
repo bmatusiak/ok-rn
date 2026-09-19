@@ -24,7 +24,6 @@ import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 import {SplashScreen} from './src/screens/SplashScreen';
 import {LoginScreen} from './src/screens/LoginScreen';
 import {PinScreen} from './src/screens/PinScreen';
-import {useInConfigMode} from './src/hooks/useInConfigMode';
 import {SetupScreen} from './src/screens/SetupScreen';
 import {KeyScreen} from './src/screens/KeyScreen';
 import {SlotsScreen} from './src/screens/SlotsScreen';
@@ -301,108 +300,6 @@ function Shell() {
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
 
-  /*
-   * CONFIG MODE, READ FROM THE LIBRARY - the app does not keep its own.
-   *
-   * It used to: a `useState` here, threaded into six screens with a
-   * `setConfigMode` beside it, and anything could write it. One thing wrote it
-   * wrongly - the Enter button set it on the tap - so on a production hard key,
-   * which the app cannot press at all, the whole app believed a key was in
-   * config mode that nobody had touched. There is no setter any more. See
-   * useInConfigMode.
-   */
-  const configMode = useInConfigMode();
-
-  /*
-   * SWITCHING TO THE HARD KEY DURING CONFIG MODE RESTARTS THE APP.
-   *
-   * `configMode` is one app-wide flag describing, in practice, the SOFT key -
-   * and `emu = keys.key` is whichever key is ACTIVE. So the moment the hard key
-   * becomes active, the app carries a belief about one device onto another:
-   * dimming what works and offering what does not.
-   *
-   * Forgetting the flag would not do. The soft key really IS still in config
-   * mode - the firmware assigns `configmode` in exactly two places, the boot
-   * initializer and the button-6 gesture, and there is no `configmode = false`
-   * anywhere - and it cannot boot in place, because the firmware thread only
-   * exits through the AIRCR trap (NativeOkEmuModule.kt:141). Clearing the flag
-   * would make the app wrong about the soft key instead of wrong about the
-   * hard one. A new process is the only thing that resolves both, and is what
-   * the config-mode banner has been telling the user to do all along.
-   *
-   * ON THE ACTIVE BACKEND, NOT ON ATTACHMENT - and the difference is the bug
-   * this replaces. A first version fired when `keys.attached` became true, but
-   * attaching a key is not the same as switching to it: useKey.ts:258 resolves
-   * `override > (auto && attached) > embedded`, so with an `embedded` override
-   * or in manual mode a plugged-in key leaves the soft key active. That version
-   * threw the session away for a switch that never happened.
-   *
-   * Launch is not a switch either. `backend` starts 'embedded', so a key
-   * already plugged in produces embedded -> usb on the first poll - but
-   * `configMode` is false at launch, so nothing fires. The guard is the flag.
-   *
-   * Edge-detected the way useKey.ts:287-296 already does it, rather than a
-   * third pattern for the same question.
-   */
-  const previousBackend = useRef(keys.backend);
-  useEffect(() => {
-    const becameHard =
-      previousBackend.current !== 'usb' && keys.backend === 'usb';
-    previousBackend.current = keys.backend;
-    if (!becameHard || !configMode) return;
-    /*
-     * THE ONLY AUTOMATIC RESTART IN THE APP - every other caller is a button
-     * somebody pressed. It kills this process and relaunches, so it says why
-     * on the way out; a screen that vanishes with no explanation reads as a
-     * crash.
-     */
-    console.log('[app] switched to the hard key while the soft key was in config mode - restarting');
-    void OkEmu.restartApp();
-  }, [keys.backend, configMode]);
-
-  /*
-   * ASKED FOR, NEVER ON A TIMER.
-   *
-   * This began as a poll every 2.5s and that HURT PIN ENTRY on a hard key:
-   * the probe writes OKGETLABELS on the vendor interface, and doing that
-   * repeatedly while someone is pressing buttons interferes with the digits
-   * going in. A check that breaks the thing it is waiting for is worse than no
-   * check.
-   *
-   * So it is a button. The person pressing it has just finished entering their
-   * PIN and is the one who knows; the app does not have to guess, and it asks
-   * exactly once.
-   *
-   * What it asks is a slot-label read: the firmware answers that only when
-   * `unlocked == true` and otherwise says "Error device locked"
-   * (okcore.cpp:379-396), so labels coming back are proof of an unlock - the
-   * proof the broadcast never gives, because in config mode it goes on saying
-   * INITIALIZED.
-   */
-  /*
-   * The ANSWER is not kept, only acted on. An unlock opens the door, which is
-   * the whole visible result; a refusal leaves the door shut, which is the
-   * other one. Three screens used to receive this as a prop and re-derive
-   * their readiness from it - see ConfigModePanel for why that went.
-   */
-  const [checking, setChecking] = useState(false);
-
-  const checkConfig = useCallback(async () => {
-    setChecking(true);
-    try {
-      const {device} = await getActiveKey();
-      const ok = await device.configModeReady({timeoutMs: 2500});
-      console.log(`[config] label probe: ${ok ? 'UNLOCKED' : 'locked'}`);
-      /* Labels came back, so the key is unlocked - the app has no other way
-         to learn that while in config mode. */
-      if (ok) emu.markUnlocked();
-    } catch (e) {
-      console.log(`[config] label probe failed: ${String((e as Error)?.message ?? e)}`);
-    } finally {
-      setChecking(false);
-    }
-  }, [getActiveKey, emu]);
-
 
   const [tab, setTab] = useState<Tab>('This Key');
 
@@ -562,7 +459,6 @@ function Shell() {
                 state={emu.device}
                 label={emu.device === 'unknown' ? emu.state : emu.device}
                 dotColor={keys.backend === 'embedded' ? ledColor(emu.led) : null}
-                tone={configMode ? theme.error : null}
               />
             </Pressable>
           </View>
@@ -573,15 +469,6 @@ function Shell() {
           <View style={styles.testing}>
             <Text style={styles.testingText}>
               Testing mode — PIN bypassed, developer tools shown
-            </Text>
-          </View>
-        ) : null}
-
-        {configMode ? (
-          <View style={styles.configBanner}>
-            <Text style={styles.configBannerText}>
-              Config mode — the key will not sign or type. Only a restart ends
-              it: unplug a hard key, restart the app for the soft key.
             </Text>
           </View>
         ) : null}
@@ -702,9 +589,6 @@ function Shell() {
                 the key and the unlock will never be announced. The panel on
                 Keys and Backup cannot help from here.
               */
-              configMode={configMode}
-              onCheckConfig={() => void checkConfig()}
-              checking={checking}
             />
           ) : tab === 'This Key' ? (
             <KeyScreen emu={emu} keys={keys} />
@@ -725,19 +609,19 @@ function Shell() {
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
             )
           ) : tab === 'Keys' ? (
-            <KeysScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
+            <KeysScreen emu={emu} overrides={caps.overrides} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
-            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} />
+            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} />
           ) : tab === 'Crypto' ? (
-            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} />
+            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} overrides={caps.overrides} />
           ) : tab === 'Messages' ? (
-            <MessagesScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
+            <MessagesScreen emu={emu} overrides={caps.overrides} />
           ) : tab === 'Settings' ? (
-            <PreferencesScreen emu={emu} configMode={configMode} />
+            <PreferencesScreen emu={emu} />
           ) : tab === 'Passkeys' ? (
-            <PasskeysScreen emu={keys.key} configMode={configMode} />
+            <PasskeysScreen emu={keys.key} />
           ) : tab === 'Advanced' ? (
             <AdvancedScreen emu={keys.key} hard={keys.hard} caps={caps} />
           ) : tab === 'Log' ? (
@@ -768,7 +652,7 @@ function Shell() {
               Start button over a device that cannot be started.
             */
             <TestingScreen
-              configMode={configMode}
+             
              
              
               emu={keys.soft}
@@ -855,16 +739,6 @@ const styles = StyleSheet.create({
   barSep: {color: theme.border, fontSize: 15},
   pressed: {opacity: 0.6},
 
-  configBanner: {
-    marginHorizontal: 16,
-    marginBottom: 10,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: theme.radius,
-    borderWidth: 1,
-    borderColor: theme.error,
-  },
-  configBannerText: {color: theme.error, fontSize: 12, fontWeight: '600'},
 
   testing: {
     marginHorizontal: 16,

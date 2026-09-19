@@ -1,11 +1,10 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, HoldTicks, KeyValue, LedCircle, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
 import OkEmu from '../transport/OkEmu';
 import {PinScreen} from './PinScreen';
-import {useInConfigMode} from '../hooks/useInConfigMode';
 import {SetupScreen} from './SetupScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {KeyControl} from '../hooks/useKey';
@@ -209,20 +208,6 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
   const getKey = useActiveKey();
   const capabilityRows = describeCapabilities(emu.capabilities);
 
-  /*
-   * Whether THIS SESSION put the key into config mode.
-   *
-   * Worth surfacing because config mode is INVISIBLE otherwise. The firmware
-   * answers eleven kinds of message and silently drops the rest, so a key left
-   * in it looks broken in three different ways at once - and it has done
-   * exactly that twice, to a person who had no way to find out why.
-   *
-   * This screen had the read written out by hand, and it was the only place in
-   * the app that took the answer from the LIBRARY rather than from a flag the
-   * app set itself. It is the shared hook now, so the rest do too.
-   */
-  const configMode = useInConfigMode();
-
   /**
    * What the LIBRARY has proven against firmware, which is a different
    * question from what THIS KEY can do.
@@ -258,14 +243,6 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
     };
   }, [getKey]);
 
-  const restartKey = useCallback(async () => {
-    try {
-      const {device} = await getKey();
-      await device.restart();
-    } catch {
-      /* The halt banner covers a key that cannot be restarted in process. */
-    }
-  }, [getKey]);
   return (
     <ScrollView
       style={styles.root}
@@ -350,29 +327,6 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
           )}
         </View>
       </Section>
-
-      {configMode ? (
-        <Section title="This session put the key in config mode">
-          <Text style={styles.hint}>
-            Config mode lets keys and settings be written, and it LOCKS the
-            key while it lasts. It ends only when the key reboots — nothing
-            else clears it, not even unlocking again.
-          </Text>
-          <Text style={styles.settling}>
-            While it lasts the key answers only eleven kinds of message and
-            silently drops the rest. A correct PIN can look ignored, a
-            security-key ceremony never answers, and reading a public key
-            times out — none of which report anything.
-          </Text>
-          <Text style={styles.hint}>
-            Said as "this session entered it" rather than "the key is in it",
-            because the key does not broadcast the fact. This is a record of
-            what the app did, and a key rebooted by anything else is already
-            out of it.
-          </Text>
-          <Btn title="Restart the key" tone="primary" onPress={restartKey} />
-        </Section>
-      ) : null}
 
       {capabilityRows.length ? (
         <Section title="What this firmware can do">

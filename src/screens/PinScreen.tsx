@@ -59,9 +59,6 @@ export function PinScreen({
   settling = null,
   led,
   keyPick = null,
-  configMode = false,
-  onCheckConfig,
-  checking = false,
 }: {
   /**
    * Whether the app believes the key is in config mode.
@@ -72,9 +69,6 @@ export function PinScreen({
    * Asking is the only way to find out, and THIS is where someone is standing
    * when they need to - not on Keys or Backup, where the panel lives.
    */
-  configMode?: boolean;
-  onCheckConfig?: () => void;
-  checking?: boolean;
   /**
    * Which key this screen is talking to, and how to change it - or null to
    * offer no choice at all, which is the honest state when nothing is plugged
@@ -297,23 +291,6 @@ export function PinScreen({
             at all. Asking is the only way out, and this is where they are
             standing.
           */}
-          {configMode && onCheckConfig ? (
-            <>
-              <Text style={styles.note}>
-                In config mode the key does not announce the unlock. Enter your
-                PIN on the key, then check.
-              </Text>
-              <View style={styles.footer}>
-                <Btn
-                  title={checking ? 'Checking…' : 'Check config mode'}
-                  tone="primary"
-                  disabled={checking}
-                  onPress={onCheckConfig}
-                />
-              </View>
-            </>
-          ) : null}
-
           {onBack ? (
             <View style={styles.footer}>
               <Btn title="Back" onPress={onBack} />
@@ -349,23 +326,6 @@ export function PinScreen({
         the app is the reset that always works: the firmware thread goes with
         the process, flash and EEPROM persist, and the key comes back locked.
       */}
-      {configMode && onCheckConfig ? (
-        <>
-          <Text style={styles.note}>
-            In config mode the key does not announce the unlock. Enter your PIN,
-            then check.
-          </Text>
-          <View style={styles.footer}>
-            <Btn
-              title={checking ? 'Checking…' : 'Check config mode'}
-              tone="primary"
-              disabled={checking}
-              onPress={onCheckConfig}
-            />
-          </View>
-        </>
-      ) : null}
-
       <View style={styles.footer}>
         <Btn title="Restart app" onPress={() => OkEmu.restartApp()} />
         {onBack ? <Btn title="Back" onPress={onBack} /> : null}

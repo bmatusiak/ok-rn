@@ -6,8 +6,6 @@ import {theme} from '../ui/theme';
 import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
 import * as biometrics from '../biometrics';
-import {ConfigModePanel} from '../ui/ConfigModePanel';
-import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
 import {SetupScreen} from './SetupScreen';
 import OkEmu from '../transport/OkEmu';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -41,10 +39,8 @@ function layoutOptions() {
 
 export function PreferencesScreen({
   emu,
-  configMode,
 }: {
   emu: EmuSession;
-  configMode: boolean;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -128,16 +124,6 @@ export function PreferencesScreen({
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  /*
-   * READY means in config mode AND the PIN is back in - and both halves are
-   * known here. Entering config mode locks the key, and the door in App
-   * follows `emu.device` (App.tsx:448), so a screen behind the door is a
-   * screen whose key is unlocked. The probe that used to answer the second
-   * half belongs to the door, the only place a locked key can be in front of
-   * you.
-   */
-  const configReady = configMode && emu.device === 'unlocked';
 
   /*
    * PERMISSIONS, visible and re-askable. The security-key role asks for
@@ -270,10 +256,15 @@ export function PreferencesScreen({
     {
       title: 'Advanced',
       note:
-        'The firmware refuses these outside config mode, so the key has to be ' +
-        'put into it first — which locks it, and ends only when the app is ' +
-        'restarted.',
-      rows: table.filter(p => p.requires === 'configMode'),
+        'The firmware refuses these on a key that is already set up. They are ' +
+        'shown so the key can be read, not so it can be changed here.',
+      /*
+       * Named by what is left rather than by the library's own word for the
+       * precondition. `requires` is the LIBRARY's description of a firmware
+       * rule and stays where it is; the app only needs to know these are not
+       * the two it can offer.
+       */
+      rows: table.filter(p => p.requires !== 'always' && p.requires !== 'firstUse'),
     },
     {
       title: 'Set during setup only',
@@ -321,13 +312,7 @@ export function PreferencesScreen({
       </Section>
 
       <Section title={`Change PINs — ${keyName}`}>
-        {!configMode ? (
-          <ConfigModePanel
-            emu={emu}
-            configMode={configMode}
-            purpose="change a PIN"
-          />
-        ) : changed ? (
+        {changed ? (
           <>
             <Text style={styles.body}>
               The PIN is set. The key is still in config mode, and only reads
@@ -428,14 +413,6 @@ export function PreferencesScreen({
         <Section key={group.title} title={group.title}>
           <Text style={styles.note}>{group.note}</Text>
 
-          {group.title === 'Advanced' && !configReady ? (
-            <ConfigModePanel
-              emu={emu}
-              configMode={configMode}
-              purpose="change these"
-            />
-          ) : null}
-
           {/*
             * GATED BY THE MODE EACH GROUP NEEDS, as a panel rather than row by
             * row - a whole section that cannot be used should look it, and the
@@ -451,14 +428,6 @@ export function PreferencesScreen({
             * DANGEROUS value needs config mode and their safe one needs first
             * use, so `requires` names the stricter and the note says so.
             */}
-          <ConfigModeRequired
-            ready={
-              group.title === 'Settings'
-                ? true
-                : group.title === 'Advanced'
-                  ? configReady
-                  : false
-            }>
             {group.rows.map(pref => (
               <PrefRow
                 key={pref.name}
@@ -470,12 +439,10 @@ export function PreferencesScreen({
                 disabled={
                   busy !== null ||
                   locked ||
-                  pref.requires === 'firstUse' ||
-                  (pref.requires === 'configMode' && !configReady)
+                  pref.requires === 'firstUse'
                 }
               />
             ))}
-          </ConfigModeRequired>
         </Section>
       ))}
 
