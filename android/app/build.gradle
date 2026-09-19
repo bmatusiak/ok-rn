@@ -157,8 +157,22 @@ android {
         applicationId "com.okrn"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        /*
+         * KEPT IN STEP WITH package.json, which is what the app DISPLAYS.
+         *
+         * These said 1.0 / 1 while the About panel read 0.0.1, because
+         * buildInfo takes its `app` string from package.json and nothing tied
+         * the two together. Two different numbers for one build is the kind of
+         * disagreement that only shows up when someone is trying to work out
+         * which apk they are holding.
+         *
+         * versionCode has to rise for every build handed out: Android refuses
+         * to install an apk whose code is lower than the installed one, and
+         * treats an equal code as the same build - so a tester who already has
+         * one gets "app not installed" rather than an update.
+         */
+        versionCode 2
+        versionName "0.0.2"
     }
     signingConfigs {
         debug {
