@@ -490,7 +490,8 @@ function Shell() {
           </View>
         ) : null}
 
-        {testing.enabled ? (
+        {/* `__DEV__` inline so Metro folds the branch out of a release bundle. */}
+        {__DEV__ && testing.enabled ? (
           <View style={styles.testing}>
             <Text style={styles.testingText}>
               Testing mode — PIN bypassed, developer tools shown
@@ -705,7 +706,7 @@ function Shell() {
 
         <Drawer
           open={drawer && ready}
-          tabs={testing.enabled ? [...TABS, TESTING_TAB] : TABS}
+          tabs={__DEV__ && testing.enabled ? [...TABS, TESTING_TAB] : TABS}
           value={tab}
           onChange={setTab}
           onClose={() => setDrawer(false)}
@@ -718,7 +719,7 @@ function Shell() {
            * whatever the UI does; this is so there is no dead button.
            */
           footer={
-            testing.available ? (
+            __DEV__ && testing.available ? (
               <Btn
                 title={testing.enabled ? 'Leave testing mode' : 'Enter testing mode'}
                 onPress={() => {

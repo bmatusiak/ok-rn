@@ -65,6 +65,35 @@ const config = {
      * explanation on the terminal.
      */
     blockList: /android[/\\](?:okemu[/\\](?:\.cxx|\.stage)|[^/\\]+[/\\]build)[/\\]/,
+
+    /*
+     * THE TESTING SCREEN IS NOT IN A RELEASE BUNDLE.
+     *
+     * Testing mode bypasses the PIN and exposes a factory reset, a soft-key
+     * wipe, the on-device test runner and the raw USB surface. `useTestingMode`
+     * already refuses to enable outside `__DEV__`, which makes it unreachable -
+     * and unreachable is not the same as absent. A release apk was unzipped and
+     * its bundle still held "Enter testing mode" and "Wipe the Soft Key",
+     * because Metro puts every statically imported module in the graph whether
+     * or not anything can route to it.
+     *
+     * So the module is SWAPPED at resolution time. `context.dev` is false for
+     * the bundle the release build embeds (`--dev false`), and the stub is a
+     * component returning null - so the real screen, and the transitive imports
+     * it is the only user of, never enter the graph.
+     *
+     * tools/release.js greps the built bundle for these strings and fails the
+     * build if they come back, so this cannot rot quietly.
+     */
+    resolveRequest: (context, moduleName, platform) => {
+      if (!context.dev && /(^|[/\\])TestingScreen$/.test(moduleName)) {
+        return {
+          type: 'sourceFile',
+          filePath: path.join(__dirname, 'src', 'screens', 'TestingScreen.release.tsx'),
+        };
+      }
+      return context.resolveRequest(context, moduleName, platform);
+    },
   },
 };
 

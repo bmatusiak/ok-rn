@@ -193,6 +193,48 @@ if (fs.existsSync(layouts)) {
       : 'UNKNOWN';
 }
 
+/*
+ * THE TESTING SURFACE IS NOT IN THE SHIPPED BUNDLE, and this is what proves it.
+ *
+ * A gate that makes something unreachable is not the same as it not being
+ * there, and the difference is readable by anyone who unzips the apk. A
+ * release was built with the runtime gate in place and its bundle still
+ * contained "Enter testing mode" and "Wipe the Soft Key", because Metro puts
+ * every statically imported module in the graph whether or not anything routes
+ * to it.
+ *
+ * So metro.config.js swaps TestingScreen for a stub when `!context.dev`, the
+ * `__DEV__` checks are inline so the branches fold, and this reads the bundle
+ * that actually shipped. Grepping the source would only prove what was meant.
+ */
+const FORBIDDEN = [
+  'Enter testing mode',
+  'Leave testing mode',
+  'PIN bypassed',
+  'Wipe the Soft Key',
+  'Factory reset',
+];
+/*
+ * Two places hold the same bundle and the AGP task that writes each has
+ * changed name across versions, so both are tried rather than one guessed.
+ * A path that is merely wrong must not read as a pass - "not found" is
+ * treated as a leak below, because a check that cannot run has not passed.
+ */
+const BUNDLES = [
+  path.join(ANDROID, 'app', 'build', 'generated', 'assets', 'react', 'release',
+    'index.android.bundle'),
+  path.join(ANDROID, 'app', 'build', 'intermediates', 'assets', 'release',
+    'mergeReleaseAssets', 'index.android.bundle'),
+];
+const bundle = BUNDLES.find((p) => fs.existsSync(p));
+let leaked = [];
+if (bundle) {
+  const js = fs.readFileSync(bundle, 'utf8');
+  leaked = FORBIDDEN.filter((s) => js.includes(s));
+} else {
+  leaked = ['(bundle not found - could not check)'];
+}
+
 const apk = path.join(ANDROID, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk');
 if (!fs.existsSync(apk)) {
   console.error(`release: no apk at ${apk}`);
@@ -207,10 +249,16 @@ say(`release: size       ${(bytes.length / 1048576).toFixed(1)} MB`);
 say(`release: sha256     ${sha}`);
 say(`release: firmware   DEBUG gate ${gate}`);
 say(`release: layouts    ${layoutGate}`);
+say(`release: testing    ${leaked.length ? 'LEAKED: ' + leaked.join(', ') : 'absent from the bundle'}`);
 say(`release: commit     ${head}${dirty ? ' + uncommitted changes' : ''}`);
 say('');
 if (!gate.startsWith('OFF')) {
   console.error('release: the firmware gate is not OFF - do not ship this');
+  process.exit(1);
+}
+if (leaked.length) {
+  console.error(`release: the testing surface is in the bundle (${leaked.join(', ')})`);
+  console.error('release: do not ship this - see metro.config.js resolveRequest');
   process.exit(1);
 }
 /*
