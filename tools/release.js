@@ -1,0 +1,224 @@
+#!/usr/bin/env node
+/**
+ * Build the RELEASE apk, cold, with production firmware.
+ *
+ * ## The rule this enforces
+ *
+ * A production release gets a CLEAN build, so it cannot carry stale drift.
+ * Not `--no-build-cache` bolted onto whatever was lying around - every
+ * intermediate removed first, including the staged firmware, and no daemon
+ * left holding a file it built last time.
+ *
+ * That rule is easy to state and easy to skip, because an incremental build
+ * looks identical and finishes sooner. It was skipped once already: a retry
+ * after a failure reused a half-written `.stage` from the run that crashed,
+ * which is exactly the drift the rule exists to stop.
+ *
+ * ## The one that is not optional
+ *
+ *     OKEMU_PRODUCTION=1
+ *
+ * stage.js leaves the firmware's DEBUG gate ALONE by default (WANT_DEBUG is
+ * null), and the working tree has it ON. So a release built without this flag
+ * ships DEBUG firmware in a release wrapper - a build that looks production
+ * and answers the debug console. The flag is set here and the result is
+ * VERIFIED afterwards from the staged source, rather than trusted.
+ *
+ *   node tools/release.js            clean, production, assembleRelease
+ *   node tools/release.js --keep     skip the wipe (for iterating; NOT a release)
+ */
+'use strict';
+
+const {execSync} = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const ROOT = path.resolve(__dirname, '..');
+const ANDROID = path.join(ROOT, 'android');
+const OKEMU = path.join(ANDROID, 'okemu');
+const KEEP = process.argv.includes('--keep');
+
+const say = (s) => console.log(s);
+/*
+ * ABSOLUTE, AND QUOTED. A bare `gradlew.bat` is resolved against PATH rather
+ * than the working directory under cmd.exe - "not recognized as an internal
+ * or external command", from a directory the wrapper is sitting in.
+ */
+const gradlew = JSON.stringify(
+  path.join(ANDROID, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew'),
+);
+
+/* Everything a previous build could have left behind. */
+const DISPOSABLE = [
+  path.join(OKEMU, '.stage'),
+  path.join(OKEMU, 'build'),
+  path.join(ANDROID, 'app', 'build'),
+  path.join(ANDROID, 'build'),
+];
+
+/*
+ * ONE COMMAND STRING, handed to a shell - not a file plus arguments.
+ *
+ * gradlew is a .bat on Windows, and Node 24 refuses to spawn a .bat from
+ * execFileSync: `spawnSync gradlew.bat EINVAL`, thrown before gradle starts,
+ * as part of the CVE-2024-27980 mitigation. execSync passes the whole string
+ * to cmd.exe, which runs a .bat the way a command prompt does.
+ */
+function run(args, opts = {}) {
+  return execSync(`${gradlew} ${args.join(' ')}`, {
+    cwd: ANDROID,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...opts,
+  });
+}
+
+/* ------------------------------------------------------------------ state */
+
+let dirty = '';
+try {
+  dirty = execSync('git status --short', {cwd: ROOT, encoding: 'utf8'}).trim();
+} catch {
+  /* not a git tree, or no git - not a reason to refuse to build */
+}
+let head = '';
+try {
+  head = execSync('git rev-parse --short HEAD', {cwd: ROOT, encoding: 'utf8'}).trim();
+} catch {}
+
+say('');
+say(`release: HEAD ${head || '(unknown)'}`);
+if (dirty) {
+  /*
+   * A WARNING, NOT A REFUSAL. Whether to ship uncommitted work is the
+   * builder's call; not being able to say afterwards what went in is not.
+   */
+  say('release: WARNING - the tree is dirty, so this apk is not reproducible from a commit:');
+  for (const line of dirty.split(/\r?\n/).slice(0, 10)) say(`  ${line}`);
+}
+
+/* ------------------------------------------------------------------- wipe */
+
+if (KEEP) {
+  say('release: --keep, so nothing was wiped. THIS IS NOT A RELEASE BUILD.');
+} else {
+  /*
+   * The daemon goes first. It holds file handles on what it built, and on
+   * Windows that surfaces as EBUSY from whatever tries to rewrite them -
+   * observed on `.stage/libraries/onlykey/okcore.cpp` mid-stage.
+   */
+  say('release: stopping the gradle daemon');
+  try { run(['--stop']); } catch { /* none running */ }
+
+  for (const dir of DISPOSABLE) {
+    if (!fs.existsSync(dir)) continue;
+    say(`release: removing ${path.relative(ROOT, dir)}`);
+    fs.rmSync(dir, {recursive: true, force: true, maxRetries: 5, retryDelay: 200});
+  }
+}
+
+/* ------------------------------------------------------------------ build */
+
+say('release: building with OKEMU_PRODUCTION=1, cold');
+const env = {...process.env, OKEMU_PRODUCTION: '1'};
+let out = '';
+try {
+  out = run([':app:assembleRelease', '--no-build-cache', '--no-daemon'], {env});
+} catch (e) {
+  out = String((e.stdout || '') + (e.stderr || ''));
+  const tail = out.split(/\r?\n/).filter(Boolean).slice(-40).join('\n');
+  /*
+   * ALWAYS SAY SOMETHING. A spawn failure carries no stdout at all, so this
+   * printed an empty block and the word FAILED - which is worse than the
+   * failure, because it looks like the build itself said nothing.
+   */
+  console.log(tail || `(no build output) ${e.message || e}`);
+  console.error('\nrelease: BUILD FAILED');
+  process.exit(1);
+}
+
+for (const line of out.split(/\r?\n/)) {
+  if (/^\s*stage:|BUILD SUCCESSFUL|BUILD FAILED/.test(line)) say(`  ${line.trim()}`);
+}
+
+/*
+ * Gradle can print BUILD SUCCESSFUL for a run whose real work failed earlier,
+ * and has: a staging crash once exited 0 with "10 tasks up-to-date". So the
+ * apk's existence is what decides, not the wording.
+ */
+if (!/BUILD SUCCESSFUL/.test(out)) {
+  console.error('release: gradle did not report success');
+  process.exit(1);
+}
+
+/* ----------------------------------------------------------------- verify */
+
+/*
+ * THE GATE IS CHECKED, NOT ASSUMED. Setting the flag and reading back what it
+ * did are different things, and only the second survives someone changing how
+ * stage.js reads its environment.
+ */
+/*
+ * IN onlykey.h, where the firmware DECLARES the gate - not okcore.cpp, which
+ * only reads it. An earlier version of this check looked in okcore.cpp, found
+ * neither marker and reported UNKNOWN against a build that was correctly
+ * production: the right refusal for the wrong reason.
+ */
+const staged = path.join(OKEMU, '.stage', 'libraries', 'onlykey', 'onlykey.h');
+let gate = 'UNKNOWN';
+if (fs.existsSync(staged)) {
+  const src = fs.readFileSync(staged, 'utf8');
+  const off =
+    src.includes('//#define DEBUG - removed by stage.js') ||
+    src.includes('//#define DEBUG //Enable Serial Monitor');
+  const on = /^#define DEBUG\s/m.test(src);
+  gate = off && !on ? 'OFF (production)' : on ? 'ON  (DEBUG - NOT a production build)' : 'UNKNOWN';
+}
+
+/*
+ * The keyboard layouts follow the same gate. A mismatch does not fail the
+ * build - it types the wrong characters on a host - so it is named here
+ * rather than discovered later.
+ */
+const layouts = path.join(OKEMU, '.stage', 'core', 'keylayouts.h');
+let layoutGate = 'UNKNOWN';
+if (fs.existsSync(layouts)) {
+  const src = fs.readFileSync(layouts, 'utf8');
+  layoutGate = src.includes('//#define KEYLAYOUTS_DEBUG_BUILD')
+    ? 'OFF (US English only)'
+    : /^#define KEYLAYOUTS_DEBUG_BUILD/m.test(src)
+      ? 'ON  (all layouts)'
+      : 'UNKNOWN';
+}
+
+const apk = path.join(ANDROID, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk');
+if (!fs.existsSync(apk)) {
+  console.error(`release: no apk at ${apk}`);
+  process.exit(1);
+}
+const bytes = fs.readFileSync(apk);
+const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+
+say('');
+say(`release: apk        ${path.relative(ROOT, apk)}`);
+say(`release: size       ${(bytes.length / 1048576).toFixed(1)} MB`);
+say(`release: sha256     ${sha}`);
+say(`release: firmware   DEBUG gate ${gate}`);
+say(`release: layouts    ${layoutGate}`);
+say(`release: commit     ${head}${dirty ? ' + uncommitted changes' : ''}`);
+say('');
+if (!gate.startsWith('OFF')) {
+  console.error('release: the firmware gate is not OFF - do not ship this');
+  process.exit(1);
+}
+/*
+ * Said every time rather than left to be discovered. The release buildType
+ * still uses signingConfigs.debug, so this apk is signed with the debug
+ * keystore that ships in the repo - fine for a tester, not for anything real.
+ */
+say('release: NOTE - signed with the DEBUG keystore (android/app/debug.keystore).');
+say('release: A real release needs its own key, kept outside this repo forever:');
+say('release: whichever key signs the first install is the key every update must use.');
+say('');
