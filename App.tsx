@@ -396,9 +396,12 @@ function Shell() {
    * proof the broadcast never gives, because in config mode it goes on saying
    * INITIALIZED.
    */
-  const [probe, setProbe] = useState<{at: number; ok: boolean; note: string} | null>(
-    null,
-  );
+  /*
+   * The ANSWER is not kept, only acted on. An unlock opens the door, which is
+   * the whole visible result; a refusal leaves the door shut, which is the
+   * other one. Three screens used to receive this as a prop and re-derive
+   * their readiness from it - see ConfigModePanel for why that went.
+   */
   const [checking, setChecking] = useState(false);
 
   const checkConfig = useCallback(async () => {
@@ -406,22 +409,16 @@ function Shell() {
     try {
       const {device} = await getActiveKey();
       const ok = await device.configModeReady({timeoutMs: 2500});
-      setProbe({at: Date.now(), ok, note: ok ? 'labels came back' : 'refused'});
       console.log(`[config] label probe: ${ok ? 'UNLOCKED' : 'locked'}`);
       /* Labels came back, so the key is unlocked - the app has no other way
          to learn that while in config mode. */
       if (ok) emu.markUnlocked();
     } catch (e) {
-      setProbe({at: Date.now(), ok: false, note: String((e as Error)?.message ?? e)});
+      console.log(`[config] label probe failed: ${String((e as Error)?.message ?? e)}`);
     } finally {
       setChecking(false);
     }
   }, [getActiveKey, emu]);
-
-  /* Leaving config mode makes the last answer meaningless. */
-  useEffect(() => {
-    if (!configMode) setProbe(null);
-  }, [configMode]);
 
 
   const [tab, setTab] = useState<Tab>('This Key');
@@ -745,17 +742,17 @@ function Shell() {
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
             )
           ) : tab === 'Keys' ? (
-            <KeysScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} overrides={caps.overrides} />
+            <KeysScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} overrides={caps.overrides} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
-            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
+            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} setConfigMode={setConfigMode} />
           ) : tab === 'Crypto' ? (
             <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Messages' ? (
             <MessagesScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Settings' ? (
-            <PreferencesScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
+            <PreferencesScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} />
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
@@ -790,7 +787,7 @@ function Shell() {
             <TestingScreen
               configMode={configMode}
               setConfigMode={setConfigMode}
-              probe={probe} onCheck={checkConfig} checking={checking}
+             
               emu={keys.soft}
               hard={keys.hard}
               active={keys.key}

@@ -46,17 +46,9 @@ export function BackupScreen({
   blockScreenshots = true,
   configMode,
   setConfigMode,
-  probe,
-  onCheck,
-  checking,
 }: {
   configMode: boolean;
   setConfigMode: (on: boolean) => void;
-  /** The label probe App runs while in config mode; `ok` means unlocked. */
-  probe: {at: number; ok: boolean; note: string} | null;
-  /** Runs one label probe, on demand. See App: never on a timer. */
-  onCheck: () => Promise<void>;
-  checking: boolean;
   emu: EmuSession;
   blockScreenshots?: boolean;
 }) {
@@ -102,63 +94,44 @@ export function BackupScreen({
    * right once.
    */
   /*
-   * THE PROBE IS THE TRUTH, and it runs by itself - see the effect below.
-   *
-   * Config mode locks the key, and the firmware does not announce the
-   * re-unlock (OnlyKey.ino:707 skips the broadcast while in config mode), so
-   * the only way to know the PIN went back in is to ask. `probe.ok` is that
-   * answer and stays the gate.
-   *
-   * What changed is WHEN it is asked. It used to wait for somebody to find a
-   * "Check config mode" button at the foot of the tab, so the whole screen sat
-   * dimmed after a successful unlock with nothing saying why.
-   */
-  /*
    * IN CONFIG MODE AND UNLOCKED IS THE PROOF. There is nothing left to ask.
    *
    * Config mode locks the key, so a key that is unlocked AFTER entering it can
-   * only have got there by the PIN going back in. If the app can see that, the
-   * question is already answered - and it usually can: the header pill reads
-   * `unlocked` throughout.
+   * only have got there by the PIN going back in.
    *
-   * This used to demand `probe.ok` alone, a slot-label read triggered by a
-   * "Check config mode" button at the foot of the tab. So the whole screen sat
-   * dimmed after a successful unlock, with the thing standing in the way being
-   * a button nothing pointed at.
+   * And that is knowable here, because the LOCK IS HANDLED AT THE DOOR. App's
+   * phase follows `emu.device` (App.tsx:448), so a locked key puts the login
+   * screen back - this screen only renders behind an unlocked one.
    *
-   * THE PROBE REMAINS, as the fallback it was always meant to be. A hard key on
-   * production firmware need not report the re-unlock at all - the firmware
-   * skips the broadcast while in config mode - so `emu.device` can sit at
-   * something other than 'unlocked' with the PIN plainly in. There the button
-   * is the only way to settle it, and removing it would strand exactly the
-   * device this feature is for.
+   * The hard key is the reason that is not circular. Production firmware skips
+   * the unlock broadcast while in config mode (OnlyKey.ino:707), so `emu.device`
+   * can sit at something other than 'unlocked' with the PIN plainly in. That is
+   * what the door's "Check config mode" is for: it reads a slot label, and on
+   * an answer calls `emu.markUnlocked()` (App.tsx:413) - which opens the door
+   * and settles this flag in the same move.
    *
-   * An earlier attempt hooked the locked -> unlocked TRANSITION instead. It
-   * never fired: `emu.device` does not go to 'locked' when config mode locks
-   * the key, so there was no edge to catch. Keying on an edge assumed a signal
-   * that does not exist.
+   * Two earlier attempts are recorded so they are not rebuilt. Demanding
+   * `probe.ok` HERE left the tab dimmed after a successful unlock, with the
+   * thing in the way being a button at the foot that nothing pointed at - and
+   * a second copy of the door's PIN pad beside it, which is the defect this
+   * removes. Hooking the locked -> unlocked TRANSITION never fired at all:
+   * `emu.device` does not go to 'locked' when config mode locks the soft key,
+   * so there was no edge to catch.
    */
-  const configReady =
-    configMode && (emu.device === 'unlocked' || probe?.ok === true);
-
-
+  const configReady = configMode && emu.device === 'unlocked';
 
   /*
    * WHY a section is inert, said where the section is.
    *
-   * Two different blockers used to read as one. Not being in config mode and
-   * being in it with the PIN not yet confirmed are different problems with
-   * different next actions, and both showed up as the same dimming - so
-   * standing IN config mode with Restore dead gave no clue that the thing to
-   * press was at the foot of the tab.
+   * Dimming alone gave no clue what to press. There is only one blocker left
+   * now that the lock is the door's business, and the answer to it is at the
+   * foot of this tab.
    *
    * Null when the section is usable, so the caller renders nothing.
    */
-  const blockedBecause = !configMode
-    ? 'Needs config mode — the panel at the foot of this tab turns it on.'
-    : !probe?.ok
-      ? 'Config mode is on, but the key locked itself — enter your PIN, then press “Check config mode” at the foot.'
-      : null;
+  const blockedBecause = configReady
+    ? null
+    : 'Needs config mode — the panel at the foot of this tab turns it on.';
 
   /*
    * THE BRIDGE MUST NOT RELAY A BACKUP.
@@ -765,9 +738,6 @@ export function BackupScreen({
           emu={emu}
           configMode={configMode}
           setConfigMode={setConfigMode}
-          probe={probe}
-          onCheck={onCheck}
-          checking={checking}
           purpose="set a backup key or restore a backup"
         />
       )}

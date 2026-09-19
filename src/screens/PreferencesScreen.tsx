@@ -8,7 +8,6 @@ import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
 import * as biometrics from '../biometrics';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
-import {PinScreen} from './PinScreen';
 import {SetupScreen} from './SetupScreen';
 import OkEmu from '../transport/OkEmu';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -44,18 +43,10 @@ export function PreferencesScreen({
   emu,
   configMode,
   setConfigMode,
-  probe,
-  onCheck,
-  checking,
 }: {
   emu: EmuSession;
   configMode: boolean;
   setConfigMode: (on: boolean) => void;
-  /** The label probe App runs while in config mode; `ok` means unlocked. */
-  probe: {at: number; ok: boolean; note: string} | null;
-  /** Runs one label probe, on demand. See App: never on a timer. */
-  onCheck: () => Promise<void>;
-  checking: boolean;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -140,7 +131,15 @@ export function PreferencesScreen({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const configReady = configMode && probe?.ok === true;
+  /*
+   * READY means in config mode AND the PIN is back in - and both halves are
+   * known here. Entering config mode locks the key, and the door in App
+   * follows `emu.device` (App.tsx:448), so a screen behind the door is a
+   * screen whose key is unlocked. The probe that used to answer the second
+   * half belongs to the door, the only place a locked key can be in front of
+   * you.
+   */
+  const configReady = configMode && emu.device === 'unlocked';
 
   /*
    * PERMISSIONS, visible and re-askable. The security-key role asks for
@@ -246,24 +245,6 @@ export function PreferencesScreen({
     [backend, getKey, values],
   );
 
-  /* Config mode locks the key, so the PIN has to go back in. */
-  if (configMode && !configReady) {
-    return (
-      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-        <ConfigModePanel
-          emu={emu}
-          configMode={configMode}
-          setConfigMode={setConfigMode}
-          probe={probe}
-          onCheck={onCheck}
-          checking={checking}
-          purpose="change a PIN"
-        />
-        <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
-      </ScrollView>
-    );
-  }
-
 
   if (changing) {
     return (
@@ -347,9 +328,6 @@ export function PreferencesScreen({
             emu={emu}
             configMode={configMode}
             setConfigMode={setConfigMode}
-            probe={probe}
-            onCheck={onCheck}
-            checking={checking}
             purpose="change a PIN"
           />
         ) : changed ? (
@@ -458,9 +436,6 @@ export function PreferencesScreen({
               emu={emu}
               configMode={configMode}
               setConfigMode={setConfigMode}
-              probe={probe}
-              onCheck={onCheck}
-              checking={checking}
               purpose="change these"
             />
           ) : null}

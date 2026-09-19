@@ -8,17 +8,38 @@ import type {EmuSession} from '../hooks/useOkEmu';
 /**
  * Config mode, explained and driven, wherever it is needed.
  *
- * Four screens need it - Keys, Backup, Firmware, Preferences - and each had
- * grown its own version, which is how they came to disagree: Keys and
- * Preferences took the screen over, Backup inlined it, Firmware gated on a
- * different flag and offered its actions before the PIN was back in.
+ * Three screens need it - Keys, Backup, Preferences - and each had grown its
+ * own version, which is how they came to disagree: Keys and Preferences took
+ * the screen over, Backup inlined it.
  *
  * ## What the panel has to carry that the key does not
  *
- * Nothing about config mode is announced. Entering it LOCKS the device; the
- * unlock that follows is never broadcast; and it ends only at a reboot. So the
- * app is the only thing that can explain the lock, and the only thing that can
- * discover the unlock - by probing, which App does while `configMode` is on.
+ * Nothing about config mode is announced. Entering it LOCKS the device, and it
+ * ends only at a reboot. So the app is the only thing that can explain the
+ * lock, and the only thing that can say when it is over.
+ *
+ * ## THIS PANEL DOES NOT TAKE A PIN
+ *
+ * It used to. Entering config mode locks the key, so every screen that offered
+ * config mode also had to offer a way back in - and each one grew its own PIN
+ * pad and its own "check config mode" button, sitting inside a backup form or
+ * a key loader. Reported 2026-09-19 as a defect: *"the enter config mode
+ * should not have any pin entry or check config mode - the only place it
+ * should exist is on the main login for unlock"*.
+ *
+ * It is also redundant, because the lock is already handled one level up. The
+ * door in App follows `emu.device` (App.tsx:448), so a key that locks itself -
+ * for any reason, config mode included - puts the login screen back, and THAT
+ * screen has the pad and the check button (App.tsx:692). A screen behind the
+ * door is a screen whose key is unlocked, so a PIN pad there is a pad for a
+ * lock that cannot be in front of you.
+ *
+ * Which is why `ready` asks `emu.device`, not a probe. The probe answers a
+ * question only the door can be asked: "the PIN went in but the key never said
+ * so" - true of a PRODUCTION HARD KEY, which broadcasts nothing while in
+ * config mode. It is resolved there by `checkConfig`, which calls
+ * `emu.markUnlocked()` on success - so by the time you are back on this
+ * screen, the answer has already become `emu.device === 'unlocked'`.
  *
  * ## Getting in is not the same on every key
  *
@@ -33,26 +54,19 @@ export function ConfigModePanel({
   emu,
   configMode,
   setConfigMode,
-  probe,
-  onCheck,
-  checking,
   /** What the caller wants config mode FOR, e.g. "load a key". */
   purpose,
 }: {
   emu: EmuSession;
   configMode: boolean;
   setConfigMode: (on: boolean) => void;
-  probe: {at: number; ok: boolean; note: string} | null;
-  /** Runs one label probe, on demand. See App: never on a timer. */
-  onCheck: () => Promise<void>;
-  checking: boolean;
   purpose: string;
 }) {
   const config = useConfigMode(emu);
   const [confirming, setConfirming] = useState(false);
 
   const locked = emu.device !== 'unlocked';
-  const ready = configMode && probe?.ok === true;
+  const ready = configMode && !locked;
 
   /* Already in, and the PIN is back in: the only state where work can happen. */
   if (ready) {
@@ -66,30 +80,18 @@ export function ConfigModePanel({
     );
   }
 
-  /* In config mode, still locked. The PIN goes back in on the key or the pad. */
+  /*
+   * In config mode and still locked. Normally unreachable - the door would be
+   * showing instead - but testing mode holds `phase` at 'main' regardless of
+   * the lock (App.tsx:449), so this says what is true rather than pretending.
+   */
   if (configMode) {
     return (
       <Section title="Config mode">
         <Text style={styles.body}>
-          The key locked itself entering config mode. Enter your PIN again to
-          carry on.
+          In config mode, but the key is locked — it locks itself on the way in.
+          Enter your PIN on the login screen and come back.
         </Text>
-        <Text style={styles.note}>
-          The key will not announce the unlock, so the app cannot see it happen
-          — press this once the PIN is in and it will ask.
-        </Text>
-        <Btn
-          title={checking ? 'Checking…' : 'Check config mode'}
-          tone="primary"
-          disabled={checking}
-          onPress={() => void onCheck()}
-        />
-        {probe && !probe.ok ? (
-          <Text style={styles.note}>
-            Still locked — the key refused a label read. Finish the PIN and
-            check again.
-          </Text>
-        ) : null}
       </Section>
     );
   }
@@ -103,7 +105,7 @@ export function ConfigModePanel({
       </Text>
       <Text style={styles.steps}>
         1. hold button 6 — the app does this, or hold it on the key
-        {'\n'}2. the key locks, and you enter your PIN again
+        {'\n'}2. the key locks, and you enter your PIN again at the login screen
         {'\n'}3. you {purpose}
         {'\n'}4. restart the key — config mode ends only there, and until then
         it will not sign or type

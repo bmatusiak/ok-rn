@@ -4,7 +4,6 @@ import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
-import {PinScreen} from './PinScreen';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
 import {missingNote, supports} from '../firmwareFeatures';
@@ -138,18 +137,11 @@ export function KeysScreen({
   emu,
   configMode,
   setConfigMode,
-  probe,
-  onCheck,
-  checking,
   overrides,
 }: {
   emu: EmuSession;
   configMode: boolean;
   setConfigMode: (on: boolean) => void;
-  probe: {at: number; ok: boolean; note: string} | null;
-  /** Runs one label probe, on demand. See App: never on a timer. */
-  onCheck: () => Promise<void>;
-  checking: boolean;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -205,11 +197,15 @@ export function KeysScreen({
    * thing to set a passphrase.
    */
   /*
-   * READY means in config mode AND the PIN is back in. The second half can
-   * only be learned by probing - the key never announces it - and App runs
-   * that probe, so both halves arrive as props.
+   * READY means in config mode AND the PIN is back in.
+   *
+   * Both halves are in hand here. Entering config mode locks the key, and the
+   * door in App follows `emu.device` (App.tsx:448) - so a screen behind the
+   * door is a screen whose key is unlocked, and there is nothing left to probe
+   * for. The probe belongs to the door, which is the only place a locked key
+   * can be standing in front of you.
    */
-  const configReady = configMode && probe?.ok === true;
+  const configReady = configMode && emu.device === 'unlocked';
 
   /*
    * Post-quantum generation, and whether this firmware has it at all - which
@@ -567,24 +563,6 @@ export function KeysScreen({
     await emu.pressRun(genChallenge);
   }, [genChallenge, emu]);
 
-  /* Config mode locks the key; the PIN has to go back in before anything else. */
-  if (configMode && !configReady) {
-    return (
-      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-        <ConfigModePanel
-          emu={emu}
-          configMode={configMode}
-          setConfigMode={setConfigMode}
-          probe={probe}
-          onCheck={onCheck}
-          checking={checking}
-          purpose="load keys"
-        />
-        <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
-      </ScrollView>
-    );
-  }
-
   return (
     <ScrollView
       style={styles.root}
@@ -649,9 +627,6 @@ export function KeysScreen({
         emu={emu}
         configMode={configMode}
         setConfigMode={setConfigMode}
-        probe={probe}
-        onCheck={onCheck}
-        checking={checking}
         purpose="load keys"
       />
 

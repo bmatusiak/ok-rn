@@ -36,9 +36,6 @@ const TEST_PIN = '1234561';
 export function TestingScreen({
   configMode,
   setConfigMode,
-  probe,
-  onCheck,
-  checking,
   emu,
   hard,
   active,
@@ -56,11 +53,6 @@ export function TestingScreen({
    */
   configMode: boolean;
   setConfigMode: (on: boolean) => void;
-  /** The last label probe, or null when not probing. Reports only. */
-  probe: {at: number; ok: boolean; note: string} | null;
-  /** Runs one label probe, on demand. See App: never on a timer. */
-  onCheck: () => Promise<void>;
-  checking: boolean;
   emu: EmuSession;
   /** The hard key, for the one bench operation this tab offers on it. */
   hard: HardKeySession;
@@ -122,23 +114,6 @@ export function TestingScreen({
           mode by holding button 6, and leaves it only by being unplugged (hard
           key) or by restarting the app (soft key).
         </Text>
-        {configMode ? (
-          <>
-            <KeyValue
-              label="label probe"
-              value={
-                probe
-                  ? `${probe.ok ? 'UNLOCKED' : 'locked'} — ${probe.note}`
-                  : 'not asked yet'
-              }
-            />
-            <Btn
-              title={checking ? 'Checking…' : 'Check config mode'}
-              disabled={checking}
-              onPress={() => void onCheck()}
-            />
-          </>
-        ) : null}
       </Section>
 
       <Section title="Soft Key firmware">
