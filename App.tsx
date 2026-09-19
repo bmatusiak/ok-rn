@@ -64,6 +64,22 @@ const TABS = [
   'Passkeys',
   'Log',
 ] as const;
+/**
+ * Whether the screens that show secrets refuse to be captured.
+ *
+ * FOLLOWS THE BUILD, NOT THE SESSION. This used to be `!testing.enabled`, so a
+ * DEBUG build blocked screenshots unless you had entered testing mode - which
+ * made the ordinary development loop (change a screen, look at it) impossible
+ * without bypassing the PIN first, and left the block untested in the only
+ * build where it matters.
+ *
+ * `__DEV__` is false in a release bundle, so a shipped app always blocks and a
+ * development build never does. Testing mode no longer comes into it: it is a
+ * way to skip the door, not a statement about whether this screen holds
+ * anything worth hiding.
+ */
+const BLOCK_SCREENSHOTS = !__DEV__;
+
 const TESTING_TAB = 'Testing' as const;
 type Tab = (typeof TABS)[number] | typeof TESTING_TAB;
 
@@ -313,6 +329,53 @@ function Shell() {
   useEffect(() => {
     if (keys.attached === false) setConfigMode(false);
   }, [keys.attached]);
+
+  /*
+   * SWITCHING TO THE HARD KEY DURING CONFIG MODE RESTARTS THE APP.
+   *
+   * `configMode` is one app-wide flag describing, in practice, the SOFT key -
+   * and `emu = keys.key` is whichever key is ACTIVE. So the moment the hard key
+   * becomes active, the app carries a belief about one device onto another:
+   * dimming what works and offering what does not.
+   *
+   * Forgetting the flag would not do. The soft key really IS still in config
+   * mode - the firmware assigns `configmode` in exactly two places, the boot
+   * initializer and the button-6 gesture, and there is no `configmode = false`
+   * anywhere - and it cannot boot in place, because the firmware thread only
+   * exits through the AIRCR trap (NativeOkEmuModule.kt:141). Clearing the flag
+   * would make the app wrong about the soft key instead of wrong about the
+   * hard one. A new process is the only thing that resolves both, and is what
+   * the config-mode banner has been telling the user to do all along.
+   *
+   * ON THE ACTIVE BACKEND, NOT ON ATTACHMENT - and the difference is the bug
+   * this replaces. A first version fired when `keys.attached` became true, but
+   * attaching a key is not the same as switching to it: useKey.ts:258 resolves
+   * `override > (auto && attached) > embedded`, so with an `embedded` override
+   * or in manual mode a plugged-in key leaves the soft key active. That version
+   * threw the session away for a switch that never happened.
+   *
+   * Launch is not a switch either. `backend` starts 'embedded', so a key
+   * already plugged in produces embedded -> usb on the first poll - but
+   * `configMode` is false at launch, so nothing fires. The guard is the flag.
+   *
+   * Edge-detected the way useKey.ts:287-296 already does it, rather than a
+   * third pattern for the same question.
+   */
+  const previousBackend = useRef(keys.backend);
+  useEffect(() => {
+    const becameHard =
+      previousBackend.current !== 'usb' && keys.backend === 'usb';
+    previousBackend.current = keys.backend;
+    if (!becameHard || !configMode) return;
+    /*
+     * THE ONLY AUTOMATIC RESTART IN THE APP - every other caller is a button
+     * somebody pressed. It kills this process and relaunches, so it says why
+     * on the way out; a screen that vanishes with no explanation reads as a
+     * crash.
+     */
+    console.log('[app] switched to the hard key while the soft key was in config mode - restarting');
+    void OkEmu.restartApp();
+  }, [keys.backend, configMode]);
 
   /*
    * ASKED FOR, NEVER ON A TIMER.
@@ -676,7 +739,7 @@ function Shell() {
                  * photo, so testing mode - which exists to make the app
                  * inspectable - turns it off.
                  */
-                blockScreenshots={!testing.enabled}
+                blockScreenshots={BLOCK_SCREENSHOTS}
               />
             ) : (
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
@@ -686,9 +749,9 @@ function Shell() {
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
-            <BackupScreen emu={emu} blockScreenshots={!testing.enabled} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
+            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
           ) : tab === 'Crypto' ? (
-            <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} configMode={configMode} overrides={caps.overrides} />
+            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Messages' ? (
             <MessagesScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Settings' ? (

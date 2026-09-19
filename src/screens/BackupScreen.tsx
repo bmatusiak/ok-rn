@@ -10,7 +10,6 @@ import NativeShare from '../../specs/NativeShare';
 import {useSecureScreen} from '../hooks/useSecureScreen';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
-import {PinScreen} from './PinScreen';
 import {summarizeBackup} from '../backupFile';
 import type {BackupSummary} from '../backupFile';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -102,7 +101,64 @@ export function BackupScreen({
    * twice - the sequence is three firmware quirks deep and only worth getting
    * right once.
    */
-  const configReady = configMode && probe?.ok === true;
+  /*
+   * THE PROBE IS THE TRUTH, and it runs by itself - see the effect below.
+   *
+   * Config mode locks the key, and the firmware does not announce the
+   * re-unlock (OnlyKey.ino:707 skips the broadcast while in config mode), so
+   * the only way to know the PIN went back in is to ask. `probe.ok` is that
+   * answer and stays the gate.
+   *
+   * What changed is WHEN it is asked. It used to wait for somebody to find a
+   * "Check config mode" button at the foot of the tab, so the whole screen sat
+   * dimmed after a successful unlock with nothing saying why.
+   */
+  /*
+   * IN CONFIG MODE AND UNLOCKED IS THE PROOF. There is nothing left to ask.
+   *
+   * Config mode locks the key, so a key that is unlocked AFTER entering it can
+   * only have got there by the PIN going back in. If the app can see that, the
+   * question is already answered - and it usually can: the header pill reads
+   * `unlocked` throughout.
+   *
+   * This used to demand `probe.ok` alone, a slot-label read triggered by a
+   * "Check config mode" button at the foot of the tab. So the whole screen sat
+   * dimmed after a successful unlock, with the thing standing in the way being
+   * a button nothing pointed at.
+   *
+   * THE PROBE REMAINS, as the fallback it was always meant to be. A hard key on
+   * production firmware need not report the re-unlock at all - the firmware
+   * skips the broadcast while in config mode - so `emu.device` can sit at
+   * something other than 'unlocked' with the PIN plainly in. There the button
+   * is the only way to settle it, and removing it would strand exactly the
+   * device this feature is for.
+   *
+   * An earlier attempt hooked the locked -> unlocked TRANSITION instead. It
+   * never fired: `emu.device` does not go to 'locked' when config mode locks
+   * the key, so there was no edge to catch. Keying on an edge assumed a signal
+   * that does not exist.
+   */
+  const configReady =
+    configMode && (emu.device === 'unlocked' || probe?.ok === true);
+
+
+
+  /*
+   * WHY a section is inert, said where the section is.
+   *
+   * Two different blockers used to read as one. Not being in config mode and
+   * being in it with the PIN not yet confirmed are different problems with
+   * different next actions, and both showed up as the same dimming - so
+   * standing IN config mode with Restore dead gave no clue that the thing to
+   * press was at the foot of the tab.
+   *
+   * Null when the section is usable, so the caller renders nothing.
+   */
+  const blockedBecause = !configMode
+    ? 'Needs config mode — the panel at the foot of this tab turns it on.'
+    : !probe?.ok
+      ? 'Config mode is on, but the key locked itself — enter your PIN, then press “Check config mode” at the foot.'
+      : null;
 
   /*
    * THE BRIDGE MUST NOT RELAY A BACKUP.
@@ -384,14 +440,11 @@ export function BackupScreen({
         * two are never both available, which is worth seeing rather than
         * discovering.
         */}
-      {configMode ? (
-        <Section title="Not while in config mode">
-          <Text style={styles.body}>
-            A backup is TYPED by the key, and the key will not type until it is
-            restarted. Unplug a hard key, or restart the app for the soft key.
-          </Text>
-        </Section>
-      ) : null}
+      {/*
+        The app-wide banner already says the key will not type in config mode,
+        the section below is dimmed, and it carries its own one-line reason.
+        A fourth statement of the same fact was noise.
+      */}
       <ConfigModeRequired ready={!configMode}>
       <Section title={`Backup — ${keyName}`}>
         <Text style={styles.body}>
@@ -455,8 +508,40 @@ export function BackupScreen({
         </Section>
       ) : null}
 
-      {needsPassphrase ? (
+      {/*
+        ALWAYS HERE, and that is the whole point.
+        This used to render only when `needsPassphrase`, a flag set in the
+        capture error handler when the device refused for want of a backup key.
+        So the only way to reach the control was to FAIL a backup first - and
+        setting a backup key needs config mode, and entering config mode locks
+        the key, which remounts this screen and clears the flag. The section
+        vanished at the exact moment it became usable.
+        A backup passphrase could not be set from this tab at all. Not awkward:
+        unreachable. Observed end to end on device.
+        The flag survives, demoted to what it is good for - saying WHY the
+        section matters right now, after a backup has just failed for want of
+        it. It no longer decides whether the section exists.
+      */}
+      {/*
+        DIMMED THE SAME WAY RESTORE IS. Both need config mode, both say so in
+        the same words - so they must LOOK the same too. Left undimmed, this
+        section read as usable while its own line said it was not, which is a
+        worse lie than either state alone.
+        Dimmed, not hidden: the point of the panel being at the foot is that
+        you can see what config mode would give you before committing to it.
+      */}
+      <ConfigModeRequired ready={configReady}>
         <Section title="Set a backup key">
+          {/*
+            The flag's remaining job: say why this matters RIGHT NOW, when a
+            backup has just been refused for want of a key. It no longer
+            decides whether the section exists.
+          */}
+          {needsPassphrase ? (
+            <Text style={styles.warn}>
+              The backup you just asked for needs this.
+            </Text>
+          ) : null}
           <Segmented
             value={backupSource}
             options={BACKUP_SOURCES}
@@ -519,21 +604,18 @@ export function BackupScreen({
             placeholderTextColor={theme.textDim}
             style={styles.input}
           />
+          {/*
+            ONE PANEL FOR THE TAB, at the bottom - not one per section.
+            This used to carry its own ConfigModePanel, so once the section was
+            open TWO rendered together: this one and Restore's, identical but
+            for step 3, two buttons for one switch. It also nested an entire
+            PinScreen, so entering config mode grew a second PIN pad inside a
+            backup form.
+            The line below says what this section needs; the single panel at
+            the foot of the tab is how to get there.
+          */}
           {!configReady ? (
-            <>
-              <ConfigModePanel
-                emu={emu}
-                configMode={configMode}
-                setConfigMode={setConfigMode}
-                probe={probe}
-              onCheck={onCheck}
-              checking={checking}
-                purpose="set a backup passphrase"
-              />
-              {configMode ? (
-                <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} />
-              ) : null}
-            </>
+            <Text style={styles.note}>{blockedBecause}</Text>
           ) : (
             <Btn
               title={busy === 'passphrase' ? 'Setting…' : 'Set passphrase'}
@@ -548,7 +630,7 @@ export function BackupScreen({
           </>
           ) : null}
         </Section>
-      ) : null}
+      </ConfigModeRequired>
 
       {/*
         * RESTORE NEEDS CONFIG MODE on a provisioned key.
@@ -563,17 +645,6 @@ export function BackupScreen({
         * looked like it worked and did nothing is the worst thing this screen
         * could do, so the panel goes dim and inert rather than inviting it.
         */}
-      {!configReady ? (
-        <ConfigModePanel
-          emu={emu}
-          configMode={configMode}
-          setConfigMode={setConfigMode}
-          probe={probe}
-          onCheck={onCheck}
-          checking={checking}
-          purpose="restore a backup"
-        />
-      ) : null}
       <ConfigModeRequired ready={configReady}>
       <Section title="Restore">
         <Text style={styles.body}>
@@ -581,6 +652,14 @@ export function BackupScreen({
           nothing is sent until the file has passed, and a damaged one is
           refused with nothing changed either way.
         </Text>
+        {/*
+          Restore had NO reason of its own. It relied on the config-mode panel
+          that used to sit directly above it, and moving that panel to the foot
+          left this section dimmed with its explanation a screen away.
+        */}
+        {blockedBecause ? (
+          <Text style={styles.note}>{blockedBecause}</Text>
+        ) : null}
         <Btn
           title={busy === 'pick' ? 'Opening…' : 'Choose a file'}
           disabled={busy !== null}
@@ -662,11 +741,42 @@ export function BackupScreen({
       </Section>
       </ConfigModeRequired>
 
+      {/*
+        THE WAY IN, AT THE FOOT - after everything it unlocks.
+        Placed last on purpose. Config mode locks the key and ends only at a
+        restart, so being asked to enter it before you have seen what it is
+        for is a demand made blind. Read the tab, see which parts say they
+        need it, then decide.
+        It also goes QUIET once its job is done: there is nothing to offer
+        somebody already through it, and a control that cannot act must not
+        look like one that can - the sections it unlocked are above it,
+        usable and waiting.
+      */}
+      {configReady ? (
+        <Section title="Config mode">
+          <Text style={styles.note}>
+            The key is in config mode, so the sections above are available.
+            Restart the key when you are done — that is the only way out, and
+            until then it will not sign or type.
+          </Text>
+        </Section>
+      ) : (
+        <ConfigModePanel
+          emu={emu}
+          configMode={configMode}
+          setConfigMode={setConfigMode}
+          probe={probe}
+          onCheck={onCheck}
+          checking={checking}
+          purpose="set a backup key or restore a backup"
+        />
+      )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  warn: {color: theme.warn, fontWeight: '600'},
   root: {flex: 1},
   content: {padding: 16, gap: 16, paddingBottom: 48},
 
