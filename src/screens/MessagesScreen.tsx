@@ -2,6 +2,7 @@ import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {missingNote, supports} from '../firmwareFeatures';
+import type {Overrides} from '../capabilityOverride';
 import {theme} from '../ui/theme';
 import {ConfigModeBlocked} from '../ui/ConfigModeBlocked';
 import {lookup, type Found, type Source} from '../keySearch';
@@ -89,10 +90,13 @@ const RSA_SLOTS = ['1', '2', '3', '4'] as const;
 export function MessagesScreen({
   emu,
   configMode = false,
+  overrides,
 }: {
   emu: EmuSession;
   /** Signing and decryption are refused in config mode - okcore.cpp:347. */
   configMode?: boolean;
+  /** Forced capabilities, if any. See src/capabilityOverride.ts. */
+  overrides?: Overrides;
 }) {
   /* The ACTIVE key, for the composite key that lives on the device. */
   const getKey = useActiveKey();
@@ -180,7 +184,7 @@ export function MessagesScreen({
    * composite-key section is gated: the rest of this screen is ordinary PGP
    * with keys the phone holds, and that works on any key at all.
    */
-  const pqc = supports(emu.capabilities, 'postQuantum');
+  const pqc = supports(emu.capabilities, 'postQuantum', overrides);
 
   /*
    * A file picked to encrypt, kept as BYTES.

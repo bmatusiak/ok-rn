@@ -18,6 +18,7 @@ import {useFidoGatt, type FidoSession} from './src/hooks/useFidoGatt';
 import {getOnlyKey} from './src/onlykey';
 import type {Backend} from './src/hooks/keySession';
 import {useTestingMode} from './src/hooks/useTestingMode';
+import {useCapabilityOverrides} from './src/capabilityOverride';
 import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 
 import {SplashScreen} from './src/screens/SplashScreen';
@@ -228,6 +229,35 @@ function Shell() {
     isUnlocked,
   });
   const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log, fidoPending: fido.pending});
+
+  /*
+   * FORCED CAPABILITIES, scoped to whichever key is active.
+   *
+   * Detection cannot see an unsigned working-tree build - it reports the same
+   * version string as the release it is ahead of - so this is the manual way
+   * to tell the app what the wire cannot. src/capabilityOverride.ts explains
+   * the whole of it, including why it is built to be deleted.
+   *
+   * Named `caps` rather than `override`, which is taken twice already: useKey
+   * has one for forcing WHICH KEY is active, and AdvancedScreen has another
+   * for the console probe.
+   */
+  const caps = useCapabilityOverrides(keys.backend === 'embedded' ? 'soft' : 'hard');
+
+  /*
+   * A HARD KEY'S OVERRIDE DIES WITH THE KEY.
+   *
+   * useHardKey drops its capabilities to null on detach and on disconnect
+   * (useHardKey.ts:146,159). A physical key can be unplugged and a DIFFERENT
+   * one plugged in, so an override that outlived the first would quietly claim
+   * the second supports something it does not - worse than the faded section
+   * it was set to fix. Re-arm it after the next unlock, which is when the app
+   * knows which key it is talking to again.
+   */
+  useEffect(() => {
+    if (keys.backend === 'embedded') return;
+    if (!keys.hard?.capabilities) caps.clear();
+  }, [keys.backend, keys.hard?.capabilities, caps]);
   backendRef.current = keys.backend;
   unlockedRef.current = keys.key.device === 'unlocked';
   const emu = keys.key;
@@ -647,21 +677,21 @@ function Shell() {
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
             )
           ) : tab === 'Keys' ? (
-            <KeysScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
+            <KeysScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} overrides={caps.overrides} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
             <BackupScreen emu={emu} blockScreenshots={!testing.enabled} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
           ) : tab === 'Crypto' ? (
-            <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} configMode={configMode} />
+            <CryptoScreen emu={emu} blockScreenshots={!testing.enabled} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Messages' ? (
-            <MessagesScreen emu={emu} configMode={configMode} />
+            <MessagesScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Settings' ? (
             <PreferencesScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} probe={probe} onCheck={checkConfig} checking={checking} />
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
-            <AdvancedScreen emu={keys.key} hard={keys.hard} />
+            <AdvancedScreen emu={keys.key} hard={keys.hard} caps={caps} />
           ) : tab === 'Log' ? (
             <LogScreen
               /*

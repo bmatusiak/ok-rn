@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
 import {missingNote, supports} from '../firmwareFeatures';
+import type {Overrides} from '../capabilityOverride';
 import {Keypad} from '../ui/Keypad';
 import {VaultList} from '../ui/VaultList';
 import {theme} from '../ui/theme';
@@ -85,11 +86,14 @@ export function CryptoScreen({
   emu,
   blockScreenshots = true,
   configMode = false,
+  overrides,
 }: {
   emu: EmuSession;
   blockScreenshots?: boolean;
   /** Signing and decryption are refused in config mode - okcore.cpp:347. */
   configMode?: boolean;
+  /** Forced capabilities, if any. See src/capabilityOverride.ts. */
+  overrides?: Overrides;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -171,7 +175,7 @@ export function CryptoScreen({
   const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locked = emu.device !== 'unlocked';
   /* Faded when the key's firmware has no post-quantum support - firmwareFeatures.ts. */
-  const pqc = supports(emu.capabilities, 'postQuantum');
+  const pqc = supports(emu.capabilities, 'postQuantum', overrides);
 
   const reveal = useCallback(() => {
     setRevealed(true);

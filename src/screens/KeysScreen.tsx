@@ -8,6 +8,7 @@ import {PinScreen} from './PinScreen';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {ConfigModeRequired} from '../ui/ConfigModeBlocked';
 import {missingNote, supports} from '../firmwareFeatures';
+import type {Overrides} from '../capabilityOverride';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 /*
@@ -140,6 +141,7 @@ export function KeysScreen({
   probe,
   onCheck,
   checking,
+  overrides,
 }: {
   emu: EmuSession;
   configMode: boolean;
@@ -148,6 +150,8 @@ export function KeysScreen({
   /** Runs one label probe, on demand. See App: never on a timer. */
   onCheck: () => Promise<void>;
   checking: boolean;
+  /** Forced capabilities, if any. See src/capabilityOverride.ts. */
+  overrides?: Overrides;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -212,7 +216,7 @@ export function KeysScreen({
    * NO RELEASE DOES, so on a key from a box this section is faded. See
    * src/firmwareFeatures.ts.
    */
-  const pqc = supports(emu.capabilities, 'postQuantum');
+  const pqc = supports(emu.capabilities, 'postQuantum', overrides);
   const [genType, setGenType] = useState<string>(GENERATED_TYPES[0].name);
   const [genSlot, setGenSlot] = useState<number>(110);
   const [genChallenge, setGenChallenge] = useState<number[] | null>(null);
@@ -800,7 +804,7 @@ export function KeysScreen({
                   explain why, and this needs the why.
                 */}
                 {RAW_TYPES.find(t => t.name === keyType)?.hmacOnly &&
-                !supports(emu.capabilities, 'hmacSha1') ? (
+                !supports(emu.capabilities, 'hmacSha1', overrides) ? (
                   <Text style={styles.warn}>
                     This firmware predates HMAC-SHA1 (it arrived in 3.0.0). It
                     will accept the write and store a key it cannot use.

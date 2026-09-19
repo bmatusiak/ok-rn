@@ -26,6 +26,50 @@ import {FirmwareScreen} from './FirmwareScreen';
 import {useActiveKeyWithBackend, useKeyName} from '../hooks/KeyContext';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {HardKeySession} from '../hooks/useHardKey';
+import {ALLOW_OVERRIDE, type Overrides} from '../capabilityOverride';
+import type {FirmwareFeature} from '../firmwareFeatures';
+
+/** The capabilities a screen fades on, in the order they are shown. */
+const CAPABILITY_ROWS: {feature: FirmwareFeature; label: string}[] = [
+  {feature: 'postQuantum', label: 'Post-quantum keys'},
+  {feature: 'hmacSha1', label: 'HMAC-SHA1 slot keys'},
+];
+
+/**
+ * WHY the library answered the way it did, in one sentence.
+ *
+ * Reconstructed from the same inputs `capabilities()` reads - the parsed
+ * release and the build keyword - rather than reported by it. That is a
+ * duplication, and a deliberate one: the alternative is teaching the library
+ * to explain itself to a screen, which is a bigger change to a file that is
+ * shared with the e2e suites and the host plugin.
+ *
+ * It follows that this can DRIFT from the real rule. If the gate in
+ * version.js moves, this sentence has to move with it - which is the trade
+ * for a panel that is meant to be deleted rather than maintained.
+ */
+function capabilityReason(
+  emu: EmuSession,
+  feature: FirmwareFeature,
+): string {
+  const info = emu.identity;
+  if (!info) return 'The key has not said what it is yet.';
+  const version = info.version ?? '(no version)';
+
+  if (feature === 'postQuantum') {
+    const build = String(info.build ?? 'unknown');
+    if (build === 'debug') {
+      return `${version} is a -test build, which is the development line, so this reads as present.`;
+    }
+    return (
+      `${version} is a -prod build, so it reads as a release — and no release ` +
+      'carries post-quantum keys. A working tree built as production reports ' +
+      'exactly this, which is why the switch exists.'
+    );
+  }
+
+  return `Needs firmware 3.0.0 or newer; this key reports ${version}.`;
+}
 
 /** Typed before the key is wiped. Not a dialog; see this file's header. */
 const WIPE_WORD = 'WIPE THIS KEY';
@@ -62,11 +106,17 @@ const DEVICE_TYPES = Object.values(okdevice.slots.DEVICE_TYPE) as string[];
 export function AdvancedScreen({
   emu,
   hard,
+  caps,
 }: {
   /** The ACTIVE key - everything here acts on whichever one is in use. */
   emu: EmuSession;
   /** The hard key, for the one control that only means anything on hardware. */
   hard: HardKeySession;
+  /** Forced capabilities: what is on, and how to change it. */
+  caps: {
+    overrides: Overrides;
+    setOverride: (feature: FirmwareFeature, on: boolean) => void;
+  };
 }) {
   const keyName = useKeyName();
   const {backend, getKey} = useActiveKeyWithBackend();
@@ -192,6 +242,68 @@ export function AdvancedScreen({
           Each one says what it will do, and needs its word typed first.
         </Text>
       </Section>
+
+      {/*
+        WHAT WAS DETECTED, WHY, AND THE SWITCH.
+
+        The "why" is the point. Every bug of this shape in this project - the
+        vault seal, provisioning on a release, and this one - was a wrong
+        conclusion that looked like a fact, and none of them were visible from
+        a screen. A line reading "postQuantum: false, because the build keyword
+        is -prod" would have shown this in seconds instead of a long chase.
+
+        Rendered only while ALLOW_OVERRIDE. It is meant to be deleted.
+      */}
+      {ALLOW_OVERRIDE ? (
+        <Section title="Capabilities">
+          <Text style={styles.body}>
+            What this key says it can do, and why the app thinks so. Forcing one
+            on tells the app the firmware has it — which is how unsigned
+            firmware is used before a release carries it.{' '}
+            <Text style={styles.warn}>
+              If the firmware does not have it, the operation fails at the key.
+            </Text>
+          </Text>
+          {CAPABILITY_ROWS.map(({feature, label}) => {
+            const detected = emu.capabilities?.[feature];
+            const forced = caps.overrides[feature] === true;
+            return (
+              <View key={feature} style={styles.capRow}>
+                <KeyValue
+                  label={label}
+                  value={
+                    detected === undefined
+                      ? 'not read yet'
+                      : detected
+                        ? 'yes'
+                        : forced
+                          ? 'no — forced on'
+                          : 'no'
+                  }
+                />
+                <Text style={styles.note}>{capabilityReason(emu, feature)}</Text>
+                {/*
+                  NO BUTTON WHEN IT IS ALREADY THERE. A greyed-out "Force it
+                  on" beside a feature the key reports having is a control with
+                  nothing to do, and an explanation the reader has to invent.
+                */}
+                {detected === true ? null : (
+                  <Btn
+                    title={forced ? 'Stop forcing it on' : 'Force it on'}
+                    tone={forced ? 'default' : 'primary'}
+                    onPress={() => caps.setOverride(feature, !forced)}
+                  />
+                )}
+              </View>
+            );
+          })}
+          <Text style={styles.note}>
+            {backend === 'embedded'
+              ? 'The soft key remembers this across a restart — it is this app’s own firmware and cannot be swapped underneath it.'
+              : 'A hard key forgets this the moment it is unplugged or disconnects, because the next key on the bus may be a different one.'}
+          </Text>
+        </Section>
+      ) : null}
 
       {hard.state === 'running' ? (
         <FirmwareScreen emu={emu} backend={backend} />
@@ -330,6 +442,8 @@ export function AdvancedScreen({
 }
 
 const styles = StyleSheet.create({
+  capRow: {gap: 6, paddingVertical: 8},
+  warn: {color: theme.warn},
   root: {flex: 1, backgroundColor: theme.bg},
   content: {padding: 14, paddingBottom: 48},
   body: {color: theme.text, fontSize: theme.fontSize, lineHeight: theme.lineHeight},

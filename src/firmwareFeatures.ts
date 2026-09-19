@@ -21,10 +21,13 @@
  * there is a reading to fade it on.
  */
 
+import {ALLOW_OVERRIDE, type Overrides} from './capabilityOverride';
+
 /** The capabilities object the library returns, or null before a reading. */
 type Capabilities = {postQuantum?: boolean; hmacSha1?: boolean} | null | undefined;
 
 export type FirmwareFeature = 'postQuantum' | 'hmacSha1';
+
 
 /**
  * What each feature is called on screen, and the firmware that carries it.
@@ -50,14 +53,54 @@ const FEATURES: Record<FirmwareFeature, {what: string; needs: string}> = {
   },
 };
 
-/** Should this section work? True while nothing is known - see the header. */
-export function supports(caps: Capabilities, feature: FirmwareFeature): boolean {
+/**
+ * Should this section work? True while nothing is known - see the header.
+ *
+ * `overrides` is the one place a forced capability is honoured, so every
+ * screen gets the same answer without any of them knowing the override exists.
+ * Omitting it is the same as having none - the e2e suites and any caller that
+ * does not care are unaffected. See src/capabilityOverride.ts.
+ */
+export function supports(
+  caps: Capabilities,
+  feature: FirmwareFeature,
+  overrides?: Overrides,
+): boolean {
+  if (ALLOW_OVERRIDE && overrides?.[feature]) return true;
   if (!caps) return true;
   return caps[feature] !== false;
+}
+
+/** Whether this section is open because somebody forced it, not because it was detected. */
+export function isForced(
+  caps: Capabilities,
+  feature: FirmwareFeature,
+  overrides?: Overrides,
+): boolean {
+  if (!ALLOW_OVERRIDE || !overrides?.[feature]) return false;
+  /* Only "forced" when detection actually said no. */
+  return Boolean(caps) && caps![feature] === false;
 }
 
 /** The sentence a faded section shows, naming the feature and what it needs. */
 export function missingNote(feature: FirmwareFeature): string {
   const {what, needs} = FEATURES[feature];
   return `${what} are not on this key: ${needs}. Everything here is switched off.`;
+}
+
+/**
+ * The sentence a section shows when it is open only because it was FORCED.
+ *
+ * A forced section must not look like a detected one. If the firmware really
+ * does lack the feature, the operation fails at the device - so the screen
+ * says where the answer came from, rather than letting a silent refusal later
+ * be the first hint.
+ */
+export function forcedNote(feature: FirmwareFeature): string {
+  const {what} = FEATURES[feature];
+  return (
+    `${what} are switched on because this key was told it has them, not ` +
+    'because it said so. If the firmware does not, these will fail at the key. ' +
+    'Advanced -> Capabilities turns it back off.'
+  );
 }
