@@ -414,8 +414,14 @@ class NativeFidoGattModule(
    * the GATT server and its registered service.
    */
 
-  /** Whether the server we hold still has the FIDO service registered. */
-  private fun serviceIsLive(): Boolean =
+  /**
+   * Whether the server we hold still has the FIDO service registered.
+   *
+   * `internal` so the watchdog can ask before deciding to leave things alone -
+   * a connection to a server whose service the stack has dropped looks healthy
+   * from every other angle and answers nothing.
+   */
+  internal fun serviceIsLive(): Boolean =
     runCatching { gattServer?.getService(FIDO_SERVICE_UUID) != null }.getOrDefault(false)
 
   /**
@@ -581,7 +587,30 @@ class NativeFidoGattModule(
     val tick = object : Runnable {
       override fun run() {
         try {
-          if (Held.wantAdvertising && Held.connectedDevice == null) {
+          /*
+           * A CONNECTION IS NOT PROOF THE SERVICE IS STILL THERE.
+           *
+           * This used to check `connectedDevice == null` alone, so a host that
+           * held an LE link kept the watchdog quiet - even when the stack had
+           * dropped the GATT registration underneath it. Re-pairing does
+           * exactly that: the bond change bounces the stack, Android drops the
+           * service, and the link survives. Every local signal then agrees the
+           * authenticator is fine - the screen says advertising, a device is
+           * connected - and WebAuthn cannot register, because the host is
+           * talking to a server with nothing registered on it.
+           *
+           * Measured on 2026-09-18: after re-pairing, a ceremony failed until
+           * the app's Bluetooth was toggled off and on by hand, which is just
+           * rebuildAndAdvertise() reached the long way round.
+           *
+           * serviceIsLive() reads the server we hold, so a ceremony in flight
+           * answers true and is left alone; only a server the stack has
+           * emptied is rebuilt. reassert() is already passive when things are
+           * healthy.
+           */
+          if (Held.wantAdvertising &&
+            (Held.connectedDevice == null || Held.live?.serviceIsLive() == false)
+          ) {
             Held.live?.reassert()
           }
         } catch (_: Exception) {
