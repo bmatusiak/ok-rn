@@ -24,6 +24,7 @@ import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 import {SplashScreen} from './src/screens/SplashScreen';
 import {LoginScreen} from './src/screens/LoginScreen';
 import {PinScreen} from './src/screens/PinScreen';
+import {useInConfigMode} from './src/hooks/useInConfigMode';
 import {SetupScreen} from './src/screens/SetupScreen';
 import {KeyScreen} from './src/screens/KeyScreen';
 import {SlotsScreen} from './src/screens/SlotsScreen';
@@ -301,34 +302,16 @@ function Shell() {
   const testing = useTestingMode();
 
   /*
-   * CONFIG MODE, as a thing the APP believes.
+   * CONFIG MODE, READ FROM THE LIBRARY - the app does not keep its own.
    *
-   * The key never says it is in config mode - entering it just locks the
-   * device, and nothing announces the unlock that follows - so the app cannot
-   * read this from the device. It has to be told, and then it can explain the
-   * lock that would otherwise look like any other.
+   * It used to: a `useState` here, threaded into six screens with a
+   * `setConfigMode` beside it, and anything could write it. One thing wrote it
+   * wrongly - the Enter button set it on the tap - so on a production hard key,
+   * which the app cannot press at all, the whole app believed a key was in
+   * config mode that nobody had touched. There is no setter any more. See
+   * useInConfigMode.
    */
-  const [configMode, setConfigMode] = useState(false);
-
-  /*
-   * UNPLUGGING THE HARD KEY ENDS CONFIG MODE, so the app's belief ends with it.
-   *
-   * Config mode is cleared by a boot and nothing else, and pulling the key IS
-   * a boot - it loses power. The library agrees: useKey.ts:193 drops the 'usb'
-   * session the moment the key leaves the bus, taking `session.configMode`
-   * with it. Leaving the banner up over a key that has rebooted would be the
-   * app asserting something it has no reason to believe.
-   *
-   * `attached === false`, not falsy: null means USB has not answered yet,
-   * which is true on every launch, and clearing on that would be clearing on
-   * no evidence.
-   *
-   * The soft key needs nothing here - its config mode ends when the process
-   * does, and this flag starts false every launch.
-   */
-  useEffect(() => {
-    if (keys.attached === false) setConfigMode(false);
-  }, [keys.attached]);
+  const configMode = useInConfigMode();
 
   /*
    * SWITCHING TO THE HARD KEY DURING CONFIG MODE RESTARTS THE APP.
@@ -742,17 +725,17 @@ function Shell() {
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
             )
           ) : tab === 'Keys' ? (
-            <KeysScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} overrides={caps.overrides} />
+            <KeysScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
-            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} setConfigMode={setConfigMode} />
+            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} />
           ) : tab === 'Crypto' ? (
             <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Messages' ? (
             <MessagesScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Settings' ? (
-            <PreferencesScreen emu={emu} configMode={configMode} setConfigMode={setConfigMode} />
+            <PreferencesScreen emu={emu} configMode={configMode} />
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
@@ -786,7 +769,7 @@ function Shell() {
             */
             <TestingScreen
               configMode={configMode}
-              setConfigMode={setConfigMode}
+             
              
               emu={keys.soft}
               hard={keys.hard}

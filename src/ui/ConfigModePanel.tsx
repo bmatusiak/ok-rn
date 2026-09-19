@@ -53,13 +53,11 @@ import type {EmuSession} from '../hooks/useOkEmu';
 export function ConfigModePanel({
   emu,
   configMode,
-  setConfigMode,
   /** What the caller wants config mode FOR, e.g. "load a key". */
   purpose,
 }: {
   emu: EmuSession;
   configMode: boolean;
-  setConfigMode: (on: boolean) => void;
   purpose: string;
 }) {
   const config = useConfigMode(emu);
@@ -123,9 +121,19 @@ export function ConfigModePanel({
             title={config.entering ? 'Holding…' : 'Yes, enter config mode'}
             tone="primary"
             disabled={config.entering}
+            /*
+             * NOTHING IS ASSERTED HERE. This used to call setConfigMode(true)
+             * straight after the hold, which is how the app came to believe a
+             * key was in config mode that nobody had touched: config.enter()
+             * swallows its own failure, so the line ran either way.
+             *
+             * enterConfigMode only reports success after a label read came
+             * back REFUSED - the key locked, and the lock is the only evidence
+             * config mode exists, since nothing on the wire reports it. That
+             * result is the flag, read back through useInConfigMode.
+             */
             onPress={async () => {
               await config.enter();
-              setConfigMode(true);
               setConfirming(false);
             }}
           />

@@ -45,10 +45,8 @@ export function BackupScreen({
   emu,
   blockScreenshots = true,
   configMode,
-  setConfigMode,
 }: {
   configMode: boolean;
-  setConfigMode: (on: boolean) => void;
   emu: EmuSession;
   blockScreenshots?: boolean;
 }) {
@@ -737,7 +735,6 @@ export function BackupScreen({
         <ConfigModePanel
           emu={emu}
           configMode={configMode}
-          setConfigMode={setConfigMode}
           purpose="set a backup key or restore a backup"
         />
       )}

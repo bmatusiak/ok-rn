@@ -5,6 +5,7 @@ import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
 import OkEmu from '../transport/OkEmu';
 import {PinScreen} from './PinScreen';
+import {useInConfigMode} from '../hooks/useInConfigMode';
 import {SetupScreen} from './SetupScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {KeyControl} from '../hooks/useKey';
@@ -211,34 +212,16 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
   /*
    * Whether THIS SESSION put the key into config mode.
    *
-   * Polled rather than subscribed because nothing emits it: the flag lives in
-   * the library session and is set by enterConfigMode, cleared by restart and
-   * by a wipe. A second is far more often than it changes, and it is a
-   * property read - no device traffic at all.
+   * Worth surfacing because config mode is INVISIBLE otherwise. The firmware
+   * answers eleven kinds of message and silently drops the rest, so a key left
+   * in it looks broken in three different ways at once - and it has done
+   * exactly that twice, to a person who had no way to find out why.
    *
-   * It is worth surfacing because config mode is INVISIBLE otherwise. The
-   * firmware answers eleven kinds of message and silently drops the rest, so
-   * a key left in it looks broken in three different ways at once - and it
-   * has done exactly that twice, to a person who had no way to find out why.
+   * This screen had the read written out by hand, and it was the only place in
+   * the app that took the answer from the LIBRARY rather than from a flag the
+   * app set itself. It is the shared hook now, so the rest do too.
    */
-  const [configMode, setConfigMode] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    const read = async () => {
-      try {
-        const {device} = await getKey();
-        if (alive) setConfigMode(Boolean(device.inConfigMode));
-      } catch {
-        /* No key yet; it is not in config mode as far as anyone can tell. */
-      }
-    };
-    void read();
-    const timer = setInterval(read, 1000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [getKey]);
+  const configMode = useInConfigMode();
 
   /**
    * What the LIBRARY has proven against firmware, which is a different

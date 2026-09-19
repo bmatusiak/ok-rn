@@ -136,12 +136,10 @@ function describeType(name: string): string {
 export function KeysScreen({
   emu,
   configMode,
-  setConfigMode,
   overrides,
 }: {
   emu: EmuSession;
   configMode: boolean;
-  setConfigMode: (on: boolean) => void;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -626,7 +624,6 @@ export function KeysScreen({
       <ConfigModePanel
         emu={emu}
         configMode={configMode}
-        setConfigMode={setConfigMode}
         purpose="load keys"
       />
 

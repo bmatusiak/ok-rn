@@ -26,6 +26,16 @@ import {useActiveKey} from './KeyContext';
 /** How long to wait for the device to lock before calling the hold a failure. */
 const LOCK_TIMEOUT_MS = 8000;
 
+/*
+ * The same wait, for a hold the PERSON is doing.
+ *
+ * A production hard key has no debug console, so the app cannot press its
+ * buttons - `holdTicks` throws. The gesture still has to happen, by a thumb on
+ * button 6, and this is how long they get to do it. Long, because it is a
+ * human finding the button and holding it for four seconds, not a queue.
+ */
+const WATCH_TIMEOUT_MS = 60000;
+
 /** How often to ask whether the PIN has been accepted. */
 const PROBE_MS = 2500;
 
@@ -36,7 +46,13 @@ export type ConfigMode = {
   ready: boolean;
   entering: boolean;
   error: string | null;
-  enter: () => Promise<void>;
+  /**
+   * Hold the gesture and wait for the lock.
+   *
+   * `press: false` skips the holding and only WATCHES - for a key the app
+   * cannot press. Either way it returns having seen the lock, or not at all.
+   */
+  enter: (opts?: {press?: boolean}) => Promise<void>;
 };
 
 /**
@@ -63,7 +79,7 @@ export function useConfigMode(emu: Holder): ConfigMode {
   const [error, setError] = useState<string | null>(null);
 
 
-  const enter = useCallback(async () => {
+  const enter = useCallback(async ({press = true}: {press?: boolean} = {}) => {
     setEntering(true);
     setError(null);
     try {
@@ -83,17 +99,29 @@ export function useConfigMode(emu: Holder): ConfigMode {
        * count because nobody is watching them.
        */
       await device.enterConfigMode({
-        hold: (button: number, ticks: number) =>
-          emu.holdTicks(button, ticks, {allowGesture: true}),
+        /*
+         * A NO-OP HOLD IS A LEGITIMATE HOLD, and it is what turns this into a
+         * watcher. enterConfigMode holds, then polls readLabels until the read
+         * is REFUSED - and a refusal is the lock, whoever caused it. Give it
+         * nothing to do and it waits for a thumb instead of a queue, with the
+         * same proof at the end.
+         */
+        hold: press
+          ? (button: number, ticks: number) =>
+              emu.holdTicks(button, ticks, {allowGesture: true})
+          : async () => {},
         attempts: 1,
-        lockMs: LOCK_TIMEOUT_MS,
+        lockMs: press ? LOCK_TIMEOUT_MS : WATCH_TIMEOUT_MS,
       });
       setEntered(true);
     } catch (e) {
       setError(
-        'The key did not enter config mode. It ignores button presses for ' +
-          'up to 20 seconds after a security-key ceremony, and while its LED ' +
-          'is fading. Wait a moment and try again.',
+        press
+          ? 'The key did not enter config mode - it never locked, so the hold ' +
+            'was not taken. A key ignores presses for up to 20 seconds after a ' +
+            'security-key ceremony, and while its LED is fading. Try again.'
+          : 'The key never locked, so the gesture did not land. Hold button 6 ' +
+            'until the light changes, then start the wait again.',
       );
     } finally {
       setEntering(false);

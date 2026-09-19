@@ -42,11 +42,9 @@ function layoutOptions() {
 export function PreferencesScreen({
   emu,
   configMode,
-  setConfigMode,
 }: {
   emu: EmuSession;
   configMode: boolean;
-  setConfigMode: (on: boolean) => void;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -327,7 +325,6 @@ export function PreferencesScreen({
           <ConfigModePanel
             emu={emu}
             configMode={configMode}
-            setConfigMode={setConfigMode}
             purpose="change a PIN"
           />
         ) : changed ? (
@@ -435,7 +432,6 @@ export function PreferencesScreen({
             <ConfigModePanel
               emu={emu}
               configMode={configMode}
-              setConfigMode={setConfigMode}
               purpose="change these"
             />
           ) : null}

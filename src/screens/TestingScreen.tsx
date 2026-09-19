@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
+import {ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import OkEmu from '../transport/OkEmu';
 import {theme} from '../ui/theme';
@@ -35,7 +35,6 @@ const TEST_PIN = '1234561';
  */
 export function TestingScreen({
   configMode,
-  setConfigMode,
   emu,
   hard,
   active,
@@ -52,7 +51,6 @@ export function TestingScreen({
    * how it gets set while the flow is being built.
    */
   configMode: boolean;
-  setConfigMode: (on: boolean) => void;
   emu: EmuSession;
   /** The hard key, for the one bench operation this tab offers on it. */
   hard: HardKeySession;
@@ -99,18 +97,11 @@ export function TestingScreen({
         panel can only ever be about one of them.
       */}
       <Section title="Config mode">
-        <View style={styles.row}>
-          <View style={styles.cell}>
-            <Text style={styles.note}>
-              {configMode
-                ? 'The app believes the key is in config mode.'
-                : 'The app believes the key is not in config mode.'}
-            </Text>
-          </View>
-          <Switch value={configMode} onValueChange={setConfigMode} />
-        </View>
+        <KeyValue label="config mode" value={configMode ? 'YES' : 'no'} />
         <Text style={styles.note}>
-          Changes what the APP believes, not the device. The key enters config
+          Read from the library, not settable. It was a switch until
+          2026-09-19, which made this the fourth thing in the app that could
+          assert config mode without the key agreeing. The key enters config
           mode by holding button 6, and leaves it only by being unplugged (hard
           key) or by restarting the app (soft key).
         </Text>
