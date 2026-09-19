@@ -303,8 +303,13 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
         const caps = device_.version.capabilities(
           device_.version.parseStatus(String(result?.status ?? '')),
         );
+        /*
+         * `=== true`, not "unless false". null means the build has not said,
+         * and probing an unknown build is how a production key got written to
+         * on an interface it does not have.
+         */
         answers =
-          caps.debugConsole === false ? false : await dev.consoleAnswers();
+          caps.debugConsole === true ? await dev.consoleAnswers() : false;
       } catch (e) {
         answers = false;
         log('info', `console probe did not answer: ${String(e)}`);

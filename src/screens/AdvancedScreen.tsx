@@ -162,9 +162,31 @@ export function AdvancedScreen({
          * debugConsole is null on a build that has not said which it is, and
          * there the probe is still the only way to find out.
          */
-        const caps = device.capabilities;
+        /*
+         * ONLY PROBE A BUILD THAT SAYS IT HAS A CONSOLE - `=== true`, not
+         * "unless false".
+         *
+         * capabilities is UNDEFINED until something has connected
+         * (BackupScreen.tsx:146 carries the same dance), and the first version
+         * of this gate read `!== false`, so an unknown build still got probed.
+         * That is precisely the dangerous case: a production hard key whose
+         * capabilities had not been read yet was written to on SEREMU, an
+         * interface it does not have, and the USB pipe did not survive it. The
+         * throw was caught here and the damage was already done - the key
+         * vanished and the app fell back to its locked screen.
+         *
+         * Resolved first, then asked. Unknown now means "do not touch it",
+         * which costs a `-test` build that has not connected nothing: the next
+         * connect fills this in.
+         */
+        let caps = device.capabilities;
+        if (!caps) {
+          await device.connect();
+          if (!alive) return;
+          caps = device.capabilities;
+        }
         setAnswers(
-          caps?.debugConsole === false ? false : await device.consoleAnswers(),
+          caps?.debugConsole === true ? await device.consoleAnswers() : false,
         );
       } catch {
         if (alive) setAnswers(false);
