@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useState} from 'react';
 import {StyleSheet, Text} from 'react-native';
 import {Btn, Section} from './components';
 import {theme} from './theme';
@@ -48,6 +48,39 @@ export function ConfigModePanel({
 }) {
   const soft = backend === 'embedded';
   const locked = emu.device !== 'unlocked';
+  const [error, setError] = useState<string | null>(null);
+
+  /*
+   * THE HOLD, AND THEN THE STATE - in that order, and only on the soft key.
+   *
+   * Written the other way round first and caught on the device: the panel said
+   * "holding button 6" while nothing had been held, because `onWant()` was the
+   * whole handler. That is the same defect the whole feature was torn out for,
+   * rebuilt by hand in the rebuild meant to avoid it.
+   *
+   * 80 ticks: eight over the 72-tick floor (OnlyKey.ino:895), the same margin
+   * the library's own enterConfigMode uses. `allowGesture` because this is one
+   * of the few places a gesture-length press is meant rather than a mistake.
+   *
+   * The state is set even if the hold throws. It means "we are watching for
+   * the lock", and watching costs nothing - whereas swallowing the failure and
+   * staying at OFF would leave a key that DID lock with an app that had
+   * stopped caring. The error says what happened.
+   */
+  const want = async () => {
+    setError(null);
+    if (soft) {
+      try {
+        await emu.holdTicks(6, 80, {allowGesture: true});
+      } catch (e) {
+        setError(
+          `The app could not hold the button: ${String((e as Error)?.message ?? e)}. ` +
+            'Hold button 6 on the keypad for about 5 seconds instead.',
+        );
+      }
+    }
+    onWant();
+  };
 
   /* Through it. Nothing to offer somebody already inside. */
   if (state === ON) {
@@ -92,6 +125,7 @@ export function ConfigModePanel({
             ? 'Locking is how config mode announces itself; there is nothing else to see.'
             : 'A hold does nothing while the light is still fading, or for up to 20 seconds after a security-key request. If nothing happens, wait and hold it again.'}
         </Text>
+        {error ? <Text style={styles.error}>{error}</Text> : null}
       </Section>
     );
   }
@@ -114,11 +148,12 @@ export function ConfigModePanel({
         title={soft ? 'Enter config mode' : 'I will hold button 6'}
         tone="primary"
         disabled={locked}
-        onPress={onWant}
+        onPress={() => void want()}
       />
       {locked ? (
         <Text style={styles.note}>Unlock the key first.</Text>
       ) : null}
+      {error ? <Text style={styles.error}>{error}</Text> : null}
     </Section>
   );
 }
@@ -127,4 +162,5 @@ const styles = StyleSheet.create({
   body: {color: theme.text, fontSize: 14, lineHeight: 20},
   note: {color: theme.textDim, fontSize: 12, lineHeight: 17},
   steps: {color: theme.textSecondary, fontSize: 13, lineHeight: 21},
+  error: {color: theme.error, fontSize: 12, lineHeight: 17},
 });

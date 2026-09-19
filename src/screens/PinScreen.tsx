@@ -314,23 +314,6 @@ export function PinScreen({
               </View>
             </>
           ) : null}
-          {/* The same question, for the layout where the app holds the pad. */}
-          {configMode && onCheckConfig ? (
-            <>
-              <Text style={styles.note}>
-                In config mode the key does not announce the unlock. Enter your
-                PIN, then check.
-              </Text>
-              <View style={styles.footer}>
-                <Btn
-                  title={checking ? 'Checking…' : 'Check config mode'}
-                  tone="primary"
-                  disabled={checking}
-                  onPress={onCheckConfig}
-                />
-              </View>
-            </>
-          ) : null}
           {onBack ? (
             <View style={styles.footer}>
               <Btn title="Back" onPress={onBack} />
@@ -366,6 +349,31 @@ export function PinScreen({
         the app is the reset that always works: the firmware thread goes with
         the process, flash and EEPROM persist, and the key comes back locked.
       */}
+      {/*
+        THE SAME QUESTION ON THE KEYPAD LAYOUT.
+
+        Both layouts need it and for the same reason - the unlock is never
+        announced in config mode, so the PIN can go all the way in with
+        nothing happening on screen. The first attempt put both copies in
+        the key-buttons branch and the soft key, which uses this one, was
+        left with no way out of PRE at all.
+      */}
+      {configMode && onCheckConfig ? (
+        <>
+          <Text style={styles.note}>
+            In config mode the key does not announce the unlock. Enter your
+            PIN, then check.
+          </Text>
+          <View style={styles.footer}>
+            <Btn
+              title={checking ? 'Checking…' : 'Check config mode'}
+              tone="primary"
+              disabled={checking}
+              onPress={onCheckConfig}
+            />
+          </View>
+        </>
+      ) : null}
       <View style={styles.footer}>
         <Btn title="Restart app" onPress={() => OkEmu.restartApp()} />
         {onBack ? <Btn title="Back" onPress={onBack} /> : null}
