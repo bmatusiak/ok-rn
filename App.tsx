@@ -711,25 +711,35 @@ function Shell() {
           onChange={setTab}
           onClose={() => setDrawer(false)}
           /*
-           * NOT IN A RELEASE BUILD. This button was ungated while
-           * LoginScreen's way in was correctly wrapped in `__DEV__`, so a
-           * production apk offered "Enter testing mode" one tap inside the
-           * menu - a PIN bypass, a factory reset and the raw USB surface,
-           * shipped. useTestingMode now refuses to enable in a release
-           * whatever the UI does; this is so there is no dead button.
+           * LOG OUT, which is a RESTART - and that is not a workaround.
+           *
+           * There was no way out of the app at all: once past the door every
+           * screen assumed an unlocked key, and the only exit was swiping the
+           * app away. The menu's footer held "Enter testing mode" instead,
+           * ungated, which is what shipped a PIN bypass in a release.
+           *
+           * Restarting IS the logout for the soft key. Its firmware runs in
+           * this process and `initialized` is recomputed from flash only in
+           * setup(), so there is no in-process way to re-lock it - the thread
+           * only exits through the AIRCR trap. A new process boots the key
+           * locked, which is the state a logout is asking for.
+           *
+           * It also clears testing mode, which is deliberately unpersisted, so
+           * a development session cannot leave the gate down for the next one.
+           *
+           * WHAT IT DOES NOT DO is lock a HARD key. That is a physical device
+           * holding its own unlocked state, and nothing here can put it back -
+           * the firmware only locks on the button 3 gesture, which also
+           * restarts it. So the button says "Log out" rather than "Lock", and
+           * the hard key's own state is its own.
            */
           footer={
-            __DEV__ && testing.available ? (
-              <Btn
-                title={testing.enabled ? 'Leave testing mode' : 'Enter testing mode'}
-                onPress={() => {
-                  testing.toggle();
-                  if (tab === TESTING_TAB) {
-                    setTab('This Key');
-                  }
-                }}
-              />
-            ) : undefined
+            <Btn
+              title="Log out"
+              onPress={() => {
+                void OkEmu.restartApp();
+              }}
+            />
           }
         />
       </SafeAreaView>
