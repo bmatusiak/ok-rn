@@ -129,6 +129,7 @@ export function Section({
   children,
   style,
   faded,
+  unavailable,
 }: {
   title: string;
   right?: React.ReactNode;
@@ -150,14 +151,41 @@ export function Section({
    * which is the worst of the three outcomes to have to interpret.
    */
   faded?: boolean;
+  /**
+   * Why this section cannot be used RIGHT NOW, or null when it can.
+   *
+   * The same rule as `faded` - not hidden, and says why - but for a state
+   * that comes and goes rather than a firmware that will not change under
+   * you. It also does the disabling `faded` leaves to the caller, because
+   * this one flips while somebody is looking at the screen: `pointerEvents`
+   * off the children, so every button and every field inside stops
+   * responding together and cannot be missed one at a time.
+   *
+   * That mechanism is the presentational half of a component deleted in
+   * 98f8760 (opacity 0.45 + pointerEvents="none"), and it is here rather than
+   * there because THIS one knows nothing. It is handed a sentence. What the
+   * sentence is about, and when, is the caller's business - the deleted
+   * version knew about config mode, prepended a section of its own and grew
+   * a second copy of itself, which is what went wrong with it.
+   */
+  unavailable?: string | null;
 }) {
   return (
-    <View style={[styles.section, faded && styles.sectionFaded, style]}>
+    <View
+      style={[
+        styles.section,
+        (faded || unavailable) && styles.sectionFaded,
+        style,
+      ]}>
       <View style={styles.sectionHead}>
         <Text style={styles.sectionTitle}>{title}</Text>
         {right}
       </View>
-      {children}
+      {unavailable ? (
+        <Text style={styles.sectionUnavailable}>{unavailable}</Text>
+      ) : null}
+      {/* Inert as one thing. See `unavailable` above. */}
+      <View pointerEvents={unavailable ? 'none' : 'auto'}>{children}</View>
     </View>
   );
 }
@@ -322,6 +350,8 @@ const styles = StyleSheet.create({
   pillText: {fontSize: 12, fontWeight: '600'},
 
   sectionFaded: {opacity: 0.45},
+  /* Under the title, above the body it explains. */
+  sectionUnavailable: {color: theme.textDim, fontSize: 12, lineHeight: 17, marginBottom: 2},
   section: {
     backgroundColor: theme.surface,
     borderRadius: 12,

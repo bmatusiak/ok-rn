@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {device as okdevice} from 'node-onlykey-lib';
 import {Btn, Section} from '../ui/components';
+import {NEEDS_CONFIG_MODE} from '../ui/configModeNotes';
 import {theme} from '../ui/theme';
 import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {layoutNameForId, rememberLayout} from '../hooks/useKeyboardLayout';
@@ -39,8 +40,20 @@ function layoutOptions() {
 
 export function PreferencesScreen({
   emu,
+  configMode,
 }: {
   emu: EmuSession;
+  /*
+   * Only the Advanced group. Its preferences carry `requires: 'configMode'`
+   * in the library's own table (plugins/device/index.js:418) - OKSETSLOT wants
+   * `configmode == true` on a provisioned key (okcore.cpp:452) - while the
+   * Settings group takes any unlocked key and the setup-only group is refused
+   * here whatever the mode.
+   *
+   * Changing a PIN is NOT gated, and it looks like it should be: the three PIN
+   * messages are on the config-mode allowlist, so that panel works either way.
+   */
+  configMode: boolean;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -410,7 +423,12 @@ export function PreferencesScreen({
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
       {groups.map(group => (
-        <Section key={group.title} title={group.title}>
+        <Section
+          key={group.title}
+          title={group.title}
+          unavailable={
+            group.title === 'Advanced' && !configMode ? NEEDS_CONFIG_MODE : null
+          }>
           <Text style={styles.note}>{group.note}</Text>
 
           {/*

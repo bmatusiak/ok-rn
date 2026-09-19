@@ -1,6 +1,7 @@
 import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
+import {NEEDS_CONFIG_MODE, NOT_IN_CONFIG_MODE} from '../ui/configModeNotes';
 import {missingNote, supports} from '../firmwareFeatures';
 import type {Overrides} from '../capabilityOverride';
 import {theme} from '../ui/theme';
@@ -88,10 +89,18 @@ const RSA_SLOTS = ['1', '2', '3', '4'] as const;
 
 export function MessagesScreen({
   emu,
+  configMode,
   overrides,
 }: {
   emu: EmuSession;
-  /** Signing and decryption are refused in config mode - okcore.cpp:347. */
+  /**
+   * Signing and decryption are refused in config mode - okcore.cpp:347.
+   *
+   * This tab is the one that needs BOTH lines: the composite key panel writes
+   * to a slot and so needs config mode, while the panel that signs or decrypts
+   * with it is refused during config mode. They sit three panels apart.
+   */
+  configMode: boolean;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -431,7 +440,8 @@ export function MessagesScreen({
         </Text>
       </Section>
 
-      <Section title={`Composite key on the device — ${keyName}`} faded={!pqc}>
+      <Section title={`Composite key on the device — ${keyName}`} faded={!pqc}
+        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
         {pqc ? null : <Text style={styles.hint}>{missingNote('postQuantum')}</Text>}
         <Text style={styles.hint}>
           A post-quantum composite key (ML-DSA-65 + Ed25519, ML-KEM-768 +
@@ -583,7 +593,9 @@ export function MessagesScreen({
         ) : null}
       </Section>
 
-      <Section title={mode === 'encrypt' ? 'Message or file' : 'Input'}>
+      <Section
+        title={mode === 'encrypt' ? 'Message or file' : 'Input'}
+        unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
         {file ? (
           <View style={styles.row}>
             <Text style={styles.body}>

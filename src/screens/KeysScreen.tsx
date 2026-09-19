@@ -1,6 +1,7 @@
 import React, {useCallback, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
+import {NEEDS_CONFIG_MODE} from '../ui/configModeNotes';
 import {theme} from '../ui/theme';
 import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useKeyName} from '../hooks/KeyContext';
@@ -133,9 +134,17 @@ function describeType(name: string): string {
 
 export function KeysScreen({
   emu,
+  configMode,
   overrides,
 }: {
   emu: EmuSession;
+  /*
+   * Everything gated on this tab goes the SAME way: writing a key to a slot,
+   * or wiping one, is accepted only in config mode (device/index.js:1632).
+   * Reading a key back is not, so "Loaded keys" and "Read a public key" stay
+   * live throughout.
+   */
+  configMode: boolean;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -613,7 +622,9 @@ export function KeysScreen({
         * symptom is a later signing failure. Dimmed and inert beats offered
         * and ignored.
         */}
-      <Section title="Load a key">
+      <Section
+        title="Load a key"
+        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
         <Segmented
           value={mode}
           options={MODES}
@@ -800,7 +811,9 @@ export function KeysScreen({
         )}
       </Section>
 
-      <Section title="Yubico OTP (legacy)">
+      <Section
+        title="Yubico OTP (legacy)"
+        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
         <Text style={styles.note}>
           The device-global Yubico credential — the desktop app&apos;s Advanced
           tab. All three fields are HEX here; the per-slot form is the one that
@@ -878,7 +891,10 @@ export function KeysScreen({
         ) : null}
       </Section>
 
-      <Section title="Generate a post-quantum key" faded={!pqc}>
+      <Section
+        title="Generate a post-quantum key"
+        faded={!pqc}
+        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
         {pqc ? null : <Text style={styles.note}>{missingNote('postQuantum')}</Text>}
         <Text style={styles.body}>
           The key makes this one itself. A seed is generated inside it,
@@ -940,7 +956,9 @@ export function KeysScreen({
         * treatment as Load a key: dim and inert rather than a live-looking
         * button over a message that will be dropped.
         */}
-      <Section title="Wipe a slot">
+      <Section
+        title="Wipe a slot"
+        unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
         <Text style={styles.note}>
           Erases the key in one slot. Irreversible, and it also needs config
           mode.

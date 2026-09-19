@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
+import {NOT_IN_CONFIG_MODE} from '../ui/configModeNotes';
 import {missingNote, supports} from '../firmwareFeatures';
 import type {Overrides} from '../capabilityOverride';
 import {Keypad} from '../ui/Keypad';
@@ -84,11 +85,19 @@ const hex = (bytes: Uint8Array): string => okbytes.toHex(bytes);
 export function CryptoScreen({
   emu,
   blockScreenshots = true,
+  configMode,
   overrides,
 }: {
   emu: EmuSession;
   blockScreenshots?: boolean;
-  /** Signing and decryption are refused in config mode - okcore.cpp:347. */
+  /**
+   * Signing and decryption are refused in config mode - okcore.cpp:347.
+   *
+   * Four panels here reach the key that way; the two that do not - the secret
+   * this screen already derived, and what is stored on this phone - stay live,
+   * because nothing about them crosses the wire.
+   */
+  configMode: boolean;
   /** Forced capabilities, if any. See src/capabilityOverride.ts. */
   overrides?: Overrides;
 }) {
@@ -534,7 +543,8 @@ export function CryptoScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Section title={`Derived secrets — ${keyName}`}>
+      <Section title={`Derived secrets — ${keyName}`}
+        unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
         <Text style={styles.body}>
           The key computes a secret from a label and a private key that never
           leaves it. Nothing is stored: the same label always gives the same
@@ -611,7 +621,8 @@ export function CryptoScreen({
         </Section>
       ) : null}
 
-      <Section title={`Vault — ${keyName}`}>
+      <Section title={`Vault — ${keyName}`}
+        unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
         <Text style={styles.body}>
           Seal a note under a key the device derives for a service name. The key
           is never stored anywhere — not on the phone and not on the key — so a
@@ -710,7 +721,8 @@ export function CryptoScreen({
         />
       </Section>
 
-      <Section title={`Use a key in a slot — ${keyName}`}>
+      <Section title={`Use a key in a slot — ${keyName}`}
+        unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
         <Text style={styles.body}>
           Sign or decrypt with a key that was LOADED into a slot, rather than
           one derived from a label. This is what a PGP or SSH key on the device
@@ -772,7 +784,8 @@ export function CryptoScreen({
         {opResult ? <Text style={styles.secret} selectable>{opResult}</Text> : null}
       </Section>
 
-      <Section title="Encrypted files (age)" faded={!pqc}>
+      <Section title="Encrypted files (age)" faded={!pqc}
+        unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
         {pqc ? null : <Text style={styles.note}>{missingNote('postQuantum')}</Text>}
         <Text style={styles.body}>
           An age identity split between this key and the host: the X25519 half

@@ -642,19 +642,19 @@ function Shell() {
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
             )
           ) : tab === 'Keys' ? (
-            <KeysScreen emu={emu} overrides={caps.overrides} />
+            <KeysScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
-            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} />
+            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} />
           ) : tab === 'Crypto' ? (
-            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} overrides={caps.overrides} />
+            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Messages' ? (
-            <MessagesScreen emu={emu} overrides={caps.overrides} />
+            <MessagesScreen emu={emu} configMode={configMode} overrides={caps.overrides} />
           ) : tab === 'Settings' ? (
-            <PreferencesScreen emu={emu} />
+            <PreferencesScreen emu={emu} configMode={configMode} />
           ) : tab === 'Passkeys' ? (
-            <PasskeysScreen emu={keys.key} />
+            <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
             <AdvancedScreen emu={keys.key} hard={keys.hard} caps={caps} />
           ) : tab === 'Log' ? (

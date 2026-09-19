@@ -8,6 +8,7 @@ import {useKeyboardLayout} from '../hooks/useKeyboardLayout';
 import {useSharedBtKeyboard} from '../hooks/BtKeyboardContext';
 import NativeShare from '../../specs/NativeShare';
 import {useSecureScreen} from '../hooks/useSecureScreen';
+import {NEEDS_CONFIG_MODE, NOT_IN_CONFIG_MODE} from '../ui/configModeNotes';
 import {summarizeBackup} from '../backupFile';
 import type {BackupSummary} from '../backupFile';
 import type {EmuSession} from '../hooks/useOkEmu';
@@ -42,9 +43,17 @@ type BackupSource = (typeof BACKUP_SOURCES)[number];
 export function BackupScreen({
   emu,
   blockScreenshots = true,
+  configMode,
 }: {
   emu: EmuSession;
   blockScreenshots?: boolean;
+  /*
+   * BOTH DIRECTIONS LIVE ON THIS TAB, which is why the grayed panels say which
+   * one they are. Capture makes the key TYPE and config mode refuses that;
+   * the two panels below it write to the key and config mode is the only time
+   * the firmware accepts that. They are never both available.
+   */
+  configMode: boolean;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -372,7 +381,9 @@ export function BackupScreen({
         the section below is dimmed, and it carries its own one-line reason.
         A fourth statement of the same fact was noise.
       */}
-      <Section title={`Backup — ${keyName}`}>
+      <Section
+        title={`Backup — ${keyName}`}
+        unavailable={configMode ? NOT_IN_CONFIG_MODE : null}>
         <Text style={styles.body}>
           The key types its backup rather than sending it, so this asks it to
           type and reads what it types. It contains everything the key holds —
@@ -455,7 +466,9 @@ export function BackupScreen({
         Dimmed, not hidden: the point of the panel being at the foot is that
         you can see what config mode would give you before committing to it.
       */}
-        <Section title="Set a backup key">
+        <Section
+          title="Set a backup key"
+          unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
           {/*
             The flag's remaining job: say why this matters RIGHT NOW, when a
             backup has just been refused for want of a key. It no longer
@@ -562,7 +575,7 @@ export function BackupScreen({
         * looked like it worked and did nothing is the worst thing this screen
         * could do, so the panel goes dim and inert rather than inviting it.
         */}
-      <Section title="Restore">
+      <Section title="Restore" unavailable={configMode ? null : NEEDS_CONFIG_MODE}>
         <Text style={styles.body}>
           Choose a backup file, or paste one, to write it back. Read it first:
           nothing is sent until the file has passed, and a damaged one is
