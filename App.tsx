@@ -242,7 +242,12 @@ function Shell() {
    * has one for forcing WHICH KEY is active, and AdvancedScreen has another
    * for the console probe.
    */
-  const caps = useCapabilityOverrides(keys.backend === 'embedded' ? 'soft' : 'hard');
+  /*
+   * FOR THE HARD KEY ONLY. The soft key's firmware is staged by this build, so
+   * buildInfo.unreleased already tells capabilities() what it needs and there
+   * is nothing to override. See src/capabilityOverride.ts.
+   */
+  const caps = useCapabilityOverrides();
 
   /*
    * A HARD KEY'S OVERRIDE DIES WITH THE KEY.

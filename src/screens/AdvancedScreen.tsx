@@ -291,7 +291,15 @@ export function AdvancedScreen({
 
         Rendered only while ALLOW_OVERRIDE. It is meant to be deleted.
       */}
-      {ALLOW_OVERRIDE ? (
+      {/*
+        HARD KEYS ONLY. The soft key's firmware is staged by this build, so
+        buildInfo.unreleased already tells capabilities() whether it is a
+        pinned release or the working tree - a working-tree build simply has
+        its features on, with nothing to switch. A hard key arrives with
+        whatever somebody flashed onto it, and an unsigned build there reports
+        the same version string as the release it is ahead of.
+      */}
+      {ALLOW_OVERRIDE && backend !== 'embedded' ? (
         <Section title="Capabilities">
           <Text style={styles.body}>
             What this key says it can do, and why the app thinks so. Forcing one
@@ -335,9 +343,9 @@ export function AdvancedScreen({
             );
           })}
           <Text style={styles.note}>
-            {backend === 'embedded'
-              ? 'The soft key remembers this across a restart — it is this app’s own firmware and cannot be swapped underneath it.'
-              : 'A hard key forgets this the moment it is unplugged or disconnects, because the next key on the bus may be a different one.'}
+            This is forgotten the moment the key is unplugged or disconnects —
+            the next key on the bus may be a different one, and an override
+            that outlived this key would be describing the wrong device.
           </Text>
         </Section>
       ) : null}
