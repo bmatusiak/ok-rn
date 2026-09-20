@@ -385,6 +385,21 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     borderRadius: 8,
     alignItems: 'center',
+    /*
+     * ROOM ABOVE, because a Btn had none and nothing else supplied it.
+     *
+     * Section spaces itself from the next Section (marginBottom: 12) but puts
+     * nothing between its own children, so every button in the app sat flush
+     * against the paragraph or field above it - reading as the last line of
+     * the text rather than as the thing you press. Passkeys is the plainest
+     * example: "…twelve at most." and then immediately Connect.
+     *
+     * Here rather than in eleven screens, because it was never one screen's
+     * problem. A button in a row (styles.footer and friends) gets this too and
+     * does not mind; a column of buttons gets it between each, which is the
+     * other half of the same complaint.
+     */
+    marginTop: 10,
   },
   btnText: {fontSize: 13, fontWeight: '600'},
 

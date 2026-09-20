@@ -693,6 +693,8 @@ const styles = StyleSheet.create({
   fieldLabel: {color: theme.textSecondary, fontSize: 12},
   fieldRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
   input: {
+    /* Off the paragraph or field above it. See components.tsx btn. */
+    marginTop: 8,
     flex: 1,
     color: theme.text,
     fontSize: 14,

@@ -389,6 +389,8 @@ const styles = StyleSheet.create({
   error: {color: theme.error, fontSize: 13, lineHeight: 20, marginTop: 6},
   label: {color: theme.textSecondary, fontSize: 12, marginTop: 10, marginBottom: 4},
   input: {
+    /* Off the paragraph or field above it. See components.tsx btn. */
+    marginTop: 8,
     color: theme.text,
     borderColor: theme.border,
     borderWidth: 1,

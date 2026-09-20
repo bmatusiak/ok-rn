@@ -944,6 +944,8 @@ const styles = StyleSheet.create({
   },
 
   input: {
+    /* Off the paragraph or field above it. See components.tsx btn. */
+    marginTop: 8,
     color: theme.text,
     fontSize: 14,
     paddingHorizontal: 10,

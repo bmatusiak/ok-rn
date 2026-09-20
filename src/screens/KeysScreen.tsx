@@ -1062,6 +1062,8 @@ const styles = StyleSheet.create({
   error: {color: theme.error, fontSize: 13, lineHeight: 20},
 
   input: {
+    /* Off the paragraph or field above it. See components.tsx btn. */
+    marginTop: 8,
     color: theme.text,
     fontSize: 14,
     paddingHorizontal: 10,

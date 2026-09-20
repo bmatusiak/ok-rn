@@ -697,6 +697,8 @@ const styles = StyleSheet.create({
   digest: {color: theme.textDim, fontSize: 11, fontFamily: theme.mono},
 
   input: {
+    /* Off the paragraph or field above it. See components.tsx btn. */
+    marginTop: 8,
     color: theme.text,
     fontSize: 14,
     paddingHorizontal: 10,

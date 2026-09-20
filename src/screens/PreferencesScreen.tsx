@@ -614,6 +614,8 @@ const styles = StyleSheet.create({
   range: {color: theme.textDim, fontSize: 11, fontFamily: theme.mono},
 
   input: {
+    /* Off the paragraph or field above it. See components.tsx btn. */
+    marginTop: 8,
     flex: 1,
     color: theme.text,
     fontSize: 14,
