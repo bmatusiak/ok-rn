@@ -210,9 +210,16 @@ export function AdvancedScreen({
       <KeySource keys={keys} />
 
       <Section title={`Advanced — ${keyName}`}>
+        {/*
+          Reworded when the wipe and the debug console moved to Testing. It
+          used to promise "things only a developer key can do", which was those
+          two - what is left needs a hard key rather than a developer one, and
+          only the firmware update is irreversible.
+        */}
         <Text style={styles.body}>
-          Things that cannot be undone, and things only a developer key can do.
-          Each one says what it will do, and needs its word typed first.
+          Things that cannot be undone, and settings the app will not change
+          for you. The firmware update says what it will do and needs its word
+          typed first.
         </Text>
       </Section>
 
