@@ -27,7 +27,7 @@
  * THE SUPPORT_LAYOUT GUARDS ARE DELIBERATELY IGNORED
  *
  * keylayouts.c wraps every layout but US English in `#if defined(
- * SUPPORT_LAYOUT_x)`, and our build leaves all of them off (see
+ * SUPPORT_LAYOUT_x)`, which a DEBUG build leaves off (see
  * FINDING-only-us-english-types-on-a-debug-build.md). The guards describe what
  * one BUILD compiles in; the tables describe what a layout MEANS. The library
  * is shared with apps that talk to real hardware running a release build, so it
@@ -114,7 +114,7 @@ function evaluate(expr, syms) {
  * is compiled in.
  */
 function activeSupportMacros(header) {
-  const debugBuild = /^#defines+KEYLAYOUTS_DEBUG_BUILD/m.test(header);
+  const debugBuild = /^#define\s+KEYLAYOUTS_DEBUG_BUILD/m.test(header);
 
   const start = header.indexOf('#ifdef KEYLAYOUTS_DEBUG_BUILD');
   const middle = header.indexOf('#else', start);
@@ -128,7 +128,7 @@ function activeSupportMacros(header) {
     : header.slice(middle, end);
 
   const active = new Set();
-  for (const m of branch.matchAll(/^#defines+(SUPPORT_LAYOUT_[A-Z_]+)/gm)) {
+  for (const m of branch.matchAll(/^#define\s+(SUPPORT_LAYOUT_[A-Z_]+)/gm)) {
     active.add(m[1]);
   }
   return active;

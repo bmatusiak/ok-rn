@@ -186,9 +186,23 @@ const layouts = path.join(OKEMU, '.stage', 'core', 'keylayouts.h');
 let layoutGate = 'UNKNOWN';
 if (fs.existsSync(layouts)) {
   const src = fs.readFileSync(layouts, 'utf8');
-  layoutGate = src.includes('//#define KEYLAYOUTS_DEBUG_BUILD')
+  /*
+   * WHICH WAY ROUND THE SWITCH GOES, because this was backwards and said so
+   * on every release for as long as it has existed.
+   *
+   * keylayouts.h's own comment: "comment this out (to match #undef DEBUG in
+   * onlykey.h) for a release build". So the define being ACTIVE is the DEBUG
+   * build - US English only - and it being COMMENTED OUT is the release, where
+   * the #else branch compiles all twenty-six guarded layouts. This read the
+   * commented-out case and reported "US English only", exactly inverted.
+   *
+   * Nothing shipped wrong - stage.js has always gated it correctly - but this
+   * line is what somebody checks before handing an apk out, and it was telling
+   * them the opposite of the truth.
+   */
+  layoutGate = /^#define\s+KEYLAYOUTS_DEBUG_BUILD/m.test(src)
     ? 'OFF (US English only)'
-    : /^#define KEYLAYOUTS_DEBUG_BUILD/m.test(src)
+    : src.includes('//#define KEYLAYOUTS_DEBUG_BUILD')
       ? 'ON  (all layouts)'
       : 'UNKNOWN';
 }
