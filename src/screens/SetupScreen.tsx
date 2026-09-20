@@ -474,13 +474,27 @@ export function SetupScreen({
                 ? 'The key is in config mode until it restarts, and only reads its PIN when it boots — restart it to finish.'
                 : 'The key only reads its PIN when it boots, and its firmware cannot be restarted in this process — so the app has to start again before the new PIN means anything.'}
             </Text>
-            <View style={styles.action}>
-              <Btn
-                title={mode === 'change' && onRestart ? 'Restart the key' : 'Restart the app'}
-                tone="primary"
-                onPress={() => (mode === 'change' && onRestart ? onRestart() : OkEmu.restartApp())}
-              />
-            </View>
+            {/*
+              NO BUTTON WHEN NOTHING CAN PRESS IT.
+
+              A hard key is restarted over the debug console, which production
+              firmware does not have - so `onRestart` is withheld there rather
+              than offering a control that resolves and does nothing. Unplugging
+              is the restart that works on every build.
+            */}
+            {mode === 'change' && !onRestart ? (
+              <Text style={styles.hint}>
+                Unplug the key and plug it back in to finish.
+              </Text>
+            ) : (
+              <View style={styles.action}>
+                <Btn
+                  title={mode === 'change' && onRestart ? 'Restart the key' : 'Restart the app'}
+                  tone="primary"
+                  onPress={() => (mode === 'change' && onRestart ? onRestart() : OkEmu.restartApp())}
+                />
+              </View>
+            )}
           </>
         ) : null}
 

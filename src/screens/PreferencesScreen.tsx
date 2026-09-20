@@ -192,11 +192,24 @@ export function PreferencesScreen({
   type PinKind = 'primary' | 'secondary' | 'selfDestruct';
   const [changing, setChanging] = useState<PinKind | null>(null);
   const [changed, setChanged] = useState(false);
+  /*
+   * ONLY THE SOFT KEY CAN BE RESTARTED BY THE APP.
+   *
+   * `emu.restart()` on a hard key is device.press('8') on SEREMU, the debug
+   * interface - which production firmware does not have. It used to be called
+   * here as `void emu.restart()`, so the rejection was swallowed: the key was
+   * never restarted, config mode never ended, and the screen said the PIN was
+   * set and moved on. A PIN that the firmware only reads at boot, on a key
+   * that was never told to boot.
+   *
+   * So the app stops claiming it can. A hard key is unplugged by the hand
+   * holding it, which works on every build and needs no back door.
+   */
+  const canRestartKey = backend !== 'usb';
   const restartKey = useCallback(() => {
     /* The soft key's firmware cannot restart in place; the app can. */
-    if (backend === 'usb') void emu.restart();
-    else void OkEmu.restartApp();
-  }, [backend, emu]);
+    if (backend !== 'usb') void OkEmu.restartApp();
+  }, [backend]);
   const locked = emu.device !== 'unlocked';
 
   useEffect(() => {
@@ -259,7 +272,12 @@ export function PreferencesScreen({
           setChanging(null);
           setChanged(true);
         }}
-        onRestart={restartKey}
+        /*
+         * Only when the app can actually do it. Undefined tells SetupScreen to
+         * say so instead of offering a button that presses nothing - see the
+         * note on restartKey above.
+         */
+        onRestart={canRestartKey ? restartKey : undefined}
       />
     );
   }
@@ -335,7 +353,14 @@ export function PreferencesScreen({
               The PIN is set. The key is still in config mode, and only reads
               its PIN when it boots — restart it to finish.
             </Text>
-            <Btn title={backend === 'usb' ? 'Restart the key' : 'Restart the app'} tone="primary" onPress={restartKey} />
+            {canRestartKey ? (
+              <Btn title="Restart the app" tone="primary" onPress={restartKey} />
+            ) : (
+              <Text style={styles.note}>
+                Unplug the key and plug it back in. The new PIN takes effect on
+                that boot, and unplugging is what ends config mode.
+              </Text>
+            )}
           </>
         ) : (
           <>
