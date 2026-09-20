@@ -53,7 +53,18 @@ export function secret(value: string, shape: string): string {
   return __DEV__ ? value : shape;
 }
 
-/** Bytes as hex when debugging, as a length otherwise. */
-export function secretBytes(hex: string, length: number): string {
-  return __DEV__ ? hex : `${length} bytes`;
+/**
+ * Bytes as hex when debugging, and nothing about them otherwise.
+ *
+ * NOT THE LENGTH EITHER. A SEREMU frame is exactly the PIN plus a newline -
+ * `pressLine` in node-onlykey-lib writes `${digits}
+` as one frame - so
+ * "SEREMU 8 bytes" states that the PIN has seven digits. The frames that are
+ * a fixed 64 bytes tell an operator nothing by their length anyway, and the
+ * frames whose length varies are the ones carrying the secret, so printing
+ * the length can only ever leak. The line already carries the direction and
+ * the interface, which is the event.
+ */
+export function secretBytes(hex: string): string {
+  return __DEV__ ? hex : 'frame';
 }

@@ -298,10 +298,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
       const arrow = event.dir === DIR.OUT ? 'rx' : 'tx';
       log(
         arrow,
-        `${IFACE_NAME[event.iface] ?? event.iface} ${secretBytes(
-          okbytes.formatHex(event.bytes).slice(0, 71),
-          event.bytes.length,
-        )}`,
+        `${IFACE_NAME[event.iface] ?? event.iface} ${secretBytes(okbytes.formatHex(event.bytes).slice(0, 71))}`,
       );
     });
 
@@ -708,10 +705,16 @@ export function useOkEmu({log, autoStart = false}: Options) {
          * into a log tab that ships in every release - and the caller that
          * hands over a complete run is PinScreen's biometric unlock, replaying
          * the PIN out of the keystore. See src/redact.ts.
+         *
+         * NOT EVEN THE COUNT. The first fix logged "7 sent", which is still a
+         * fact about the secret: a PIN is 7 to 10 digits, so the count removes
+         * three quarters of the guessing. OnlyKey-App logs the message name
+         * and no count, and it is right - "buttons sent" is the event, and the
+         * event is all a log is for.
          */
-        log('info', `buttons ${secret(digits.split('').join(' '), `${digits.length} sent`)}`);
+        log('info', `buttons ${secret(digits.split('').join(' '), 'sent')}`);
       } catch (error) {
-        log('error', `buttons ${secret(digits, `${digits.length} sent`)}: ${String(error)}`);
+        log('error', `buttons ${secret(digits, 'sent')}: ${String(error)}`);
       }
     },
     [log],

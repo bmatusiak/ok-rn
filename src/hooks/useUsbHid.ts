@@ -88,10 +88,7 @@ export function useUsbHid({log}: Options) {
        */
       log(
         inbound ? 'rx' : 'tx',
-        `${name} ${secretBytes(
-          okbytes.formatHex(okbytes.toHex(event.bytes)),
-          event.bytes.length,
-        )}`,
+        `${name} ${secretBytes(okbytes.formatHex(okbytes.toHex(event.bytes)))}`,
       );
 
       if (!inbound || event.iface !== IFACE.FIDO) return;

@@ -123,10 +123,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
       const arrow = event.dir === DIR.OUT ? 'rx' : 'tx';
       log(
         arrow,
-        `${IFACE_NAME[event.iface] ?? event.iface} ${secretBytes(
-          okbytes.formatHex(event.bytes).slice(0, 71),
-          event.bytes.length,
-        )}`,
+        `${IFACE_NAME[event.iface] ?? event.iface} ${secretBytes(okbytes.formatHex(event.bytes).slice(0, 71))}`,
       );
     });
 
