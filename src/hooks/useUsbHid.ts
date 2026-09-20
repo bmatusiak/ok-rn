@@ -1,4 +1,5 @@
 import {bytes as okbytes, protocol, transport as oktransport} from 'node-onlykey-lib';
+import {secretBytes} from '../redact';
 import {useCallback, useEffect, useRef, useState} from 'react';
 
 import UsbPipe, {VENDOR_ID, PRODUCT_ID} from '../transport/UsbPipe';
@@ -78,7 +79,20 @@ export function useUsbHid({log}: Options) {
       const name = usb.describe(event.iface)?.name ?? String(event.iface);
       /* Device to host is OUT in this library. See UsbPipe's header. */
       const inbound = event.dir === DIR.OUT;
-      log(inbound ? 'rx' : 'tx', `${name} ${okbytes.formatHex(okbytes.toHex(event.bytes))}`);
+      /*
+       * THE WIDEST LEAK OF THE THREE, and the only one with no truncation at
+       * all: every report, every interface, both directions, in full. Slot
+       * writes travel here, so stored passwords and TOTP seeds passed through
+       * it as hex whenever somebody edited a slot - and a DUO types its PIN
+       * into the vendor message body, so that went through too.
+       */
+      log(
+        inbound ? 'rx' : 'tx',
+        `${name} ${secretBytes(
+          okbytes.formatHex(okbytes.toHex(event.bytes)),
+          event.bytes.length,
+        )}`,
+      );
 
       if (!inbound || event.iface !== IFACE.FIDO) return;
       const frame = assembler.current.push(event.bytes);

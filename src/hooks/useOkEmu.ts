@@ -2,6 +2,7 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState} from 'react-native';
 import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, bandFor, type Iface} from '../transport/OkEmu';
+import {secret, secretBytes} from '../redact';
 import {getOnlyKey} from '../onlykey';
 import {buildInfo} from '../buildInfo';
 
@@ -283,9 +284,10 @@ export function useOkEmu({log, autoStart = false}: Options) {
       const arrow = event.dir === DIR.OUT ? 'rx' : 'tx';
       log(
         arrow,
-        `${IFACE_NAME[event.iface] ?? event.iface} ${okbytes
-          .formatHex(event.bytes)
-          .slice(0, 71)}`,
+        `${IFACE_NAME[event.iface] ?? event.iface} ${secretBytes(
+          okbytes.formatHex(event.bytes).slice(0, 71),
+          event.bytes.length,
+        )}`,
       );
     });
 
@@ -548,7 +550,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
       setBusy(true);
       let offProgress: (() => void) | undefined;
       try {
-        log('info', `provisioning with a ${pin.length}-digit PIN`);
+        log('info', `provisioning with a ${secret(`${pin.length}-digit`, 'new')} PIN`);
         const {device} = await getOnlyKey('embedded');
 
         offProgress = device.on('progress', (e: {step: string}) =>
@@ -663,9 +665,10 @@ export function useOkEmu({log, autoStart = false}: Options) {
         await OkEmu.pressQueue(String(button));
         lastPressAt.current = Date.now();
         setPressTick(t => t + 1);
-        log('info', `button ${button}`);
+        /* One per keypad tap, and the buffer is in order - see src/redact.ts. */
+        log('info', `button ${secret(String(button), 'pressed')}`);
       } catch (error) {
-        log('error', `button ${button}: ${String(error)}`);
+        log('error', `button ${secret(String(button), 'pressed')}: ${String(error)}`);
       }
     },
     [log],
@@ -686,9 +689,15 @@ export function useOkEmu({log, autoStart = false}: Options) {
         await OkEmu.pressQueue(digits);
         lastPressAt.current = Date.now();
         setPressTick(t => t + 1);
-        log('info', `buttons ${digits.split('').join(' ')}`);
+        /*
+         * THE DIGITS ARE THE PIN. This printed them whole, space-separated,
+         * into a log tab that ships in every release - and the caller that
+         * hands over a complete run is PinScreen's biometric unlock, replaying
+         * the PIN out of the keystore. See src/redact.ts.
+         */
+        log('info', `buttons ${secret(digits.split('').join(' '), `${digits.length} sent`)}`);
       } catch (error) {
-        log('error', `buttons ${digits}: ${String(error)}`);
+        log('error', `buttons ${secret(digits, `${digits.length} sent`)}: ${String(error)}`);
       }
     },
     [log],
@@ -873,9 +882,12 @@ export function useOkEmu({log, autoStart = false}: Options) {
         await OkEmu.pressQueue(String(button), ticks, {allowGesture: true});
         lastPressAt.current = Date.now();
         setPressTick(t => t + 1);
-        log('info', `button ${button} held ${held} ticks — sent as ${band}`);
+        log(
+          'info',
+          `button ${secret(String(button), 'held')} ${held} ticks — sent as ${band}`,
+        );
       } catch (error) {
-        log('error', `button ${button}: ${String(error)}`);
+        log('error', `button ${secret(String(button), 'hold')}: ${String(error)}`);
       }
     },
     [log, stopPolling],

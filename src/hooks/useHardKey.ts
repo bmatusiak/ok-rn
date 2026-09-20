@@ -2,6 +2,7 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, device as device_, protocol, transport as oktransport} from 'node-onlykey-lib';
 
 import UsbPipe from '../transport/UsbPipe';
+import {secretBytes} from '../redact';
 import {PRESS_TICKS} from '../transport/OkEmu';
 import {getOnlyKey} from '../onlykey';
 import type {LogLevel} from './useLog';
@@ -62,6 +63,20 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
   useEffect(() => {
     const offStream = UsbPipe.on('stream', event => {
       if (event.iface === IFACE.SEREMU) {
+        /*
+         * THE DEBUG CONSOLE, IN BOTH DIRECTIONS - which is the part that bites.
+         *
+         * UsbPipe.write re-emits a successful write as a stream event, and this
+         * decodes any SEREMU frame whichever way it went. A hard key's PIN is
+         * written as a console LINE (device.press(digits)), so the digits came
+         * back through here verbatim as `[fw] 1234567`. The firmware's own
+         * replies are no better - it acknowledges each digit by name.
+         *
+         * A release has no console to read anyway: production firmware does not
+         * enumerate SEREMU. So this is a debug surface by definition, and it
+         * is gated as one rather than relying on that.
+         */
+        if (!__DEV__) return;
         const text = okbytes.toPrintable(event.bytes).trim();
         if (text) {
           log('info', `[fw] ${text}`);
@@ -106,9 +121,13 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
       }
 
       const arrow = event.dir === DIR.OUT ? 'rx' : 'tx';
-      log(arrow, `${IFACE_NAME[event.iface] ?? event.iface} ${okbytes
-        .formatHex(event.bytes)
-        .slice(0, 71)}`);
+      log(
+        arrow,
+        `${IFACE_NAME[event.iface] ?? event.iface} ${secretBytes(
+          okbytes.formatHex(event.bytes).slice(0, 71),
+          event.bytes.length,
+        )}`,
+      );
     });
 
     const offStatus = UsbPipe.on('status', event => {

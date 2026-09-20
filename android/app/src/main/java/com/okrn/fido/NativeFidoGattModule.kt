@@ -30,6 +30,7 @@ import android.os.ParcelUuid
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import androidx.core.content.ContextCompat
+import com.okrn.BuildConfig
 import com.okrn.specs.NativeFidoGattSpec
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -947,13 +948,32 @@ class NativeFidoGattModule(
        * Logged before anything else decides what to do with it. A write that
        * is quietly filtered out looks exactly like a write that never arrived,
        * and the host retries either way.
+       *
+       * THE BYTES ONLY IN A DEBUG BUILD. This printed the first twelve bytes of
+       * every Control Point write to LOGCAT, unguarded - and logcat is the
+       * worse sink of the two this app has, because an adb session or a crash
+       * reporter reads it without touching the phone. It is a raw wire-frame
+       * prefix off a live CTAP exchange; nothing here promises what a host puts
+       * in the first twelve bytes.
+       *
+       * Nothing else catches this: app/build.gradle has `minifyEnabled false`
+       * and proguard-rules.pro is comments only, so there is no
+       * -assumenosideeffects on android.util.Log and every Log.* call runs in a
+       * shipped build. CredProviderActivity:82-85 already redacts its
+       * clientDataHash to "present"/"NULL" - same idea, done by hand.
+       *
+       * The shape still logs, because the shape is what makes a report of "it
+       * does not work" readable: which characteristic, how long, at what offset.
        */
       Log.d(
         TAG,
         "write: ${characteristic.uuid} len=${value.size} offset=$offset " +
-          "prepared=$preparedWrite bytes=${value.take(12).joinToString("") {
-            "%02x".format(it)
-          }}",
+          "prepared=$preparedWrite" +
+          if (BuildConfig.DEBUG) {
+            " bytes=${value.take(12).joinToString("") { "%02x".format(it) }}"
+          } else {
+            ""
+          },
       )
 
       if (responseNeeded) {
