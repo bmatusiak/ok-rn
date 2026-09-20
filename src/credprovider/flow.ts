@@ -126,20 +126,32 @@ export async function chooseTarget(force?: 'usb' | 'embedded'): Promise<Target> 
   }
 
   /*
-   * ASK THE CONSOLE, NEVER PRESS TO FIND OUT. consoleAnswers() writes one
-   * inert byte and watches for the firmware's echo; it presses nothing, so it
-   * cannot spend a PIN attempt. Ten spent attempts wipe a key
-   * (FINDING #43), which makes "probe by pressing" the most expensive possible
-   * way to answer this question.
+   * A HARD KEY IS PRESSED BY A FINGER. THE APP DOES NOT ASK, AND DOES NOT
+   * REACH.
+   *
+   * This used to settle the question with consoleAnswers(), whose whole virtue
+   * was that it presses nothing and so cannot spend a PIN attempt - ten spent
+   * attempts wipe a key (FINDING #43). That reasoning was right about presses
+   * and wrong about the channel: the probe WRITES a byte to SEREMU, the debug
+   * interface, which production firmware is compiled without. On a production
+   * key it wrote into something that does not exist, on EVERY credential
+   * request over USB - and AdvancedScreen.tsx:173-197 records what that cost
+   * when measured: "the USB pipe did not survive it. The key vanished and the
+   * app fell back to its locked screen."
+   *
+   * The console is a back door - over it, unauthenticated, you can wipe the
+   * key, restart it, or type its PIN - and a shipped key not having one is the
+   * security property, not an obstacle to work around. The rule now: the debug
+   * interface belongs to the Testing tab and the e2e suites, nowhere else, and
+   * least of all on the path a browser takes to a passkey.
+   *
+   * `false` costs nothing that was working. pressKeyButton below returns
+   * without sending when it is false, the credential screen says to press the
+   * key and polls for the unlock, and that is what a production key did
+   * anyway once the probe answered no. A DEVELOPER key loses app-driven
+   * presses here and keeps them in Testing.
    */
-  let canPress = false;
-  try {
-    const {device} = await getOnlyKey('usb');
-    canPress = (await device.consoleAnswers()) === true;
-  } catch {
-    canPress = false;
-  }
-  return {backend: 'usb', hard: true, canPress, hardOnBus: true};
+  return {backend: 'usb', hard: true, canPress: false, hardOnBus: true};
 }
 
 /** One button press, on whichever key this request is talking to. */

@@ -177,24 +177,34 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
        * the other. Two devices, never blended.
        *
        * The soft key keeps the native press: it works on a production build
-       * of the emulator too, where the console does not read. A hard key is
-       * pressed through its console, and only when that console answers -
-       * asked with a probe that presses nothing - otherwise the answer is a
-       * finger, and saying so beats writing into silence.
+       * of the emulator too, where the console does not read.
        */
       /*
-       * Asked at press time, not captured. Same reason as getKey above: this
-       * hook lives outside the provider, and a value read once would pin the
-       * confirm button to the soft key for the life of the app - so pressing
-       * Confirm for a HARD key ceremony pressed the soft key instead.
+       * A HARD KEY IS PRESSED BY A FINGER. THE APP DOES NOT REACH FOR IT.
+       *
+       * This used to probe with consoleAnswers() and press through the console
+       * when it answered. The probe is not free: it WRITES a byte to SEREMU,
+       * the debug interface, which production firmware is compiled without -
+       * and AdvancedScreen.tsx:173-197 records what that costs, measured:
+       * "the USB pipe did not survive it. The key vanished and the app fell
+       * back to its locked screen."
+       *
+       * That guard existed at the other probe sites and not at this one, so
+       * confirming a security-key ceremony on a production key wrote into a
+       * bricked-up interface every time.
+       *
+       * The console is a BACK DOOR - over it, unauthenticated, you can wipe
+       * the key, restart it, or type its PIN. A shipped key not having it is
+       * the security property, not a gap to route around, and the app has no
+       * business knocking on a user path. The rule it now follows: the debug
+       * interface belongs to the Testing tab and the e2e suites, nowhere else.
+       *
+       * Nothing is lost on a production key, which never took this press. A
+       * DEVELOPER key loses app-driven confirm here and keeps it in Testing.
        */
       if (getBackend() === 'usb') {
-        const {device} = await getKey();
-        if (!(await device.consoleAnswers())) {
-          log('info', 'this key does not take presses from the app - press any button on it');
-          return;
-        }
-        await device.press('1');
+        log('info', 'press the button on the key - the app does not press a hard key');
+        return;
       } else {
         /* Handed over rather than sensed - a browser is waiting. */
         await OkEmu.pressQueue('1');
@@ -203,7 +213,8 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
     } catch (error) {
       log('error', 'confirm: ' + String(error));
     }
-  }, [getBackend, getKey, log]);
+    /* No getKey: confirming no longer reaches the hard key at all. */
+  }, [getBackend, log]);
 
   return {
     state,
