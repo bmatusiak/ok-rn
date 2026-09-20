@@ -269,6 +269,61 @@ if (!fs.existsSync(apk)) {
   console.error(`release: no apk at ${apk}`);
   process.exit(1);
 }
+
+/*
+ * Sign with the OnlyKey, BEFORE the hash is taken.
+ *
+ * Signing rewrites the file, so a sha256 computed above it would describe an
+ * artifact nobody ever installs - and that hash is what goes in the release
+ * notes for people to check against. Order is the whole point of it being
+ * here rather than after the report.
+ *
+ * Gradle has already signed and aligned by now. apksigner strips the old
+ * signature and puts ours on, preserving the alignment it found, so the two
+ * stay separable: `gradlew assembleRelease` on its own still produces an
+ * installable apk for anyone who never runs this script.
+ *
+ * Skippable with --no-sign, because a build that cannot finish because a
+ * signer is unavailable is worse than one that says plainly it is unsigned.
+ */
+const OKSIGN = path.join(__dirname, 'oksign');
+const SIGNER_CERT = path.join(OKSIGN, '.local', 'signer.crt.pem');
+
+let signed = false;
+if (!process.argv.includes('--no-sign')) {
+  say('release: signing with the OnlyKey (expect two button presses, v2 and v3)');
+  try {
+    /*
+     * Not run(): that one prefixes gradlew. apksign.cmd is its own program -
+     * see its header for why apksigner cannot be invoked through the stock
+     * launcher when a custom provider is involved.
+     *
+     * stderr inherited rather than captured: it carries the device console
+     * and the helper's progress, and when a sign stalls waiting for a press
+     * that output is the only thing that says so.
+     */
+    execSync([
+      JSON.stringify(path.join(OKSIGN, 'apksign.cmd')),
+      'sign', '--ks', 'NONE', '--ks-type', 'ONLYKEY',
+      '--ks-provider-class', 'com.okrn.signer.OnlyKeyProvider',
+      '--ks-provider-arg', JSON.stringify(SIGNER_CERT),
+      '--ks-pass', 'pass:onlykey',
+      '--min-sdk-version', '24', '--max-sdk-version', '36',
+      JSON.stringify(apk),
+    ].join(' '), {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'inherit'],
+      env: {...process.env, OKSIGN_CMD: path.join(OKSIGN, 'backend-device.cmd')},
+    });
+    signed = true;
+  } catch (err) {
+    console.error(`release: signing failed - ${err.message}`);
+    process.exit(1);
+  }
+}
+
 const bytes = fs.readFileSync(apk);
 const sha = crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -300,11 +355,45 @@ if (leaked.length) {
   process.exit(1);
 }
 /*
- * Said every time rather than left to be discovered. The release buildType
- * still uses signingConfigs.debug, so this apk is signed with the debug
- * keystore that ships in the repo - fine for a tester, not for anything real.
+ * ASK THE APK WHO SIGNED IT.
+ *
+ * This used to be three hardcoded lines saying "signed with the DEBUG
+ * keystore", which was true when they were written and would have gone on
+ * being printed word for word after the signer changed. A note that cannot be
+ * wrong is a note that cannot be right either.
+ *
+ * apksigner verify is the only thing that actually knows, so it is asked, and
+ * what it says is what gets printed.
  */
-say('release: NOTE - signed with the DEBUG keystore (android/app/debug.keystore).');
-say('release: A real release needs its own key, kept outside this repo forever:');
-say('release: whichever key signs the first install is the key every update must use.');
+let signer = '(not checked)';
+try {
+  const out = execSync(
+    `${JSON.stringify(path.join(OKSIGN, 'apksign.cmd'))} verify --print-certs ${JSON.stringify(apk)}`,
+    {cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe']},
+  );
+  const dn = /certificate DN: (.+)/.exec(out);
+  const digest = /certificate SHA-256 digest: ([0-9a-f]+)/.exec(out);
+  signer = digest ? `${digest[1]}  ${dn ? dn[1].trim() : ''}`.trim() : '(no signer found)';
+} catch (err) {
+  signer = `(apksigner could not verify: ${String(err.message).split('\n')[0]})`;
+}
+say(`release: signer     ${signer}`);
+say(`release: signed by  ${signed ? 'the OnlyKey' : 'gradle (--no-sign)'}`);
+
+/*
+ * THE TEMPLATE KEY IS NOT AN IDENTITY. android/app/debug.keystore is the
+ * stock React Native one - CN=Android Debug, fac61745... - and its private
+ * half ships with every scaffold on GitHub, so anyone can build an update to
+ * an apk it signed.
+ *
+ * For a pre-release that is a known, accepted cost: the emulated OnlyKey
+ * holds that same key on purpose, so existing testers keep updating in place.
+ * For a real release it is not, and this is the line that has to stop being
+ * printed before one goes out.
+ */
+if (signer.startsWith('fac61745')) {
+  say('release: NOTE - this is the React Native template key. Its private half is');
+  say('release: public, so anyone can sign an update to this apk. Fine for a');
+  say('release: pre-release; never for a real one.');
+}
 say('');
