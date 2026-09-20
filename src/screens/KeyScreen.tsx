@@ -8,7 +8,6 @@ import {PinScreen} from './PinScreen';
 import {SetupScreen} from './SetupScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {KeyControl} from '../hooks/useKey';
-import {KeySource} from '../ui/KeySource';
 import {useActiveKey} from '../hooks/KeyContext';
 
 /**
@@ -154,25 +153,12 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
    * pad the door uses works just as well inside, and it means there is exactly
    * one place a PIN is ever typed.
    */
-  /*
-   * THE SOURCE CONTROL IS ABOVE THE LOCK, not behind it.
-   *
-   * Found by looking at the screen: it was inside the unlocked view, which
-   * means you could not choose which key to talk to until you had already
-   * unlocked one. That is backwards - the choice decides WHICH key you would
-   * be unlocking, and on a phone with a hard key attached the wrong one may
-   * be the one asking for a PIN.
-   *
-   * So it sits above every state this screen has, and the state view scrolls
-   * under it.
-   */
   if (emu.device !== 'unlocked') {
     return (
       <ScrollView
         style={styles.root}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
-        <KeySource keys={keys} />
         <View style={styles.locked}>
           <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} led={keys.backend === 'embedded' ? emu.led : undefined} />
         </View>
@@ -248,7 +234,6 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <KeySource keys={keys} />
 
       {emu.canPress !== true ? (
         <Section title="Buttons">

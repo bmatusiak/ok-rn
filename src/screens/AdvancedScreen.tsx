@@ -23,9 +23,11 @@ import {Btn, KeyValue, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice} from 'node-onlykey-lib';
 import {FirmwareScreen} from './FirmwareScreen';
+import {KeySource} from '../ui/KeySource';
 import {useActiveKeyWithBackend, useKeyName} from '../hooks/KeyContext';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {HardKeySession} from '../hooks/useHardKey';
+import type {KeyControl} from '../hooks/useKey';
 import {ALLOW_OVERRIDE, type Overrides} from '../capabilityOverride';
 import type {FirmwareFeature} from '../firmwareFeatures';
 
@@ -106,10 +108,25 @@ const DEVICE_TYPES = Object.values(okdevice.slots.DEVICE_TYPE) as string[];
 export function AdvancedScreen({
   emu,
   hard,
+  keys,
   caps,
 }: {
   /** The ACTIVE key - everything here acts on whichever one is in use. */
   emu: EmuSession;
+  /**
+   * Which key is active, and the controls that decide it.
+   *
+   * Moved here from This Key on 2026-09-19. It had been lifted to the top of
+   * that screen so the choice could be made BEFORE unlocking - "the choice
+   * decides WHICH key you would be unlocking" - and that case is now covered
+   * at the door instead: PinScreen takes `keyPick` and offers the same choice
+   * whenever a hard key is attached, which is the only time there is anything
+   * to choose between.
+   *
+   * It belongs here because it decides what every other panel on this tab
+   * acts on, which is why it is rendered first.
+   */
+  keys: KeyControl;
   /** The hard key, for the one control that only means anything on hardware. */
   hard: HardKeySession;
   /** Forced capabilities: what is on, and how to change it. */
@@ -273,6 +290,9 @@ export function AdvancedScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      {/* First, because it decides which key everything below acts on. */}
+      <KeySource keys={keys} />
+
       <Section title={`Advanced — ${keyName}`}>
         <Text style={styles.body}>
           Things that cannot be undone, and things only a developer key can do.
