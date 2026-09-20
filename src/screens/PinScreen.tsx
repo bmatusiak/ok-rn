@@ -325,7 +325,18 @@ export function PinScreen({
       <Text style={styles.hint}>Enter your PIN on the keypad.</Text>
 
       {hasStoredPin ? (
-        <>
+        /*
+         * ROOM ON BOTH SIDES, because it had none on either.
+         *
+         * The hint above carries marginTop: 4 and the keypad below carries
+         * nothing, so this button sat flush against both - reading as part of
+         * the sentence above it rather than as an alternative to the pad below.
+         *
+         * The wrapper rather than a margin on the Btn itself: the error line
+         * belongs to this button, and margin on the button alone would leave
+         * the error hanging against the keypad.
+         */
+        <View style={styles.bio}>
           <Btn
             title={bioBusy ? 'Waiting…' : 'Unlock with biometrics'}
             tone="primary"
@@ -333,7 +344,7 @@ export function PinScreen({
             onPress={unlockWithBiometric}
           />
           {bioError ? <Text style={styles.bioError}>{bioError}</Text> : null}
-        </>
+        </View>
       ) : null}
 
       {settling ? <Text style={styles.settling}>{settling}</Text> : null}
@@ -385,6 +396,7 @@ export function PinScreen({
 }
 
 const styles = StyleSheet.create({
+  bio: {width: '100%', maxWidth: 320, marginTop: 16, marginBottom: 18},
   bioError: {color: theme.error, fontSize: 12, lineHeight: 18, marginTop: 8, textAlign: 'center'},
   root: {flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24},
   title: {color: theme.text, fontSize: 22, fontWeight: '700', marginTop: 28},
