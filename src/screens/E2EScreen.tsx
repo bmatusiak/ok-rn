@@ -66,7 +66,7 @@ function selected() {
  * Tabs are for looking at things. Running a suite that tears down the device is
  * a decision, so it needs a press.
  */
-export function E2EScreen() {
+export function E2EScreen({onRunStart}: {onRunStart?: () => void}) {
   const [armed, setArmed] = useState(false);
 
   if (armed) {
@@ -98,7 +98,33 @@ export function E2EScreen() {
         <View style={styles.row}>
           {/* Labelled to match what tools/e2e.js looks for, so the suite can
               still be driven from a terminal without touching the phone. */}
-          <Btn title="RUN TESTS" tone="primary" onPress={() => setArmed(true)} />
+          <Btn
+            title="RUN TESTS"
+            tone="primary"
+            onPress={() => {
+              /*
+               * BLUETOOTH OFF FIRST, and this is not tidiness.
+               *
+               * backupCapture holds button 1 past the gesture band on
+               * purpose, and the key answers by TYPING ITS WHOLE BACKUP on
+               * the keyboard interface. The suite expects to capture that
+               * itself. But if this phone is paired to a computer as a BLE
+               * keyboard, the keystrokes go there instead - into whatever
+               * window happens to have focus.
+               *
+               * Measured, once, the hard way (2026-09-20): the backup was
+               * typed into the terminal driving the run, the app lost the
+               * screen, and the suite aborted with no verdict. The key
+               * material went somewhere nobody chose.
+               *
+               * Turning it off here rather than in tools/e2e.js because the
+               * run can be started from the phone too, and the hazard is the
+               * run's, not the runner's.
+               */
+              onRunStart?.();
+              setArmed(true);
+            }}
+          />
         </View>
       </Section>
     </View>

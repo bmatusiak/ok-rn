@@ -44,6 +44,7 @@ export function TestingScreen({
   hid,
   usbEntries,
   clearUsb,
+  onE2EStart,
 }: {
   /**
    * The app's config-mode flag, and the only way to change it.
@@ -64,6 +65,15 @@ export function TestingScreen({
   hid: UsbSession;
   usbEntries: LogEntry[];
   clearUsb: () => void;
+  /**
+   * Called the moment a suite is armed, before it runs.
+   *
+   * The app turns Bluetooth off here: backupCapture makes the key type its
+   * whole backup on the keyboard interface, and a phone paired to a computer
+   * as a BLE keyboard sends that to the computer instead of to the suite.
+   * See E2EScreen for the incident that established it.
+   */
+  onE2EStart?: () => void;
 }) {
   const [armed, setArmed] = useState(false);
   const [armedHard, setArmedHard] = useState(false);
@@ -339,7 +349,7 @@ export function TestingScreen({
         switch. See AdvancedScreen.
       */}
 
-      <E2EScreen />
+      <E2EScreen onRunStart={onE2EStart} />
 
       <UsbScreen hid={hid} entries={usbEntries} clear={clearUsb} />
 

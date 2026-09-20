@@ -282,11 +282,29 @@ export function PreferencesScreen({
     );
   }
 
+  /*
+   * LED brightness is a HARD KEY setting, and only that.
+   *
+   * The preference exists in the library because the firmware has it, and the
+   * firmware has it because a physical OnlyKey has a NeoPixel to dim. The soft
+   * key's light is a circle this app draws - the firmware still reports a
+   * colour and this screen still renders it, but nothing downstream of
+   * `ledBrightness` reaches a lamp. Offering it would be offering a control
+   * that writes a byte and changes nothing anyone can see.
+   *
+   * Dropped rather than disabled: a greyed-out row invites the question "why
+   * can't I set this", and the answer - there is no LED - is better expressed
+   * by the row not being there at all. The rest of the group applies to both
+   * keys and stays.
+   */
+  const rowApplies = (p: {name: string}) =>
+    !(p.name === 'ledBrightness' && backend !== 'usb');
+
   const groups = [
     {
       title: 'Settings',
       note: 'These can be changed whenever the key is unlocked.',
-      rows: table.filter(p => p.requires === 'always'),
+      rows: table.filter(p => p.requires === 'always').filter(rowApplies),
     },
     {
       title: 'Advanced',

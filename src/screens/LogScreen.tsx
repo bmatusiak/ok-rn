@@ -4,6 +4,7 @@ import {Btn, LogList, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import type {LogEntry} from '../hooks/useLog';
 import {useBackend, useKeyName} from '../hooks/KeyContext';
+import {useSecureScreen} from '../hooks/useSecureScreen';
 
 /*
  * NAMED FOR THE DEVICE, not for the layer.
@@ -54,7 +55,30 @@ const FW_TAG = '[fw] ';
  * single buffer with a source tag, which is a change to useLog rather than to
  * this screen.
  */
-export function LogScreen({buffers}: {buffers: LogBuffers}) {
+export function LogScreen({
+  buffers,
+  blockScreenshots = true,
+}: {
+  buffers: LogBuffers;
+  /*
+   * FLAG_SECURE, same as Backup and Crypto.
+   *
+   * This tab was the one that did not have it, and it is the one that shows
+   * device traffic and whatever the firmware prints - the console included.
+   * Nothing in the buffers is supposed to be a secret any more, since the PIN
+   * was taken out of them at source, but "supposed to" is what a redaction
+   * pass gives you and FLAG_SECURE is what blocks a screenshot of the next
+   * thing somebody logs without thinking about it.
+   *
+   * Defaults to true so a caller that forgets the prop gets the safe
+   * behaviour; testing mode passes false through BLOCK_SCREENSHOTS, which is
+   * !__DEV__, because a tab that exists to be inspected has to be screenshot-
+   * able while inspecting it.
+   */
+  blockScreenshots?: boolean;
+}) {
+  useSecureScreen(blockScreenshots);
+
   const [view, setView] = useState<View>('Soft Key');
   const backend = useBackend();
   const keyName = useKeyName();

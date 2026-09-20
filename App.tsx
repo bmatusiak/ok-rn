@@ -801,6 +801,7 @@ function Shell() {
             <AdvancedScreen emu={keys.key} hard={keys.hard} keys={keys} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} caps={caps} />
           ) : tab === 'Log' ? (
             <LogScreen
+              blockScreenshots={BLOCK_SCREENSHOTS}
               /*
                 NAMED FOR THE DEVICE, not for the layer.
 
@@ -836,6 +837,12 @@ function Shell() {
               hid={hid}
               usbEntries={usbLog.entries}
               clearUsb={usbLog.clear}
+              /*
+               * The suite types a whole backup out on purpose, and a phone
+               * paired as a BLE keyboard would deliver it to the paired
+               * computer rather than to the suite. Off before anything runs.
+               */
+              onE2EStart={() => setBtOn(false)}
             />
           )}
         </View>
