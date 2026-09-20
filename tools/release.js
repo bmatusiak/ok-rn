@@ -213,6 +213,21 @@ const FORBIDDEN = [
   'PIN bypassed',
   'Wipe the Soft Key',
   'Factory reset',
+  /*
+   * THE DEBUG-CONSOLE SURFACES, moved off the Advanced tab on 2026-09-19.
+   *
+   * Both drive the 4th interface, which is a back door: over it,
+   * unauthenticated, a key can be wiped, restarted, or have its PIN typed in.
+   * Production firmware is compiled without it, and that is the security
+   * property rather than a gap - so the controls that drive it belong to the
+   * Testing tab, which this build strips.
+   *
+   * Listed here so the move is PROVEN rather than assumed. The strings are the
+   * section titles; if either reappears in a release bundle, the build fails
+   * rather than shipping a back-door control that merely looks unreachable.
+   */
+  'Debug console',
+  'Wipe the hard key',
 ];
 /*
  * Two places hold the same bundle and the AGP task that writes each has

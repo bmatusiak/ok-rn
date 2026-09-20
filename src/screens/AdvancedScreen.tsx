@@ -18,7 +18,7 @@
  * library and could be reached from a test suite and nowhere else.
  */
 import React, {useCallback, useEffect, useState} from 'react';
-import {Linking, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {Linking, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice} from 'node-onlykey-lib';
@@ -72,9 +72,6 @@ function capabilityReason(
 
   return `Needs firmware 3.0.0 or newer; this key reports ${version}.`;
 }
-
-/** Typed before the key is wiped. Not a dialog; see this file's header. */
-const WIPE_WORD = 'WIPE THIS KEY';
 
 /**
  * The two things the Tools tab had that this app cannot do for you.
@@ -138,12 +135,8 @@ export function AdvancedScreen({
   const keyName = useKeyName();
   const {backend, getKey} = useActiveKeyWithBackend();
 
-  const [wipeWord, setWipeWord] = useState('');
   const [detected, setDetected] = useState<string | null>(null);
   const [override, setOverride] = useState<string | null>(null);
-  const [answers, setAnswers] = useState<boolean | null>(null);
-  const [transcript, setTranscript] = useState('');
-  const [line, setLine] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -167,46 +160,8 @@ export function AdvancedScreen({
         if (!alive) return;
         setDetected(device.detectedType ?? null);
         setOverride(device.deviceType ?? null);
-        /*
-         * NOT PROBED WHEN THE BUILD HAS SAID IT HAS NO CONSOLE.
-         *
-         * consoleAnswers() writes a byte to SEREMU, and `-prod` firmware is
-         * compiled without that interface - so on a production hard key this
-         * wrote into something that does not exist, every time the tab was
-         * opened. Opening a tab should not poke a key at all, let alone an
-         * interface it does not have.
-         *
-         * debugConsole is null on a build that has not said which it is, and
-         * there the probe is still the only way to find out.
-         */
-        /*
-         * ONLY PROBE A BUILD THAT SAYS IT HAS A CONSOLE - `=== true`, not
-         * "unless false".
-         *
-         * capabilities is UNDEFINED until something has connected
-         * (BackupScreen.tsx:146 carries the same dance), and the first version
-         * of this gate read `!== false`, so an unknown build still got probed.
-         * That is precisely the dangerous case: a production hard key whose
-         * capabilities had not been read yet was written to on SEREMU, an
-         * interface it does not have, and the USB pipe did not survive it. The
-         * throw was caught here and the damage was already done - the key
-         * vanished and the app fell back to its locked screen.
-         *
-         * Resolved first, then asked. Unknown now means "do not touch it",
-         * which costs a `-test` build that has not connected nothing: the next
-         * connect fills this in.
-         */
-        let caps = device.capabilities;
-        if (!caps) {
-          await device.connect();
-          if (!alive) return;
-          caps = device.capabilities;
-        }
-        setAnswers(
-          caps?.debugConsole === true ? await device.consoleAnswers() : false,
-        );
       } catch {
-        if (alive) setAnswers(false);
+        /* Nothing to report: the rows below say "not said yet". */
       }
     })();
     return () => {
@@ -214,27 +169,18 @@ export function AdvancedScreen({
     };
   }, [getKey]);
 
-  const wipe = useCallback(async () => {
-    reset();
-    setBusy('wipe');
-    try {
-      const {device} = await getKey();
-      await device.wipeUserspace();
-      setWipeWord('');
-      setStatus(
-        'Wipe sent. The key reboots with no PIN, no slots and no keys. Set it ' +
-          'up again from This Key.',
-      );
-    } catch (e) {
-      setError(String((e as Error)?.message ?? e));
-    } finally {
-      setBusy(null);
-    }
-  }, [getKey]);
-
   const forceType = useCallback(
     async (next: string | null) => {
       reset();
+      /*
+       * The only thing on this tab that still sets `busy`.
+       *
+       * The Model buttons were already disabled on `working`, but nothing
+       * drove it here - so they stayed live through their own await. It was
+       * masked while the wipe and the debug console shared this state; with
+       * both moved to the Testing tab, the guard had nothing left behind it.
+       */
+      setBusy('type');
       try {
         const {device} = await getKey();
         const now = device.setDeviceType(next);
@@ -246,44 +192,14 @@ export function AdvancedScreen({
         );
       } catch (e) {
         setError(String((e as Error)?.message ?? e));
+      } finally {
+        setBusy(null);
       }
     },
     [getKey],
   );
 
-  /** Whatever the key has printed on its console so far. */
-  const readConsole = useCallback(async () => {
-    reset();
-    setBusy('console');
-    try {
-      const {device} = await getKey();
-      setTranscript(device.console.text);
-    } catch (e) {
-      setError(String((e as Error)?.message ?? e));
-    } finally {
-      setBusy(null);
-    }
-  }, [getKey]);
-
-  const sendLine = useCallback(async () => {
-    reset();
-    setBusy('console');
-    try {
-      const {device} = await getKey();
-      await device.press(line);
-      setLine('');
-      /* A moment for the key to answer before reading what it said. */
-      await new Promise<void>(r => setTimeout(() => r(), 400));
-      setTranscript(device.console.text);
-    } catch (e) {
-      setError(String((e as Error)?.message ?? e));
-    } finally {
-      setBusy(null);
-    }
-  }, [getKey, line]);
-
   const working = busy !== null;
-  const canWipe = wipeWord.trim() === WIPE_WORD;
 
   return (
     <ScrollView
@@ -381,30 +297,6 @@ export function AdvancedScreen({
         </Section>
       )}
 
-      <Section title="Erase this key">
-        <Text style={styles.body}>
-          Wipes the PIN, every profile and every slot, and reboots the key
-          unprovisioned. Keys loaded into slots go with it. There is no backup
-          unless you made one, and no undo.
-        </Text>
-        <Text style={styles.label}>Type {WIPE_WORD} to enable it</Text>
-        <TextInput
-          style={styles.input}
-          value={wipeWord}
-          onChangeText={setWipeWord}
-          placeholder={WIPE_WORD}
-          placeholderTextColor={theme.textDim}
-          autoCapitalize="characters"
-          autoCorrect={false}
-        />
-        <Btn
-          title={busy === 'wipe' ? 'Wiping…' : 'Erase everything on this key'}
-          tone="danger"
-          disabled={working || !canWipe}
-          onPress={wipe}
-        />
-      </Section>
-
       <Section title="Model">
         <KeyValue label="detected" value={detected ?? 'not said yet'} />
         <KeyValue label="in use" value={override ?? '—'} />
@@ -430,52 +322,6 @@ export function AdvancedScreen({
             onPress={() => forceType(null)}
           />
         </View>
-      </Section>
-
-      <Section title="Debug console">
-        {answers ? (
-          <>
-            <Text style={styles.note}>
-              This key answers on its serial console, which means it is a
-              DEVELOPER build. The console is how the test suites drive it and
-              how the firmware says what it is doing internally. Lines go to
-              the key exactly as typed.
-            </Text>
-            <TextInput
-              style={styles.input}
-              value={line}
-              onChangeText={setLine}
-              placeholder="a line to send"
-              placeholderTextColor={theme.textDim}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <View style={styles.row}>
-              <Btn
-                title={busy === 'console' ? 'Working…' : 'Send'}
-                tone="primary"
-                disabled={working || !line}
-                onPress={sendLine}
-              />
-              <Btn title="Read" disabled={working} onPress={readConsole} />
-            </View>
-            {transcript ? (
-              <Text style={styles.transcript} selectable>
-                {transcript.slice(-2000)}
-              </Text>
-            ) : (
-              <Text style={styles.note}>Nothing read yet.</Text>
-            )}
-          </>
-        ) : (
-          <Text style={styles.note}>
-            {answers === null
-              ? 'Asking the key whether it reads its console…'
-              : 'This key does not answer on its console. Production firmware ' +
-                'is built without it, which is why the suites that drive a key ' +
-                'this way only run against developer builds.'}
-          </Text>
-        )}
       </Section>
 
       <Section title="On a computer">
@@ -528,12 +374,5 @@ const styles = StyleSheet.create({
     marginTop: 6,
     paddingHorizontal: 10,
     paddingVertical: 8,
-  },
-  transcript: {
-    color: theme.textDim,
-    fontFamily: theme.mono,
-    fontSize: 11,
-    lineHeight: 15,
-    marginTop: 10,
   },
 });

@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
+import {ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import {OFF, ON, type ConfigState} from '../ui/configModeNotes';
 import OkEmu from '../transport/OkEmu';
@@ -68,6 +68,51 @@ export function TestingScreen({
   const [armed, setArmed] = useState(false);
   const [armedHard, setArmedHard] = useState(false);
   const [hardWipe, setHardWipe] = useState<string | null>(null);
+
+  /*
+   * THE DEBUG CONSOLE, MOVED HERE FROM THE ADVANCED TAB on 2026-09-19.
+   *
+   * It is a back door: over it, unauthenticated and in plain text, you can
+   * wipe the key, restart it, or type its PIN. Production firmware is compiled
+   * without the interface, which is the security property rather than a gap -
+   * so a control that drives it has no business on a tab a user opens, however
+   * carefully it was gated there.
+   *
+   * On this tab it is absent from a release build outright: metro.config.js
+   * swaps TestingScreen for TestingScreen.release.tsx, and tools/release.js
+   * greps the built bundle to prove it.
+   */
+  const [line, setLine] = useState('');
+  const [transcript, setTranscript] = useState('');
+  const [consoleBusy, setConsoleBusy] = useState(false);
+
+  const readConsole = async () => {
+    setConsoleBusy(true);
+    try {
+      const {device} = await getOnlyKey('usb');
+      setTranscript(device.console.text);
+    } catch (e) {
+      setTranscript(String((e as Error)?.message ?? e));
+    } finally {
+      setConsoleBusy(false);
+    }
+  };
+
+  const sendLine = async () => {
+    setConsoleBusy(true);
+    try {
+      const {device} = await getOnlyKey('usb');
+      await device.press(line);
+      setLine('');
+      /* A moment for the key to answer before reading what it said. */
+      await new Promise<void>(r => setTimeout(() => r(), 400));
+      setTranscript(device.console.text);
+    } catch (e) {
+      setTranscript(String((e as Error)?.message ?? e));
+    } finally {
+      setConsoleBusy(false);
+    }
+  };
 
   /**
    * The bench key's factory reset: the firmware's own "0C" through the
@@ -238,6 +283,50 @@ export function TestingScreen({
                 <Btn title="Cancel" onPress={() => setArmedHard(false)} />
               </View>
             ) : null}
+
+      {hard.state === 'running' && hard.canPress ? (
+        <Section title="Debug console">
+          <Text style={styles.note}>
+            This key answers on its serial console, which means it is a
+            DEVELOPER build. The console is how the test suites drive it and
+            how the firmware says what it is doing internally. Lines go to the
+            key exactly as typed.
+          </Text>
+          <TextInput
+            style={styles.consoleInput}
+            value={line}
+            onChangeText={setLine}
+            placeholder="a line to send"
+            placeholderTextColor={theme.textDim}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <View style={styles.row}>
+            <View style={styles.cell}>
+              <Btn
+                title={consoleBusy ? 'Working…' : 'Send'}
+                tone="primary"
+                disabled={consoleBusy || !line}
+                onPress={() => void sendLine()}
+              />
+            </View>
+            <View style={styles.cell}>
+              <Btn
+                title="Read"
+                disabled={consoleBusy}
+                onPress={() => void readConsole()}
+              />
+            </View>
+          </View>
+          {transcript ? (
+            <Text style={styles.transcript} selectable>
+              {transcript.slice(-2000)}
+            </Text>
+          ) : (
+            <Text style={styles.note}>Nothing read yet.</Text>
+          )}
+        </Section>
+      ) : null}
           </View>
           {hardWipe ? <Text style={styles.note}>{hardWipe}</Text> : null}
         </Section>
@@ -284,6 +373,8 @@ const styles = StyleSheet.create({
   root: {flex: 1},
   content: {paddingBottom: 4},
   kv: {marginTop: 6},
+  consoleInput: {backgroundColor: theme.surfaceAlt, borderRadius: 8, color: theme.text, fontFamily: theme.mono, fontSize: 13, marginTop: 8, paddingHorizontal: 10, paddingVertical: 8},
+  transcript: {color: theme.textSecondary, fontFamily: theme.mono, fontSize: 11, lineHeight: 15, marginTop: 10},
   row: {flexDirection: 'row', gap: 8, marginTop: 12},
   cell: {flex: 1},
   note: {
