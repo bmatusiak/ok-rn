@@ -166,12 +166,17 @@ export async function pressKeyButton(target: Target, button: number) {
     await OkEmu.pressQueue(String(button));
     return;
   }
-  if (!target.canPress) {
-    /* The finger is the user's. Nothing to send. */
-    return;
-  }
-  const {device} = await getOnlyKey('usb');
-  await device.press(String(button));
+  /*
+   * A HARD KEY IS PRESSED BY ITS OWNER. There is nothing left to send.
+   *
+   * This used to fall through to device.press() on SEREMU when the console
+   * probe said yes. The probe is gone - chooseTarget above returns
+   * canPress: false for every hard key now - so this is where a credential
+   * request stops and the person presses the button themselves.
+   *
+   * Written as a return rather than left as an unreachable press: dead code
+   * that writes to the debug interface is how that write comes back.
+   */
 }
 
 /**

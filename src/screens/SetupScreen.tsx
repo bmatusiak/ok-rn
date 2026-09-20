@@ -126,7 +126,7 @@ const BLURB: Record<Kind, string> = {
  * initialized key; this screen only ever appeared on a blank one. The
  * firmware takes OKPIN on an initialized key only in config mode
  * (okcore.cpp:362-374, `!initcheck || configmode`), so the caller walks
- * that door first - PreferencesScreen does, with useConfigMode - and this
+ * that door first - PreferencesScreen does - and this
  * screen then runs the same bracket for the one kind asked for and stops:
  * no other kinds, no passphrase stage. Config mode ends only at a restart,
  * which the done view offers through `onRestart` (the app for the soft

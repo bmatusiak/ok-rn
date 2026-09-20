@@ -24,6 +24,8 @@ import {theme} from '../ui/theme';
 import {device as okdevice} from 'node-onlykey-lib';
 import {FirmwareScreen} from './FirmwareScreen';
 import {KeySource} from '../ui/KeySource';
+import {ConfigModePanel} from '../ui/ConfigModePanel';
+import type {ConfigState} from '../ui/configModeNotes';
 import {useActiveKeyWithBackend, useKeyName} from '../hooks/KeyContext';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {HardKeySession} from '../hooks/useHardKey';
@@ -106,6 +108,8 @@ export function AdvancedScreen({
   emu,
   hard,
   keys,
+  configMode,
+  onWantConfigMode,
   caps,
 }: {
   /** The ACTIVE key - everything here acts on whichever one is in use. */
@@ -124,6 +128,9 @@ export function AdvancedScreen({
    * acts on, which is why it is rendered first.
    */
   keys: KeyControl;
+  /** Firmware update needs config mode; the panel at the foot is the way in. */
+  configMode: ConfigState;
+  onWantConfigMode: () => void;
   /** The hard key, for the one control that only means anything on hardware. */
   hard: HardKeySession;
   /** Forced capabilities: what is on, and how to change it. */
@@ -294,7 +301,7 @@ export function AdvancedScreen({
       ) : null}
 
       {hard.state === 'running' ? (
-        <FirmwareScreen emu={emu} backend={backend} />
+        <FirmwareScreen emu={emu} backend={backend} configMode={configMode} />
       ) : (
         <Section title="Firmware update">
           <Text style={styles.note}>
@@ -355,6 +362,24 @@ export function AdvancedScreen({
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
+      {/*
+        THE WAY IN, AT THE FOOT - after the panels it unlocks.
+    
+        Firmware update is the one thing on this tab that needs config
+        mode: the reboot-into-bootloader request is refused outside it.
+        That screen used to carry its own Enter button, which pressed
+        button 6 through the debug console and so could not work on the
+        production key it exists to update. This panel replaces it, and
+        on a hard key it asks for the only thing that can do the job - a
+        thumb on button 6.
+      */}
+      <ConfigModePanel
+        state={configMode}
+        emu={emu}
+        backend={backend}
+        onWant={onWantConfigMode}
+        purpose="update the firmware"
+      />
     </ScrollView>
   );
 }

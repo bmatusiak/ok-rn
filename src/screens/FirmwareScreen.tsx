@@ -2,8 +2,8 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, KeyValue, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
+import {ON, type ConfigState} from '../ui/configModeNotes';
 import {getOnlyKey} from '../onlykey';
-import {useConfigMode} from '../hooks/useConfigMode';
 import NativeShare from '../../specs/NativeShare';
 import {
   BUNDLED_DIR,
@@ -66,7 +66,16 @@ import type {EmuSession} from '../hooks/useOkEmu';
 const SOURCES = ['Bundled', 'A file', 'A URL'] as const;
 type Source = (typeof SOURCES)[number];
 
-export function FirmwareScreen({emu, backend}: {emu: EmuSession; backend: 'embedded' | 'usb'}) {
+export function FirmwareScreen({
+  emu,
+  backend,
+  configMode,
+}: {
+  emu: EmuSession;
+  backend: 'embedded' | 'usb';
+  /** The app's one config-mode state. This screen reads it; it never sets it. */
+  configMode: ConfigState;
+}) {
   const isHard = backend === 'usb';
 
   /*
@@ -82,7 +91,6 @@ export function FirmwareScreen({emu, backend}: {emu: EmuSession; backend: 'embed
    * device somebody might legitimately be trying to update.
    */
   const developerKey = isHard && emu.capabilities?.debugConsole === true;
-  const config = useConfigMode(emu);
 
   const [source, setSource] = useState<Source>('Bundled');
   const [bundled, setBundled] = useState<string[] | null>(null);
@@ -345,24 +353,30 @@ export function FirmwareScreen({emu, backend}: {emu: EmuSession; backend: 'embed
         autoCorrect={false}
       />
 
-      {!config.entered ? (
-        <>
-          <Text style={styles.note}>
-            The reboot request is accepted only in config mode, which locks the
-            key: hold button 6 (the app does this), then enter the PIN again.
-          </Text>
-          <Btn
-            title={config.entering ? 'Holding…' : 'Enter config mode'}
-            disabled={config.entering || !isHard || emu.device !== 'unlocked' || busy !== null}
-            onPress={config.enter}
-          />
-          {config.error ? <Text style={styles.error}>{config.error}</Text> : null}
-        </>
+      {/*
+        NO WAY IN OF ITS OWN. There is one, at the foot of this tab.
+
+        This carried its own "Enter config mode" button, which held button 6
+        through the debug console - so on a production hard key, the key the
+        firmware updater is FOR, the hold threw and the error blamed the key:
+        "it never locked, so the hold was not taken… try again." Nothing about
+        that was true. The app had not pressed anything, because it cannot
+        press a key with no console.
+
+        Removed rather than fixed, because it was also redundant: config mode
+        is one app-wide state and the panel at the foot of this tab is how it
+        is entered, on the hard key by the only thing that can - a thumb.
+      */}
+      {configMode !== ON ? (
+        <Text style={styles.note}>
+          The reboot request is accepted only in config mode. The panel at the
+          foot of this tab is how to get there.
+        </Text>
       ) : null}
       <Btn
         title={busy === 'reboot' ? 'Asking…' : 'Reboot the key into its bootloader'}
         tone="danger"
-        disabled={busy !== null || !isHard || developerKey || !confirmed || !text || !config.ready || inBootloader}
+        disabled={busy !== null || !isHard || developerKey || !confirmed || !text || configMode !== ON || inBootloader}
         onPress={() => void reboot()}
       />
       <Btn

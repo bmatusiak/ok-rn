@@ -784,7 +784,7 @@ function Shell() {
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
-            <AdvancedScreen emu={keys.key} hard={keys.hard} keys={keys} caps={caps} />
+            <AdvancedScreen emu={keys.key} hard={keys.hard} keys={keys} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} caps={caps} />
           ) : tab === 'Log' ? (
             <LogScreen
               /*
