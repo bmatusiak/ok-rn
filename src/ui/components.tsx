@@ -107,8 +107,20 @@ const BAND_LABEL: Record<string, string> = {
 };
 
 export function HoldTicks({ticks}: {ticks?: {button: number; ticks: number} | null}) {
+  /*
+   * A PLACEHOLDER, NOT NOTHING, and the reason is a bug rather than taste.
+   *
+   * This used to return null with no press in flight, so the row was 0px
+   * idle and 24px held (lineHeight 18 + marginTop 6). Putting a finger on a
+   * button made the counter APPEAR, which pushed the keypad down by 24px
+   * mid-press - and the button slid out from under the finger that was
+   * holding it. Pressing the button is what stopped the button being pressed.
+   *
+   * Reported 2026-09-19. Constant height fixes it, and the dash reads as a row
+   * that currently has nothing to say rather than one that is missing.
+   */
   if (!ticks) {
-    return null;
+    return <Text style={[styles.holdTicks, {color: theme.textDim}]}>—</Text>;
   }
   const band = okdevice.press.bandFor(ticks.ticks);
   const color =
