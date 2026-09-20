@@ -182,9 +182,23 @@ export function useOkEmu({log, autoStart = false}: Options) {
 
   useEffect(() => {
     const offStream = OkEmu.on('stream', event => {
-      // The debug interface carries the firmware's own printf output, which is
-      // text; everything else is binary reports.
+      /*
+       * The debug interface carries the firmware's own printf output, which is
+       * text; everything else is binary reports.
+       *
+       * DEBUG BUILDS ONLY, the same as the hard key's copy of this. The
+       * firmware says a great deal about itself on this interface - buffers,
+       * key bytes in hex, generated random numbers, and during a PIN bracket
+       * it acknowledges each digit BY VALUE ("password appended with 4"). None
+       * of that belongs in a log a release ships.
+       *
+       * A release cannot reach it anyway: production firmware does not
+       * enumerate SEREMU, so no such frame arrives. Gated regardless, because
+       * "unreachable" and "absent" are not the same thing, and this decode is
+       * the only reason those frames would ever become text.
+       */
       if (event.iface === IFACE.SEREMU) {
+        if (!__DEV__) return;
         const text = okbytes.toPrintable(event.bytes).trim();
         if (text) {
           log('info', `[fw] ${text}`);
