@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect} from 'react';
-import {Pressable, ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
+import {Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View} from 'react-native';
 import {Btn, KeyValue, Section, StatusPill} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useSharedBtKeyboard} from '../hooks/BtKeyboardContext';
@@ -139,6 +139,51 @@ export function BluetoothScreen({
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [on, published]);
+
+  /*
+   * THE RADIO BEING OFF IS NOT A VERDICT ON THE PHONE.
+   *
+   * Reported 2026-09-19: with Bluetooth off this tab said "this phone does not
+   * offer the Bluetooth HID Device profile... it is not something the app can
+   * turn on" - a permanent claim about the hardware, on a phone that had been
+   * publishing a keyboard minutes earlier. isSupported() was resolving false
+   * for a disabled adapter, which is now fixed natively; this says the true
+   * thing and offers the one action that helps.
+   *
+   * Above the `supported === false` branch on purpose: while the radio is off
+   * the profile question cannot be answered, so the radio answer is the only
+   * one worth giving.
+   */
+  if (bt.radioOn === false) {
+    return (
+      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+        <Section title="Bluetooth">
+          <Text style={styles.body}>
+            Bluetooth is off, so this phone cannot present itself as a keyboard
+            or answer a security-key request over the air.
+          </Text>
+          <Btn
+            title="Open Bluetooth settings"
+            tone="primary"
+            onPress={() => {
+              /*
+               * An intent rather than a native method: Android exposes this
+               * settings screen by action name, and the app already reaches
+               * Android's own settings this way elsewhere.
+               */
+              void Linking.sendIntent('android.settings.BLUETOOTH_SETTINGS').catch(
+                () => void Linking.openSettings(),
+              );
+            }}
+          />
+          <Text style={styles.note}>
+            Turn it on and this tab comes back on its own — nothing here needs
+            reopening.
+          </Text>
+        </Section>
+      </ScrollView>
+    );
+  }
 
   if (bt.supported === false) {
     return (

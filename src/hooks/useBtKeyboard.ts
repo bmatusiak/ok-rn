@@ -65,6 +65,8 @@ const HOST_POLL_MS = 3000;
 
 export type BtKeyboard = {
   supported: boolean | null;
+  /** Whether the radio is on right now. Null until asked. */
+  radioOn: boolean | null;
   /** 'unregistered' | 'registering' | 'registered' | 'connecting' | 'connected' | ... */
   state: string;
   message: string;
@@ -126,6 +128,31 @@ export function useBtKeyboard(): BtKeyboard {
    */
   const backend = useBackend();
   const [supported, setSupported] = useState<boolean | null>(null);
+  /*
+   * The RADIO, which is not the same as support and changes under you.
+   *
+   * `supported` is asked once per mount and describes the phone. This one is
+   * re-read on every status event, because somebody can turn Bluetooth off
+   * while the tab is open and the screen has to follow.
+   */
+  const [radioOn, setRadioOn] = useState<boolean | null>(null);
+
+  /*
+   * A STALE REFUSAL OUTLIVES THE REASON FOR IT.
+   *
+   * The errors this hook sets are about a moment - a publish that was
+   * refused, a profile that could not be reached - and every one of them was
+   * sticky. So turning Bluetooth off and back on left the Keyboard panel
+   * still reading "This phone does not offer the Bluetooth HID Device
+   * profile" in red, under a radio that was now on and perfectly capable.
+   *
+   * Reported 2026-09-19. The radio coming back invalidates anything said
+   * while it was down, so the slate is wiped and whatever is tried next
+   * gets to speak for itself.
+   */
+  useEffect(() => {
+    if (radioOn === true) setError(null);
+  }, [radioOn]);
   const [state, setState] = useState('unregistered');
 
   /* Asked at most once per mount; a refusal must not become a prompt loop. */
@@ -224,6 +251,13 @@ export function useBtKeyboard(): BtKeyboard {
       .catch(() => {
         if (!cancelled) setSupported(false);
       });
+    NativeBtKeyboard.isRadioOn()
+      .then(on => {
+        if (!cancelled) setRadioOn(on);
+      })
+      .catch(() => {
+        if (!cancelled) setRadioOn(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -233,6 +267,14 @@ export function useBtKeyboard(): BtKeyboard {
     const sub = NativeBtKeyboard.onStatus((event: BtKeyboardStatusEvent) => {
       setState(event.state);
       setMessage(event.message);
+      /*
+       * Every status is also a chance to re-read the radio. The adapter
+       * receiver emits on both edges, so this is what makes the screen follow
+       * a switch flipped in Android settings rather than waiting for a remount.
+       */
+      NativeBtKeyboard.isRadioOn()
+        .then(setRadioOn)
+        .catch(() => setRadioOn(false));
       setHost(event.name || event.address);
 
       const connected = event.state === 'connected';
@@ -556,6 +598,7 @@ export function useBtKeyboard(): BtKeyboard {
 
   return {
     supported,
+    radioOn,
     state,
     message,
     host,

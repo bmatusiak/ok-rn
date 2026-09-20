@@ -97,15 +97,53 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
     super.invalidate()
   }
 
+  /**
+   * Is the radio ON - which is not the same question as isSupported().
+   *
+   * Support is about the phone and never changes; this changes whenever
+   * somebody flips the switch, so the screen reads it at mount AND on every
+   * status event the adapter receiver pushes.
+   */
+  override fun isRadioOn(promise: Promise) {
+    try {
+      promise.resolve(adapter?.isEnabled == true)
+    } catch (e: Exception) {
+      promise.resolve(false)
+    }
+  }
+
   override fun isSupported(promise: Promise) {
     try {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
         promise.resolve(false)
         return
       }
+      /*
+       * NO ADAPTER AT ALL is a real no. A DISABLED one is not an answer.
+       *
+       * This used to resolve false for both, and the screen reads false as
+       * "this phone does not offer the HID Device profile... it is not
+       * something the app can turn on" - a permanent verdict about the
+       * hardware. So turning Bluetooth off told you to give up on a phone that
+       * works perfectly well, and `supported` is read once per mount, so it
+       * stayed wrong until the tab was left and reopened.
+       *
+       * Reported 2026-09-19. It is the same mistake register() already carries
+       * a comment about (:222) - "OFF and ABSENT are different answers, and
+       * only one of them is permanent" - fixed there and missed here.
+       *
+       * With the radio down the profile question cannot be asked, so this says
+       * the only honest thing: not-ruled-out. register() gives the real answer
+       * the moment there is a radio to ask, and reports `unsupported` itself
+       * if the proxy is genuinely missing.
+       */
       val a = adapter
-      if (a == null || !a.isEnabled) {
+      if (a == null) {
         promise.resolve(false)
+        return
+      }
+      if (!a.isEnabled) {
+        promise.resolve(true)
         return
       }
       /*
@@ -760,11 +798,38 @@ private object Held {
             val next = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)
             if (next == BluetoothAdapter.STATE_ON) {
               Log.i(NativeBtKeyboardModule.TAG, "adapter is back; republishing if it should be")
+              /*
+               * ANNOUNCE IT EVEN IF NOTHING REPUBLISHES. reacquire() returns
+               * early unless something wanted to be registered, so without
+               * this the screen never learned the radio came back and went on
+               * showing "Bluetooth is off" until the tab was reopened.
+               */
+              Held.setState(Held.state, "")
               reacquire()
             } else if (next == BluetoothAdapter.STATE_TURNING_OFF) {
               proxy = null
               registered = false
               host = null
+              /*
+               * AND SAY SO. Forgetting silently left the SCREEN saying the
+               * keyboard was published over a radio that had just been turned
+               * off - the state on the JS side is only ever what was last
+               * emitted, and this branch emitted nothing.
+               *
+               * Reported 2026-09-19 by someone who turned Bluetooth off, read
+               * the Bluetooth tab still offering HID, and reasonably concluded
+               * the app was broken rather than that they had forgotten. The
+               * app WAS telling them something untrue.
+               *
+               * Same words `register()` uses when it is asked to publish with
+               * the adapter down (:232), so the tab reads the same whichever
+               * way it got here, and the panel already renders the message.
+               *
+               * STATE_TURNING_OFF rather than STATE_OFF: the profile is gone
+               * the moment the stack starts tearing down, so waiting for OFF
+               * would leave a window where the screen is still wrong.
+               */
+              Held.setState("unregistered", "Bluetooth is off")
             }
           }
         },

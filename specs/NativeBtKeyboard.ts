@@ -75,6 +75,8 @@ export interface Spec extends TurboModule {
    * back - so this resolves on what the platform actually offered.
    */
   isSupported(): Promise<boolean>;
+  /** Whether the radio is ON. A different question from isSupported. */
+  isRadioOn(): Promise<boolean>;
 
   /** BLUETOOTH_CONNECT on API 31+; resolves false if the user declined. */
   requestPermissions(): Promise<boolean>;

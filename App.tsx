@@ -156,12 +156,26 @@ function RadioStatus({
    * is "on, and not up yet" - which is also true after a host drops, after a
    * reload, and after the app is swiped away and reopened.
    */
+  /*
+   * THE RADIO COMING BACK IS ONE OF THOSE TRIGGERS, and it was missing.
+   *
+   * Reported 2026-09-19: turn Bluetooth off, turn it on again, and nothing
+   * republished - the switches still said on, the Keyboard panel still said
+   * unregistered. Neither `published` nor `advertising` changes when the
+   * adapter goes away, so none of the deps moved and this never re-ran.
+   *
+   * `btk.radioOn` is the edge that was missing. It is re-read on every status
+   * event, and the adapter receiver now emits on both edges, so flipping the
+   * switch in Android settings brings both services back without the tab
+   * being reopened.
+   */
   useEffect(() => {
     if (!auto.ready || !on) return;
+    if (btk.radioOn === false) return;
     if (!published && !btk.busy) void btk.publish();
     if (!advertising && fido.supported !== false) void fido.start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auto.ready, on, published, advertising]);
+  }, [auto.ready, on, published, advertising, btk.radioOn]);
 
   const color = (enabled: boolean, connected: boolean) =>
     connected ? theme.ok : enabled ? theme.accentHover : theme.textDim;

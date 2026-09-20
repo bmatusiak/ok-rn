@@ -219,12 +219,35 @@ class NativeFidoGattModule(
 
   override fun isSupported(promise: Promise) {
     try {
+      /*
+       * A DISABLED RADIO IS NOT A VERDICT ON THE PHONE.
+       *
+       * `bluetoothLeAdvertiser` is null and `isMultipleAdvertisementSupported`
+       * is false whenever Bluetooth is OFF - so this used to answer false for
+       * a radio somebody had simply switched off, and the Bluetooth tab said
+       * "This phone cannot advertise as a BLE peripheral", which reads as
+       * hardware that will never work. The answer is also read once per mount,
+       * so it stayed wrong after the radio came back.
+       *
+       * Reported 2026-09-19, alongside the same bug in the HID module's
+       * isSupported. With the adapter down the question cannot be answered, so
+       * the only honest reply is "not ruled out" - the BLE FEATURE flag is
+       * still a real check, and start() reports the truth once there is a
+       * radio to ask.
+       */
       val adapter = bluetoothManager?.adapter
-      val supported = adapter != null &&
-        adapter.isMultipleAdvertisementSupported &&
-        adapter.bluetoothLeAdvertiser != null &&
-        reactContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
-      promise.resolve(supported)
+      val hasBle = reactContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+      if (adapter == null || !hasBle) {
+        promise.resolve(false)
+        return
+      }
+      if (!adapter.isEnabled) {
+        promise.resolve(true)
+        return
+      }
+      promise.resolve(
+        adapter.isMultipleAdvertisementSupported && adapter.bluetoothLeAdvertiser != null,
+      )
     } catch (e: Exception) {
       promise.reject(ERR_UNSUPPORTED, e.message ?: "isSupported failed", e)
     }
