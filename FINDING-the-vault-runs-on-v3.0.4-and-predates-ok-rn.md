@@ -29,15 +29,45 @@ So a v3.0.4 key really can do this, on the firmware as it ships.
 
 ## Has anyone USED it?
 
-**No.** The vault is new on the APP side - `deviceVault` arrived in
-node-onlykey-lib on 2026-09-08 - and ok-rn is unreleased. The app does not gate
-it by capability either, unlike the age section which fades on `postQuantum`.
+**UNKNOWN, and an earlier version of this file said "no" on incomplete
+evidence.** That answer came from looking only at ok-rn: `deviceVault` arrived
+in node-onlykey-lib on 2026-09-08, and ok-rn is unreleased. Both true, and both
+about the wrong GUI.
+
+**The vault is older than that in the WEB APP.**
+`onlykey.github.io@439a1b8`, 2026-07-18: "app: add hardware-encrypted
+credential vault to onlyagent.app" - about two months earlier. It is the same
+feature, not a similar one:
+
+    web app   phrase = "vault:" + serviceId,  KEYTYPE_P256R1
+    lib       `vault:${label}`,               KEYTYPE.P256R1 (default)
+
+Same label convention and same keytype, so an entry sealed in one is readable
+by the other. That is deliberate interop, and it means the migration hazard was
+never ok-rn's alone.
+
+Whether anyone actually used it there is not something this repository can
+answer - the checkout is of uncertain currency, and whether onlyagent.app
+carried the feature to real users is the bench owner's question, not a fact in
+the tree. The honest answer is UNKNOWN rather than no.
+
+**And on 3.0.5 that origin is refused outright.** `onlyagent.app` is not in the
+trusted table - `fido2/device.cpp` admits `apps.crp.to` and `apps.onlykey.io`
+and nothing else, after libraries@e44ff6c dropped it deliberately. So a user
+with vault data created at onlyagent.app would not merely find it unreadable
+after upgrading; they could not reach the device from that page at all, which
+takes the recovery route away at the same moment as the data.
+
+The app does not gate the vault by capability either, unlike the age section
+which fades on `postQuantum`.
 
 ## So what
 
-The exposure is LATENT. Every part is in place for a user to seal data on
-v3.0.4 and lose access to it on upgrading, and no user has been anywhere near
-it, because the app that would do the sealing has not shipped.
+The exposure is LATENT FOR OK-RN and UNQUANTIFIED ELSEWHERE. Every part is in
+place for a user to seal data on v3.0.4 and lose access to it on upgrading. For
+ok-rn nobody has been near it, because that app has not shipped. For the web
+app the question is open, and it is the one worth asking of a human rather than
+of a repository.
 
 That is worth stating precisely because it decides the response:
 
