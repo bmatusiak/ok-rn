@@ -11,15 +11,58 @@ node scripts/version-probe.js         # do the patterns still match? builds noth
 npm run e2e:matrix                    # build and run EVERY release (from ok-rn/)
 ```
 
-Two build options are gates rather than patches, because the sources arrive on
-both sides of both defines:
+Some build options are gates rather than patches, because the sources arrive
+on both sides of the defines - and one of them is not a define at all:
 
 ```bash
-OKEMU_DEBUG=1        force the DEBUG gate ON  - the console, not a requirement
-OKEMU_PRODUCTION=1   force it OFF, the way the firmware ships
-OKEMU_STD=1          force the STANDARD edition on
-OKEMU_STD=0          force the IN TRVL edition (STD_VERSION off)
+OKEMU_DEBUG=1             force the DEBUG gate ON  - the console, not a requirement
+OKEMU_PRODUCTION=1        force it OFF, the way the firmware ships
+OKEMU_STD=1               force the STANDARD edition on
+OKEMU_STD=0               force the IN TRVL edition (STD_VERSION off)
+OKEMU_ENFORCE_ORIGINS=1   a debug build that still obeys the origin table
 ```
+
+## OKEMU_ENFORCE_ORIGINS - the one thing a debug build cannot show you
+
+`webcryptcheck()` ends its `#ifdef DEBUG` block with
+
+```c
+return 2; // Trust all origins for debug firmware
+```
+
+and that single line switches off three mechanisms before any of them is read:
+the trusted-origin table (`apps.crp.to`, `apps.onlykey.io`), field 31's
+`OKWC_ALLOW_STORED_KEY`, and field 31's `OKWC_DISABLE_EXT` kill switch. 2 is
+also the most permissive answer the function has, so on an ordinary debug build
+all three read as "allowed" - every origin is served and every stored-key
+request over FIDO2 succeeds.
+
+That is not a gap in coverage. It is a gap that LOOKS like coverage: a test
+expecting a refusal gets service instead, and cannot tell "the firmware does
+not implement this" from "this build was never asked to".
+
+Building production is not the way out - that build has no console, so it
+cannot be given a PIN. `OKEMU_ENFORCE_ORIGINS=1` cuts the one return and keeps
+everything else, which is the only combination in which the origin table and
+field 31 are observable at all:
+
+```bash
+OKEMU_ENFORCE_ORIGINS=1 ./android/gradlew -p android :app:installDebug
+```
+
+It is recorded in `src/generated/firmware.json` as `enforcingOrigins` and in
+the stage summary as an `origins:` row, so a result is never attributed to the
+wrong build from memory. Check that row: the flag reaches staging through
+Gradle's process environment, and a daemon started without it would stage a
+trust-all tree while the command line said otherwise.
+
+Off by default, because it changes what the device DOES rather than what it
+reports - a third-party origin is refused instead of served, so suites using
+one take a different branch (`10b-thirdPartyOrigin`). On a production build it
+is redundant and says so: the return is inside `#ifdef DEBUG` and is not
+compiled. Asking for it on a tree that has no such line - the 2019 beta has an
+EMPTY `#ifdef DEBUG` block and needs no flag - fails the stage rather than
+producing a tree labelled enforcing that is not.
 
 **A release provisions with the gate OFF.** This used to say the opposite, and
 it was wrong: the PIN bracket is not held entirely in `Serial.println`. The
