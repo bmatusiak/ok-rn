@@ -55,6 +55,15 @@ const {FidoAdmin} = deviceLib.fido;
  * key on a bench, its unlock PIN is already in these suites, and there is no
  * secret here worth the risk of losing the key.
  */
+/*
+ * DELIBERATELY NOT the soft key's PIN, which moved to onlykey-testing's 9137.
+ *
+ * This suite drives a PHYSICAL key, whose FIDO2 PIN is whatever was set on the
+ * hardware - 12345678 - and which no wipe of the soft key touches. Changing
+ * these constants to match the soft key would fire a wrong PIN at real
+ * hardware on every run, and eight wrong attempts lock the FIDO2 side
+ * PERMANENTLY. They differ because the devices differ.
+ */
 const FIDO_PIN = '12345678';
 const FIDO_PIN_ALT = '87654321';
 

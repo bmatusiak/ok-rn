@@ -156,6 +156,27 @@ module.exports = function backupCapture({describe, it}) {
            */
           trigger: () =>
             OkEmu.pressQueue(String(backup.button), backup.ticks, {allowGesture: true}),
+          /*
+           * KNOWN TOO SMALL, and deliberately left until it can be MEASURED.
+           *
+           * Measured 2026-09-23 on a key that had a backup passphrase: the
+           * capture reached 1316 characters at 120 s and was still climbing,
+           * ~12 chars/s (every character costs two real delays of
+           * (TYPESPEED^2/3)*8 ms). So this budget cannot finish a real backup.
+           *
+           * It is not raised to a guess, because the right value is the length
+           * of a backup this key actually types and nothing here can produce
+           * one: the firmware refuses without a backup passphrase, and nothing
+           * in the e2e sets one - setBackupPassphrase is only called from
+           * SetupScreen/BackupScreen. So the test SKIPS, this number never
+           * applies, and raising it would be theatre.
+           *
+           * To close it: set a passphrase (by hand, or teach provisioning to
+           * set one on the SOFT key only), read the character count off the
+           * progress lines, and set this from that. Raise drainKeyboard's cap
+           * with it, and note OKRN_E2E_TIMEOUT_MS (tools/e2e.js:352, 420 s
+           * default) is a THIRD budget that will cut a long capture off.
+           */
           timeoutMs: 120000,
           onProgress: reportProgress,
         });

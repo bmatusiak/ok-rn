@@ -1,39 +1,51 @@
 /**
- * Per-origin key separation, which nothing else exercises.
+ * Per-origin key separation - and from firmware 3.0.5 there is none.
  *
- * The origin is not an access check. `okcrypto_hkdf()` reads the rpId out of
- * the CTAP buffer, SHA-256s it, and mixes that hash into the HKDF expand step,
- * so the SAME slot and the SAME label derive a DIFFERENT key at a different
- * origin. That is what makes per-site derived keys work: a third-party site
- * asks under its own hostname and gets keys only it can ask for again.
+ * WHAT THIS FILE USED TO PIN. okcrypto_hkdf() v1 read the rpId out of the CTAP
+ * buffer, SHA-256'd it and mixed that hash into the HKDF expand step, so the
+ * same slot and the same label derived a DIFFERENT key at a different origin.
+ * Third-party sites asked under their own hostname and got keys only they
+ * could ask for again.
  *
- * `webcryptcheck()` (fido2/device.cpp) answers with three values, and the
- * middle one is this feature:
+ * WHAT 3.0.5 DOES INSTEAD. libraries@40464ca replaced that with a fixed info
+ * string, "onlykey/derive/ecc/v2", and no origin at all, because per-origin
+ * keyspaces were "too confusing and complicated for the user" (the maintainer,
+ * 2026-09). Access control replaces key separation: webcryptcheck() admits
+ * exactly apps.crp.to and apps.onlykey.io, and everything else gets no
+ * extension at all rather than a different key.
  *
- *   2  the rpId matches stored_apprpid, or the appid hash matches a stored
- *      one. The full extension, no device setting needed.
- *   1  ANY other origin, for the 0xFFFFFFFF OKCONNECT bootstrap alone, when
- *      bit 2 of derived_key_challenge_mode is set. Third-party mode.
- *   0  otherwise, and the device answers nothing at all.
+ * So the assertion inverts, and it inverts rather than being deleted: a file
+ * that used to pin separation should end up pinning that separation is
+ * deliberately absent, where someone looking for it will find out why.
  *
- * MEASURED, once the bits were set (setting 21, config mode only). Same label,
- * one device, two origins:
+ * Third-party browser use is closed by the same change - a page cannot assert
+ * an rpId that is not a registrable suffix of its own origin, so it can never
+ * name one of the two admitted ones. On a DEBUG build webcryptcheck() returns 2
+ * before the table is read, which is why example.test still answers here at all.
  *
- *   apps.crp.to   04c69f1643bf92c71556f0d8…   65 bytes
- *   example.test  04ab5ed0ee3560e9037a70cf…   65 bytes
+ * REPEATS ARE THE POINT, and they earned their keep twice now. A key that
+ * varied between calls would make any comparison meaningless, so each origin is
+ * derived twice and the stability assertions run BEFORE the comparison.
  *
- * REPEATS ARE THE POINT, not decoration. A key that varied between calls would
- * make "the two differ" meaningless, so each origin is derived twice and the
- * stability assertions run before the difference one. An earlier version of
- * this probe extracted the key wrongly, got empty strings for all four, and
- * reported "two origins derived the SAME key" - which was a bug in the reader,
- * not a finding about the device. Hence publicKeyFrom() and a throw when the
- * payload carries no key.
+ * The first time, an earlier probe extracted the key wrongly, got empty strings
+ * for all four and reported "two origins derived the SAME key" - a bug in the
+ * reader wearing the costume of a finding about the device.
  *
- * REQUIRES BITS 2 AND 3 of derivedChallengeMode, written in config mode by
- * 9-cryptoSign. Config mode kills CTAPHID for the rest of the run it is
- * entered in, so this suite only ever sees them on a later run - which is the
- * same three-run climb a fresh device already needs.
+ * The second time was 2026-09-23 and it came through a different door: this
+ * file builds its own tunnel and calls openResponse() itself, so it never got
+ * the transitV2 flag that plugins/okcrypto's derive() passes. v1 framing over a
+ * v2 frame decrypts to noise - empty status, different "key" bytes every call -
+ * and it surfaced as "the first-party key is not stable", which reads like a
+ * NON-DETERMINISTIC DERIVATION and would be far worse than anything this file
+ * is about. The stability assertions are what caught it.
+ *
+ * The lesson both times: a probe that decodes the device's answer itself can be
+ * wrong about the answer, and its wrongness will look like a device defect.
+ *
+ * NO LONGER REQUIRES a device setting. It used to need bits 2 and 3 of
+ * derivedChallengeMode, written in config mode by 9-cryptoSign - but 3.0.5
+ * made fields 21/22/30 a 0/1/2 enum with no such bits, and admission is now the
+ * compiled-in origin table, which no setting can extend.
  */
 'use strict';
 const {getOnlyKey} = require('../src/onlykey');
@@ -46,7 +58,7 @@ const rand = n => { const o = new Uint8Array(n); global.crypto.getRandomValues(o
 const hex = b => Array.from(b).map(x => x.toString(16).padStart(2, '0')).join('');
 const LABEL = 'origin.probe';
 
-async function deriveUnder(transport, rpId, log) {
+async function deriveUnder(transport, rpId, log, {transitV2 = false} = {}) {
   const ctap = new CtapHid(transport);
   await ctap.init({timeoutMs: 8000});
   const bound = protocol.tunnel.createTunnel(ctap, {randomBytes: rand, rpId});
@@ -72,7 +84,22 @@ async function deriveUnder(transport, rpId, log) {
   if (!answer || !answer.data || !answer.data.length) {
     throw new Error(`no data (status ${answer && answer.status})`);
   }
-  const opened = okconnect.openResponse(answer.data, app.secretKey);
+  /*
+   * THE FRAMING HAS TO BE PASSED, and this file has its own tunnel so nothing
+   * passes it for free.
+   *
+   * plugins/okcrypto's derive() reads the device's transitV2 capability and
+   * hands it to openResponse(); this file builds its own CtapHid and decodes
+   * the answer itself, so the fix that taught the library transit v2 never
+   * reached here.
+   *
+   * What that looked like: v1 framing over a v2 frame decrypts to noise, so
+   * `status` came back EMPTY and the "public key" was different bytes on every
+   * call - including two calls to the SAME origin. It read as "the first-party
+   * key is not stable", i.e. as a non-deterministic derivation, which would be
+   * a far worse defect than the one this file is about.
+   */
+  const opened = okconnect.openResponse(answer.data, app.secretKey, {transitV2});
   const pub = okconnect.publicKeyFrom(opened.payload, okconnect.KEYTYPE.P256R1);
   if (!pub || !pub.length) {
     throw new Error(`no public key in the payload (status "${opened.status}")`);
@@ -83,7 +110,7 @@ async function deriveUnder(transport, rpId, log) {
 
 module.exports = function thirdParty({describe, it}) {
   describe(thirdParty.name, () => {
-    it('the same label derives a different key under a different origin', async ({log, assert, skip}) => {
+    it('the same label derives the SAME key under a different origin, from 3.0.5', async ({log, assert, skip}) => {
       const {transport, device} = await getOnlyKey();
 
       /*
@@ -103,20 +130,33 @@ module.exports = function thirdParty({describe, it}) {
        * config mode kills CTAPHID for the rest of that run, so this only sees
        * them on a later one.
        */
+      const framing = {transitV2: caps && caps.transitV2 === true};
+
       let first;
       try {
-        first = await deriveUnder(transport, 'apps.crp.to', log);
+        first = await deriveUnder(transport, 'apps.crp.to', log, framing);
       } catch (e) {
         skip(`the first-party derive did not answer, so there is no control to compare against: ${e.message}`);
       }
-      const again = await deriveUnder(transport, 'apps.crp.to', log);
-      const other = await deriveUnder(transport, 'example.test', log);
-      const other2 = await deriveUnder(transport, 'example.test', log);
+      const again = await deriveUnder(transport, 'apps.crp.to', log, framing);
+      const other = await deriveUnder(transport, 'example.test', log, framing);
+      const other2 = await deriveUnder(transport, 'example.test', log, framing);
 
+      /* Stability within an origin is the control, and it is what proves the
+       * framing is right: a mis-decoded answer is different bytes every call. */
       assert.equal(first, again, 'the first-party key is not stable');
       assert.equal(other, other2, 'the third-party key is not stable');
-      assert.notEqual(first, other, 'two origins derived the SAME key - no separation');
-      log('per-origin separation holds: stable within an origin, different across');
+
+      if (framing.transitV2) {
+        assert.equal(first, other,
+          'two origins derived DIFFERENT keys - the origin is back in the '
+          + 'derivation, which 3.0.5 removed');
+        log('no per-origin separation, by design: one label, one key, every origin');
+      } else {
+        assert.notEqual(first, other,
+          'two origins derived the SAME key - no separation');
+        log('per-origin separation holds: stable within an origin, different across');
+      }
     });
   });
 };

@@ -85,8 +85,32 @@ const PIN = '1234561';
  * of the second try is one attempt, and the correct one that follows puts the
  * counter straight back.
  */
-const FIDO_PIN = '12345678';
-const FIDO_PIN_ALT = '87654321';
+/*
+ * THE SAME PINS onlykey-testing USES (`test/01-protocol/18-clientpin-credmgmt`,
+ * PIN / NEW_PIN), so one bench key can be driven by either kit without the two
+ * disagreeing about what its FIDO2 PIN is. They were 12345678 / 87654321 here,
+ * which no other kit sets.
+ */
+const FIDO_PIN = '9137';
+const FIDO_PIN_ALT = '2468';
+
+/*
+ * A PIN THAT IS WRONG BY CONSTRUCTION, rather than a literal that might be
+ * somebody's real one.
+ *
+ * This was hardcoded '00000000'. That is a plausible real PIN - the maintainer
+ * may use it - and on a key that had it set, `getPinToken('00000000')` would
+ * SUCCEED, so the test would fail with "a wrong PIN was accepted" and send the
+ * reader hunting a firmware bug that is not there. The wrong PIN has to be
+ * derived from the right one to be reliably wrong.
+ *
+ * Digits only, and the same length, because the firmware's rules are about
+ * both: a 4-digit minimum and a 63-byte maximum (ctap.cpp). Shifting every
+ * digit by one keeps it a valid PIN that cannot equal the one it is derived
+ * from.
+ */
+const wrongVersionOf = (pin) =>
+  String(pin).replace(/[0-9]/g, (d) => String((Number(d) + 1) % 10));
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -233,7 +257,7 @@ module.exports = function fidoPin({describe, it}) {
 
         let failure = null;
         try {
-          await fido.getPinToken('00000000', {timeoutMs: 10000});
+          await fido.getPinToken(wrongVersionOf(pin), {timeoutMs: 10000});
         } catch (e) {
           failure = e;
         }

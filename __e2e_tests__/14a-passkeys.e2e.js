@@ -46,7 +46,9 @@ const {FidoAdmin, RESET_CONFIRMATION} = deviceLib.fido;
 
 const PIN = '1234561';
 /** Set by 4b-fidoPin, which runs earlier in every full run. */
-const FIDO_PIN = '12345678';
+/* The SOFT key's FIDO2 PIN, matching onlykey-testing and 4b-fidoPin. The HARD
+ * key keeps 12345678 - see 18-hardKeyFido, which drives a physical device. */
+const FIDO_PIN = '9137';
 
 const RP_ID = 'passkeys.e2e';
 const USER_NAME = 'somebody';
