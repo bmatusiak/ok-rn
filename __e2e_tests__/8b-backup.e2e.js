@@ -102,6 +102,18 @@ async function drainKeyboard(log, quietMs = 1500, capMs = 60000) {
 
 let shared = null;
 
+/**
+ * Was this suite ASKED for by name?
+ *
+ * The runner writes only.js, so a plain sweep leaves it empty and anything
+ * gated on this skips. It is how a test that writes to the key opts out of
+ * running as a side effect of running everything.
+ */
+function isNamed() {
+  const only = require('./only.js');
+  return Array.isArray(only) && only.includes('backupCapture');
+}
+
 module.exports = function backupCapture({describe, it}) {
   describe(backupCapture.name, () => {
     it('the backup band is read from the device, not chosen here', async ({log, assert}) => {
@@ -327,6 +339,137 @@ module.exports = function backupCapture({describe, it}) {
       assert.ok(result.verified,
         'the backup was captured but its digest chain does not check out - '
         + 'a character was decoded wrongly, or the capture ended early');
+
+      /* Kept for the restore test below, which is armed and usually skips. */
+      shared.text = result.text;
+      shared.digest = result.digest;
+    });
+
+    it('and the backup RESTORES to the key it came from', async ({log, assert, skip}) => {
+      /*
+       * THE HALF THAT HAS NEVER RUN. device.restore() has existed all along and
+       * nothing exercised it: this suite proved the device can TYPE a backup
+       * and that the digest chain verifies, which says the file is intact and
+       * says nothing about whether it can be put back. A backup that cannot be
+       * restored is not a backup.
+       *
+       * It also matters more now than it did. With the vault gated to 3.0.5 no
+       * derived data can exist on older firmware, so backup and restore carry
+       * everything an upgrade needs to preserve - stored keys, slots, labels -
+       * and the seed in slot 128 with them (the backup walks ECC slots
+       * 101..132, okcore.cpp:7020). Restore IS the upgrade path, so it had
+       * better work.
+       *
+       * ## Why restoring to the SAME key is the safe form
+       *
+       * The bytes going back are the bytes that came out, so the write is
+       * idempotent: interrupted halfway, it has written what was already
+       * there. That is what makes this runnable against a provisioned key at
+       * all. It does NOT prove a cross-device restore, which needs two keys
+       * and is a different test.
+       *
+       * ARMED, because it writes every key slot. `--only backupCapture` opts
+       * into the whole exercise - capture then restore - and a plain sweep
+       * runs the capture alone.
+       */
+      if (!isNamed()) {
+        skip('writes every key slot. Run it with --only backupCapture.');
+      }
+      assert.ok(shared, 'the band test did not run');
+      if (!shared.text) {
+        skip('no backup was captured above, so there is nothing to restore');
+      }
+      const {device} = shared;
+
+      /*
+       * WHAT IT LOOKED LIKE BEFORE, so "it still works" is a comparison rather
+       * than a feeling. Labels are the cheap witness: they are readable
+       * without a touch and they live in the slots the restore rewrites.
+       */
+      const before = await device.readLabels({timeoutMs: 8000});
+      log(`labels before: ${JSON.stringify(before.labels || before)}`);
+
+      /*
+       * RESTORE NEEDS CONFIG MODE, and capture needs it OFF - which is why
+       * they cannot be one step.
+       *
+       * okcore.cpp's OKSETSLOT handler refuses a write whose first byte is not
+       * 0xBA when `mod_keys_enabled && configmode == false`, answering "Error
+       * not in config mode". The app already knows: BackupScreen renders
+       * Restore with `unavailable={configMode === ON ? null :
+       * NEEDS_CONFIG_MODE}`, and the capture panel directly above it with the
+       * opposite gate.
+       *
+       * The first version of this test restored without entering it. The
+       * stream went out and reported 672 bytes sent, and the refusal surfaced
+       * on the NEXT call as a label read failing with "Error not in config
+       * mode" - a command that had worked moments earlier. That reads as a
+       * device that broke during the restore, and it was a precondition the
+       * test never met.
+       *
+       * So the gesture happens between the two halves: capture with config
+       * mode off, then enter it, then restore. inConfigMode() does not come
+       * back out - the runner's force-stop at the end of the pass is the power
+       * cycle - which is fine for an armed test and is why this one is armed.
+       */
+      let sent = null;
+      const after = await inConfigMode(device, PIN, log, async () => {
+        try {
+          sent = await device.restore(shared.text, {
+            onProgress: p => {
+              if (p && p.block && p.packet === 1) log(`restoring block ${p.block}/${p.of}`);
+            },
+          });
+        } catch (e) {
+          throw new Error(
+            `the backup verified but would not restore: ${e.message}. The `
+            + 'device has been written to - read its labels before trusting it.');
+        }
+        log(`restored ${sent.bytes} bytes, digest ${String(sent.digest).slice(0, 16)}…`);
+
+        /*
+         * READ IT BACK FROM INSIDE config mode. OKGETLABELS is on the
+         * config-mode allowlist - it is what configModeReady() probes with -
+         * so this is the same evidence it would be outside, without leaving.
+         */
+        return device.readLabels({timeoutMs: 8000});
+      });
+
+      /*
+       * AND IT IS STILL THE SAME KEY. A restore that completes and leaves the
+       * device unreadable has failed at the only thing being asked of it.
+       */
+      log(`labels after:  ${JSON.stringify(after.labels || after)}`);
+
+      /*
+       * WHAT THIS TEST PROVES, and what it deliberately does not.
+       *
+       * PROVES: a backup this device produced is accepted back by it. The
+       * stream was framed, every packet acknowledged, and the device did not
+       * refuse - which is the half that had never run at all, and the half
+       * that a production key cannot show you, because it has no console to
+       * say where a restore stopped.
+       *
+       * DOES NOT PROVE the contents came back. Reading labels immediately
+       * afterwards shows the first few as null where they held text before,
+       * and that is not loss: the device has written flash and has not
+       * RELOADED it. BackupScreen says exactly this to the user after a
+       * restore - "Restart the app so the key reloads what it now holds" - and
+       * `initialized` is recomputed from flash only in setup(), the same
+       * reason provisioning takes two runs.
+       *
+       * So content verification belongs in the NEXT pass, after the runner's
+       * force-stop, which is the three-pass shape this suite already has. The
+       * labels are logged rather than asserted because an assertion here would
+       * be testing the reload, not the restore, and would fail for a reason
+       * that has nothing to do with backups.
+       */
+      assert.ok(sent && sent.bytes > 0,
+        'restore reported no bytes, so nothing was sent');
+      assert.equal(String(sent.digest), String(shared.digest),
+        'the device accepted a restore whose digest is not the one captured');
+      log('restore accepted. Contents reload at the next app start - the '
+        + 'runner restarts at the end of this pass.');
     });
   });
 };
