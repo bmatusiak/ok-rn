@@ -226,6 +226,53 @@ const WANT_DUO =
   : null;
 
 /**
+ * ENFORCING ORIGINS: a debug build that still obeys the trusted-origin table.
+ *
+ *     OKEMU_ENFORCE_ORIGINS=1   cut the debug "trust all origins" return
+ *     unset                     leave it, which is what a debug build ships as
+ *
+ * ## The blind spot this exists to close
+ *
+ * webcryptcheck() (libraries/fido2/device.cpp) ends its `#ifdef DEBUG` block
+ * with `return 2; // Trust all origins for debug firmware`, and that ONE line
+ * disables three separate mechanisms at once, before any of them is read:
+ *
+ *   - the trusted-origin table (apps.crp.to, apps.onlykey.io), so any rpId
+ *     derives - including ones a shipped key refuses outright;
+ *   - OKWC_ALLOW_STORED_KEY (field 31 bit 0), so the stored-key OKSIGN /
+ *     OKDECRYPT tunnel is open whatever the policy byte says;
+ *   - OKWC_DISABLE_EXT (field 31 bit 1), so the kill switch does nothing.
+ *
+ * 2 is also the MOST permissive answer the function has, so all three read as
+ * "allowed" on every emulator this project has ever tested against. None of
+ * the policy is observable there, and a suite written against it passes
+ * whether the firmware implements any of it or not.
+ *
+ * ## Why not simply build production
+ *
+ * Because a production build has no debug console, so it cannot be given a PIN
+ * and no suite that needs an unlocked device can run against one
+ * (FINDING-provisioning-needs-a-debug-build.md) - the same reason OKEMU_DEBUG
+ * exists at all. Cutting one return keeps the console while running the
+ * production control flow underneath it, which is the only combination in
+ * which the origin table and field 31 can be exercised.
+ *
+ * The technique is the maintainer's. It is what found libraries@c1a6cf2: a
+ * NULL `_appid` that segfaults on the first getAssertion, unnoticed for years
+ * because no debug build had ever reached the code below the return.
+ *
+ * ## Opt-in, and deliberately not the default
+ *
+ * On an enforcing build a derive from an untrusted origin is REFUSED, so
+ * suites using a third-party rpId change behaviour rather than merely
+ * reporting more. That is the point of the flag, and also why the ordinary run
+ * does not set it: the two builds answer different questions, and an answer is
+ * only attributable if which build produced it was recorded. It is - in
+ * firmware.json as `enforcingOrigins`, and in the stage summary.
+ */
+const WANT_ENFORCE = process.env.OKEMU_ENFORCE_ORIGINS === '1';
+
+/**
  * Read - or flip - one of onlykey.h's build-option defines.
  *
  * A TOGGLE rather than a text patch, because the sources arrive on either side
@@ -471,6 +518,77 @@ function gateKeylayouts(debugOn) {
     `stage: keyboard layouts ${debugOn ? 'US English only' : 'ALL ENABLED'} ` +
     `- synced to the DEBUG gate (was ${on ? 'US English only' : 'all enabled'})`);
   return debugOn;
+}
+
+/**
+ * Cut the debug "trust all origins" return, so the origin table and the
+ * webcrypt policy actually decide. WANT_ENFORCE says what that buys.
+ *
+ * A GATE rather than an entry in PATCHES, and that is the whole reason this is
+ * a function: applyPatches() treats a missing anchor as a WARNING and carries
+ * on, which here would produce the worst outcome available - a tree labelled
+ * enforcing, in firmware.json and in every result taken from it, that quietly
+ * trusts everything. A wrong answer in the direction that looks fine. So this
+ * throws instead.
+ *
+ * The edit COMMENTS THE LINE OUT rather than deleting it, because the staged
+ * tree is what someone reads when a result surprises them, and a line that is
+ * simply gone explains nothing. The debug prints above it are kept: they are
+ * the reason this is still a debug build, and webcryptcheck() is exactly where
+ * a refusal needs to be visible.
+ *
+ * @param want     true to cut it
+ * @param debugOn  the gate as gateDebug() left it
+ * @returns whether this build enforces the origin table
+ */
+function gateTrustAllOrigins(want, debugOn) {
+  /*
+   * A production build has no `#ifdef DEBUG` body to cut, and enforces
+   * already. Reporting that beats both alternatives: refusing a request that
+   * is already satisfied, and answering `false` for a build that does enforce.
+   */
+  if (debugOn === false) {
+    if (want) {
+      console.log(
+        'stage: OKEMU_ENFORCE_ORIGINS=1 on a production build - redundant. ' +
+        'The trust-all return is inside #ifdef DEBUG and is not compiled; ' +
+        'this build enforces either way.');
+    }
+    return true;
+  }
+  if (!want) return false;
+
+  const target = path.join(STAGE, 'libraries', 'fido2', 'device.cpp');
+  const TRUST_ALL = '    return 2; // Trust all origins for debug firmware';
+  const CUT = [
+    '    /* ok-rn stage.js, OKEMU_ENFORCE_ORIGINS=1: the trust-all return is',
+    '     * cut here. Execution falls through to the trusted[] table and the',
+    '     * field 31 policy below, exactly as a production build does, while',
+    '     * the debug console this suite needs for PIN entry stays. */',
+    '    // return 2; // Trust all origins for debug firmware',
+  ].join(NL);
+
+  const text = fs.readFileSync(target, 'utf8');
+  /*
+   * One line, so no CRLF variant to try - the pattern contains no newline.
+   */
+  if (!text.includes(TRUST_ALL)) {
+    throw new Error(
+      'stage: OKEMU_ENFORCE_ORIGINS=1, but webcryptcheck() in ' +
+      'libraries/fido2/device.cpp does not contain ' + TRUST_ALL.trim() + ' - ' +
+      'either this release predates it (the 2019 beta line has an EMPTY ' +
+      '#ifdef DEBUG block, so it has no early return and already enforces: ' +
+      'drop the flag for that pin) or the line was respelled upstream and this ' +
+      'gate has to be taught the new spelling. Refusing to stage: a tree that ' +
+      'reports enforcingOrigins without enforcing makes every measurement ' +
+      'taken from it wrong in the direction that looks correct.');
+  }
+  fs.writeFileSync(target, text.split(TRUST_ALL).join(CUT));
+  console.log(
+    'stage: ENFORCING build - webcryptcheck() trust-all return cut. The ' +
+    'trusted-origin table and webcrypt policy (field 31) decide; the debug ' +
+    'console is kept.');
+  return true;
 }
 
 /**
@@ -1359,7 +1477,8 @@ function gitShort(dir) {
  * worse than none. Generated rather than committed: a checkout that has never
  * staged reports 'unknown' instead of somebody else's hash.
  */
-function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel) {
+function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel,
+                        enforcingOrigins) {
   const out = path.join(OKEMU, '..', '..', 'src', 'generated');
   fs.mkdirSync(out, { recursive: true });
   const pins = release.pins;
@@ -1424,6 +1543,18 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel) {
      * on the device, so a host that reads this wrong gets all of that wrong.
      */
     model: duoModel ? 'duo' : 'classic',
+    /**
+     * Whether webcryptcheck() actually consults the trusted-origin table and
+     * the field 31 policy, rather than returning 2 for everything.
+     *
+     * Recorded because it is invisible from the wire in the permissive
+     * direction: an ordinary debug build SERVES every origin and every
+     * stored-key request, so a suite that expects a refusal and gets service
+     * cannot tell "the firmware does not enforce this" from "this build was
+     * not asked to". True on any production build, where the return is not
+     * compiled at all.
+     */
+    enforcingOrigins,
     stagedAt: new Date().toISOString(),
   };
   fs.writeFileSync(
@@ -1691,6 +1822,14 @@ function main() {
    */
   gateKeylayouts(debugOn);
   /*
+   * And the ORIGIN gate, which only a debug build can be asked about: it cuts
+   * the one line that makes webcryptcheck() answer 2 before reading anything.
+   * Off unless asked, because it changes what the device DOES - an untrusted
+   * origin is refused rather than served - and a suite result is only
+   * attributable if which of the two builds produced it was recorded.
+   */
+  const enforcingOrigins = gateTrustAllOrigins(WANT_ENFORCE, debugOn);
+  /*
    * The EDITION, read the same way. Reported whether or not it was forced,
    * because a travel build looks like a broken standard one from the outside:
    * set_private returns early, there is no FIDO, and the profile is not
@@ -1734,7 +1873,8 @@ function main() {
   const scs = rewriteSystemBlock();
 
   const stats = digestStage();
-  const info = writeBuildInfo(stats, release, debugOn, stdEdition, duoModel);
+  const info = writeBuildInfo(stats, release, debugOn, stdEdition, duoModel,
+                              enforcingOrigins);
 
   console.log(
     `stage: ${path.relative(OKEMU, STAGE)}\n` +
@@ -1755,6 +1895,8 @@ function main() {
   sources declare:                           ${info.declaredVersion || 'unknown'}` +
     `
   build:                                     ${debugOn ? 'debug' : 'production'}` +
+    `
+  origins:                                   ${enforcingOrigins ? 'ENFORCED (table + field 31 decide)' : 'trust-all (debug default)'}` +
     `
   edition:                                   ${stdEdition ? 'standard' : 'TRAVEL (STD_VERSION off)'}` +
     `
