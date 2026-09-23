@@ -51,6 +51,29 @@ module.exports = function deviceFlow({describe, it}) {
       assert.ok(/INITIALIZED|UNLOCKED/i.test(result.status), `unexpected status: ${result.status}`);
       assert.equal(result.kind, 'status', 'the vendor path is not a key exchange');
       assert.equal(result.sealed, false);
+
+      /*
+       * A PASS STARTS WITH CONFIG MODE OFF, and this is the only place that
+       * can prove it.
+       *
+       * Config mode ends ONLY at a power cycle - there is no message that
+       * leaves it, and `OkEmu.restart()` cannot do it in place (1-softKey pins
+       * that refusal). End to end the power cycle is the runner force-stopping
+       * the app between runs. So "the restart cleared the flag" is not
+       * observable at the end of a pass, where the app is about to die; it is
+       * observable at the START of the next one, here.
+       *
+       * It matters because the state is REMEMBERED, not read: the wire carries
+       * no config-mode signal at all. A flag that survived a restart would
+       * make every derive in this pass refuse up front with "this device is in
+       * CONFIG MODE" against a device that is in no such thing - the failure
+       * would name a cause that is not true, which is worse than naming none.
+       */
+      assert.equal(device.inConfigMode, false,
+        'this pass began with the app still believing the device is in config '
+        + 'mode. Config mode ends only at a power cycle and the runner '
+        + 'force-stops the app between runs, so either that did not happen or '
+        + 'the flag outlived it.');
     });
 
     it('is silent to a label read while locked, and the error says as much', async ({log, assert}) => {

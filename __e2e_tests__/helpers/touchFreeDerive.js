@@ -155,6 +155,54 @@ async function setTouchFreeDerive(device, log) {
  */
 async function inConfigMode(device, pin, log, work, {restart = true} = {}) {
   /*
+   * CONFIG MODE IS AN APP STATE, and this is the first of three places that
+   * says so out loud.
+   *
+   * The wire carries NO config-mode signal: the firmware logs CONFIG_MODE to a
+   * debug console production builds do not have, and OKCONNECT answers
+   * UNLOCKED from inside config mode exactly as it does outside
+   * (okcore.cpp:1362-1367). So the state cannot be read back - only
+   * remembered, by whoever performed the gesture. `device.inConfigMode` is
+   * that memory, and everything downstream branches on it: okcrypto refuses a
+   * derive up front rather than waiting out a timeout, and the Preferences
+   * screen grays the Advanced group.
+   *
+   * Nothing asserted it, anywhere in the e2e, until now. A remembered state
+   * that is never checked is a state that can drift without a single test
+   * noticing.
+   */
+  if (device.inConfigMode) {
+    throw new Error(
+      'the app already believes this device is in config mode before the '
+      + 'gesture. Config mode ends only at a restart, so either a previous '
+      + 'suite left it there - and CTAPHID has been silent since - or the flag '
+      + 'survived a restart it should have been cleared by.');
+  }
+
+  /*
+   * AND IT MUST BE UNLOCKED FIRST, which is not the same requirement.
+   *
+   * enterConfigMode() proves the gesture landed by watching the device become
+   * LOCKED - entering config mode locks it (OnlyKey.ino:914-926). That is
+   * evidence ONLY if it was unlocked to begin with. Inside the sweep it always
+   * is, because an earlier suite unlocked it; for a suite run ALONE the key is
+   * locked from the start and "it is locked now" proves nothing whatever.
+   *
+   * Measured 2026-09-23 on the first `--only backupPassphrase` attempt: the
+   * gesture was reported as landed on an already-locked key, the PIN went in,
+   * and twenty seconds of polling never found a readable device - because it
+   * was never in config mode, just locked.
+   */
+  const before = await device.connect();
+  if (!/UNLOCKED/i.test(String(before.status))) {
+    throw new Error(
+      `this device is ${before.status}, and the config-mode gesture is proven `
+      + 'by watching it LOCK - which proves nothing about a key that is locked '
+      + 'already. Unlock before calling inConfigMode(); a suite run alone has '
+      + 'to do that itself, since no predecessor did it.');
+  }
+
+  /*
    * Long enough for the fade to finish. The same figure the derive suite waits
    * for pending_operation, and for a related reason - the firmware holds
    * post-ceremony state for about twenty seconds.
@@ -187,6 +235,23 @@ async function inConfigMode(device, pin, log, work, {restart = true} = {}) {
     off();
   }
   log('device locked, so the gesture landed');
+
+  /*
+   * THE APP STATE, not the device proxy. enterConfigMode() sets
+   * session.configMode on success (plugins/device/index.js:1309) and
+   * `inConfigMode` reads it. The lock above is the DEVICE's evidence; this is
+   * the state the rest of the app will act on, and the two are set in
+   * different places, so agreeing is a fact worth checking rather than
+   * assuming.
+   */
+  if (!device.inConfigMode) {
+    throw new Error(
+      'the device locked, so the gesture landed, but the app does not believe '
+      + 'it is in config mode - enterConfigMode() resolved without setting '
+      + 'session.configMode, and every caller that branches on it is now wrong '
+      + 'about this device.');
+  }
+  log('app state: inConfigMode = true');
 
   /*
    * PRESS THE PIN, THEN POLL. Do not call device.unlock() here.

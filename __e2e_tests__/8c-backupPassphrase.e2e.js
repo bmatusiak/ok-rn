@@ -140,6 +140,70 @@ module.exports = function backupPassphrase({describe, it}) {
         `the device did not acknowledge the backup passphrase: ${said}`);
 
       log('backupCapture can now measure a real backup - run it alone to time one');
+
+      /* Left ON deliberately - the next test is about what that state does. */
+      assert.ok(device.inConfigMode,
+        'config mode should still be on: there is no message that ends it and '
+        + 'this suite did not restart');
+    });
+
+    it('refuses a derive BY NAME while in config mode, instead of timing out', async ({log, assert, skip}) => {
+      /*
+       * THE POINT OF TRACKING THE STATE AT ALL.
+       *
+       * Config mode silences CTAPHID while the vendor interface goes on
+       * answering, so a derive attempted here waits out its full timeout
+       * against a device that is working exactly as designed. That is this
+       * project's most expensive failure shape: six tests failing in a row
+       * with "no CTAPHID reply", none of them naming a cause, all downstream
+       * of one gesture forty seconds earlier
+       * (FINDING-enabling-touch-free-derive-mid-run-kills-ctaphid.md).
+       *
+       * okcrypto checks session.configMode BEFORE the request and throws
+       * (plugins/okcrypto/index.js:517) - turning six anonymous timeouts into
+       * one sentence naming the cause and the cure. That refusal has never
+       * been exercised against a device, only unit-tested, which is why it
+       * gets a test here rather than a comment somewhere.
+       *
+       * It runs second on purpose: the test above leaves config mode ON, and
+       * nothing can end it but a restart.
+       */
+      if (!isNamed()) skip('runs with the setter above - see the first test');
+
+      const {okcrypto, device} = await getOnlyKey('embedded');
+      assert.ok(device.inConfigMode, 'the setter above did not leave config mode on');
+
+      const started = Date.now();
+      let threw = null;
+      try {
+        await okcrypto.deviceAge.identity('config.mode.probe');
+      } catch (e) {
+        threw = e;
+      }
+      const took = Date.now() - started;
+
+      assert.ok(threw, 'a derive in config mode RESOLVED - CTAPHID is supposed '
+        + 'to be silent here, so either the refusal is gone or config mode is');
+      log(`refused in ${took}ms: ${threw.message.slice(0, 80)}...`);
+
+      assert.ok(/CONFIG MODE/i.test(threw.message),
+        `the derive failed but not by name, so a caller cannot tell this from `
+        + `a dead device: ${threw.message}`);
+      assert.ok(/ends only at a restart/i.test(threw.message),
+        'the refusal does not say how to get out of it, which is the half a '
+        + 'reader actually needs');
+
+      /*
+       * FAST is the whole point. A timeout would also "fail", and would look
+       * identical in a summary - the difference is that this one costs a
+       * second instead of thirty and says why. Generous bound: the check is
+       * before any I/O, so it should be immediate, but a slow phone under a
+       * cold bundle is not the thing under test.
+       */
+      assert.ok(took < 5000,
+        `the refusal took ${took}ms, which is long enough that it may have `
+        + 'gone to the wire - the check is supposed to happen before the '
+        + 'request, not after the silence');
     });
   });
 };
