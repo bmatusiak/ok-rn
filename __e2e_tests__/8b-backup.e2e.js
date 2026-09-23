@@ -110,6 +110,41 @@ module.exports = function backupCapture({describe, it}) {
       assert.ok(shared, 'the band test did not run');
       const {device, backup} = shared;
 
+      /*
+       * A SLOW CAPTURE MUST NOT LOOK LIKE A HANG, because it was taking the
+       * rest of the suite down with it.
+       *
+       * tools/e2e.js kills a run after 90s with no new line from the phone,
+       * and that budget is documented as "the slowest single step measured is
+       * a backup capture ON A PRODUCTION BUILD, well under a minute". A debug
+       * build is not that: it prints a byteprint for everything it does, and
+       * the same capture runs past 90s. With `onProgress: null` the suite said
+       * nothing for the whole capture, so the watchdog fired, the run died at
+       * backupCapture, and cryptoSign, derive, thirdParty, compositePgp,
+       * identity, deriveParity, biometrics, passkeys and pqcSlots never ran at
+       * all. Nine suites were being reported as neither passed nor failed.
+       *
+       * Throttled to one line every 10s rather than raising OKRN_E2E_STALL_MS,
+       * for two reasons. Raising the budget weakens hang detection for every
+       * other step to accommodate one slow one. And a line carrying the
+       * character count is strictly better than silence: it says the keyboard
+       * is still delivering, which is exactly the difference between slow and
+       * wedged that the watchdog exists to tell. A capture that really stops
+       * still goes quiet and is still caught.
+       *
+       * Not per-event: onProgress fires on EVERY keyboard report, and a backup
+       * is thousands of characters. That flood is presumably why this was null
+       * to begin with - the choice was between too much and nothing, and the
+       * throttle is the third option.
+       */
+      let lastProgressAt = 0;
+      const reportProgress = ({characters}) => {
+        const now = Date.now();
+        if (now - lastProgressAt < 10000) return;
+        lastProgressAt = now;
+        log(`still typing: ${characters} characters so far`);
+      };
+
       let result;
       try {
         result = await device.captureBackup({
@@ -122,7 +157,7 @@ module.exports = function backupCapture({describe, it}) {
           trigger: () =>
             OkEmu.pressQueue(String(backup.button), backup.ticks, {allowGesture: true}),
           timeoutMs: 120000,
-          onProgress: null,
+          onProgress: reportProgress,
         });
       } catch (e) {
         const message = String(e && e.message);

@@ -42,8 +42,38 @@ const {pressDigits} = require('./pressDigits');
  * The library models this as a preference and its table says why the value is 8
  * rather than 1: bit 0 makes raw-HID derives raise a three-button challenge,
  * bit 3 is the one that allows a FIDO2 derive without a touch.
+ *
+ * PRE-3.0.5 ONLY. See the note on setTouchFreeDerive().
  */
 const DERIVE_WITHOUT_TOUCH = 8;
+
+/**
+ * The 3.0.5 spelling: an ENUM in field 30, not a bit in field 21.
+ *
+ * Two things changed at once and the old value fails on both counts.
+ *
+ *   THE ENCODING. Fields 21, 22 and 30 became a 0/1/2 enum - 0 = challenge
+ *   code, 1 = button press, 2 = no press - and set_slot() refuses anything
+ *   above 2 with "Error invalid user input mode". So 8 is not "a bit that
+ *   stopped working", it is rejected outright, and the preference never
+ *   arrives.
+ *
+ *   THE FIELD. Even a correctly encoded 2 in field 21 would not change this
+ *   gate: okcore_user_input_mode_for_slot() routes slot 128 - the web-and-agent
+ *   derivation key - straight to field 30, and web_agent_derive_gate() calls
+ *   okcore_web_agent_derive_mode() directly. Field 21 is the RAW-HID derived
+ *   key. (The maintainer's own GUI tests write 21 here; on the slot-128 path
+ *   that is the wrong byte.)
+ *
+ * What it cost: the write was refused, the gate stayed at its default of
+ * "button press", and every SHARED-SECRET derive answered
+ * CTAP2_ERR_OPERATION_DENIED while every PUBLIC-KEY derive passed - because
+ * public-key derives are never gated. Five failures that looked like a firmware
+ * regression and were a host-side encoding.
+ */
+const USER_INPUT_CHALLENGE = 0;
+const USER_INPUT_PRESS = 1;
+const USER_INPUT_NONE = 2;
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
@@ -56,8 +86,32 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
  * reported success without sending anything.
  */
 async function setTouchFreeDerive(device, log) {
-  const result = await device.setPreference('derivedChallengeMode', DERIVE_WITHOUT_TOUCH);
-  log(`derived key challenge mode: ${JSON.stringify(result.response ?? result)}`);
+  /*
+   * WHICH FIELD IS A CAPABILITY QUESTION, so both firmware lines keep working.
+   * Before 3.0.5 the only knob is field 21's bit 3; from 3.0.5 it is field 30's
+   * enum, and field 21 no longer reaches the derive gate at all.
+   */
+  const modern = device.capabilities && device.capabilities.deriveReqPress === false;
+
+  if (!modern) {
+    const legacy = await device.setPreference('derivedChallengeMode', DERIVE_WITHOUT_TOUCH);
+    log(`derived key challenge mode (legacy bit): ${JSON.stringify(legacy.response ?? legacy)}`);
+    return legacy;
+  }
+
+  /*
+   * "No press" is not universally available: a build without OK_ALLOW_NO_PRESS
+   * refuses it with "unsupported user input mode", and the firmware notes that
+   * a stale 2 already in EEPROM fails CLOSED to the challenge code. So the
+   * refusal is reported rather than swallowed - a caller that assumed the write
+   * took would go on to blame the derive.
+   */
+  const result = await device.setPreference('webAgentDeriveMode', USER_INPUT_NONE);
+  const text = String(result.response ?? result);
+  log(`web and agent derived key mode: ${JSON.stringify(text)}`);
+  if (/unsupported user input mode/i.test(text)) {
+    log('  this build has no OK_ALLOW_NO_PRESS, so derives will want a confirmation');
+  }
   return result;
 }
 
@@ -151,4 +205,7 @@ module.exports = {
   setTouchFreeDerive,
   enableTouchFreeDerive,
   DERIVE_WITHOUT_TOUCH,
+  USER_INPUT_CHALLENGE,
+  USER_INPUT_PRESS,
+  USER_INPUT_NONE,
 };

@@ -33,9 +33,9 @@
 const UsbPipeModule = require('../src/transport/UsbPipe');
 const UsbPipe = UsbPipeModule.default || UsbPipeModule.UsbPipe;
 const {getOnlyKey, resetOnlyKey} = require('../src/onlykey');
+const {setTouchFreeDerive} = require('./helpers/touchFreeDerive');
 
 const PIN = '1234561';
-const DERIVE_WITHOUT_TOUCH = 8;
 const RSA_SLOT = 1;
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
@@ -121,8 +121,14 @@ module.exports = function hardKeyConfig({describe, it}) {
     it('sets touch-free per-site derive, which the vault needs', async ({log, assert, skip}) => {
       if (!armed) skip('not armed');
       const {device} = await getOnlyKey('usb');
-      const result = await device.setPreference('derivedChallengeMode', DERIVE_WITHOUT_TOUCH);
-      log(`derivedChallengeMode -> ${JSON.stringify(result.response ?? result)}`);
+      /*
+       * Through the shared helper rather than a local constant, because WHICH
+       * field and WHICH encoding depend on the firmware: pre-3.0.5 it is bit 3
+       * of field 21, from 3.0.5 it is the 0/1/2 enum in field 30 and an 8 is
+       * refused outright. This file had its own copy of the old value and would
+       * have gone on sending it to a hard key running new firmware.
+       */
+      const result = await setTouchFreeDerive(device, log);
       assert.ok(!/^Error/i.test(String(result.response || '')), String(result.response));
     });
 
