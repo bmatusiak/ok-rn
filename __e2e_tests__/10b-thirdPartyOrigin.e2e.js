@@ -86,7 +86,31 @@ const LABEL = 'origin.probe';
  * comes back, 45 s of silence is most of the runner's own 90 s stall watchdog
  * (tools/e2e.js) spent proving something a fraction of it proves as well.
  */
-async function deriveUnder(transport, rpId, log, {transitV2 = false, timeoutMs = 45000} = {}) {
+/*
+ * `reqPress` is the OTHER half of speaking to an older key, and this file went
+ * without it for as long as it has existed.
+ *
+ * Before 3.0.5 a derive that wants a button press asks for it in the OPCODE -
+ * DERIVE_PUBLIC_KEY_REQ_PRESS - and 3.0.5 REMOVED those opcodes, leaving the
+ * numbers burned so an old client fails loudly. plugins/okcrypto handles this
+ * for its own callers (REQ_PRESS_TO_PLAIN, opcodeFor), but this file builds its
+ * own tunnel and sends its own request, so none of that reaches it.
+ *
+ * Sending the plain opcode to v3.0.4 is therefore asking for a derive with no
+ * press on firmware that wants one. It half-worked, which is the worst
+ * outcome: the first derive answered 65 bytes and the second came back 14, and
+ * on a later run the first did not answer at all - so the suite failed one run
+ * and SKIPPED the next, both times because the request was wrong rather than
+ * the device.
+ *
+ * Same shape as the transitV2 bug this file already carries a note about: a
+ * probe that hand-rolls the protocol has to hand-roll the version handling
+ * too, or it is testing the wrong firmware.
+ */
+async function deriveUnder(
+  transport, rpId, log,
+  {transitV2 = false, reqPress = false, timeoutMs = 45000} = {},
+) {
   const ctap = new CtapHid(transport);
   await ctap.init({timeoutMs: 8000});
   const bound = protocol.tunnel.createTunnel(ctap, {randomBytes: rand, rpId});
@@ -99,8 +123,12 @@ async function deriveUnder(transport, rpId, log, {transitV2 = false, timeoutMs =
   });
   /* The device asks for presence; press once when it does. */
   let pressed = 0;
+  const action = reqPress
+    ? okconnect.KEYACTION.DERIVE_PUBLIC_KEY_REQ_PRESS
+    : okconnect.KEYACTION.DERIVE_PUBLIC_KEY;
+
   const answer = await bound.send(
-    {cmd: okconnect.OKCONNECT, opt1: okconnect.KEYACTION.DERIVE_PUBLIC_KEY,
+    {cmd: okconnect.OKCONNECT, opt1: action,
      opt2: okconnect.KEYTYPE.P256R1, opt3: 1, data},
     {timeoutMs,
      onKeepAlive: async () => {
@@ -158,7 +186,17 @@ module.exports = function thirdParty({describe, it}) {
        * enum with no third-party bit, and admission is the compiled-in origin
        * table, which nothing on the device can extend.
        */
-      const framing = {transitV2: caps && caps.transitV2 === true};
+      /*
+       * BOTH halves come from the device's capabilities, not from constants
+       * written when 3.0.5 was the only firmware in view: how the answer is
+       * framed, and which opcode asks for a press.
+       */
+      const framing = {
+        transitV2: caps && caps.transitV2 === true,
+        reqPress: caps && caps.deriveReqPress === true,
+      };
+      log(`framing: transit ${framing.transitV2 ? 'v2' : 'v1'}, `
+        + `${framing.reqPress ? 'REQ_PRESS opcode' : 'plain opcode'}`);
 
       /*
        * WHICH BUILD IS THIS. Not a device capability and not readable from the
