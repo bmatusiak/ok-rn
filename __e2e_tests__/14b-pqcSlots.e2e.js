@@ -307,9 +307,28 @@ module.exports = function pqcSlots({describe, it}) {
        * a DUO's different gesture went unnoticed once.
        */
       await s.device.enterConfigMode({
-        /* HANDED to the firmware; key_press IS what payload() bands on. */
+        /*
+         * A GESTURE IS A REAL HOLD, so it is SENSED rather than handed over.
+         *
+         * This used pressQueue, and it worked - key_press is what payload()
+         * bands on either way. But it was the only place in the project that
+         * reached config mode differently from the app, which holds button 6
+         * for 80 ticks through holdTicks (ui/ConfigModePanel.tsx:74), as does
+         * helpers/touchFreeDerive.js.
+         *
+         * The rule is production's own (useOkEmu.ts:670): "holdTicks stays for
+         * the sensing tests and for gestures, which are real holds and are the
+         * one case where emulating the finger is the point." pressQueue is for
+         * taps and PIN digits, where a sensed press costs 757-855ms for no
+         * gain. A gesture is the other case: the duration IS the input, and
+         * emulating the finger is what the firmware is being asked to read.
+         *
+         * Costs a few seconds here. Buys a suite that reaches config mode the
+         * way the app does, so a regression in that path fails a test rather
+         * than only a user.
+         */
         hold: (button, ticks) =>
-          OkEmu.pressQueue(String(button), ticks, {allowGesture: true}),
+          OkEmu.holdTicks(button, ticks, {allowGesture: true}),
         settle: delay,
         attempts: 3,
       });

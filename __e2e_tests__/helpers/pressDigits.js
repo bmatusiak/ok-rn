@@ -19,14 +19,27 @@
  * as `enterDigits` is what lets the suite use the library's unlock() rather than
  * reimplementing it, on whichever firmware is staged.
  *
- * ## Why the presses are sequential and paced by the firmware
+ * ## The separation is STRUCTURAL now, not paced
  *
- * holdTicks() waits for the RELEASE to be observed before returning
- * (RELEASE_ROUNDS idle sense rounds), because counted presses with no idle gap
- * between them MERGE - their durations sum, and eight taps in a row would cross
- * the gesture band and take a backup instead of entering a PIN. So these are
- * awaited one at a time on purpose; firing them together is the bug this
- * pacing exists to prevent.
+ * This paragraph used to explain why the digits were pressed one at a time:
+ * holdTicks() waits for the RELEASE to be observed (RELEASE_ROUNDS idle sense
+ * rounds), because counted presses with no idle gap between them MERGE - their
+ * durations sum, and eight taps in a row would cross the gesture band and take
+ * a backup instead of entering a PIN.
+ *
+ * All true, and no longer what this file does. It hands the whole run to
+ * pressQueue, where okemu_press_take() refuses to give the firmware the next
+ * press until the loop has taken the last - so the gap is guaranteed by the
+ * queue rather than waited out, and a merge cannot happen. That is also what
+ * the app itself does (useOkEmu.ts:602), which is the point: a helper that
+ * entered PINs some other way would be testing a path no user takes.
+ *
+ * The description outlived the code it described - the same shape as the
+ * `yield()` comment and the "do not call device.unlock() here" comment, both
+ * of which were true when written and became instructions to keep a workaround
+ * nobody needed. Kept rather than deleted because the merge hazard is REAL on
+ * the sensed path, which is still how gestures are performed, and a reader who
+ * finds holdTicks elsewhere should find the reason here.
  */
 'use strict';
 
