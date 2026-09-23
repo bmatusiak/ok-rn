@@ -137,7 +137,7 @@ async function ready(log) {
   const caps = deviceLib.version.capabilities(String(state.status).trim(), {
     unreleased: buildInfo.unreleased,
   });
-  shared = {device, caps, configMode: false, generated: null, stored: null};
+  shared = {device, caps, generated: null, stored: null};
   return shared;
 }
 
@@ -316,15 +316,33 @@ module.exports = function pqcSlots({describe, it}) {
       log('the gesture landed and the device locked');
 
       await s.device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
-      s.configMode = true;
       log('unlocked again, now in config mode');
-      assert.ok(true);
+
+      /*
+       * THE APP'S STATE, not a copy of it.
+       *
+       * This used to set `s.configMode = true` here and the three tests below
+       * read that. The device flag and the private one then said the same
+       * thing by coincidence rather than by construction: the app records
+       * config mode because the WIRE CARRIES NO SIGNAL for it - OKCONNECT
+       * answers UNLOCKED from inside config mode exactly as it does outside -
+       * so `device.inConfigMode` is the only thing that knows, and a shadow
+       * beside it can only ever agree or be wrong.
+       *
+       * Asserted rather than assigned, which is the whole difference: the test
+       * now CHECKS that entering config mode set the state the rest of the app
+       * branches on, instead of asserting a boolean it set itself.
+       */
+      assert.ok(s.device.inConfigMode,
+        'the gesture landed and the PIN went back in, but the app does not '
+        + 'believe this device is in config mode - so every slot write below '
+        + 'would be refused for a reason nothing here would report');
     });
 
     it('GENERATES an X-Wing key in the device and hands back only the public half',
       async ({log, assert, skip}) => {
         const s = await ready(log);
-        if (!s.configMode) {
+        if (!s.device.inConfigMode) {
           skip('config mode was not reached');
         }
 
@@ -379,7 +397,7 @@ module.exports = function pqcSlots({describe, it}) {
          * for both.
          */
         const s = await ready(log);
-        if (!s.configMode) {
+        if (!s.device.inConfigMode) {
           skip('config mode was not reached');
         }
 
@@ -448,7 +466,7 @@ module.exports = function pqcSlots({describe, it}) {
          * fail with an unexplained timeout.
          */
         const s = await ready(log);
-        if (!s.configMode) {
+        if (!s.device.inConfigMode) {
           skip('config mode was never entered');
         }
         log('config mode is still on; the next run starts with a fresh boot');

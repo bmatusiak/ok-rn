@@ -420,8 +420,24 @@ module.exports = function cryptoSign({describe, it}) {
        * key that test did not run, so neither can this one.
        */
       const {device, transport} = await ready(log);
-      if (!shared.provisioned) {
-        skip('config mode was not entered this run - the signing slot was already provisioned');
+      /*
+       * ASK THE APP, not a flag we set ourselves.
+       *
+       * The precondition here is CONFIG MODE - field 28 is gated on
+       * `configmode == true || !initcheck` - and this used to test
+       * `shared.provisioned`, meaning "the provisioning test above entered
+       * config mode this run". Those are not the same claim. Config mode can
+       * be open because something ELSE opened it: 8b-backup takes it to set a
+       * backup passphrase on a key that has none, and this test would then
+       * have skipped itself out of a window that was wide open.
+       *
+       * device.inConfigMode is the state the firmware gate actually mirrors,
+       * and it is the app's own - the wire reports nothing about config mode,
+       * so a private boolean beside it can only agree or be wrong.
+       */
+      if (!device.inConfigMode) {
+        skip('config mode is not open this run - nothing entered it, so a '
+          + 'field 28 write would be refused');
       }
 
       /*
@@ -594,8 +610,9 @@ module.exports = function cryptoSign({describe, it}) {
        * somewhere else.
        */
       const {device} = await ready(log);
-      if (!shared.provisioned) {
-        skip('config mode was not entered this run - the signing slot was already provisioned');
+      /* The same precondition, asked the same way - see the field 28 test. */
+      if (!device.inConfigMode) {
+        skip('config mode is not open this run, so this write would be refused');
       }
 
       const LABELLED = 104;
