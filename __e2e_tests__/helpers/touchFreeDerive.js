@@ -131,7 +131,29 @@ async function setTouchFreeDerive(device, log) {
  * so the unlock that follows sat waiting twenty seconds for an UNLOCKED
  * transition from a device that had never locked.
  */
-async function enableTouchFreeDerive(device, pin, log) {
+/**
+ * Take the device into config mode, run `work` there, and restart out of it.
+ *
+ * EXTRACTED, because config mode is a ceremony with four separate traps in it
+ * and a second copy would get at least one wrong. It is the whole of what
+ * enableTouchFreeDerive() used to be, minus the one line that said what to do
+ * once inside - so anything else needing config mode (writing a backup
+ * passphrase, for one: OKSETPRIV is refused outside it unless the device has
+ * never been initialised) gets the fade wait, the library's gesture, the
+ * silent-unlock poll and the restart for free.
+ *
+ * @param device  the device service
+ * @param pin     the PIN, pressed rather than sent - see below
+ * @param log     the suite's log
+ * @param work    async () => result, run while in config mode
+ * @param opts.restart  attempt the in-place firmware restart afterwards.
+ *                      DEFAULT TRUE only to preserve the existing caller's
+ *                      behaviour - see the note at the restart itself, which
+ *                      explains why false is the honest value for a suite that
+ *                      is run alone.
+ * @returns whatever `work` returned
+ */
+async function inConfigMode(device, pin, log, work, {restart = true} = {}) {
   /*
    * Long enough for the fade to finish. The same figure the derive suite waits
    * for pending_operation, and for a related reason - the firmware holds
@@ -198,7 +220,7 @@ async function enableTouchFreeDerive(device, pin, log) {
   }
   log('unlocked again, now in config mode');
 
-  const result = await setTouchFreeDerive(device, log);
+  const result = await work();
 
   /*
    * LEAVE CONFIG MODE, or nothing after this works.
@@ -217,14 +239,51 @@ async function enableTouchFreeDerive(device, pin, log) {
    * A fix that works and then breaks the six tests behind it is worse than the
    * failure it fixed, because it looks like a regression somewhere else.
    */
-  log('restarting to leave config mode - CTAPHID is silent until it does');
-  await OkEmu.restart();
+  /*
+   * THERE IS NO IN-PLACE RESTART, and this line has never been able to do what
+   * it says.
+   *
+   * OkEmu.restart() rejects unconditionally: the firmware thread only exits
+   * through the AIRCR trap, so NativeOkEmuModule refuses rather than
+   * pretending, and `1-softKey` has a test pinning exactly that refusal.
+   * 14b-pqcSlots says the same thing in its header - "the real power cycle is
+   * the runner force-stopping the app".
+   *
+   * So reaching this throws. It went unnoticed because the only caller,
+   * 10-derive, reaches it solely when a derive asks for confirmation, which
+   * 3.0.5 does not do once field 30 is set - the branch is dead in the current
+   * green run. Extracting this function for the backup-passphrase suite is
+   * what first executed it (2026-09-23).
+   *
+   * Left ATTEMPTED rather than deleted for that caller, because if it ever
+   * does run mid-sweep it must fail loudly: the device is genuinely in config
+   * mode, CTAPHID is genuinely dead for every suite behind it, and a silent
+   * carry-on would present as six unrelated timeouts. A caller that is run
+   * ALONE passes restart:false instead - the runner force-stops the app at the
+   * end of the run, and that IS the power cycle.
+   */
+  if (restart) {
+    log('restarting to leave config mode - CTAPHID is silent until it does');
+    await OkEmu.restart();
+  } else {
+    log('still in config mode: CTAPHID stays silent until the app process ' +
+        'restarts, which the runner does at the end of this run');
+  }
   return result;
+}
+
+/**
+ * The original caller, now one line: get into config mode and set the
+ * preference. Kept by name because several suites import it.
+ */
+async function enableTouchFreeDerive(device, pin, log) {
+  return inConfigMode(device, pin, log, () => setTouchFreeDerive(device, log));
 }
 
 module.exports = {
   setTouchFreeDerive,
   enableTouchFreeDerive,
+  inConfigMode,
   DERIVE_WITHOUT_TOUCH,
   USER_INPUT_CHALLENGE,
   USER_INPUT_PRESS,

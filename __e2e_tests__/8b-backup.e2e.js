@@ -57,7 +57,20 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
  * TYPESPEED is a preference. Watching the keyboard interface go quiet measures
  * it instead of guessing, and costs nothing when there was no refusal.
  */
-async function drainKeyboard(log, quietMs = 1500, capMs = 20000) {
+/*
+ * capMs 60 s, not 20 s. The cap is a ceiling on how long we will wait for the
+ * key to go quiet, and 20 s was shorter than the typing it was meant to
+ * outlast: a measured backup types for ~85 s, so the drain gave up while the
+ * key was still delivering characters and the next suite opened into a device
+ * mid-sentence. That is the cascade
+ * FINDING-the-backup-refusal-is-typed-and-blocks-the-device.md describes for
+ * the refusal, and it applies to a real backup with far more to say.
+ *
+ * It costs nothing when there is nothing to drain: the quiet detector returns
+ * as soon as the keyboard has been silent for quietMs, and the cap is only
+ * reached when the key really is still typing.
+ */
+async function drainKeyboard(log, quietMs = 1500, capMs = 60000) {
   let seen = 0;
   let lastAt = Date.now();
   const off = OkEmu.on('stream', e => {
@@ -137,13 +150,55 @@ module.exports = function backupCapture({describe, it}) {
        * to begin with - the choice was between too much and nothing, and the
        * throttle is the third option.
        */
-      let lastProgressAt = 0;
-      const reportProgress = ({characters}) => {
-        const now = Date.now();
-        if (now - lastProgressAt < 10000) return;
-        lastProgressAt = now;
-        log(`still typing: ${characters} characters so far`);
-      };
+      /*
+       * ON A TIMER, NOT ON THE EVENT - because ZERO characters is a real
+       * outcome and the event-driven version could not report it.
+       *
+       * onProgress fires on keyboard reports. If the gesture never lands
+       * nothing is typed, so it never fires, so the suite says nothing, so the
+       * runner's 90 s watchdog kills the RUN - before this test's own 120 s
+       * budget expires and before it can say what happened. Measured
+       * 2026-09-23 running `--only deviceFlow,backupCapture`: the band test
+       * passed, then ninety seconds of silence and `stuck after: the backup
+       * band is read from the device`. The capture was never going to produce
+       * a character, and the failure named a watchdog instead of a gesture.
+       *
+       * A timer feeds the watchdog either way and makes the distinction the
+       * diagnostic actually turns on:
+       *
+       *   rising    the gesture fired and the key is typing
+       *   stuck at ~110 then stopping   no backup key - the refusal URL
+       *   ZERO      THE GESTURE NEVER FIRED
+       */
+      let typed = 0;
+      const startedAt = Date.now();
+      const reportProgress = ({characters}) => { typed = characters; };
+      const heartbeat = setInterval(() => {
+        const secs = Math.round((Date.now() - startedAt) / 1000);
+        log(typed === 0
+          ? `${secs}s: NOTHING typed yet - if this stays 0 the gesture never fired`
+          : `still typing: ${typed} characters so far (${secs}s)`);
+      }, 10000);
+
+      /*
+       * WAIT OUT THE LED FADE FIRST, or the gesture is discarded in silence.
+       *
+       * payload() bands the backup on `duration >= 72 && button_selected == '1'
+       * && !isfade`. That last clause is the same one enableTouchFreeDerive
+       * waits 22 s for, and the fade is started by the unlock this suite
+       * depends on. Inside the full sweep a dozen suites run in between and it
+       * has long ended; run as `--only deviceFlow,backupCapture` it has not,
+       * and the gesture is dropped with nothing said.
+       *
+       * That is what made this test order-dependent: it typed normally in the
+       * full run and produced ZERO characters standalone. A test that silently
+       * does nothing depending on what ran before it is not measuring what it
+       * claims to measure, so the wait is unconditional - 22 s is cheap next to
+       * a capture that runs into the minutes, and it removes the dependency
+       * rather than documenting it.
+       */
+      log('waiting for the LED fade to end, or the backup gesture is discarded');
+      await delay(22000);
 
       let result;
       try {
@@ -157,30 +212,36 @@ module.exports = function backupCapture({describe, it}) {
           trigger: () =>
             OkEmu.pressQueue(String(backup.button), backup.ticks, {allowGesture: true}),
           /*
-           * KNOWN TOO SMALL, and deliberately left until it can be MEASURED.
+           * MEASURED, at last. 2026-09-23, soft key, debug build:
            *
-           * Measured 2026-09-23 on a key that had a backup passphrase: the
-           * capture reached 1316 characters at 120 s and was still climbing,
-           * ~12 chars/s (every character costs two real delays of
-           * (TYPESPEED^2/3)*8 ms). So this budget cannot finish a real backup.
+           *   1014 characters, ~85 s of typing, ~12 chars/s
+           *   (predicted 12.5 - every character costs two real delays of
+           *   (TYPESPEED^2/3)*8 ms, and the emulator's delay() is wall clock)
            *
-           * It is not raised to a guess, because the right value is the length
-           * of a backup this key actually types and nothing here can produce
-           * one: the firmware refuses without a backup passphrase, and nothing
-           * in the e2e sets one - setBackupPassphrase is only called from
-           * SetupScreen/BackupScreen. So the test SKIPS, this number never
-           * applies, and raising it would be theatre.
+           * and the digest chain verified, which is the first time this test
+           * has ever actually run. It could not before: the firmware refuses
+           * without a backup passphrase and nothing in the e2e set one, so it
+           * skipped and this number never applied. `8c-backupPassphrase` sets
+           * one on the SOFT key now.
            *
-           * To close it: set a passphrase (by hand, or teach provisioning to
-           * set one on the SOFT key only), read the character count off the
-           * progress lines, and set this from that. Raise drainKeyboard's cap
-           * with it, and note OKRN_E2E_TIMEOUT_MS (tools/e2e.js:352, 420 s
-           * default) is a THIRD budget that will cut a long capture off.
+           * 240 s rather than the 120 s that just barely fit, because 85 s of
+           * measurement is not 85 s of budget. This key's backup grows with
+           * what is stored on it - the FIDO2 AuthenticatorState record alone
+           * is ~210 bytes, plus 35 per populated ECC slot and 515 if any RSA
+           * slot is set - so a key further through the suite types for longer
+           * than the one measured here. Doubling covers that without being a
+           * guess about a specific key.
+           *
+           * The other two budgets move with it, and BOTH have to: drainKeyboard's
+           * cap below, or the next suite starts while the key is still typing,
+           * and OKRN_E2E_TIMEOUT_MS in tools/e2e.js, which is the whole-run
+           * budget a capture that no longer skips eats 107 s of.
            */
-          timeoutMs: 120000,
+          timeoutMs: 240000,
           onProgress: reportProgress,
         });
       } catch (e) {
+        clearInterval(heartbeat);
         const message = String(e && e.message);
 
         /*
@@ -205,8 +266,10 @@ module.exports = function backupCapture({describe, it}) {
         await drainKeyboard(log);
         throw e;
       }
+      /* The success path needs it too, or the timer outlives the run. */
+      clearInterval(heartbeat);
 
-      log(`captured ${result.text.length} characters`);
+      log(`captured ${result.text.length} characters in ${Math.round((Date.now() - startedAt) / 1000)}s`);
       log(`digest: ${String(result.digest).slice(0, 16)}…`);
       log(`verified: ${result.verified}`);
 

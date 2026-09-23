@@ -13,6 +13,7 @@ module.exports = [
     require('./7b-pressBench.e2e.js'),
     require('./8-keystrokes.e2e.js'),
     require('./8b-backup.e2e.js'),
+    require('./8c-backupPassphrase.e2e.js'),
     require('./9-cryptoSign.e2e.js'),
     require('./10-derive.e2e.js'),
     require('./10b-thirdPartyOrigin.e2e.js'),

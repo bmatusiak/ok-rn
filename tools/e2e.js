@@ -349,7 +349,25 @@ async function main() {
    * put the suite past the old 180s deadline while every test in it passed,
    * which reads as a hang rather than as "this build is slower".
    */
-  const budgetMs = Number(process.env.OKRN_E2E_TIMEOUT_MS || 420000);
+  /*
+   * 600 s, raised from 420 s on 2026-09-23 because backupCapture stopped
+   * skipping.
+   *
+   * It had skipped for want of a backup passphrase on the key, so the whole-run
+   * budget had never had to cover it. `8c-backupPassphrase` sets one, and the
+   * capture then costs ~107 s of real time - the key types the backup out at
+   * about 12 characters a second and nothing can make that faster except
+   * changing the device's typing speed, which is not a trade worth making to
+   * suit a test. A full sweep measured 261 s with the capture skipping, so with
+   * it the run lands near 390 s: inside 420 s on paper and not in practice,
+   * since a key further through the suite has more to type.
+   *
+   * This is the budget that kills a RUN, so it is the one that must have slack.
+   * The 90 s stall watchdog below is the hang detector and stays where it is -
+   * a slow step feeds it with progress lines, which is what 8b-backup's
+   * heartbeat exists to do.
+   */
+  const budgetMs = Number(process.env.OKRN_E2E_TIMEOUT_MS || 600000);
   /*
    * STREAMED, NOT DOTTED. The old loop printed one dot every two seconds and
    * the suite's lines only at the end, so a run that sat on one test for two
