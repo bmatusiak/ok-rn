@@ -141,15 +141,23 @@ test('every release file named by a pin is bundled', () => {
   expect(absent).toEqual([]);
 });
 
-test('v3.0.0 names no file, because it was never signed', () => {
+test('the only pins without a signed file are the two that cannot have one', () => {
   /*
-   * 3.0.0 went out as an unsigned beta and was skipped for production, so
-   * there is no Signed_OnlyKey_3_0_0_STD and there is not going to be one. The
-   * row carries no `file` for that reason - asserted rather than left as an
-   * absence, so nobody helpfully adds one back.
+   * A pin names the signed image it was built from, and two do not - for
+   * DIFFERENT reasons, which is why they are listed rather than counted.
+   *
+   *   v3.0.0  went out as an unsigned beta and was skipped for production, so
+   *           there is no Signed_OnlyKey_3_0_0_STD and there never will be.
+   *   v3.0.5  is not a release. Its commit hashes are blank, which is this
+   *           file's way of saying "the working tree" - so there is no signed
+   *           image to name YET, and one appears when 3.0.5 ships.
+   *
+   * This used to assert `named === total - 1`, i.e. exactly one exception, and
+   * it broke the moment v3.0.5 was pinned. Counting made a new unreleased
+   * version look like a missing file; naming them says which is which, and
+   * still catches a pin that quietly loses its image.
    */
   const pins = require('../ok-versions.json') as Record<string, {file?: string}>;
-  expect(pins['v3.0.0'].file).toBeUndefined();
-  const named = Object.values(pins).filter(e => e.file).length;
-  expect(named).toBe(Object.keys(pins).length - 1);
+  const unsigned = Object.entries(pins).filter(([, e]) => !e.file).map(([k]) => k);
+  expect(unsigned.sort()).toEqual(['v3.0.0', 'v3.0.5']);
 });
