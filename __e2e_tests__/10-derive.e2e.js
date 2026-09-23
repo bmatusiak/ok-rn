@@ -516,10 +516,24 @@ module.exports = function derive({describe, it}) {
       try {
         blob = await okcrypto.deviceVault.seal('vault.example', 'hunter2-the-secret', opts);
       } catch (e) {
-        if (!/derived keys per site without touch/.test(String(e && e.message))) {
+        /*
+         * TWO SPELLINGS OF "THE PREFERENCE IS OFF", one per firmware line.
+         *
+         * Before 3.0.5 the refusal names itself - the device answers
+         * CTAP2_ERR_EXTENSION_NOT_SUPPORTED and the library turns that into
+         * "derived keys per site without touch".
+         *
+         * From 3.0.5 the gate is web_agent_derive_gate() reading field 30,
+         * which defaults to USER_INPUT_PRESS, and an unanswered confirmation is
+         * CTAP2_ERR_OPERATION_DENIED. Nothing in that names a preference, so
+         * matching only the old text rethrew and the setup below never ran -
+         * which is what left every shared-secret derive failing while the
+         * public-key ones passed.
+         */
+        if (!/derived keys per site without touch|OPERATION_DENIED/.test(String(e && e.message))) {
           throw e;
         }
-        log('the preference is off; entering config mode to set it');
+        log('the derive wants a confirmation; entering config mode to set the preference');
         await enableTouchFreeDerive(device, PIN, log);
         blob = await okcrypto.deviceVault.seal('vault.example', 'hunter2-the-secret', opts);
       }

@@ -198,7 +198,28 @@ async function enableTouchFreeDerive(device, pin, log) {
   }
   log('unlocked again, now in config mode');
 
-  return setTouchFreeDerive(device, log);
+  const result = await setTouchFreeDerive(device, log);
+
+  /*
+   * LEAVE CONFIG MODE, or nothing after this works.
+   *
+   * Config mode silences CTAPHID - the vendor interface still answers, so the
+   * device looks healthy - and there is no message that ends it. The only way
+   * out is a restart (okcore.cpp; the library's own derive() refuses up front
+   * with "Config mode ends only at a restart" rather than waiting out a
+   * timeout).
+   *
+   * This helper did not restart, and for a long time that went unnoticed
+   * because its caller only reached it on firmware that named the preference in
+   * its refusal - which 3.0.5 does not, so the helper was never running. The
+   * moment it did, it set the preference correctly and then left the device
+   * mute: every derive after it failed, INCLUDING ones that had just passed.
+   * A fix that works and then breaks the six tests behind it is worse than the
+   * failure it fixed, because it looks like a regression somewhere else.
+   */
+  log('restarting to leave config mode - CTAPHID is silent until it does');
+  await OkEmu.restart();
+  return result;
 }
 
 module.exports = {
