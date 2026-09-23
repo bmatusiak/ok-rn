@@ -92,6 +92,29 @@ const DROP = [
   'memcpy-armv7m.S',
   'main.cpp',           // Arduino main(); the JNI layer drives setup()/loop()
   'Makefile',
+  /*
+   * yield.cpp - DEAD IN BOTH TREES, and a latent link failure while it stayed.
+   *
+   * Its whole body polls Serial/Serial1/Serial2/Serial3 for `serialEvent`
+   * hooks, to call ones the firmware never defines. Every one of those UARTs
+   * is already dropped above (serial1.c, HardwareSerial1.cpp and siblings), so
+   * the file's only remaining effect is to reference symbols that are not
+   * here.
+   *
+   * It links today by luck of linkage, not by design. core-override's
+   * okemu_pins.cpp defines yield() too, and while THAT definition was strong
+   * the archive member was never extracted, so the undefined
+   * Serial1/serialEvent1 references were never resolved. Upstream then made
+   * okemu_pins.cpp's yield() WEAK - correctly, matching the Teensy core's own
+   * linkage so a sketch's override wins - which leaves weak against weak on
+   * any tree whose sketch has no yield() of its own. That is every pinned
+   * release at v3.0.4 and older. Which one the linker takes is then decided by
+   * archive extraction order rather than by strength, and if lld ever reached
+   * for this one the build fails on undefined `serial_available`.
+   *
+   * Dropping it removes the coin flip. Nothing wants what it provides.
+   */
+  'yield.cpp',
 ];
 
 /*

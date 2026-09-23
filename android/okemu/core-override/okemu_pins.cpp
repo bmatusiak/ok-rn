@@ -75,7 +75,29 @@ void delay(uint32_t ms) {
   okemu_delay_ms(ms);
 }
 
-void yield(void) {
+/*
+ * WEAK, exactly as the Teensy core's own yield() is.
+ *
+ * This file stands in for pins_teensy.c, and the core declares yield() weak so
+ * a sketch can override it. OnlyKey.ino DOES override it - with a no-op, to
+ * stop the core's version referencing Serial1/2/3 and dragging in three unused
+ * UART drivers, which on a part with 128 KB of flash is a real saving.
+ *
+ * Defining ours strongly made that a link error the moment the sketch gained
+ * its own: `ld.lld: error: duplicate symbol: yield`. ok-rn carried a staged
+ * PATCH deleting the sketch's line to dodge it - an edit to OnlyKey.ino, the
+ * file most likely to be reformatted upstream, justified by a claim that a
+ * no-op yield() "stops the clock". It does not: ok_hal.cpp:356 runs a
+ * dedicated thread calling okemu_sync_systick() every 500 us, and micros()
+ * syncs it too.
+ *
+ * Matching the core's linkage fixes it properly and keeps the choice where the
+ * firmware makes it: the sketch's definition wins where it exists, ours is
+ * used where it does not. Nothing in the firmware has to know it is emulated.
+ * This is upstream node-onlykey-emulator's fix; ok-rn's copy of this file had
+ * not taken it.
+ */
+__attribute__((weak)) void yield(void) {
   /* The firmware never blocks on USB the way the Teensy core does; keeping
    * the millisecond counter current is all any caller needs here. */
   okemu_sync_systick();
