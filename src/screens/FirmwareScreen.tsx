@@ -4,6 +4,7 @@ import {Btn, KeyValue, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {ON, type ConfigState} from '../ui/configModeNotes';
 import {getOnlyKey} from '../onlykey';
+import {supports} from '../firmwareFeatures';
 import NativeShare from '../../specs/NativeShare';
 import {
   BUNDLED_DIR,
@@ -131,6 +132,14 @@ export function FirmwareScreen({
    * nothing. A warning anywhere else arrives too late to act on.
    */
   const [atRisk, setAtRisk] = useState<string[] | null>(null);
+
+  /*
+   * TRUE when this key is 3.0.5 or newer, which is also when the vault is
+   * offered at all. Entries on such a key were sealed under the construction
+   * it already has, so an update does not strand them and there is nothing to
+   * warn about.
+   */
+  const vaultSupported = supports(emu.capabilities, 'deviceVault');
 
   useEffect(() => {
     let cancelled = false;
@@ -426,15 +435,37 @@ export function FirmwareScreen({
         * produces a different key. A warning further down the screen would be
         * a warning the reader meets too late to act on.
         */}
-      {atRisk && atRisk.length > 0 ? (
+      {/*
+        * ONLY ON A KEY THAT PREDATES THE CHANGE, which this did not check and
+        * had to learn the hard way.
+        *
+        * When this warning was written the vault was available on any firmware
+        * that could derive, so "there are entries" was reason enough to say
+        * something. The vault is now gated to 3.0.5+, and that quietly made
+        * this wrong in both directions: entries can only exist on a key that
+        * is ALREADY 3.0.5 or newer, so the case described here - a pre-3.0.5
+        * key with entries - can no longer arise, while the case that DOES
+        * arise (a 3.0.5 key updating to something later) would be told its
+        * data breaks, which nothing has established.
+        *
+        * Two correct changes producing a false sentence between them. The
+        * lesson is that a warning's CONDITION is part of the warning: this one
+        * kept saying something true about the world it was written in.
+        *
+        * `deviceVault` is false exactly when the key is pre-3.0.5, so it is
+        * the condition rather than a version comparison of our own. The
+        * warning now fires only for the legacy state - something sealed before
+        * the gate existed - and is silent otherwise.
+        */}
+      {atRisk && atRisk.length > 0 && !vaultSupported ? (
         <View style={styles.atRisk}>
           <Text style={styles.atRiskTitle}>
             {atRisk.length} saved vault {atRisk.length === 1 ? 'entry' : 'entries'} on
             this key
           </Text>
           <Text style={styles.warn}>
-            Firmware 3.0.5 changed how a key is derived from a label, so if the
-            firmware you are installing is 3.0.5 or newer these stop opening —
+            This key runs firmware older than 3.0.5, and 3.0.5 changed how a key
+            is derived from a label. Updating it makes these stop opening —
             silently. The blobs stay where they are and look fine.
           </Text>
           <Text style={styles.warn}>
