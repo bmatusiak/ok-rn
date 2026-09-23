@@ -11,6 +11,7 @@
  *   node tools/matrix.js                 every release with a script
  *   node tools/matrix.js v2.1.0 v3.0.2   just those
  *   node tools/matrix.js --dry-run       say what it would do
+ *   node tools/matrix.js --summary LOG   one line per failure, no stacks
  *   node tools/matrix.js --no-restore    leave the last version installed
  *
  * Set ANDROID_SERIAL when more than one device is attached; it is passed
@@ -244,6 +245,97 @@ function restoreWorkingTree() {
     ['-p', path.join(ROOT, 'android'), ':app:installDebug', '-q'], {});
 }
 
+/**
+ * --summary: read a sweep's LOG and print one line per failure.
+ *
+ * The sweep runs e2e.js with stdio inherited, so matrix.js never sees a word of
+ * it - the output goes straight to whatever captured the process. That is the
+ * right call while it runs (the progress dots have to be live) and it is why
+ * this is a log reader rather than something the sweep accumulates.
+ *
+ * It exists because the log is not readable by hand. Every failed assertion
+ * carries its full JS stack, and under Metro each frame is a ~200-character
+ * `http://localhost:8081/index.bundle?platform=android&dev=true&...` URL. One
+ * version's failures are forty such lines apiece; pulling the actual messages
+ * out of a single block cost about ten thousand tokens of bundle URLs once,
+ * which is the whole reason this is here.
+ *
+ *   node tools/matrix.js --summary <logfile>
+ *
+ * Nothing is thrown away - the log keeps the stacks. This prints the first line
+ * of each message, which is the part that says what went wrong.
+ */
+function summarize(file) {
+  const text = fs.readFileSync(file, 'utf8');
+  const lines = text.split(/\r?\n/);
+
+  let version = '(before any version)';
+  let suite = '?';
+  let attempt = 0;
+  let atRule = false;
+  const rows = [];
+
+  for (const line of lines) {
+    /*
+     * A block header is the label alone BETWEEN two rules of '='. Matching the
+     * label's SHAPE instead also matched 'v3.0.3: no PIN yet...' and
+     * 'v3.0.3: run 1 exited 1' as new versions, and missed working-tree
+     * entirely - so the rule is what identifies a header, not the text.
+     */
+    if (/^={10,}$/.test(line)) { atRule = true; continue; }
+    if (atRule) {
+      atRule = false;
+      const label = line.trim();
+      if (label) { version = label; suite = '?'; attempt = 0; }
+      continue;
+    }
+    const s = /^\s*suite:\s*(\S+)/.exec(line);
+    if (s) { suite = s[1]; continue; }
+
+    const v = /^(PASS|FAIL)\s+passed=(\d+)(?:\s+failed=(\d+))?(?:\s+skipped=(\d+))?/.exec(line);
+    if (v) {
+      attempt++;
+      rows.push({ kind: 'run', version, attempt, verdict: v[1],
+        passed: v[2], failed: v[3] || '0', skipped: v[4] || '0',
+        bail: /bailed after (\S+)/.exec(line) });
+      continue;
+    }
+
+    const f = /✗\s+(.*)$/.exec(line);
+    if (!f) continue;
+    /*
+     * "<test name> -> <message>", and the message runs on into an escaped
+     * stack: the runner ships it through as a single line with literal \n.
+     * Cut at the first one.
+     */
+    const body = f[1];
+    const arrow = body.indexOf(' -> ');
+    const name = arrow === -1 ? body : body.slice(0, arrow);
+    let msg = arrow === -1 ? '' : body.slice(arrow + 4);
+    msg = msg.split('\n')[0].split(/\s+at\s+\S+\s+\(http/)[0].trim();
+    msg = msg.replace(/\\n$/, '').trim();
+    rows.push({ kind: 'fail', version, suite, attempt: attempt + 1, name, msg });
+  }
+
+  let shown = null;
+  let fails = 0;
+  for (const r of rows) {
+    if (r.version !== shown) {
+      console.log(`\n${r.version}`);
+      shown = r.version;
+    }
+    if (r.kind === 'run') {
+      const b = r.bail ? `  (bailed after ${r.bail[1]})` : '';
+      console.log(`  run ${r.attempt}: ${r.verdict} ${r.passed}p/${r.failed}f/${r.skipped}s${b}`);
+    } else {
+      fails++;
+      console.log(`    ${r.suite} - ${r.name}`);
+      if (r.msg) console.log(`      ${r.msg.slice(0, 150)}`);
+    }
+  }
+  console.log(`\n${fails} failed test${fails === 1 ? '' : 's'} across the log.`);
+}
+
 function main() {
   const list = plan();
   console.log(
@@ -265,4 +357,8 @@ function main() {
   process.exit(bad.length ? 1 : 0);
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  const i = args.indexOf("--summary");
+  if (i !== -1) summarize(args[i + 1] || args.find((a) => !a.startsWith("--")));
+  else main();
+}
