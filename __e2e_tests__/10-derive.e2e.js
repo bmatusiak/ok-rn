@@ -153,6 +153,8 @@ function pressing(log, capabilities = null) {
 const hex = bytes =>
   Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 
+const {needsCtaphid} = require('./helpers/needsCtaphid');
+
 let shared = null;
 async function connected(log) {
   if (shared) return shared;
@@ -251,35 +253,6 @@ function needsVendorOrigin(skip) {
   }
 }
 
-/**
- * CONFIG MODE ENDS THE CTAPHID HALF OF THIS RUN, so say which pass will do it.
- *
- * Config mode silences CTAPHID and leaves only at a power cycle, and the soft
- * key has no in-process restart - the firmware thread exits through the AIRCR
- * trap alone, OkEmu.restart() rejects, and 1-softKey pins that refusal. The
- * restart that works is the app PROCESS starting again, which is what the
- * runner does between passes.
- *
- * So a derive attempted after something took config mode cannot pass, and
- * reporting it as a FAILURE says the firmware is broken when the run is simply
- * over for this interface. The suite already skips with this reason when the
- * derive ITSELF takes config mode (see the seal below); this is the same thing
- * when 8c-backupPassphrase or 9-cryptoSign got there first, which is what
- * happens on a FRESH storage slot where no passphrase or signing key is set up
- * yet.
- *
- * Measured: this is why every version from v3.0.2 down reported ~8 failing
- * derives on its first full pass and a clean sweep on the next, while the
- * working tree - whose slot was already provisioned - never showed it at all.
- */
-function needsCtaphid(skip) {
-  if (shared && shared.device && shared.device.inConfigMode) {
-    skip('something already took config mode this pass - CTAPHID is silent '
-      + 'until the app restarts, so this runs on the next pass. What was set '
-      + 'up persists in EEPROM.');
-  }
-}
-
 module.exports = function derive({describe, it}) {
   describe(derive.name, () => {
     it('the plugin offers the derive pair at all', async ({log, assert, skip}) => {
@@ -294,7 +267,7 @@ module.exports = function derive({describe, it}) {
     it('derives a public key for a label', async ({log, assert, skip}) => {
       const {okcrypto, status} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
       assert.ok(
         /UNLOCKED/i.test(status),
         'the device is locked, so there is no FIDO interface to derive over',
@@ -339,7 +312,7 @@ module.exports = function derive({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
 
       const first = await okcrypto.derivePublicKey('e2e.example',
         {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
@@ -364,7 +337,7 @@ module.exports = function derive({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
       assert.equal('e2e.example'.length, 'e2e.exampyy'.length);
 
       const a = await okcrypto.derivePublicKey('e2e.example',
@@ -385,7 +358,7 @@ module.exports = function derive({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
 
       const pub = await okcrypto.derivePublicKey('e2e.example',
         {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
@@ -436,7 +409,7 @@ module.exports = function derive({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
 
       const first = await okcrypto.deriveSharedSecretFor('vault.example',
         {requirePress: true, timeoutMs: 30000, onKeepAlive: pressing(log, shared && shared.device && shared.device.capabilities).onKeepAlive});
@@ -478,7 +451,7 @@ module.exports = function derive({describe, it}) {
        */
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
       const can = device.capabilities && device.capabilities.touchFreeDerive;
       log(`touch-free derive on this firmware: ${can}`);
 
@@ -612,7 +585,7 @@ module.exports = function derive({describe, it}) {
        */
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
       assert.equal(okcrypto.deviceVault.canPersist, true, 'no store was wired');
 
       /*
@@ -688,7 +661,7 @@ module.exports = function derive({describe, it}) {
     it('an export carries sealed blobs and imports back', async ({log, assert, skip}) => {
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
       const press = () => ({
         requirePress: true,
         timeoutMs: 30000,
@@ -762,7 +735,7 @@ module.exports = function derive({describe, it}) {
        */
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
 
       /*
        * X-WING IS THE DEVELOPMENT LINE ONLY. Measured by diff across every
@@ -854,7 +827,7 @@ module.exports = function derive({describe, it}) {
        */
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
-      needsCtaphid(skip);
+      needsCtaphid(skip, shared && shared.device);
       const opts = {
         requirePress: true,
         timeoutMs: 30000,

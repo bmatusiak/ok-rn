@@ -90,6 +90,8 @@ function pressing(log, capabilities = null) {
   };
 }
 
+const {needsCtaphid} = require('./helpers/needsCtaphid');
+
 let shared = null;
 async function connected(log) {
   if (shared) return shared;
@@ -125,6 +127,7 @@ module.exports = function deriveParity({describe, it}) {
     it('the shared secret matches one computed independently', async ({log, assert, skip}) => {
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsCtaphid(skip, shared && shared.device);
 
       const pub = await okcrypto.derivePublicKey(LABEL, {
         keytype: P256R1,
@@ -174,6 +177,7 @@ module.exports = function deriveParity({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsCtaphid(skip, shared && shared.device);
 
       const pub = await okcrypto.derivePublicKey(LABEL, {
         keytype: P256R1,

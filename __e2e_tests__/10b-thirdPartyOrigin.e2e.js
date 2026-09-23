@@ -190,6 +190,8 @@ async function deriveUnder(
   return hex(pub);
 }
 
+const {needsCtaphid} = require('./helpers/needsCtaphid');
+
 module.exports = function thirdParty({describe, it}) {
   describe(thirdParty.name, () => {
     it('the same label derives the SAME key under a different origin, from 3.0.5', async ({log, assert, skip}) => {
@@ -204,6 +206,8 @@ module.exports = function thirdParty({describe, it}) {
       if (caps && caps.vendorOrigin === false) {
         skip('this firmware does not accept the origin this library derives under');
       }
+
+      needsCtaphid(skip, device);
 
       /*
        * WHICH FRAMING to decode with. This used to be a note about third-party

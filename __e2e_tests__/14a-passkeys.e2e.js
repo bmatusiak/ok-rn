@@ -57,9 +57,11 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const fill = (n, b) => new Uint8Array(n).fill(b);
 
+const {needsCtaphid} = require('./helpers/needsCtaphid');
+
 let shared = null;
 
-async function ready(log) {
+async function ready(log, skip) {
   if (shared) return shared;
   if (!OkEmu.isRunning()) await OkEmu.start();
 
@@ -72,6 +74,13 @@ async function ready(log) {
     state = await device.connect();
     log(`unlocked: ${String(state.status).trim()}`);
   }
+
+  /*
+   * BEFORE the CtapHid init, which is the 8000ms this would otherwise spend
+   * learning nothing: config mode answers the vendor interface and goes silent
+   * here, so every test in this suite would time out in turn.
+   */
+  needsCtaphid(skip, device);
 
   /* U2Finit() runs during unlock and the first FIDO packet after it is eaten
    * by the Android double-recv workaround (okcore.cpp:652-658). */
@@ -117,7 +126,7 @@ module.exports = function passkeys({describe, it}) {
   describe(passkeys.name, () => {
     it('gets a pinToken, which everything else here needs',
       async ({log, assert, skip}) => {
-        const s = await ready(log);
+        const s = await ready(log, skip);
         const state = await s.fido.pinState({timeoutMs: 10000});
         log(`pin set: ${state.set}`);
         if (!state.set) {
@@ -140,7 +149,7 @@ module.exports = function passkeys({describe, it}) {
          * browser would otherwise make "there is one" either trivially true
          * or wrong, depending on luck.
          */
-        const s = await ready(log);
+        const s = await ready(log, skip);
         if (!s.token) skip('no pinToken');
 
         const counts = await s.fido.credentialCount(s.token, {timeoutMs: 10000});
@@ -151,7 +160,7 @@ module.exports = function passkeys({describe, it}) {
 
     it('MAKES a resident credential, which needs a finger',
       async ({log, assert, skip}) => {
-        const s = await ready(log);
+        const s = await ready(log, skip);
         if (!s.token) skip('no pinToken');
 
         const clientDataHash = fill(32, 0x24);
@@ -181,7 +190,7 @@ module.exports = function passkeys({describe, it}) {
       });
 
     it('LISTS it, under the site that owns it', async ({log, assert, skip}) => {
-      const s = await ready(log);
+      const s = await ready(log, skip);
       if (!s.made) skip('nothing was made');
 
       const sites = await s.fido.listCredentials(s.token, {timeoutMs: 20000});
@@ -210,7 +219,7 @@ module.exports = function passkeys({describe, it}) {
          * so a remembered position can name a different credential by the
          * time it is used. The listing is taken immediately before.
          */
-        const s = await ready(log);
+        const s = await ready(log, skip);
         if (!s.made) skip('nothing was made');
 
         const sites = await s.fido.listCredentials(s.token, {timeoutMs: 20000});
@@ -232,7 +241,7 @@ module.exports = function passkeys({describe, it}) {
       });
 
     it('refuses a reset without the exact words', async ({log, assert, skip}) => {
-      const s = await ready(log);
+      const s = await ready(log, skip);
       if (!s.token) skip('no pinToken');
 
       for (const attempt of [true, 'yes', RESET_CONFIRMATION.toLowerCase(), '']) {
@@ -258,7 +267,7 @@ module.exports = function passkeys({describe, it}) {
          * window (ctap.cpp:2417-2424). The typed word is the only other thing
          * between a caller and this.
          */
-        const s = await ready(log);
+        const s = await ready(log, skip);
         if (!s.token) skip('no pinToken');
 
         const pressed = [];
