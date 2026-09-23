@@ -688,9 +688,19 @@ module.exports = function derive({describe, it}) {
        * as unavailable for a while after this test started passing, and both
        * that flag and this comment have been corrected.
        *
-       * X-Wing returns 64 bytes - [pk_X(32) | mlkem_seed(32)] - not a 65-byte
-       * EC point (ok_extension.cpp:275-281). sk_X never leaves the device; the
-       * host expands the seed and does the ML-KEM half itself.
+       * X-Wing returns THE WHOLE RECIPIENT now - [pk_M(1184) | pk_X(32)],
+       * 1216 bytes - not a 65-byte EC point and no longer a 64-byte pair.
+       *
+       * It used to answer [pk_X(32) | mlkem_seed(32)] and leave the host to
+       * expand the ML-KEM half from that seed, which meant a PUBLIC-KEY request
+       * returned private material. From 3.0.5 the device holds both halves.
+       *
+       * THIS TEST PASSED THROUGHOUT THE CHANGE, on the wrong bytes. The payload
+       * is 1216 either way, the library sliced the LAST 64 of it, and the two
+       * halves of that slice are the tail of pk_M and the real pk_X - different
+       * from each other, 64 bytes long, so both assertions below held. Measured
+       * 2026-09-23: "payload: 1216 bytes, key 64". An assertion that cannot
+       * distinguish right from wrong is not a weak test, it is a false one.
        *
        * Wire keytype 5 becomes KEYTYPE_XWING inside the firmware, which does
        * opt2++ on the way in - so 5 is what goes on the wire, not 6.
@@ -730,18 +740,39 @@ module.exports = function derive({describe, it}) {
 
       log(`status: ${JSON.stringify(first.status)}`);
       log(`payload: ${first.payload.length} bytes, key ${first.publicKey.length}`);
-      log(`pk_X: ${hex(first.publicKey.subarray(0, 32)).slice(0, 24)}...`);
-      log(`seed: ${hex(first.publicKey.subarray(32)).slice(0, 24)}...`);
+      const custody = device.capabilities
+        && device.capabilities.xwingDeviceCustody === true;
+      const want = custody ? 1216 : 64;
 
-      assert.equal(first.publicKey.length, 64, 'X-Wing is 32 + 32, not an EC point');
+      log(`pk_M: ${hex(first.publicKey.subarray(0, 32)).slice(0, 24)}...`);
+      log(`pk_X: ${hex(first.publicKey.subarray(want - 32)).slice(0, 24)}...`);
+
+      assert.equal(first.publicKey.length, want,
+        custody
+          ? 'X-Wing is the whole recipient, pk_M(1184) | pk_X(32)'
+          : 'X-Wing is 32 + 32, not an EC point');
       assert.ok(/UNLOCKED/i.test(first.status), 'the transit cipher is wrong');
 
-      /* The two halves must not be the same 32 bytes twice. */
-      assert.notEqual(
-        hex(first.publicKey.subarray(0, 32)),
-        hex(first.publicKey.subarray(32)),
-        'pk_X and the ML-KEM seed are the same bytes, which cannot be right',
-      );
+      /*
+       * TIED TO THE PAYLOAD, which is what the old assertion could not do.
+       * "64 bytes, and the halves differ" is satisfied by any 64 bytes,
+       * including a tail slice of a 1216-byte answer - so it could not tell a
+       * correct read from the wrong one, and did not. Under custody the key IS
+       * the whole payload, and that is checkable.
+       */
+      if (custody) {
+        assert.equal(first.payload.length, 1216,
+          `the device sent ${first.payload.length} bytes, not a 1216-byte recipient`);
+        assert.equal(first.publicKey.length, first.payload.length,
+          'the recipient is the whole payload - a shorter key is a tail slice');
+      } else {
+        /* The old pair: two DIFFERENT halves, which is all that shape allows. */
+        assert.notEqual(
+          hex(first.publicKey.subarray(0, 32)),
+          hex(first.publicKey.subarray(32)),
+          'pk_X and the ML-KEM seed are the same bytes, which cannot be right',
+        );
+      }
 
       const again = await okcrypto.derivePublicKey('xwing.example', {
         keytype: okcrypto.KEYTYPE.XWING,
