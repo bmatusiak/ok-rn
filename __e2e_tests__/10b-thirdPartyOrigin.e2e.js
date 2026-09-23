@@ -156,6 +156,32 @@ async function deriveUnder(
    * a far worse defect than the one this file is about.
    */
   const opened = okconnect.openResponse(answer.data, app.secretKey, {transitV2});
+  /*
+   * THE STATUS IS THE EVIDENCE THE DECODE WORKED, and the length of the
+   * payload is not.
+   *
+   * Every answer on this path comes from an UNLOCKED device, so a correct
+   * decode always carries its status string - "UNLOCKEDv3.0.4-prodc". A
+   * REFUSAL decoded as if it were a payload does not: the status comes back
+   * EMPTY, and what follows is whatever the refusal's bytes happen to be.
+   *
+   * Sometimes that is obviously wrong - "payload is 42 bytes; a keytype-1
+   * public key is 65" - and sometimes it is 65 bytes that parse perfectly and
+   * differ on every call, which surfaces as "the third-party key is not
+   * stable" and reads as a NON-DETERMINISTIC DEVICE. It is not. It is a
+   * refusal being read as a key, and checking the length cannot tell the
+   * difference because the length is sometimes right by accident.
+   *
+   * This file's header already recorded the same tell for the transit-v2 bug -
+   * empty status, different bytes every call - and the check was never added.
+   */
+  if (!/UNLOCKED/i.test(String(opened.status || ''))) {
+    throw new Error(
+      `the answer did not decode: status is "${opened.status}" and an unlocked `
+      + 'device always names itself. That is a refusal being read as a payload, '
+      + 'not a key - whatever length it happens to be.');
+  }
+
   const pub = okconnect.publicKeyFrom(opened.payload, okconnect.KEYTYPE.P256R1);
   if (!pub || !pub.length) {
     throw new Error(`no public key in the payload (status "${opened.status}")`);
