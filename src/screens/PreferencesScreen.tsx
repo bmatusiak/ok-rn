@@ -576,6 +576,7 @@ function PrefRow({
     unit?: string;
     note?: string;
     bits?: Record<string, string>;
+    choices?: Record<string, string>;
   };
   value: string;
   onChange: (v: string) => void;
@@ -620,16 +621,57 @@ function PrefRow({
         </View>
       ) : null}
 
+      {/*
+        * AN ENUM IS NOT A NUMBER TO TYPE EITHER, and for the same reason the
+        * bitmask above is not: "2" means nothing without knowing the firmware
+        * calls it USER_INPUT_NONE. These three values are three different
+        * behaviours, not a scale, and one of them - "no confirmation" - is the
+        * one that removes a confirmation step, so it had better be readable
+        * rather than arithmetic.
+        *
+        * A COLUMN OF BUTTONS, not the Segmented control. Segmented lays its
+        * options out with flex:1 across the row, and these labels are
+        * sentences - "Three-digit challenge" in a third of a phone's width
+        * wraps to two cramped lines. The bits above already had this problem
+        * and already solved it this way, so this is the file's existing
+        * pattern rather than a second one.
+        */}
+      {pref.choices ? (
+        <View style={styles.bits}>
+          {Object.entries(pref.choices).map(([choice, meaning]) => {
+            const on = String(value) === String(choice);
+            return (
+              <Btn
+                key={choice}
+                title={`${on ? '●' : '○'}  ${meaning}`}
+                tone={on ? 'primary' : 'default'}
+                disabled={disabled}
+                onPress={() => onChange(String(choice))}
+              />
+            );
+          })}
+        </View>
+      ) : null}
+
       <View style={styles.rowControls}>
-        <TextInput
-          value={value}
-          onChangeText={onChange}
-          keyboardType="number-pad"
-          placeholder="—"
-          placeholderTextColor={theme.textDim}
-          editable={!disabled}
-          style={[styles.input, disabled && styles.inputDisabled]}
-        />
+        {/*
+          * The raw byte stays visible for a bitmask (where the toggles compose
+          * a number worth seeing) and for a plain numeric preference. For an
+          * enum it is noise: the buttons above ARE the value, and a second
+          * control that can be set to 7 would be offering something the
+          * firmware refuses with "Error invalid user input mode".
+          */}
+        {pref.choices ? null : (
+          <TextInput
+            value={value}
+            onChangeText={onChange}
+            keyboardType="number-pad"
+            placeholder="—"
+            placeholderTextColor={theme.textDim}
+            editable={!disabled}
+            style={[styles.input, disabled && styles.inputDisabled]}
+          />
+        )}
         <Btn
           title={busy ? '…' : 'Set'}
           disabled={disabled || value === ''}
