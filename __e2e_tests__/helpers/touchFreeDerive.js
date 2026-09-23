@@ -254,36 +254,32 @@ async function inConfigMode(device, pin, log, work, {restart = true} = {}) {
   log('app state: inConfigMode = true');
 
   /*
-   * PRESS THE PIN, THEN POLL. Do not call device.unlock() here.
+   * JUST unlock(). THE LIBRARY ABSORBED THE HARD PART.
    *
-   * Entering config mode locks the device (OnlyKey.ino:914-926), and unlocking
-   * WHILE IN IT IS NEVER ANNOUNCED (OnlyKey.ino:707) - see
-   * FINDING-config-mode-unlock-is-silent.md. unlock() resolves on the device's
-   * own UNLOCKED broadcast, so here it can only ever time out, and it does so
-   * saying the PIN may be wrong. The PIN is fine; there is no announcement to
-   * hear. The app's useConfigMode hook already polls for exactly this reason.
+   * This used to press the PIN and then poll readLabels by hand, under a
+   * comment saying "Do not call device.unlock() here" - because unlocking
+   * inside config mode IS NEVER ANNOUNCED (OnlyKey.ino:707, and
+   * FINDING-config-mode-unlock-is-silent.md), so unlock() waiting on the
+   * device's UNLOCKED broadcast could only ever time out saying the PIN might
+   * be wrong. The PIN was fine; there was nothing to hear.
    *
-   * readLabels is the probe: it works unlocked and is refused while locked, so
-   * a successful read is the evidence the broadcast never gives.
+   * That is no longer true. plugins/device/index.js:1135 does exactly this
+   * poll INSIDE unlock(), gated on session.configMode, and resolves with a
+   * bare `UNLOCKED` marker rather than a status line - "the app's Keys screen
+   * already did exactly this, in its own copy. It belongs here, where every
+   * GUI gets it rather than each one rediscovering it." This helper was the
+   * third copy, and its comment had become false: following the instruction
+   * not to call unlock() was, by then, the way to get the duplicate.
+   *
+   * The bare marker is also why session.observeStatus() tests `!seen.version`
+   * rather than `=== null`: this unlock resolves with a version-less status by
+   * design, and it must not erase the version the session already knows.
    */
-  await pressDigits({log})(pin);
-
-  const deadline = Date.now() + 20000;
-  for (;;) {
-    try {
-      await device.readLabels({timeoutMs: 2500});
-      break;
-    } catch (e) {
-      if (Date.now() > deadline) {
-        throw new Error(
-          'the PIN was entered but the device never became readable in config ' +
-          `mode: ${String(e && e.message)}`,
-        );
-      }
-      await delay(1500);
-    }
-  }
-  log('unlocked again, now in config mode');
+  const said = await device.unlock(pin, {
+    timeoutMs: 20000,
+    enterDigits: pressDigits({log}),
+  });
+  log(`unlocked again, now in config mode (${said})`);
 
   const result = await work();
 
