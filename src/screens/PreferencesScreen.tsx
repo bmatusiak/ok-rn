@@ -317,7 +317,34 @@ export function PreferencesScreen({
    * by the row not being there at all. The rest of the group applies to both
    * keys and stays.
    */
+  /*
+   * THIS TAB IS FOR THINGS YOU CAN CHANGE BACK. The Advanced screen is for
+   * things you cannot, and says so in its own header: "Things that cannot be
+   * undone, and settings the app will not change for you."
+   *
+   * Three rows broke that rule, and one of them said so itself - backupKeyMode
+   * has carried the note "cannot be undone afterwards" for as long as it has
+   * existed, rendered on the reversible tab. A tab whose meaning holds only
+   * most of the time teaches people to stop reading the warnings, which is
+   * exactly what the warnings are for.
+   *
+   *   webcryptPolicy  the first write ends the legacy field-21 inheritance
+   *                   permanently, in either direction, including a write of 0
+   *   backupKeyMode   locking it (1) cannot be undone
+   *   wipeMode        on a provisioned key only the destructive value is
+   *                   settable at all - the safe ones need first use - so it
+   *                   is one-way in practice
+   *
+   * They live on AdvancedScreen now, each stating its consequence and needing
+   * its exact word typed. Dropped here rather than disabled: a greyed row
+   * invites "why can't I set this", and the answer - it is on the other tab,
+   * behind a typed word, on purpose - is not something a disabled control can
+   * say.
+   */
+  const ONE_WAY = new Set(['webcryptPolicy', 'backupKeyMode', 'wipeMode']);
+
   const rowApplies = (p: {name: string}) =>
+    !ONE_WAY.has(p.name) &&
     !(p.name === 'ledBrightness' && backend !== 'usb');
 
   const groups = [
@@ -337,7 +364,15 @@ export function PreferencesScreen({
        * rule and stays where it is; the app only needs to know these are not
        * the two it can offer.
        */
-      rows: table.filter(p => p.requires !== 'always' && p.requires !== 'firstUse'),
+      /*
+       * FILTERED TOO, which it was not. This group takes "everything left
+       * over", so it adopted every row the other two did not claim - and
+       * rowApplies was only ever applied to Settings above. That is how a
+       * one-way setting could sit here unnoticed, and how the NEXT one would
+       * have.
+       */
+      rows: table.filter(p => p.requires !== 'always' && p.requires !== 'firstUse')
+        .filter(rowApplies),
     },
     {
       title: 'Set during setup only',
@@ -345,7 +380,7 @@ export function PreferencesScreen({
         'The firmware accepts these only before setup is finished. On a key ' +
         'that is already provisioned they are refused, so they are shown for ' +
         'completeness rather than offered.',
-      rows: table.filter(p => p.requires === 'firstUse'),
+      rows: table.filter(p => p.requires === 'firstUse').filter(rowApplies),
     },
   ];
 

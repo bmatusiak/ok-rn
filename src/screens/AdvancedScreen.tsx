@@ -18,20 +18,67 @@
  * library and could be reached from a test suite and nowhere else.
  */
 import React, {useCallback, useEffect, useState} from 'react';
-import {Linking, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {Linking, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, KeyValue, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice} from 'node-onlykey-lib';
 import {FirmwareScreen} from './FirmwareScreen';
 import {KeySource} from '../ui/KeySource';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
-import type {ConfigState} from '../ui/configModeNotes';
+import {ON, NEEDS_CONFIG_MODE, type ConfigState} from '../ui/configModeNotes';
 import {useActiveKeyWithBackend, useKeyName} from '../hooks/KeyContext';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {HardKeySession} from '../hooks/useHardKey';
 import type {KeyControl} from '../hooks/useKey';
 import {ALLOW_OVERRIDE, type Overrides} from '../capabilityOverride';
 import type {FirmwareFeature} from '../firmwareFeatures';
+
+/**
+ * The settings a provisioned key CANNOT TAKE BACK.
+ *
+ * They were on the Settings tab, which is for things you can change back - and
+ * one of them said so itself: backupKeyMode has rendered the note "cannot be
+ * undone afterwards" on the reversible tab for as long as it has existed. A
+ * tab whose meaning holds only most of the time teaches people to stop reading
+ * the warnings, which is the opposite of what the warnings are for.
+ *
+ * `word` is what has to be typed, and it is the CONSEQUENCE rather than the
+ * setting - someone typing LOCK has said what will happen, where someone
+ * typing the row's name has only confirmed they can read. Same reasoning as
+ * the firmware updater's UPDATE, and this tab's rule: a typed word rather than
+ * a dialog, "because a dialog is dismissed by the same reflex that opened it".
+ */
+const ONE_WAY_SETTINGS: {
+  name: string;
+  word: string;
+  consequence: string;
+}[] = [
+  {
+    name: 'webcryptPolicy',
+    word: 'BROWSER',
+    consequence:
+      'Saving this ONCE - even with both boxes left off - permanently ends ' +
+      'the way older firmware decided this from the SSH/GPG setting. The key ' +
+      'cannot be put back to "never configured", and a backup does not carry ' +
+      'this setting, so restoring one silently returns it to the old ' +
+      'behaviour rather than to what you chose.',
+  },
+  {
+    name: 'backupKeyMode',
+    word: 'LOCK',
+    consequence:
+      'Locking the backup key fixes it for the life of the key. It cannot be ' +
+      'changed afterwards, on this or any other firmware.',
+  },
+  {
+    name: 'wipeMode',
+    word: 'WIPE',
+    consequence:
+      'On a key that is already set up, this can only be set to the full ' +
+      'wipe. The gentler values are refused once setup is finished, so this ' +
+      'is a one-way move - it decides what a future wipe destroys.',
+  },
+];
 
 /** The capabilities a screen fades on, in the order they are shown. */
 const CAPABILITY_ROWS: {feature: FirmwareFeature; label: string}[] = [
@@ -176,6 +223,46 @@ export function AdvancedScreen({
     };
   }, [getKey]);
 
+  /*
+   * THE TABLE, read the same way the Settings tab reads it - and re-read when
+   * the key unlocks, because the SHAPE of these rows depends on the firmware
+   * version and a locked key does not report one. See PreferencesScreen for
+   * the measurement that cost.
+   */
+  const [oneWayTable, setOneWayTable] = useState<
+    {name: string; label: string; max: number; note?: string;
+     bits?: Record<string, string>; choices?: Record<string, string>}[]
+  >([]);
+  const keyLocked = emu.device !== 'unlocked';
+
+  useEffect(() => {
+    let cancelled = false;
+    getKey()
+      .then(({device}) => {
+        if (!cancelled) setOneWayTable(device.preferences());
+      })
+      .catch(() => {
+        /* The section simply does not render; the rest of the tab still works. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [getKey, keyLocked]);
+
+  const setOneWay = useCallback(
+    async (name: string, value: number) => {
+      reset();
+      try {
+        const {device} = await getKey();
+        const result = await device.setPreference(name, value);
+        setStatus(`${name}: ${result.response}`);
+      } catch (e) {
+        setError(String((e as Error)?.message ?? e));
+      }
+    },
+    [getKey, reset],
+  );
+
   const forceType = useCallback(
     async (next: string | null) => {
       reset();
@@ -300,6 +387,43 @@ export function AdvancedScreen({
         </Section>
       ) : null}
 
+      {/*
+        * SETTINGS THAT CANNOT BE TAKEN BACK.
+        *
+        * Moved here from the Settings tab, which is for things you can change
+        * back. One of them - Backup key mode - already carried the note
+        * "cannot be undone afterwards" while sitting on the reversible tab,
+        * so the rule was being broken in writing.
+        *
+        * Faded as a whole while config mode is off, the same as the Settings
+        * tab's Advanced group, because the firmware refuses every one of these
+        * outside it and a row that looks settable and is not is the worst of
+        * the three outcomes to interpret.
+        */}
+      <Section
+        title="Settings that cannot be undone"
+        unavailable={configMode !== ON ? NEEDS_CONFIG_MODE : null}>
+        <Text style={styles.note}>
+          Each of these can be set once and not set back. They state what they
+          do, and need their word typed before the button does anything — the
+          same gate the firmware update uses.
+        </Text>
+        {ONE_WAY_SETTINGS.map(spec => {
+          const pref = oneWayTable.find(p => p.name === spec.name);
+          if (!pref) return null;
+          return (
+            <OneWaySetting
+              key={spec.name}
+              pref={pref}
+              word={spec.word}
+              consequence={spec.consequence}
+              disabled={configMode !== ON || keyLocked}
+              onSet={value => setOneWay(spec.name, value)}
+            />
+          );
+        })}
+      </Section>
+
       {hard.state === 'running' ? (
         <FirmwareScreen emu={emu} backend={backend} configMode={configMode} />
       ) : (
@@ -384,7 +508,124 @@ export function AdvancedScreen({
   );
 }
 
+/**
+ * One setting that cannot be taken back.
+ *
+ * Renders whatever shape the LIBRARY says the field has - `bits` compose a
+ * byte, `choices` pick one - so this does not need to know that field 31 is a
+ * bitmask and field 30 an enum, nor that the shapes differ by firmware
+ * version. preferences() decides; this draws.
+ *
+ * Three gates, and they are deliberately not one: the key must be in config
+ * mode, the consequence is on screen, and the word must be typed. The first is
+ * the firmware's, the second is so nobody has to go looking, and the third is
+ * this tab's rule - a typed word rather than a dialog, because a dialog is
+ * dismissed by the same reflex that opened it.
+ */
+function OneWaySetting({
+  pref,
+  word,
+  consequence,
+  disabled,
+  onSet,
+}: {
+  pref: {
+    name: string;
+    label: string;
+    max: number;
+    note?: string;
+    bits?: Record<string, string>;
+    choices?: Record<string, string>;
+  };
+  word: string;
+  consequence: string;
+  disabled: boolean;
+  onSet: (value: number) => Promise<void>;
+}) {
+  const [value, setValue] = useState(0);
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const confirmed = typed.trim().toUpperCase() === word;
+
+  return (
+    <View style={styles.oneWay}>
+      <Text style={styles.oneWayTitle}>{pref.label}</Text>
+      {pref.note ? <Text style={styles.note}>{pref.note}</Text> : null}
+      <Text style={styles.warn}>{consequence}</Text>
+
+      {pref.bits
+        ? Object.entries(pref.bits).map(([bit, meaning]) => {
+            const mask = 1 << Number(bit);
+            const on = (value & mask) !== 0;
+            return (
+              <Btn
+                key={bit}
+                title={`${on ? '✓' : '–'}  ${meaning}`}
+                tone={on ? 'primary' : 'default'}
+                disabled={disabled}
+                onPress={() => setValue(v => v ^ mask)}
+              />
+            );
+          })
+        : null}
+
+      {pref.choices
+        ? Object.entries(pref.choices).map(([choice, meaning]) => (
+            <Btn
+              key={choice}
+              title={`${String(value) === choice ? '●' : '○'}  ${meaning}`}
+              tone={String(value) === choice ? 'primary' : 'default'}
+              disabled={disabled}
+              onPress={() => setValue(Number(choice))}
+            />
+          ))
+        : null}
+
+      {!pref.bits && !pref.choices ? (
+        <TextInput
+          style={styles.input}
+          value={String(value)}
+          onChangeText={v => setValue(Number(v) || 0)}
+          keyboardType="number-pad"
+          editable={!disabled}
+        />
+      ) : null}
+
+      <Text style={styles.label}>Type {word} to enable the button below</Text>
+      <TextInput
+        style={styles.input}
+        value={typed}
+        onChangeText={setTyped}
+        placeholder={word}
+        placeholderTextColor={theme.textDim}
+        autoCapitalize="characters"
+        autoCorrect={false}
+        editable={!disabled}
+      />
+      <Btn
+        title={busy ? 'Setting…' : `Set ${pref.label}`}
+        tone="danger"
+        disabled={disabled || !confirmed || busy}
+        onPress={async () => {
+          setBusy(true);
+          try {
+            await onSet(value);
+            /* Cleared so a second press cannot ride the first confirmation. */
+            setTyped('');
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  /* Spaced apart, because each of these is a separate irreversible act and
+   * they must not read as one form with several fields. */
+  oneWay: {gap: 8, paddingVertical: 14},
+  oneWayTitle: {color: theme.textSecondary, fontSize: 15, fontWeight: '600'},
   capRow: {gap: 6, paddingVertical: 8},
   warn: {color: theme.warn},
   root: {flex: 1, backgroundColor: theme.bg},
