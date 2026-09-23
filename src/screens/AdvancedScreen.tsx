@@ -230,7 +230,7 @@ export function AdvancedScreen({
    * the measurement that cost.
    */
   const [oneWayTable, setOneWayTable] = useState<
-    {name: string; label: string; max: number; note?: string;
+    {name: string; label: string; max: number; note?: string; oneWay?: boolean;
      bits?: Record<string, string>; choices?: Record<string, string>}[]
   >([]);
   const keyLocked = emu.device !== 'unlocked';
@@ -408,17 +408,40 @@ export function AdvancedScreen({
           do, and need their word typed before the button does anything — the
           same gate the firmware update uses.
         </Text>
-        {ONE_WAY_SETTINGS.map(spec => {
-          const pref = oneWayTable.find(p => p.name === spec.name);
-          if (!pref) return null;
+        {/*
+          * DRIVEN BY THE TABLE, not by the list below it.
+          *
+          * The library marks a row `oneWay` when the firmware cannot take the
+          * write back, so THAT decides what appears here. ONE_WAY_SETTINGS only
+          * supplies the wording - which word to type and how to describe the
+          * consequence - because that is presentation and differs per GUI.
+          *
+          * Written the other way round first, iterating the local list, which
+          * meant a new one-way field added to the library would appear on NO
+          * screen at all: dropped from Preferences by `oneWay` and never picked
+          * up here. Silently unreachable is worse than either place.
+          */}
+        {oneWayTable.filter(p => p.oneWay).map(pref => {
+          const spec = ONE_WAY_SETTINGS.find(x => x.name === pref.name);
           return (
             <OneWaySetting
-              key={spec.name}
+              key={pref.name}
               pref={pref}
-              word={spec.word}
-              consequence={spec.consequence}
+              /*
+               * A one-way field with no wording yet still has to be settable,
+               * and has to say it is not fully described. CHANGE is the
+               * fallback word and the row's own note carries the consequence.
+               */
+              word={spec ? spec.word : 'CHANGE'}
+              consequence={
+                spec
+                  ? spec.consequence
+                  : 'This write cannot be undone, and this screen has no '
+                    + 'description for it yet — read the note above before '
+                    + 'setting it.'
+              }
               disabled={configMode !== ON || keyLocked}
-              onSet={value => setOneWay(spec.name, value)}
+              onSet={value => setOneWay(pref.name, value)}
             />
           );
         })}

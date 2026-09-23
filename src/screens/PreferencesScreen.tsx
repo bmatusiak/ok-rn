@@ -340,11 +340,16 @@ export function PreferencesScreen({
    * invites "why can't I set this", and the answer - it is on the other tab,
    * behind a typed word, on purpose - is not something a disabled control can
    * say.
+   *
+   * ASKED, NOT LISTED. This screen kept its own Set of the three names for a
+   * while, which made a FIRMWARE fact a property of one GUI - the nw desktop
+   * app and the CLI can write all three and would each have had to rediscover
+   * it. `oneWay` is on the library's table now, beside `requires`, so the next
+   * irreversible field is handled here without anyone remembering to come and
+   * add it.
    */
-  const ONE_WAY = new Set(['webcryptPolicy', 'backupKeyMode', 'wipeMode']);
-
-  const rowApplies = (p: {name: string}) =>
-    !ONE_WAY.has(p.name) &&
+  const rowApplies = (p: {name: string; oneWay?: boolean}) =>
+    !p.oneWay &&
     !(p.name === 'ledBrightness' && backend !== 'usb');
 
   const groups = [
