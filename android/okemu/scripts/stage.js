@@ -1681,6 +1681,94 @@ function listVersions() {
     'linking, and linking is not booting.');
 }
 
+/**
+ * Throw away compiled objects when the BUILD IDENTITY changes.
+ *
+ * ## The failure this exists to stop
+ *
+ * Each firmware version is a different source tree, and the compiled objects
+ * from one do not belong to another. Switching back to the working tree after
+ * building v3.0.4 produced:
+ *
+ *     ld.lld: error: undefined symbol: okeeprom_eeset_webcrypt_policy
+ *
+ * v3.0.4's eeprom object has no such function; a fresh okcore calls it. Ninja
+ * tracks timestamps and still got this wrong, because staging rewrites files
+ * whose CONTENT is unchanged without disturbing every dependent object.
+ *
+ * That one failed LOUDLY, which is the lucky case. The dangerous one is a pair
+ * of stale objects that happen to link: a silently mixed-version emulator, two
+ * firmwares in one .so, and every measurement taken from it attributed to a
+ * version that was never built. Nothing downstream could detect it - the
+ * digest covers the staged SOURCES, not the objects compiled from them.
+ *
+ * ## Why here rather than in a caller
+ *
+ * tools/matrix.js already removes .cxx before every build, with the comment
+ * "stale objects link against the wrong sources" - so the hazard was known and
+ * the remedy lived in ONE caller. Every other route in (a plain gradle
+ * command, an IDE, `npm run android`, a person switching versions by hand) had
+ * to remember. I forgot it myself today, one build after using it correctly.
+ *
+ * stage.js is where the swap actually happens, so it is where the clean
+ * belongs. The caller cannot get it wrong if it is not the caller's job.
+ *
+ * ## What counts as a swap
+ *
+ * Not just the version. A v3.0.4 PRODUCTION build and a v3.0.4 DEBUG build are
+ * different objects too, as are the standard and travel editions and the two
+ * models - each flips defines the whole tree compiles against. The identity is
+ * all of them together, recorded beside the staged tree and compared next time.
+ *
+ * Unchanged identity leaves the objects alone, so the ordinary edit-and-build
+ * loop stays incremental. This costs a full recompile exactly when the
+ * alternative is a build that cannot be trusted.
+ */
+function cleanOnSwap(release) {
+  const marker = path.join(OKEMU, '.stage-identity');
+  const identity = [
+    release.version,
+    WANT_DEBUG === null ? 'gate-as-staged' : WANT_DEBUG ? 'debug' : 'production',
+    ENV_STD === null ? 'std-as-staged' : ENV_STD ? 'standard' : 'travel',
+    WANT_DUO === null ? 'model-as-staged' : WANT_DUO ? 'duo' : 'classic',
+    WANT_ENFORCE ? 'enforcing' : 'trust-all',
+  ].join(' ');
+
+  let previous = null;
+  try {
+    previous = fs.readFileSync(marker, 'utf8').trim();
+  } catch (_) {
+    /* No marker: either a first build or a tree cleaned by hand. Treat it as a
+     * swap - cleaning when nothing needed it costs a rebuild, and NOT cleaning
+     * when something did costs a wrong answer. */
+  }
+
+  if (previous === identity) return;
+
+  const targets = [
+    path.join(OKEMU, '.cxx'),
+    path.join(OKEMU, '..', 'app', 'build', 'intermediates', 'cxx'),
+    path.join(OKEMU, 'build', 'intermediates', 'cxx'),
+  ];
+  let removed = 0;
+  for (const dir of targets) {
+    if (!fs.existsSync(dir)) continue;
+    fs.rmSync(dir, { recursive: true, force: true });
+    removed += 1;
+  }
+
+  console.log([
+    'stage: build identity changed, so compiled objects were dropped',
+    '       was:  ' + (previous || '(nothing recorded)'),
+    '       now:  ' + identity,
+    '       ' + removed + ' object director' + (removed === 1 ? 'y' : 'ies')
+      + ' removed - this build is a full recompile',
+  ].join(NL));
+
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, identity + NL);
+}
+
 function main() {
   if (process.argv.includes('--list')) return listVersions();
 
@@ -1720,6 +1808,12 @@ function main() {
     console.error(release.notes.replace(/^/gm, '  '));
     process.exit(1);
   }
+
+  /*
+   * AND IF THE BUILD IDENTITY CHANGED, THROW THE OBJECTS AWAY FIRST.
+   * See cleanOnSwap().
+   */
+  cleanOnSwap(release);
 
   /*
    * A release may DECLARE the build options it has to be staged with - see
