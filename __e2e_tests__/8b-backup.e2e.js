@@ -46,6 +46,7 @@ const {getOnlyKey} = require('../src/onlykey');
 const {pressDigits} = require('./helpers/pressDigits');
 const {inConfigMode} = require('./helpers/touchFreeDerive');
 const {writeBackupPassphrase, acknowledged} = require('./helpers/backupPassphrase');
+const parsers = require('node-onlykey-lib/src/device/parsers');
 
 /** The same PIN every suite provisions and uses. */
 const PIN = '1234561';
@@ -335,10 +336,31 @@ module.exports = function backupCapture({describe, it}) {
        * Asserting on the digest rather than on the length. A capture that lost
        * one character to a dropped modifier is still thousands of characters
        * long and still looks like a backup file; the chain is what notices.
+       *
+       * FROM v2.1.2 ONLY. Before it the file has no digest line at all - the
+       * rolling hash and the trailing `--<base64>` arrive together in the
+       * v2.1.1..v2.1.2 firmware diff, and v2.1.1's okcore.cpp base64-encodes
+       * each block and stops. verifyBackup() then reports 'no digest line
+       * found', which is the truth about the file rather than a bad capture,
+       * and asserting through it called three healthy versions broken:
+       * v2.1.1, v2.1.0 and v0.2-beta.8 each failed this test on every run.
+       *
+       * What is left to check below that line is that the capture PARSES. That
+       * is worth stating rather than skipping: a backup from those versions
+       * can be restored and cannot be verified, which is a property of the
+       * backup, not of this test.
        */
-      assert.ok(result.verified,
-        'the backup was captured but its digest chain does not check out - '
-        + 'a character was decoded wrongly, or the capture ended early');
+      if (device.capabilities.backupDigest) {
+        assert.ok(result.verified,
+          'the backup was captured but its digest chain does not check out - '
+          + 'a character was decoded wrongly, or the capture ended early');
+      } else {
+        log(`no digest chain before v2.1.2; reason: ${result.reason || '(none given)'}`);
+        assert.ok(result.text.includes(parsers.BACKUP_END),
+          'the backup did not reach its END marker, so the capture was cut short');
+        assert.ok(parsers.parseBackup(result.text).length > 0,
+          'the backup reached its END marker but decodes to nothing');
+      }
 
       /* Kept for the restore test below, which is armed and usually skips. */
       shared.text = result.text;
