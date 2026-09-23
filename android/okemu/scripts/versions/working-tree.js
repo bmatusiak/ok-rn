@@ -38,35 +38,66 @@ module.exports = {
 
   patches: [],
 
-  /**
-   * Applied only when the DEBUG gate ends up OFF - here, only under
-   * OKEMU_PRODUCTION=1.
+  /*
+   * APPID_NULL_GUARD's line is gone, because UPSTREAM FIXED IT.
    *
-   * This edit is in the version script rather than stage.js's shared list
-   * because the line it patches DOES NOT EXIST in any release:
-   * `git show 5d7ce7a:fido2/device.cpp` has no appid_match3 at all. The
-   * OnlyAgent origin check is newer than v3.0.2, so a shared patch carrying it
-   * would fail to apply to every pinned version.
+   * That guard existed because webcryptcheck() compared a caller's `_appid`
+   * against the trusted origin hashes without checking it for NULL, and
+   * ctap.cpp's add_existing_user_info() passes NULL on every allowList
+   * credential of every getAssertion. libraries@c1a6cf2 ("webcryptcheck(): do
+   * not compare a NULL appid against the trusted hashes", 2026-09-22) rewrote
+   * the whole comparison as
    *
-   * Same defect as its two siblings in stage.js's DEBUG_OFF_PATCHES:
-   * webcryptcheck() dereferences a pointer its callers hand it as NULL, and
-   * only the #ifdef DEBUG early return kept a debug build from noticing. See
-   * FINDING-production-firmware-crashes-in-webcryptcheck.md.
+   *     if (_appid && memcmp(trusted[t].hash, _appid, 32) == 0) origin_ok = 1;
+   *     else if (memcmp(trusted[t].name, rpid, trusted[t].namelen) == 0) ...
+   *
+   * which is null-safe by construction and takes the same position ours did -
+   * the name comparison is the answer on that path. `stored_appid`,
+   * `appid_match1`, `appid_match2` and the per-origin variables are all gone
+   * with it.
+   *
+   * Declared absent rather than dropped from the shared list, because every
+   * PINNED release still has the old spelling and still needs the guard.
+   * stage.js throws if this line ever comes back, so the claim cannot go stale
+   * and leave the tree unpatched.
    */
-  debugOffPatches: [
-    /*
-     * The OKCONNECT branch's null buffer, in the spelling this tree uses -
-     * with the derived-key challenge clause that arrived in v3.0.2. Every
-     * release before that spells the same line without it, which is why the
-     * two live side by side in _shared.js.
-     */
-    shared.okconnectBufferGuardWithChallengeMode,
-    {
-      file: 'libraries/fido2/device.cpp',
-      edits: [
-        ['\tint appid_match3 = memcmp (stored_appid_oa, _appid, 32); //OnlyAgent origin (onlyagent.app)',
-         '\tint appid_match3 = (_appid == NULL) ? 1 : memcmp (stored_appid_oa, _appid, 32); //OnlyAgent origin (onlyagent.app)'],
-      ],
-    },
+  absentPatterns: [
+    '	appid_match2 = memcmp (stored_appid, _appid, 32);',
+  ],
+
+  /**
+   * NONE LEFT. Upstream fixed every defect this list guarded against.
+   *
+   * All three entries existed because webcryptcheck() and the OKCONNECT
+   * dispatch branch dereferenced pointers their callers hand over as NULL, and
+   * only the `#ifdef DEBUG` early return kept a debug build from noticing -
+   * see FINDING-production-firmware-crashes-in-webcryptcheck.md. Between
+   * libraries@8d77e34 and @7bd29a4 the maintainer closed all of them:
+   *
+   *   appid_match3 / stored_appid_oa   gone with the origin itself.
+   *                                    libraries@e44ff6c drops onlyagent.app;
+   *                                    the trusted origins are now a `trusted[]`
+   *                                    table of apps.crp.to and apps.onlykey.io.
+   *   okconnectBufferGuard...          the whole `buffer[4]==OKCONNECT` branch
+   *                                    is out of fido2/device.cpp; OKCONNECT is
+   *                                    handled on the raw-HID path instead.
+   *   appid_match1 / stored_apprpid    libraries@c1a6cf2 rewrote the comparison
+   *                                    as a null-safe loop over `trusted[]`.
+   *                                    Declared below rather than deleted,
+   *                                    because it lives in stage.js's SHARED
+   *                                    list and every pinned release still
+   *                                    needs it.
+   *
+   * Each was verified as fixed, not merely re-spelled, before being dropped. A
+   * guard removed because its anchor moved would be a guard silently lost.
+   */
+  debugOffPatches: [],
+
+  /**
+   * See the note above: this one is stage.js's, so the working tree declares it
+   * absent instead of deleting it. stage.js throws if it reappears.
+   */
+  debugOffAbsentPatterns: [
+    '    appid_match1 = memcmp (stored_apprpid, rpid, 12);',
   ],
 };

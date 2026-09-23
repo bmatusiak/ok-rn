@@ -1664,7 +1664,10 @@ function main() {
     APPID_NULL_GUARD,
     ...release.patches,
     ...(debugOn === false ? [...DEBUG_OFF_PATCHES, ...release.debugOffPatches] : []),
-  ], release.absentPatterns);
+  ], [
+    ...release.absentPatterns,
+    ...(debugOn === false ? release.debugOffAbsentPatterns : []),
+  ]);
   const scs = rewriteSystemBlock();
 
   const stats = digestStage();

@@ -256,6 +256,16 @@ function load(version) {
      */
     absentPatterns: mod.absentPatterns || [],
     /**
+     * The same claim, for patterns only the DEBUG-OFF list looks for.
+     *
+     * It cannot go in `absentPatterns`, because that list is validated against
+     * the patches actually in play: a debug build never passes DEBUG_OFF_PATCHES
+     * to applyPatches(), so a debug-only pattern declared there would throw on
+     * every debug stage as "no patch looks for it". Merged in only when the
+     * gate ends up off, which is exactly when its patches are.
+     */
+    debugOffAbsentPatterns: mod.debugOffAbsentPatterns || [],
+    /**
      * Build options this release must be staged with to be comparable, when
      * its pinned commit does not have them set.
      *
