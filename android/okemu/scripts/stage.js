@@ -249,6 +249,55 @@ const WANT_DUO =
  * @param want true to enable, false to disable, null to leave it alone
  * @returns whether the staged tree ends up with it defined
  */
+/*
+ * The version the STAGED SOURCES declare, as "v3.0.5".
+ *
+ * Read rather than recorded, because the point of it is to track the
+ * maintainer. onlykey.h builds the banner the device answers with -
+ *
+ *     #define OKversion "v" OKversionmaj "." OKversionmin "." OKversionpat  *                       OKversionkeyword
+ *     #define UNLOCKED  "UNLOCKED" OKversion
+ *
+ * - so these three defines are the same number `UNLOCKEDv3.0.5-testc` carries
+ * on the wire, and reading them here cannot drift from what the firmware says
+ * about itself.
+ *
+ * THIS IS NOT `version`. That one is the RELEASE this build is a copy of, and
+ * it stays null for the working tree on purpose: the app must not report an
+ * unreleased tree as a release, and `unreleased` gates features on it. This is
+ * the version the tree DECLARES, which for a working tree is the one being
+ * worked towards - v3.0.5 while 3.0.4 is the newest tag. Both are wanted: one
+ * says what this is, the other says what it will become.
+ *
+ * The keyword suffix (-test / -prod) is left off deliberately; `production`
+ * already carries that and duplicating it invites the two to disagree.
+ */
+function readDeclaredVersion() {
+  const target = path.join(STAGE, 'libraries', 'onlykey', 'onlykey.h');
+  const text = fs.readFileSync(target, 'utf8');
+  /* `//#define` cannot match: the `//` is not whitespace. */
+  const part = (name) => {
+    const m = new RegExp(
+      String.raw`^[ \t]*#define[ \t]+${name}[ \t]+"([^"]*)"`, 'm').exec(text);
+    return m ? m[1] : null;
+  };
+  const maj = part('OKversionmaj');
+  const min = part('OKversionmin');
+  const pat = part('OKversionpat');
+  if (maj === null || min === null || pat === null) {
+    /*
+     * Not fatal. Every tree back to the 2019 beta has carried these, but a
+     * staging that otherwise succeeded should not fail over a label - the
+     * build is still correct, the app just shows one less thing.
+     */
+    console.error(
+      'stage: WARNING - OKversionmaj/min/pat not all readable from ' +
+      'libraries/onlykey/onlykey.h, so the declared version is unknown');
+    return null;
+  }
+  return `v${maj}.${min}.${pat}`;
+}
+
 function gateDefine(name, on, want, { universal = true } = {}) {
   const target = path.join(STAGE, 'libraries', 'onlykey', 'onlykey.h');
 
@@ -1331,6 +1380,13 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel) {
      * not report it as one. src/buildInfo.ts turns this into the storage slot.
      */
     version: release.pins ? release.version : null,
+    /*
+     * What the SOURCES call themselves, e.g. "v3.0.5" - see
+     * readDeclaredVersion(). Present for a pinned build too, where it should
+     * agree with `version`; a disagreement there means ok-versions.json pins a
+     * commit that is not the release it claims, which is worth seeing.
+     */
+    declaredVersion: readDeclaredVersion(),
     /**
      * Whether this build is AHEAD of every release, rather than being one.
      *
@@ -1341,11 +1397,18 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel) {
      * flag lets that case default to "released" rather than claim to be an
      * unreleased tree and switch on features that may not exist.
      *
-     * It exists because the wire cannot answer this. The firmware's version
-     * macros have read 3/0/4 since 2022, so a working tree built as production
-     * reports v3.0.4-prodc - byte-identical to the release it is ahead of,
-     * while carrying post-quantum work no release has. The build keyword used
-     * to separate the two lines and no longer can.
+     * It exists because the wire cannot answer this. A working tree reports
+     * whatever onlykey.h's version macros say, which is the same string the
+     * release of that number will report: the macros read 3/0/4 from 2022
+     * until 2026-09, so a tree built as production answered v3.0.4-prodc -
+     * byte-identical to the release it was ahead of, while carrying
+     * post-quantum work no release had. They read 3/0/5 now, ahead of any
+     * v3.0.5 tag, which is the same situation one number along. The build
+     * keyword used to separate the two lines and no longer can.
+     *
+     * `declaredVersion` records that string rather than replacing this flag:
+     * it says which number the sources claim, and this says whether the claim
+     * has been released yet. Neither answers the other.
      */
     unreleased: !release.pins,
     production: !debugOn,
@@ -1688,6 +1751,8 @@ function main() {
     `  OnlyKey-Firmware / libraries:              ${info.firmware || '?'} / ${info.libraries || '?'}` +
     `
   version:                                   ${release.version} (${release.status})` +
+    `
+  sources declare:                           ${info.declaredVersion || 'unknown'}` +
     `
   build:                                     ${debugOn ? 'debug' : 'production'}` +
     `

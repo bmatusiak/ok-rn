@@ -22,6 +22,8 @@ type Staged = {
   libraries?: string | null;
   /** A released version name when OKEMU_VERSION was set; null for the tree. */
   version?: string | null;
+  /** What onlykey.h's version macros say, e.g. 'v3.0.5'. */
+  declaredVersion?: string | null;
   production?: boolean;
   edition?: string | null;
   /** 'duo' or 'classic' - which model the staged firmware reports as. */
@@ -74,6 +76,21 @@ export type BuildInfo = {
    * unreleased tree and switch on features that may not be there.
    */
   unreleased: boolean;
+  /**
+   * The version the SOURCES declare, e.g. 'v3.0.5' - read by stage.js from
+   * onlykey.h's OKversionmaj/min/pat, which are what the device's own
+   * `UNLOCKEDv3.0.5-testc` banner is built from.
+   *
+   * Not the same question as `version`. That one is which RELEASE this is a
+   * copy of and is null for a working tree; this one is the number the
+   * firmware answers with either way, and for a tree it is the release being
+   * worked towards. A tree can declare v3.0.5 months before a v3.0.5 exists,
+   * which is exactly when knowing the difference matters.
+   *
+   * null when the staging could not read it, or when there is no staging
+   * metadata at all.
+   */
+  declaredVersion: string | null;
 };
 
 export const buildInfo: BuildInfo = {
@@ -85,6 +102,7 @@ export const buildInfo: BuildInfo = {
       ? `${staged.firmware ?? '?'} / ${staged.libraries ?? '?'}`
       : '',
   version: staged.version ?? null,
+  declaredVersion: staged.declaredVersion ?? null,
   production: staged.production === true,
   edition: staged.edition ?? null,
   model: staged.model === 'duo' ? 'duo' : 'classic',
@@ -118,9 +136,24 @@ buildInfo.builtFor = describeBuild();
  * worth seeing at a glance, which is the whole point of this screen.
  */
 function describeBuild(): string {
+  /*
+   * A working tree says WHICH working tree. 'working tree' alone was true and
+   * useless: it is the ordinary case, so the slot carried no information on
+   * almost every build, while the number the device answers with was sitting
+   * in the staging metadata unread. 'working tree v3.0.5' says which line of
+   * firmware this is ahead of, which is the thing that actually changes.
+   *
+   * A pinned release keeps its own name and does not repeat the declared
+   * version beside it - for a release the two agree by definition, and
+   * printing both would only draw the eye when they disagree, which is a
+   * mispinned row and belongs in stage.js's output rather than here.
+   */
+  const tree = buildInfo.declaredVersion
+    ? `working tree ${buildInfo.declaredVersion}`
+    : 'working tree';
   const parts = [
     buildInfo.model === 'duo' ? 'DUO' : 'classic',
-    buildInfo.version ?? 'working tree',
+    buildInfo.version ?? tree,
     buildInfo.production ? 'production' : 'debug',
   ];
   /* Only when it is NOT the standard edition - saying "standard" every time

@@ -166,6 +166,36 @@ function pinsFor(version) {
       Object.keys(all).join(', '),
     );
   }
+  /*
+   * A ROW WITH BLANK HASHES MEANS "THE WORKING TREE", and returns exactly what
+   * the working tree returns, so nothing downstream needs a second idea of
+   * what unpinned means: writeBuildInfo() already reads `release.pins` to
+   * choose between the pinned shas and gitShort() of the checkouts, and
+   * `unreleased: !release.pins` already flags it as ahead of every release.
+   *
+   * It is for a version that has been NAMED but not CUT. v3.0.5 is the case
+   * this was added for: onlykey.h declares 3/0/5, upstream has a release
+   * branch for it, and there is no tag to pin to yet. Naming it now means the
+   * row is already there to fill in on release day, and until then
+   * OKEMU_VERSION=v3.0.5 builds what the checkouts hold - which is what that
+   * version currently IS.
+   *
+   * Partly filled is a mistake rather than a third mode: one repo pinned and
+   * the other floating would produce a build that is neither the release nor
+   * the tree, and no note would say which half moved.
+   */
+  const blank = Object.keys(pins).filter(
+    (k) => k !== 'file' && String(pins[k] ?? '').trim() === '');
+  const filled = Object.keys(pins).filter(
+    (k) => k !== 'file' && String(pins[k] ?? '').trim() !== '');
+  if (blank.length && filled.length) {
+    throw new Error(
+      `${version} in ok-versions.json pins ${filled.join(', ')} but leaves ` +
+      `${blank.join(', ')} blank. Blank means "the working tree", so a row ` +
+      'has to be all pinned or all blank - otherwise the build is half a ' +
+      'release and nothing records which half.');
+  }
+  if (blank.length) return null;
   return pins;
 }
 
