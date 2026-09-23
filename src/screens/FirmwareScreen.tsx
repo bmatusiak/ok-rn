@@ -106,6 +106,52 @@ export function FirmwareScreen({
   const [error, setError] = useState<string | null>(null);
 
   /*
+   * WHAT THIS UPDATE WILL MAKE UNREADABLE, counted before it happens.
+   *
+   * Firmware 3.0.5 changed how a derived key is built: libraries@40464ca took
+   * the rpId out of okcrypto_hkdf() and replaced it with a fixed info string.
+   * Before it, the origin was hashed into the SALT; after, it is absent. The
+   * seed is untouched - slot 128 is the same slot number in both and lives in
+   * flash, so an upgrade carries it across intact - but the same seed and the
+   * same label now expand to a DIFFERENT key.
+   *
+   * So every vault entry sealed on older firmware stops opening the moment
+   * this update lands, silently, with the blobs still sitting there looking
+   * fine.
+   *
+   * AND THE OBVIOUS RECOVERY DOES NOT WORK. "Back it up, then restore onto the
+   * new firmware" is what anyone would try, and the backup preserves the INPUT
+   * rather than the CONSTRUCTION - the same seed, expanded differently. The
+   * only route back is to unwrap while pre-3.0.5 is still reachable: before
+   * updating, or afterwards by restoring a backup onto an older instance.
+   *
+   * Which is why this is counted HERE. This screen is the thing that performs
+   * the upgrade, and the reboot below is the last moment the old derivation is
+   * reachable at all - after it the key is in its bootloader and derives
+   * nothing. A warning anywhere else arrives too late to act on.
+   */
+  const [atRisk, setAtRisk] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getOnlyKey(backend)
+      .then(({okcrypto}) => okcrypto.deviceVault.serviceIds())
+      .then(names => {
+        if (!cancelled) setAtRisk(Array.isArray(names) ? names : []);
+      })
+      .catch(() => {
+        /*
+         * Left NULL, not zero. "We could not look" and "there is nothing" are
+         * different answers, and only one of them should quiet the warning.
+         */
+        if (!cancelled) setAtRisk(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [backend]);
+
+  /*
    * What is bundled, asked once. Listing an asset directory touches no
    * network and no key, so it is the one thing on this screen that may happen
    * without a press.
@@ -373,6 +419,42 @@ export function FirmwareScreen({
           foot of this tab is how to get there.
         </Text>
       ) : null}
+      {/*
+        * PLACED HERE, above the reboot, because this is the LAST MOMENT the
+        * old derivation is reachable. After the reboot the key is in its
+        * bootloader and derives nothing, and after the update the same label
+        * produces a different key. A warning further down the screen would be
+        * a warning the reader meets too late to act on.
+        */}
+      {atRisk && atRisk.length > 0 ? (
+        <View style={styles.atRisk}>
+          <Text style={styles.atRiskTitle}>
+            {atRisk.length} saved vault {atRisk.length === 1 ? 'entry' : 'entries'} on
+            this key
+          </Text>
+          <Text style={styles.warn}>
+            Firmware 3.0.5 changed how a key is derived from a label, so if the
+            firmware you are installing is 3.0.5 or newer these stop opening —
+            silently. The blobs stay where they are and look fine.
+          </Text>
+          <Text style={styles.warn}>
+            Backing up and restoring afterwards does NOT bring them back: a
+            backup carries the seed, not the way it is expanded. Read them out
+            on the Crypto tab and keep the plaintext BEFORE you update, then
+            save them again afterwards.
+          </Text>
+          <Text style={styles.note}>
+            {atRisk.slice(0, 6).join(', ')}
+            {atRisk.length > 6 ? `, and ${atRisk.length - 6} more` : ''}
+          </Text>
+          <Text style={styles.note}>
+            Stored keys are not affected — PGP, SSH and the RSA and ECC slots
+            are held on the key rather than derived, and cross the update
+            intact.
+          </Text>
+        </View>
+      ) : null}
+
       <Btn
         title={busy === 'reboot' ? 'Asking…' : 'Reboot the key into its bootloader'}
         tone="danger"
@@ -398,6 +480,10 @@ export function FirmwareScreen({
 }
 
 const styles = StyleSheet.create({
+  /* Set apart, because it is the one thing on this screen that is about DATA
+   * rather than about the firmware, and it is easy to scroll past. */
+  atRisk: {gap: 6, paddingVertical: 12},
+  atRiskTitle: {color: theme.warn, fontSize: 15, fontWeight: '600'},
   warn: {color: theme.warn, fontSize: 12, lineHeight: 18, marginBottom: 6},
   note: {color: theme.textDim, fontSize: 12, lineHeight: 18, marginTop: 6},
   error: {color: theme.error, fontSize: 13, lineHeight: 20, marginTop: 6},
