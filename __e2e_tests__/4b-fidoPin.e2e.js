@@ -129,6 +129,35 @@ async function unlocked(log) {
   }
   log(`device: ${status}`);
 
+  /*
+   * PROVE THE PRESSES ARE DONE, rather than sleeping and hoping.
+   *
+   * This suite enters a seven-digit PIN and then immediately starts CTAP2
+   * clientPIN work, and a run on 2026-09-23 failed here once with
+   * CTAP1_ERR_INVALID_COMMAND - not reproduced in the several runs since. A
+   * press still in flight was the obvious suspect, and the obvious response
+   * was a settle.
+   *
+   * IT IS ALREADY SETTLED, structurally and better than a delay could manage:
+   * pressQueue() ends with pressesDrained(), so it does not return until the
+   * firmware has TAKEN every press, and unlock() then resolves on the device's
+   * own UNLOCKED broadcast, which only happens once the PIN has been processed.
+   * Adding a sleep on top of that would be a placebo with a comment - the
+   * exact shape of the false justifications this suite has been clearing out.
+   *
+   * So the assumption is CHECKED instead. It costs one call, and if a press is
+   * ever genuinely still queued here it says so by name rather than surfacing
+   * three commands later as a CTAP error that names nothing.
+   */
+  const pending = await OkEmu.pressPending();
+  if (pending !== 0) {
+    throw new Error(
+      `${pending} button press(es) were still queued when the PIN bracket `
+      + 'returned. pressQueue() is supposed to drain before resolving, so '
+      + 'either that guarantee broke or something queued presses behind it - '
+      + 'and the CTAP commands below would be racing the keypad.');
+  }
+
   /* U2Finit() runs during unlock; the first FIDO packet after it is eaten by
    * the Android double-recv workaround (okcore.cpp:652-658). */
   await delay(500);
