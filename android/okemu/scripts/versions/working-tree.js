@@ -36,7 +36,40 @@ module.exports = {
     'Ships with the DEBUG gate ON, unlike every release.',
   ].join('\n'),
 
-  patches: [],
+  /**
+   * The sketch's own yield() collides with the emulator's, and the emulator's
+   * has to win.
+   *
+   * OnlyKey.ino gained `void yield(void) {}` upstream to override the Teensy
+   * core's weak one, whose only job there is polling Serial1/2/3 for
+   * serialEvent hooks the firmware never defines - a reference that linked all
+   * three UART drivers, about 4 KB of flash the device does not have to spare.
+   * On a Teensy a no-op is exactly right.
+   *
+   * Hosted it is not. core/okemu_pins.cpp defines yield() as
+   * okemu_sync_systick(), which is what advances the millisecond counter on a
+   * build with no SysTick interrupt behind it. Every delay() and every poll
+   * loop in the firmware reaches time through that call, so a no-op yield()
+   * stops the clock rather than merely saving space. The core file is ours and
+   * lands in the same archive, so the two definitions are a hard link error -
+   * `duplicate symbol: yield` - and not something that silently picks a winner.
+   *
+   * Dropping the sketch's copy costs the device nothing here: the bare-metal
+   * UART drivers are among the 31 files stage.js already removes, so there is
+   * no weak yield() left to override and nothing for it to pull in.
+   *
+   * Version-scoped rather than shared because no pinned release has this line
+   * - it arrived with the OnlyKey.ino rewrite in OnlyKey-Firmware@1f7e726.
+   */
+  patches: [
+    {
+      file: 'sketch/OnlyKey.ino',
+      edits: [
+        ['void yield(void) {}',
+         '/* yield() dropped by ok-rn stage.js - core/okemu_pins.cpp defines the real one, which keeps the hosted millisecond counter moving; see versions/working-tree.js */'],
+      ],
+    },
+  ],
 
   /*
    * APPID_NULL_GUARD's line is gone, because UPSTREAM FIXED IT.
