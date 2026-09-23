@@ -43,6 +43,12 @@
 'use strict';
 
 const {getOnlyKey} = require('../src/onlykey');
+const {pressDigits} = require('./helpers/pressDigits');
+const {inConfigMode} = require('./helpers/touchFreeDerive');
+const {writeBackupPassphrase, acknowledged} = require('./helpers/backupPassphrase');
+
+/** The same PIN every suite provisions and uses. */
+const PIN = '1234561';
 
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
@@ -254,12 +260,52 @@ module.exports = function backupCapture({describe, it}) {
          */
         if (/no backup key set/i.test(message)) {
           log(`the device refused: ${message}`);
+          /*
+           * Drain FIRST. The device is mid-URL - 110 characters of
+           * "No Backup Key - Follow instructions here ..." - and anything that
+           * talks to it while it is still typing lands in a window where the
+           * vendor interface answers nothing
+           * (FINDING-the-backup-refusal-is-typed-and-blocks-the-device.md).
+           */
           await drainKeyboard(log);
+
+          /*
+           * SET IT, rather than skipping for the life of the device.
+           *
+           * This is the CONFIG-MODE PASS. Provisioning gives a fresh key its
+           * passphrase for free, in first-use state before the reboot
+           * (0-provision), so reaching here means an already-initialised key
+           * that never got one - and for that key the only route is config
+           * mode, because OKSETPRIV needs `configmode || !initcheck` and
+           * neither the device nor we can go back to first use.
+           *
+           * Config mode then silences CTAPHID until a restart, so the suites
+           * behind this one fail for the rest of THIS pass. That is the cost,
+           * and it is the shape the suite already has: a device needs three
+           * passes - one for the base setup, one that takes config mode and
+           * does all of it, and one that uses everything. 0-provision's own
+           * "run me again" says the same thing. So this pass sets it, and the
+           * digest chain verifies on the next one.
+           *
+           * restart:false because there is no in-place firmware restart to
+           * ask for - OkEmu.restart() rejects unconditionally (1-softKey pins
+           * that refusal). The runner force-stops the app when the pass ends,
+           * and that IS the power cycle.
+           */
+          const said = await inConfigMode(
+            device, PIN, log,
+            () => writeBackupPassphrase(device, log),
+            {restart: false});
+
+          assert.ok(acknowledged(said),
+            `this key had no backup passphrase and the device would not take `
+            + `one: ${said}`);
+
           skip(
-            'this key has no backup key set, so the firmware types a URL instead '
-            + 'of a backup. The gesture and the refusal both work; the digest '
-            + 'chain is what went unverified. Set a backup passphrase on the '
-            + 'device to make this test run.',
+            'this key had no backup passphrase; it has one NOW. The digest '
+            + 'chain is what went unverified, and it verifies on the next '
+            + 'pass - this one took config mode to do the setup, so CTAPHID '
+            + 'is silent for the suites behind it until the app restarts.',
           );
         }
 

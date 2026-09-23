@@ -41,6 +41,7 @@
 
 const {getOnlyKey} = require('../src/onlykey');
 const {pressDigits} = require('./helpers/pressDigits');
+const {writeBackupPassphrase, acknowledged} = require('./helpers/backupPassphrase');
 const {protocol} = require('node-onlykey-lib');
 const okmsg = protocol.okmsg;
 
@@ -177,6 +178,36 @@ module.exports = function provision({describe, it}) {
         assert.equal(steps.length, 7, 'the PIN bracket did not run to completion');
       }
 
+      /*
+       * AND A BACKUP PASSPHRASE, WHILE IT IS STILL FREE.
+       *
+       * OKSETPRIV is accepted when `configmode == true || !initcheck`
+       * (okcore.cpp:452). This device has just been given its PIN and has NOT
+       * rebooted - `initialized` is recomputed from flash only in setup() - so
+       * it is still in first-use state and takes the write without config
+       * mode. Every other moment in the device's life costs a config-mode
+       * cycle, and config mode silences CTAPHID until a restart, so a later
+       * setter would break every derive suite behind it. Here it is free.
+       *
+       * Without it backupCapture skips for the life of the device, and the
+       * digest chain - the one thing 8b-backup exists to verify - goes
+       * unchecked. A wiped key regains its passphrase because of these lines.
+       *
+       * NOT FATAL if refused. The PIN is what provisioning is FOR: a device
+       * with a PIN and no backup passphrase is usable, one without a PIN is
+       * not. So this reports loudly and lets the run reach the "run me again"
+       * assert below, where the operator sees both.
+       */
+      try {
+        const said = await writeBackupPassphrase(device, log);
+        if (!acknowledged(said)) {
+          log(`WARNING: backup passphrase not acknowledged: ${said}`);
+          log('WARNING: backupCapture will skip. Set it with --only backupPassphrase.');
+        }
+      } catch (e) {
+        log(`WARNING: could not set the backup passphrase: ${String(e && e.message)}`);
+        log('WARNING: backupCapture will skip. Set it with --only backupPassphrase.');
+      }
 
       assert.ok(
         false,

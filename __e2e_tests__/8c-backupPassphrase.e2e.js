@@ -40,19 +40,19 @@
 const {getOnlyKey} = require('../src/onlykey');
 const {inConfigMode} = require('./helpers/touchFreeDerive');
 const {pressDigits} = require('./helpers/pressDigits');
+/*
+ * SHARED, not repeated. Three callers set this passphrase - provisioning,
+ * the backup suite's no-key path, and this one - and two of them
+ * disagreeing would write two different backup KEYS, because only SHA-256
+ * of the string ever reaches the device, and the mismatch would show up as
+ * a backup that will not restore rather than as an error.
+ */
+const {writeBackupPassphrase, acknowledged} =
+  require('./helpers/backupPassphrase');
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 
 const PIN = '1234561';
-
-/*
- * Six repetitions of "onlykey", 42 characters, chosen by the bench owner on
- * 2026-09-23. It is a TEST passphrase on an emulated key whose flash lives in
- * the app's own files directory - not a secret, and written down here on
- * purpose so the backup this key produces can actually be restored later.
- * Anything shorter than 25 characters is refused host-side.
- */
-const PASSPHRASE = 'onlykey'.repeat(6);
 
 function isNamed() {
   const only = require('./only.js');
@@ -120,10 +120,10 @@ module.exports = function backupPassphrase({describe, it}) {
        * flash.bin carries the passphrase across the restart exactly as it
        * carries it across a power cycle on hardware.
        */
-      const said = await inConfigMode(device, PIN, log, async () => {
-        log(`setting a ${PASSPHRASE.length}-character backup passphrase`);
-        return device.setBackupPassphrase(PASSPHRASE);
-      }, {restart: false});
+      const said = await inConfigMode(
+        device, PIN, log,
+        () => writeBackupPassphrase(device, log),
+        {restart: false});
 
       /*
        * PROVEN BY THE ACKNOWLEDGEMENT, because there is no readback.
@@ -136,12 +136,8 @@ module.exports = function backupPassphrase({describe, it}) {
        * config mode is dropped in silence, so a write that is not awaited
        * reports success for a passphrase the device never took.
        */
-      const text = typeof said === 'string' ? said : (said && said.response) || '';
-      log(`device said: ${text || JSON.stringify(said)}`);
-      assert.ok(
-        /Successfully set Backup Passphrase/i.test(String(text)),
-        `the device did not acknowledge the backup passphrase: ${JSON.stringify(said)}`,
-      );
+      assert.ok(acknowledged(said),
+        `the device did not acknowledge the backup passphrase: ${said}`);
 
       log('backupCapture can now measure a real backup - run it alone to time one');
     });
