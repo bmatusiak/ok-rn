@@ -24,9 +24,12 @@
 import {ALLOW_OVERRIDE, type Overrides} from './capabilityOverride';
 
 /** The capabilities object the library returns, or null before a reading. */
-type Capabilities = {postQuantum?: boolean; hmacSha1?: boolean} | null | undefined;
+type Capabilities =
+  | {postQuantum?: boolean; hmacSha1?: boolean; deviceVault?: boolean}
+  | null
+  | undefined;
 
-export type FirmwareFeature = 'postQuantum' | 'hmacSha1';
+export type FirmwareFeature = 'postQuantum' | 'hmacSha1' | 'deviceVault';
 
 
 /**
@@ -50,6 +53,22 @@ const FEATURES: Record<FirmwareFeature, {what: string; needs: string}> = {
   hmacSha1: {
     what: 'HMAC-SHA1 slot keys',
     needs: 'firmware 3.0.0 or newer',
+  },
+  /*
+   * NOT a limit of the firmware, unlike the two above, and the note says so
+   * rather than implying an old key is incapable. A v3.0.4 key derives fine -
+   * measured on a production build of the last signed release. What changed at
+   * 3.0.5 is HOW a key is derived from a label, so anything sealed on older
+   * firmware stops opening after an upgrade, silently and unrecoverably by the
+   * obvious route. Offering it on older firmware would create data that a
+   * later update strands, for a feature no released app has carried.
+   */
+  deviceVault: {
+    what: 'The vault',
+    needs:
+      'firmware 3.0.5 or newer — older firmware can derive, but 3.0.5 ' +
+      'changed how, so anything sealed before it would stop opening after ' +
+      'the update',
   },
 };
 

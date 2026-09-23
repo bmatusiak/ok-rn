@@ -183,6 +183,24 @@ export function CryptoScreen({
   /* Faded when the key's firmware has no post-quantum support - firmwareFeatures.ts. */
   const pqc = supports(emu.capabilities, 'postQuantum', overrides);
 
+  /*
+   * THE VAULT IS A 3.0.5 FEATURE, by decision rather than by capability.
+   *
+   * Older firmware derives perfectly well - a v3.0.4 production build seals
+   * and opens a blob, measured. What 3.0.5 changed is HOW a key is derived
+   * from a label, so anything sealed before it stops opening after an upgrade,
+   * silently, and the obvious recovery (back up, restore onto the new
+   * firmware) does not work because a backup carries the seed rather than the
+   * expansion.
+   *
+   * No released app ever carried the vault: ok-rn is unreleased, and the web
+   * app's version was pre-release - undocumented, reworked over time, and not
+   * something anyone would have found without going looking. So there is no
+   * data to protect and no reason to let any be created where an update would
+   * strand it.
+   */
+  const vault = supports(emu.capabilities, 'deviceVault', overrides);
+
   const reveal = useCallback(() => {
     setRevealed(true);
     if (revealTimer.current) clearTimeout(revealTimer.current);
@@ -621,8 +639,9 @@ export function CryptoScreen({
         </Section>
       ) : null}
 
-      <Section title={`Vault — ${keyName}`}
+      <Section title={`Vault — ${keyName}`} faded={!vault}
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
+        {vault ? null : <Text style={styles.note}>{missingNote('deviceVault')}</Text>}
         <Text style={styles.body}>
           Seal a note under a key the device derives for a service name. The key
           is never stored anywhere — not on the phone and not on the key — so a
@@ -671,12 +690,12 @@ export function CryptoScreen({
           <Btn
             title={busy ? 'Working…' : 'Seal'}
             tone="primary"
-            disabled={busy || locked || !service.trim() || !plaintext}
+            disabled={busy || locked || !vault || !service.trim() || !plaintext}
             onPress={seal}
           />
           <Btn
             title="Seal and store"
-            disabled={busy || locked || !service.trim() || !plaintext}
+            disabled={busy || locked || !vault || !service.trim() || !plaintext}
             onPress={saveToVault}
           />
         </View>
@@ -694,7 +713,7 @@ export function CryptoScreen({
         />
         <Btn
           title={busy ? 'Working…' : 'Open'}
-          disabled={busy || locked || !service.trim() || !blob.trim()}
+          disabled={busy || locked || !vault || !service.trim() || !blob.trim()}
           onPress={unseal}
         />
 
@@ -706,7 +725,10 @@ export function CryptoScreen({
         ) : null}
       </Section>
 
-      <Section title={`Stored on this phone — ${keyName}`}>
+      {/* Faded with the Vault above: these ARE vault entries, and a list that
+        * stayed live beside a faded sealer would offer to open what it cannot
+        * make. */}
+      <Section title={`Stored on this phone — ${keyName}`} faded={!vault}>
         <Text style={styles.body}>
           Credentials sealed by this key and kept here. The list costs no
           touch; copying a secret does, and the plaintext leaves only by the
