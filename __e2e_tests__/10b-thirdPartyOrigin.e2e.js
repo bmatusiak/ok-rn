@@ -23,6 +23,27 @@
  * name one of the two admitted ones. On a DEBUG build webcryptcheck() returns 2
  * before the table is read, which is why example.test still answers here at all.
  *
+ * SO THERE ARE THREE STATES, not two, and the third is the one a shipped key
+ * is actually in:
+ *
+ *   pre-3.0.5          the origin is in the HKDF info - different keys
+ *   3.0.5, debug       trust-all: example.test is served, same key as crp.to
+ *   3.0.5, ENFORCING   example.test is REFUSED; there is no key to compare
+ *
+ * Only the third describes a device a user will ever hold, and until
+ * OKEMU_ENFORCE_ORIGINS existed this file could not reach it: an ordinary
+ * debug build returns the most permissive answer webcryptcheck() has, so
+ * "example.test derived a key" proved nothing about the origin table either
+ * way. Staging with OKEMU_ENFORCE_ORIGINS=1 cuts that return and the table
+ * decides, which is what makes the third branch below testable at all.
+ *
+ * The refusal is asserted by SHAPE rather than by a predicted error string.
+ * `if (wc_level)` in ok_extension.cpp skips the whole extension block, so what
+ * the host sees is whatever the ordinary FIDO2 path then makes of a credential
+ * id that is not one - an error, an empty answer, or nothing. All three mean
+ * the same thing here and the test says which it got; what must not happen is
+ * a usable key coming back.
+ *
  * REPEATS ARE THE POINT, and they earned their keep twice now. A key that
  * varied between calls would make any comparison meaningless, so each origin is
  * derived twice and the stability assertions run BEFORE the comparison.
@@ -54,11 +75,18 @@ const okconnect = require('node-onlykey-lib/src/crypto/okconnect');
 const {CtapHid} = protocol.ctaphid;
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
+const {buildInfo} = require('../src/buildInfo');
 const rand = n => { const o = new Uint8Array(n); global.crypto.getRandomValues(o); return o; };
 const hex = b => Array.from(b).map(x => x.toString(16).padStart(2, '0')).join('');
 const LABEL = 'origin.probe';
 
-async function deriveUnder(transport, rpId, log, {transitV2 = false} = {}) {
+/*
+ * `timeoutMs` exists for the refusal case. 45 s is right when an answer is
+ * expected and a press has to be waited out; when the point is that NOTHING
+ * comes back, 45 s of silence is most of the runner's own 90 s stall watchdog
+ * (tools/e2e.js) spent proving something a fraction of it proves as well.
+ */
+async function deriveUnder(transport, rpId, log, {transitV2 = false, timeoutMs = 45000} = {}) {
   const ctap = new CtapHid(transport);
   await ctap.init({timeoutMs: 8000});
   const bound = protocol.tunnel.createTunnel(ctap, {randomBytes: rand, rpId});
@@ -74,7 +102,7 @@ async function deriveUnder(transport, rpId, log, {transitV2 = false} = {}) {
   const answer = await bound.send(
     {cmd: okconnect.OKCONNECT, opt1: okconnect.KEYACTION.DERIVE_PUBLIC_KEY,
      opt2: okconnect.KEYTYPE.P256R1, opt3: 1, data},
-    {timeoutMs: 45000,
+    {timeoutMs,
      onKeepAlive: async () => {
        if (pressed) return;
        pressed += 1;
@@ -124,13 +152,21 @@ module.exports = function thirdParty({describe, it}) {
       }
 
       /*
-       * THIRD-PARTY MODE IS A DEVICE SETTING, not a firmware capability, so a
-       * device without bit 2 is not a failure - it is a device nobody has
-       * turned it on for. 9-cryptoSign writes the bits in config mode, and
-       * config mode kills CTAPHID for the rest of that run, so this only sees
-       * them on a later one.
+       * WHICH FRAMING to decode with. This used to be a note about third-party
+       * mode being a device setting that 9-cryptoSign turned on in config
+       * mode; there is no such setting on 3.0.5 - fields 21/22/30 are a 0/1/2
+       * enum with no third-party bit, and admission is the compiled-in origin
+       * table, which nothing on the device can extend.
        */
       const framing = {transitV2: caps && caps.transitV2 === true};
+
+      /*
+       * WHICH BUILD IS THIS. Not a device capability and not readable from the
+       * wire: an unenforcing build serves a third-party origin and an
+       * enforcing one refuses it, and the only difference is a line cut at
+       * staging time. stage.js records it, buildInfo reads it.
+       */
+      const enforcing = buildInfo.enforcingOrigins === true;
 
       let first;
       try {
@@ -139,12 +175,37 @@ module.exports = function thirdParty({describe, it}) {
         skip(`the first-party derive did not answer, so there is no control to compare against: ${e.message}`);
       }
       const again = await deriveUnder(transport, 'apps.crp.to', log, framing);
-      const other = await deriveUnder(transport, 'example.test', log, framing);
-      const other2 = await deriveUnder(transport, 'example.test', log, framing);
 
       /* Stability within an origin is the control, and it is what proves the
        * framing is right: a mis-decoded answer is different bytes every call. */
       assert.equal(first, again, 'the first-party key is not stable');
+
+      /*
+       * THE ENFORCING BRANCH ENDS HERE, because there is no third-party key to
+       * be stable. Asserted as "no key came back", by whatever route: a
+       * refusal, an error, an empty answer or silence all mean the origin
+       * table did its job, and pinning one of those spellings would turn an
+       * upstream change in how a refusal is reported into a failure about
+       * origins.
+       */
+      if (enforcing) {
+        let leaked = null;
+        try {
+          leaked = await deriveUnder(transport, 'example.test', log,
+            {...framing, timeoutMs: 15000});
+        } catch (e) {
+          log(`example.test was refused: ${e.message}`);
+        }
+        assert.equal(leaked, null,
+          'an ENFORCING build derived a key for example.test - the origin '
+          + 'table admits apps.crp.to and apps.onlykey.io only, so either the '
+          + 'trust-all return was not cut or the table is not being read');
+        log('the trusted-origin table holds: first-party derives, third-party gets nothing');
+        return;
+      }
+
+      const other = await deriveUnder(transport, 'example.test', log, framing);
+      const other2 = await deriveUnder(transport, 'example.test', log, framing);
       assert.equal(other, other2, 'the third-party key is not stable');
 
       if (framing.transitV2) {
@@ -152,6 +213,8 @@ module.exports = function thirdParty({describe, it}) {
           'two origins derived DIFFERENT keys - the origin is back in the '
           + 'derivation, which 3.0.5 removed');
         log('no per-origin separation, by design: one label, one key, every origin');
+        log('(this build trusts every origin - stage with OKEMU_ENFORCE_ORIGINS=1 '
+          + 'to test the table that a shipped key actually applies)');
       } else {
         assert.notEqual(first, other,
           'two origins derived the SAME key - no separation');

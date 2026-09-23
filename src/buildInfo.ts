@@ -25,6 +25,8 @@ type Staged = {
   /** What onlykey.h's version macros say, e.g. 'v3.0.5'. */
   declaredVersion?: string | null;
   production?: boolean;
+  /** True when the debug trust-all return was cut - see stage.js. */
+  enforcingOrigins?: boolean;
   edition?: string | null;
   /** 'duo' or 'classic' - which model the staged firmware reports as. */
   model?: string | null;
@@ -60,6 +62,19 @@ export type BuildInfo = {
   version: string | null;
   /** True when the DEBUG gate was off, as the firmware ships. */
   production: boolean;
+  /**
+   * Whether webcryptcheck() consults the trusted-origin table and the field 31
+   * webcrypt policy, instead of returning 2 for everything.
+   *
+   * An ordinary DEBUG build does the latter, and that is invisible from the
+   * wire in the permissive direction: it serves every origin and every
+   * stored-key request, so a test expecting a refusal and getting service
+   * cannot tell an unimplemented policy from an unenforcing build. Always true
+   * on a production build, where the return is not compiled.
+   *
+   * Set by OKEMU_ENFORCE_ORIGINS=1 at staging time.
+   */
+  enforcingOrigins: boolean;
   /** model, version, build and edition in one line - see describeBuild(). */
   builtFor: string;
   /** 'standard' or 'travel'; null when the build predates the gate. */
@@ -104,6 +119,13 @@ export const buildInfo: BuildInfo = {
   version: staged.version ?? null,
   declaredVersion: staged.declaredVersion ?? null,
   production: staged.production === true,
+  /*
+   * Defaults FALSE on a checkout that has never staged, which is the safe
+   * direction: a test that gates a refusal on this then skips rather than
+   * asserting something no build guaranteed. Production implies it, and
+   * stage.js writes true there for exactly that reason.
+   */
+  enforcingOrigins: staged.enforcingOrigins === true,
   edition: staged.edition ?? null,
   model: staged.model === 'duo' ? 'duo' : 'classic',
   unreleased: staged.unreleased === true,
@@ -156,6 +178,14 @@ function describeBuild(): string {
     buildInfo.version ?? tree,
     buildInfo.production ? 'production' : 'debug',
   ];
+  /*
+   * Only on a DEBUG build, because production enforces by construction and
+   * "production - enforcing" would be saying the same thing twice. On a debug
+   * build it is the difference between two devices that answer differently.
+   */
+  if (!buildInfo.production && buildInfo.enforcingOrigins) {
+    parts.push('enforcing origins');
+  }
   /* Only when it is NOT the standard edition - saying "standard" every time
    * teaches people to stop reading the line. */
   if (buildInfo.edition && buildInfo.edition !== 'standard') {
