@@ -212,6 +212,26 @@ export function PreferencesScreen({
   }, [backend]);
   const locked = emu.device !== 'unlocked';
 
+  /*
+   * RE-READ WHEN THE KEY UNLOCKS, because the table DEPENDS ON THE FIRMWARE
+   * VERSION and a locked key does not report one.
+   *
+   * Fields 21, 22 and 30 are a bitmask before firmware 3.0.5 and a 0/1/2 enum
+   * at and after it, so preferences() returns different rows for each - and it
+   * decides from capabilities, which are derived from the status string. A
+   * locked device broadcasts the bare word INITIALIZED, so capabilities read
+   * as the OLDEST firmware until it unlocks.
+   *
+   * Read once at mount, this screen therefore drew the legacy bitmask against
+   * a 3.0.5 key - complete with the "allow per-site derived keys without a
+   * touch" toggle, which writes value 8 and is REFUSED by that firmware with
+   * "Error invalid user input mode". Measured on the bench, after the gate
+   * itself was already correct: the gate was right and the call site was too
+   * early.
+   *
+   * `locked` is the dependency rather than a version, because it is the moment
+   * the version becomes knowable at all.
+   */
   useEffect(() => {
     let cancelled = false;
     getKey()
@@ -224,7 +244,7 @@ export function PreferencesScreen({
     return () => {
       cancelled = true;
     };
-  }, [getKey]);
+  }, [getKey, locked]);
 
   const apply = useCallback(
     async (name: string) => {
