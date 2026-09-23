@@ -18,7 +18,7 @@
  */
 'use strict';
 
-const {dumpUi, tapText, visibleLabels, sleep} = require('./ui');
+const {dumpUi, tapText, visibleLabels, sleep, allLabels, swipeUp, swipeDown} = require('./ui');
 
 const trace = message => process.stdout.write(`  · ${message}\n`);
 
@@ -46,7 +46,34 @@ async function main() {
   const labels = args.filter((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1]));
 
   if (args.includes('--labels') || !labels.length) {
-    console.log(visibleLabels(dumpUi({trace}), 60));
+    /*
+     * SCROLL FIRST, if asked, and WITHOUT a label to hunt for.
+     *
+     * `--scroll` used to work only as part of a label search, so a screen
+     * could not simply be moved - and a long screen whose controls are all
+     * below the fold could not be looked at at all. Positive swipes up (shows
+     * what is below), negative swipes down (shows what is above), matching
+     * tapText's convention so the sign means one thing in this tool.
+     *
+     *     node tools/tap.js --scroll -4     move up, then list
+     *     node tools/tap.js --scroll 3      move down, then list
+     */
+    let xml = dumpUi({trace});
+    for (let i = 0; i < Math.abs(scroll); i++) {
+      trace(`swiping ${scroll > 0 ? 'up' : 'down'} (${i + 1}/${Math.abs(scroll)})`);
+      if (scroll > 0) swipeUp(xml); else swipeDown(xml);
+      await sleep(600);
+      xml = dumpUi({trace});
+    }
+
+    /*
+     * ONE PER LINE, AND ALL OF THEM. This printed a ` | `-joined list capped
+     * at 60, so a Preferences screen - which carries well past that - reported
+     * its later rows as absent. Three separate theories were formed about why
+     * rows were "missing" before the cap was noticed. One per line is also
+     * what makes this greppable, which is how it is actually used.
+     */
+    for (const label of allLabels(xml)) console.log(label);
     return;
   }
 

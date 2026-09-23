@@ -70,6 +70,28 @@ function findByText(xml, label) {
  * Every label the screen is showing, for an error that has to name them.
  * Truncated: a full hierarchy is hundreds of nodes.
  */
+/**
+ * EVERY label on screen, in order, as an array.
+ *
+ * visibleLabels() below truncates, which is right where it is used - inside an
+ * error, the list is context and forty lines of it would bury the message. It
+ * is wrong for a caller whose whole question is "what is on screen": a
+ * Preferences screen carries well over sixty labels, so the rows someone is
+ * looking for sit past the cut and read as absent. That cost a long detour,
+ * with three wrong theories about why rows were "missing" from the dump
+ * (pointerEvents, exact-match, scrolling) before the truncation was noticed.
+ */
+function allLabels(xml) {
+  const seen = new Set();
+  for (const node of xml.split('<node ')) {
+    for (const attr of [/text="([^"]+)"/, /content-desc="([^"]+)"/]) {
+      const m = attr.exec(node);
+      if (m && m[1].trim()) seen.add(m[1].trim());
+    }
+  }
+  return [...seen];
+}
+
 function visibleLabels(xml, limit = 25) {
   const seen = new Set();
   for (const node of xml.split('<node ')) {
@@ -163,4 +185,5 @@ async function tapText(label, {timeoutMs = 15000, trace = noop, scroll = 0, tapO
   }
 }
 
-module.exports = {dumpUi, findByText, visibleLabels, screenSize, swipeUp, swipeDown, tapText, sleep};
+module.exports = {
+  allLabels,dumpUi, findByText, visibleLabels, screenSize, swipeUp, swipeDown, tapText, sleep};
