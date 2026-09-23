@@ -535,7 +535,25 @@ module.exports = function derive({describe, it}) {
         }
         log('the derive wants a confirmation; entering config mode to set the preference');
         await enableTouchFreeDerive(device, PIN, log);
-        blob = await okcrypto.deviceVault.seal('vault.example', 'hunter2-the-secret', opts);
+
+        /*
+         * THIS RUN JUST BECAME THE CONFIG-MODE PASS, so stop here.
+         *
+         * Retrying the seal on the next line could never work: config mode
+         * silences CTAPHID and ends only at a power cycle, so the derive it
+         * needs has nowhere to go. It used to try anyway, because the helper
+         * claimed to restart out of config mode - a call that rejects
+         * unconditionally (1-softKey pins that refusal), so the retry was
+         * unreachable behind a throw.
+         *
+         * The preference IS set and it persists in EEPROM, so the next pass
+         * seals without asking for anything. That is the suite's own
+         * three-pass shape: a base pass shows what is not set up, a
+         * config-mode pass sets it, and the pass after uses it.
+         */
+        skip('the touch-free derive preference was just set, which took config '
+          + 'mode - CTAPHID is silent until the app restarts, so this derive '
+          + 'runs on the next pass. The preference persists in EEPROM.');
       }
       log(`blob: ${blob}`);
       log(`cached after seal: ${okcrypto.deviceVault.isUnlocked('vault.example')}`);

@@ -112,18 +112,16 @@ module.exports = function backupPassphrase({describe, it}) {
       }
 
       /*
-       * restart:false - there is no in-place firmware restart to ask for.
-       * OkEmu.restart() rejects unconditionally (1-softKey pins that), and the
-       * real power cycle is the runner force-stopping the app when this run
-       * ends. That is safe precisely because this suite is armed and runs
-       * alone: nothing is behind it to be broken by the silent CTAPHID, and
-       * flash.bin carries the passphrase across the restart exactly as it
-       * carries it across a power cycle on hardware.
+       * inConfigMode() leaves the device IN config mode - there is no
+       * in-place firmware restart, and the real power cycle is the runner
+       * force-stopping the app when this run ends. Safe precisely because this
+       * suite is armed and runs alone: nothing is behind it to be broken by
+       * the silent CTAPHID, and flash.bin carries the passphrase across that
+       * restart exactly as it carries it across a power cycle on hardware.
        */
       const said = await inConfigMode(
         device, PIN, log,
-        () => writeBackupPassphrase(device, log),
-        {restart: false});
+        () => writeBackupPassphrase(device, log));
 
       /*
        * PROVEN BY THE ACKNOWLEDGEMENT, because there is no readback.

@@ -287,15 +287,15 @@ module.exports = function backupCapture({describe, it}) {
            * "run me again" says the same thing. So this pass sets it, and the
            * digest chain verifies on the next one.
            *
-           * restart:false because there is no in-place firmware restart to
-           * ask for - OkEmu.restart() rejects unconditionally (1-softKey pins
-           * that refusal). The runner force-stops the app when the pass ends,
-           * and that IS the power cycle.
+           * inConfigMode() does not come back out, and cannot: there is no
+           * in-place firmware restart (OkEmu.restart() rejects
+           * unconditionally, and 1-softKey pins that refusal). The runner
+           * force-stops the app when this pass ends, and that IS the power
+           * cycle.
            */
           const said = await inConfigMode(
             device, PIN, log,
-            () => writeBackupPassphrase(device, log),
-            {restart: false});
+            () => writeBackupPassphrase(device, log));
 
           assert.ok(acknowledged(said),
             `this key had no backup passphrase and the device would not take `

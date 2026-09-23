@@ -146,14 +146,11 @@ async function setTouchFreeDerive(device, log) {
  * @param pin     the PIN, pressed rather than sent - see below
  * @param log     the suite's log
  * @param work    async () => result, run while in config mode
- * @param opts.restart  attempt the in-place firmware restart afterwards.
- *                      DEFAULT TRUE only to preserve the existing caller's
- *                      behaviour - see the note at the restart itself, which
- *                      explains why false is the honest value for a suite that
- *                      is run alone.
  * @returns whatever `work` returned
+ *
+ * IT DOES NOT COME BACK OUT, and cannot. See the tail.
  */
-async function inConfigMode(device, pin, log, work, {restart = true} = {}) {
+async function inConfigMode(device, pin, log, work) {
   /*
    * CONFIG MODE IS AN APP STATE, and this is the first of three places that
    * says so out loud.
@@ -301,35 +298,28 @@ async function inConfigMode(device, pin, log, work, {restart = true} = {}) {
    * failure it fixed, because it looks like a regression somewhere else.
    */
   /*
-   * THERE IS NO IN-PLACE RESTART, and this line has never been able to do what
-   * it says.
+   * AND IT STAYS IN CONFIG MODE. There is no way out from here.
    *
-   * OkEmu.restart() rejects unconditionally: the firmware thread only exits
-   * through the AIRCR trap, so NativeOkEmuModule refuses rather than
-   * pretending, and `1-softKey` has a test pinning exactly that refusal.
-   * 14b-pqcSlots says the same thing in its header - "the real power cycle is
-   * the runner force-stopping the app".
+   * This used to end with `await OkEmu.restart()`, which REJECTS
+   * UNCONDITIONALLY: the firmware thread only exits through the AIRCR trap, so
+   * NativeOkEmuModule refuses rather than pretending, and 1-softKey has a test
+   * pinning that refusal. The line could never have done what it said.
    *
-   * So reaching this throws. It went unnoticed because the only caller,
-   * 10-derive, reaches it solely when a derive asks for confirmation, which
-   * 3.0.5 does not do once field 30 is set - the branch is dead in the current
-   * green run. Extracting this function for the backup-passphrase suite is
-   * what first executed it (2026-09-23).
+   * It survived because the only caller reached it solely when a derive asked
+   * for confirmation, which 3.0.5 stops doing once field 30 is set - a dead
+   * branch on current firmware. Extracting this function for the
+   * backup-passphrase suite is what first executed it, and it threw
+   * immediately (2026-09-23).
    *
-   * Left ATTEMPTED rather than deleted for that caller, because if it ever
-   * does run mid-sweep it must fail loudly: the device is genuinely in config
-   * mode, CTAPHID is genuinely dead for every suite behind it, and a silent
-   * carry-on would present as six unrelated timeouts. A caller that is run
-   * ALONE passes restart:false instead - the runner force-stops the app at the
-   * end of the run, and that IS the power cycle.
+   * The option to try it is gone rather than defaulted off, because a dead
+   * branch that calls something guaranteed to throw is a trap wearing a
+   * comment. What replaces it is the suite's own THREE-PASS shape: a run that
+   * takes config mode IS the config-mode pass, the power cycle is the runner
+   * force-stopping the app when that pass ends, and every caller defers its
+   * verification to the next one.
    */
-  if (restart) {
-    log('restarting to leave config mode - CTAPHID is silent until it does');
-    await OkEmu.restart();
-  } else {
-    log('still in config mode: CTAPHID stays silent until the app process ' +
-        'restarts, which the runner does at the end of this run');
-  }
+  log('still in config mode: CTAPHID stays silent until the app process '
+      + 'restarts, which the runner does at the end of this pass');
   return result;
 }
 
@@ -338,6 +328,19 @@ async function inConfigMode(device, pin, log, work, {restart = true} = {}) {
  * preference. Kept by name because several suites import it.
  */
 async function enableTouchFreeDerive(device, pin, log) {
+  /*
+   * THE CALLER MUST DEFER AFTER THIS. It does not come back out of config
+   * mode, because nothing can: the in-place restart this used to attempt
+   * rejects unconditionally (1-softKey pins that refusal), so the call could
+   * never have done what its log line claimed. It went unnoticed because the
+   * only caller reaches it solely when a derive asks for confirmation, which
+   * 3.0.5 stops doing once field 30 is set - dead on current firmware, and
+   * executing it at all is what exposed it (2026-09-23).
+   *
+   * The preference persists in EEPROM, so the pass after this one gets what
+   * this pass set up. That is the three-pass shape, and 10-derive skips on
+   * exactly that basis.
+   */
   return inConfigMode(device, pin, log, () => setTouchFreeDerive(device, log));
 }
 
