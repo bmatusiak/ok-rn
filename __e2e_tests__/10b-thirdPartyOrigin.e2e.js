@@ -226,7 +226,26 @@ module.exports = function thirdParty({describe, it}) {
        * upstream change in how a refusal is reported into a failure about
        * origins.
        */
-      if (enforcing) {
+      /*
+       * THE VERSION DECIDES FIRST, THEN THE BUILD - and this was the other way
+       * round until a production v3.0.4 ran it.
+       *
+       * `enforcingOrigins` is true on ANY build where webcryptcheck()'s
+       * debug trust-all return is not compiled, which includes every
+       * PRODUCTION build of every release. It says "the origin check runs"; it
+       * does NOT say which origin check.
+       *
+       * The two-entry trusted[] table is a 3.0.5 thing. Before it, the origin
+       * was not an admission gate at all - it was mixed INTO the derivation,
+       * so a third-party origin got a different key rather than no key. So a
+       * production v3.0.4 enforces an origin model that admits example.test
+       * and simply derives something else for it, and asserting 3.0.5's
+       * refusal there failed on firmware behaving exactly as designed:
+       * "an ENFORCING build derived a key for example.test".
+       *
+       * Hence: ask what the FIRMWARE does before asking what the BUILD does.
+       */
+      if (enforcing && framing.transitV2) {
         let leaked = null;
         try {
           leaked = await deriveUnder(transport, 'example.test', log,
@@ -242,8 +261,45 @@ module.exports = function thirdParty({describe, it}) {
         return;
       }
 
-      const other = await deriveUnder(transport, 'example.test', log, framing);
-      const other2 = await deriveUnder(transport, 'example.test', log, framing);
+      /*
+       * BEFORE 3.0.5, A THIRD-PARTY ORIGIN NEEDS A DEVICE SETTING - and this
+       * file used to say so, until I deleted the note as stale. It is stale
+       * for 3.0.5 ONLY, and I checked it against the newest firmware and
+       * removed it for every version.
+       *
+       * v3.0.4's webcryptcheck (fido2/device.cpp:126-132) is:
+       *
+       *   if (rpid matches apps.crp.to && !bit1(field 21))        return 2;
+       *   else if (frame is FF FF FF FF OKCONNECT && bit2(field 21)) return 1;
+       *   else                                                    return 0;
+       *
+       * So a third-party origin is admitted only when BIT 2 of field 21 is
+       * set - the old "third-party mode". Without it the request is REFUSED,
+       * and what comes back decodes as nonsense with an empty status: 42
+       * bytes on one run, 14 on another. That is a refusal being read as a
+       * payload, not an unstable device.
+       *
+       * 3.0.5 removed the bit along with the rest of the bitfield, which is
+       * why the setting is absent from `capabilities` - there is nothing to
+       * ask. So the honest split is: ask for the derive, and if it does not
+       * come back, say WHICH setting would have allowed it rather than
+       * failing on firmware that is behaving exactly as designed.
+       */
+      let other = null;
+      let other2 = null;
+      try {
+        other = await deriveUnder(transport, 'example.test', log,
+          {...framing, timeoutMs: 20000});
+        other2 = await deriveUnder(transport, 'example.test', log,
+          {...framing, timeoutMs: 20000});
+      } catch (e) {
+        skip(
+          'this firmware admits a third-party origin only with BIT 2 of field '
+          + '21 ("third-party mode") set, and this key does not have it - so '
+          + 'the derive is refused and there is nothing to compare. Setting it '
+          + 'needs config mode. The FIRST-PARTY control above did answer, so '
+          + `the tunnel and the framing are right: ${e.message}`);
+      }
       assert.equal(other, other2, 'the third-party key is not stable');
 
       if (framing.transitV2) {
