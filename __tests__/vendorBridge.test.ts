@@ -205,3 +205,31 @@ test('unsubscribing stops the bridge answering', async () => {
   off();
   expect(mockRequestListener).toBeNull();
 });
+
+test('OKFWUPDATE is REFUSED and never reaches the key', async () => {
+  /*
+   * On a physical developer key this message locks the bootloader and turns it
+   * into a production key for good, and this bridge relays to whichever key is
+   * active - a plugged-in hard key included. So it must not cross the radio.
+   * Silence rather than a reply, and a log line saying why.
+   */
+  const {fake, logged, off} = start();
+  await mockRequestListener!({iface: 'vendor', hex: 'fffffffff4' + '00'.repeat(59), requestId: ''});
+  expect(fake.writes).toHaveLength(0);
+  expect(logged.some(([level, text]) => level === 'error' && /OKFWUPDATE refused/.test(text))).toBe(true);
+  off();
+});
+
+test('the refusal matches the MESSAGE, not a byte that happens to be 0xf4', async () => {
+  /*
+   * The other direction of the same check. A refusal that fired on 0xf4
+   * anywhere would silently drop ordinary traffic - a set-time payload, a slot
+   * label, a key blob - and a dropped write looks exactly like a slow key.
+   * OKCONNECT with 0xf4 in its payload must go through untouched.
+   */
+  const {fake, off} = start();
+  await mockRequestListener!({iface: 'vendor', hex: 'ffffffffe4f4f4f4', requestId: ''});
+  expect(fake.writes).toHaveLength(1);
+  expect(fake.writes[0].data[4]).toBe(0xe4);
+  off();
+});
