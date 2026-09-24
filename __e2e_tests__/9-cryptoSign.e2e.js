@@ -797,7 +797,26 @@ module.exports = function cryptoSign({describe, it}) {
       const payload = new Uint8Array(32).map((_, i) => (i * 5 + 2) & 0xff);
       const expected = digitsFor(payload);
       log(`challenge should be ${expected.join('-')}`);
-      await delay(1500);
+
+      /*
+       * WAIT OUT THE PREVIOUS OPERATION'S FADE TIMER on firmware that does not
+       * clear it for us.
+       *
+       * A press counts only while `isfade` is set, and `Endfade` is a 2.5-second
+       * SoftTimer that clears it (okcore.cpp:174-176). From v2.1.2
+       * done_process_packets() calls SoftTimer.remove(&Endfade) on entry, so a
+       * timer left from the signature before this one cannot fire during this
+       * one. v0.2-beta.8 has no such call.
+       *
+       * 1500ms was below that 2500ms, so on the beta the stale timer landed
+       * PART-WAY THROUGH this challenge: the first presses counted, the rest
+       * failed the guard, and the device finished nothing and said nothing -
+       * the host just timed out. Sleeping past the timer lets it fire while
+       * nothing is in flight, which is where it does no harm.
+       */
+      const settle = shared.device.capabilities.staleFadeGuard ? 1500 : 3000;
+      log(`settling ${settle}ms before the next signature`);
+      await delay(settle);
 
       const signature = await okcrypto.sign(SSH_SLOT, payload, {
         timeoutMs: 25000,
