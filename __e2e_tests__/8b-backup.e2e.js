@@ -46,7 +46,15 @@ const {getOnlyKey} = require('../src/onlykey');
 const {pressDigits} = require('./helpers/pressDigits');
 const {inConfigMode} = require('./helpers/touchFreeDerive');
 const {writeBackupPassphrase, acknowledged} = require('./helpers/backupPassphrase');
-const parsers = require('node-onlykey-lib/src/device/parsers');
+/*
+ * Through the PUBLIC surface. A deep `node-onlykey-lib/src/device/parsers`
+ * resolves under Metro, which ignores the exports map, and is refused by node -
+ * and the exports map is deliberate: it is one of three things keeping a
+ * consumer to the surface it can use. The library is headed into GUIs that will
+ * honour it.
+ */
+const {device: okdevice} = require('node-onlykey-lib');
+const parsers = okdevice.parsers;
 
 /** The same PIN every suite provisions and uses. */
 const PIN = '1234561';
@@ -392,7 +400,7 @@ module.exports = function backupCapture({describe, it}) {
       }
     });
 
-    it('and the backup RESTORES to the key it came from', async ({log, assert, skip}) => {
+    it('the backup RESTORES, and so does one from another key', async ({log, assert, skip}) => {
       /*
        * THE HALF THAT HAS NEVER RUN. device.restore() has existed all along and
        * nothing exercised it: this suite proved the device can TYPE a backup
@@ -473,6 +481,59 @@ module.exports = function backupCapture({describe, it}) {
             + 'device has been written to - read its labels before trusting it.');
         }
         log(`restored ${sent.bytes} bytes, digest ${String(sent.digest).slice(0, 16)}…`);
+
+        /*
+         * NOW A BACKUP FROM ANOTHER KEY, which is the case restore exists for.
+         *
+         * Restoring a key's own backup cannot fail the way a real restore
+         * fails: the material already matches. The upgrade path is a key that
+         * DIED, whose owner has a file taken on the firmware it was running,
+         * and a replacement running something newer. The fixture is a file a
+         * v3.0.4 key typed - the last SIGNED release - cut from a run by
+         * tools/backup-fixture.js.
+         *
+         * IN THIS SAME WINDOW, and that is the device's constraint rather than
+         * tidiness. Config mode ends only at a power cycle and the soft key has
+         * no in-process restart, so there is no second window in this pass -
+         * a separate test for this skipped with "the app already believes this
+         * device is in config mode", which is how the constraint announced
+         * itself. Leaving the undo for later would mean leaving the key holding
+         * another device's slots until someone restarted the app.
+         */
+        const foreign = require('./fixtures/backup-v3.0.4.js');
+        const check = parsers.verifyBackup(foreign);
+        assert.equal(check.ok, true, 'the committed fixture does not verify');
+        assert.notEqual(
+          check.digest, String(sent.digest),
+          'the fixture and this key\'s backup are the same file, so this proves nothing',
+        );
+
+        const other = await device.restore(foreign, {
+          onProgress: p => {
+            if (p && p.block && p.packet === 1) log(`foreign block ${p.block}/${p.of}`);
+          },
+        });
+        log(`accepted ${other.bytes} bytes from a v3.0.4 key, digest ${check.digest.slice(0, 16)}…`);
+        assert.equal(other.digest, check.digest, 'the foreign restore sent a different file');
+
+        /*
+         * PUT IT BACK, immediately. If this throws the key is holding another
+         * device's slots, and the message has to say so - a run that stopped
+         * here quietly would leave a soft key that looks fine and is not.
+         */
+        try {
+          const back = await device.restore(shared.text, {
+            onProgress: p => {
+              if (p && p.block && p.packet === 1) log(`restoring own block ${p.block}/${p.of}`);
+            },
+          });
+          assert.equal(String(back.digest), String(shared.digest), 'this key was not put back');
+          log('the key is back where it started');
+        } catch (e) {
+          throw new Error(
+            'THE UNDO FAILED: this key now holds the v3.0.4 fixture\'s slots. '
+            + `Restore its own backup before trusting it. Cause: ${e.message}`);
+        }
 
         /*
          * READ IT BACK FROM INSIDE config mode. OKGETLABELS is on the
