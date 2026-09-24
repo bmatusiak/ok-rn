@@ -502,7 +502,17 @@ module.exports = function backupCapture({describe, it}) {
          */
         const foreign = require('./fixtures/backup-v3.0.4.js');
         const check = parsers.verifyBackup(foreign);
-        assert.equal(check.ok, true, 'the committed fixture does not verify');
+        /*
+         * Say WHICH failure. verifyBackup() names one of its two - "no digest
+         * line found" - and on the other returns the two digests instead of a
+         * reason, so both are spelled out here.
+         */
+        assert.equal(
+          check.ok, true,
+          `the committed fixture does not verify: ${
+            check.reason || `digest ${check.digest} is not the expected ${check.expected}`
+          }`,
+        );
         assert.notEqual(
           check.digest, String(sent.digest),
           'the fixture and this key\'s backup are the same file, so this proves nothing',

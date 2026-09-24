@@ -71,7 +71,7 @@
 'use strict';
 const {getOnlyKey} = require('../src/onlykey');
 const {protocol} = require('node-onlykey-lib');
-const okconnect = require('node-onlykey-lib/src/crypto/okconnect');
+const {okconnect} = require('node-onlykey-lib/crypto');
 const {CtapHid} = protocol.ctaphid;
 const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
