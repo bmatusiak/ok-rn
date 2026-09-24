@@ -51,6 +51,7 @@ SVC = "0c0ffab0-9f1e-4b1d-9c6a-0f0e1d2c3b4a"
 REQ = "0c0ffab1-9f1e-4b1d-9c6a-0f0e1d2c3b4a"
 RSP = "0c0ffab2-9f1e-4b1d-9c6a-0f0e1d2c3b4a"
 CMD = 0x83
+ROUNDS = 10
 
 def fragment(payload, size):
     out = [bytes([CMD | 0x80, (len(payload) >> 8) & 0xff, len(payload) & 0xff]) + payload[:size - 3]]
@@ -80,6 +81,7 @@ async def main():
     print(f"found {dev.name} {dev.address}")
 
     replies, asm = asyncio.Queue(), Assembler()
+    notifies = []
 
     async with BleakClient(dev, use_cached_services=False) as c:
         names = [s.uuid.lower() for s in c.services]
@@ -90,6 +92,7 @@ async def main():
         print("vendor service present")
 
         def on_notify(_, data):
+            notifies.append((time.perf_counter(), len(data)))
             msg = asm.push(bytes(data))
             if msg is not None:
                 replies.put_nowait((time.perf_counter(), msg))
@@ -99,23 +102,31 @@ async def main():
 
         payload = bytes([0xff, 0xff, 0xff, 0xff, 0xe4] + [0] * 59)
         frags = fragment(payload, 20)
-        print(f"OKCONNECT: {len(payload)} bytes in {len(frags)} fragments")
+        print(f"OKCONNECT: {len(payload)} bytes in {len(frags)} write fragments")
 
-        t0 = time.perf_counter()
-        for f in frags:
-            await c.write_gatt_char(REQ, f, response=False)
-        sent = time.perf_counter()
-        print(f"written in {(sent - t0) * 1000:.0f} ms")
+        times = []
+        for run in range(ROUNDS):
+            notifies.clear()
+            t0 = time.perf_counter()
+            for f in frags:
+                await c.write_gatt_char(REQ, f, response=False)
+            sent = time.perf_counter()
+            try:
+                t, msg = await asyncio.wait_for(replies.get(), timeout=10)
+            except asyncio.TimeoutError:
+                print(f"  #{run}: NO REPLY in 10 s")
+                return 1
+            rtt = (t - t0) * 1000
+            times.append(rtt)
+            text = msg.decode('latin-1').rstrip(chr(0))
+            print(f"  #{run}: {rtt:6.1f} ms  write {(sent - t0) * 1000:4.1f} ms  "
+                  f"{len(notifies)} notif  {len(msg)}B  {text!r}")
 
-        try:
-            t, msg = await asyncio.wait_for(replies.get(), timeout=10)
-        except asyncio.TimeoutError:
-            print("NO REPLY in 10 s")
-            return 1
-
-        print(f"REPLY after {(t - t0) * 1000:.0f} ms ({(t - sent) * 1000:.0f} ms after the last write)")
-        print(f"  {len(msg)} bytes: {msg[:32].hex()}")
-        print(f"  as text: {msg.decode('latin-1').rstrip(chr(0))!r}")
+        times.sort()
+        n = len(times)
+        print("")
+        print(f"min {times[0]:.0f}  median {times[n // 2]:.0f}  max {times[-1]:.0f} ms"
+              f"   over 100 ms: {sum(1 for x in times if x > 100)}/{n}")
         await c.stop_notify(RSP)
     return 0
 
