@@ -38,10 +38,35 @@ firmware answered, and the answer came back.
 
 **181 ms is over python-onlykey's 100 ms default read timeout**
 (client.py:404), so the risk the BLE plan flagged as possibly theoretical is
-real on a healthy link. The reply is almost all of it - 170 of the 181 ms came
-after the last write - and at MTU 23 a 64-byte report is FOUR notifications,
-each paced by onNotificationSent against a connection interval. Fragment count
-times the interval is the cost, which is a thing a larger MTU changes.
+real on a healthy link.
+
+## WHERE THE TIME GOES - measured, after a wrong answer
+
+This first said the cost was fragmentation: four notifications paced by
+onNotificationSent. That was inferred from the four WRITE fragments, which are
+this script's own choice of 20 bytes, and the reply's fragmentation is the
+phone's from the negotiated MTU. Counting them says otherwise - **every reply
+arrives as ONE 67-byte notification**, so a larger MTU would buy nothing.
+
+Ten consecutive exchanges::
+
+    #0 180 ms  #1 179  #2 120  #3 120  #4 238
+    #5 182     #6 120  #7 239  #8 120  #9 239
+    min 120  median 180  max 239   over 100 ms: 10/10
+
+The figures quantise to about 60 ms, so the reply is waiting for the next
+connection event rather than the phone being slow.
+
+**AND THE PHONE CANNOT FIX IT.** Checked against android.jar rather than
+assumed: `BluetoothGattServer` - the peripheral - has no connection-priority or
+interval method at all, while the central-side `BluetoothGatt` has
+`requestConnectionPriority(int)` with BALANCED / HIGH / LOW_POWER. Connection
+parameters are the central's to choose, so this is the HOST's to improve, on
+whatever BLE stack it runs: WinRT exposes BluetoothLEPreferredConnectionParameters
+and bleak does not surface it; BlueZ has its own controls.
+
+So a slow round trip here is a property of the host link, not of ok-rn and not
+of the transport. Treat it as the floor when choosing timeouts.
 """
 import asyncio, sys, time
 from bleak import BleakClient, BleakScanner
