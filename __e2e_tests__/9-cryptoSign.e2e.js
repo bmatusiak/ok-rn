@@ -195,6 +195,32 @@ async function probeKey(device, log, slot = SLOT) {
  * the challenge did not consume runs gen_press() and types a slot at the
  * keyboard.
  */
+/**
+ * The digits this device will ask for - computed here, but under ITS formula.
+ *
+ * The firmware has had three. v0.2-beta.8 takes `temp[0] % 5` under a floor
+ * that forces button 1 (okcore.cpp:7182-7186); from v0.2-beta.9 it is `% 6`; a
+ * DUO takes `% 3` on the releases that carry that branch. `capabilities()`
+ * resolves which one a status line means, and the library now defaults to it.
+ *
+ * THIS STILL COMPUTES THEM SEPARATELY, on purpose. The assertion downstream is
+ * that the plugin and this file arrive at the same three numbers, and that is
+ * worth keeping - it catches the real hazard, which is hashing the wrong bytes
+ * (the frame instead of the payload, or one report instead of the reassembled
+ * whole). Sharing the FORMULA does not make it tautological; sharing the
+ * computation would.
+ *
+ * Passing nothing here is what made this file wrong on v0.2-beta.8: it
+ * predicted mod-6 digits at a device computing base 5, and a wrong press is
+ * indistinguishable from no press until the window shuts.
+ */
+function digitsFor(payload) {
+  const caps = shared && shared.device && shared.device.capabilities;
+  return protocol.challenge.challengeDigits(payload, {
+    formula: (caps && caps.challengeFormula) || undefined,
+  });
+}
+
 async function pressChallenge(digits, log, isAnswered = () => false) {
   const pressed = [];
   for (const d of digits) {
@@ -672,7 +698,7 @@ module.exports = function cryptoSign({describe, it}) {
       }
 
       const payload = new Uint8Array(32).map((_, i) => (i * 3 + 1) & 0xff);
-      const expected = protocol.challenge.challengeDigits(payload);
+      const expected = digitsFor(payload);
       log(`challenge should be ${expected.join('-')}`);
 
       const tap = serialTap();
@@ -749,7 +775,7 @@ module.exports = function cryptoSign({describe, it}) {
       const {fromHex} = require('node-onlykey-lib').bytes;
 
       const payload = new Uint8Array(32).map((_, i) => (i * 5 + 2) & 0xff);
-      const expected = protocol.challenge.challengeDigits(payload);
+      const expected = digitsFor(payload);
       log(`challenge should be ${expected.join('-')}`);
       await delay(1500);
 
