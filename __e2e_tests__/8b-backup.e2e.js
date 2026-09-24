@@ -365,6 +365,31 @@ module.exports = function backupCapture({describe, it}) {
       /* Kept for the restore test below, which is armed and usually skips. */
       shared.text = result.text;
       shared.digest = result.digest;
+
+      /*
+       * EMIT THE WHOLE FILE when this suite was asked for by name, so a fixture
+       * can be taken from a run instead of re-derived.
+       *
+       * A backup only exists as keystrokes the device TYPED - there is no
+       * command that reads one back - so without this the only copy lives in
+       * `shared.text` for the rest of the process and is then gone. Committing
+       * one as a test fixture means `parseBackup`/`verifyBackup` and the restore
+       * chunker can be exercised with no device at all, which is the only way
+       * those paths get covered on a machine that has none.
+       *
+       * Gated on isNamed() for the same reason the restore test below is: a
+       * plain sweep should not carry a key's material in its log, and twenty
+       * lines of base64 in every version's output is noise. Ask for it and you
+       * get it.
+       *
+       * The markers are there to be machine-read; tools/backup-fixture.js cuts
+       * between them.
+       */
+      if (isNamed()) {
+        log('----- FIXTURE BEGIN -----');
+        for (const line of result.text.split('\n')) log(line);
+        log('----- FIXTURE END -----');
+      }
     });
 
     it('and the backup RESTORES to the key it came from', async ({log, assert, skip}) => {
