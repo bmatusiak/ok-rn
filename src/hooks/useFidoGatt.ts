@@ -6,6 +6,9 @@ import FidoGatt, {
 } from '../transport/FidoGatt';
 import OkEmu from '../transport/OkEmu';
 import {startFidoBridge} from '../fidoBridge';
+/* The vendor service, plugged in. Delete this import, the call below and
+ * src/vendorBridge.ts to remove the feature; nothing else refers to it. */
+import {startVendorBridge} from '../vendorBridge';
 import type {OnlyKeyApp} from '../onlykey';
 import type {LogLevel} from './useLog';
 
@@ -114,6 +117,21 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
       isUnlocked,
     });
 
+    /*
+     * The VENDOR interface, on its own GATT service.
+     *
+     * Shares the relay switch with FIDO because it is the same consent: this
+     * is whether the phone answers a host at all. It does NOT share the
+     * unlocked check - a locked key is silent over FIDO because the firmware
+     * drops the packet, but plenty of vendor commands are exactly what a host
+     * sends to a locked key, OKSETPIN among them.
+     */
+    const offVendor = startVendorBridge({
+      getKey,
+      log,
+      isRelaying: () => relayingRef.current,
+    });
+
     FidoGatt.isSupported()
       .then(value => {
         setSupported(value);
@@ -126,6 +144,7 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
     return () => {
       offStatus();
       offBridge();
+      offVendor();
     };
   }, [getKey, log]);
 

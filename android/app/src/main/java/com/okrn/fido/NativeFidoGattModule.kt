@@ -124,7 +124,6 @@ class NativeFidoGattModule(
 
   private val assembler get() = Held.assembler
   private val vendorAssembler get() = Held.vendorAssembler
-  private val pendingVendor get() = Held.pendingVendor
   private val pendingRequests get() = Held.pendingRequests
   private val requestCounter get() = Held.requestCounter
 
@@ -761,7 +760,6 @@ class NativeFidoGattModule(
     /* No server, no foreground: the notification goes with it. */
     FidoGattService.stop(reactContext)
     pendingRequests.clear()
-    pendingVendor.clear()
     clearNotifications("GATT server stopped")
     mtu = DEFAULT_MTU
   }
@@ -1166,12 +1164,8 @@ class NativeFidoGattModule(
     Log.d(TAG, "vendor: message cmd=0x${"%02x".format(message.command)} " +
       "len=${message.payload.size}")
 
-    val id = "req-" + requestCounter.incrementAndGet()
-    pendingRequests[id] = message.command
-    pendingVendor.add(id)
-
     val event = Arguments.createMap()
-    event.putString("requestId", id)
+    event.putString("requestId", "")
     event.putString("iface", "vendor")
     event.putInt("command", message.command)
     event.putString("commandName", "")
@@ -1202,25 +1196,12 @@ class NativeFidoGattModule(
     try {
       val command = pendingRequests.remove(requestId)
         ?: throw IllegalStateException("Unknown or already-answered requestId: $requestId")
-      val isVendor = pendingVendor.remove(requestId)
       val device = connectedDevice
         ?: throw IllegalStateException("No connected central to respond to")
+      val target = statusCharacteristic
+        ?: throw IllegalStateException("Status characteristic is not registered")
       val server = gattServer
         ?: throw IllegalStateException("GATT server is not running")
-      /*
-       * Looked up on the LIVE server rather than cached at build time.
-       * VendorGatt.build() constructs fresh objects on every call, so a cached
-       * reference would be to a characteristic the server never saw - and after
-       * a server restart the cached one is stale in the same way.
-       */
-      val target = if (isVendor) {
-        server.getService(VendorGatt.SERVICE_UUID)
-          ?.getCharacteristic(VendorGatt.RESPONSE_UUID)
-          ?: throw IllegalStateException("Vendor response characteristic is not registered")
-      } else {
-        statusCharacteristic
-          ?: throw IllegalStateException("Status characteristic is not registered")
-      }
 
       val payload = hex.hexToByteArray()
       val fragments = CtapBle.fragment(command, payload, maxFragmentSize())
@@ -1269,6 +1250,55 @@ class NativeFidoGattModule(
       enqueueNotifications(fragments, promise, statusChar)
     } catch (e: Exception) {
       promise.reject(ERR_RESPOND, e.message ?: "sendKeepAlive failed", e)
+    }
+  }
+
+  /**
+   * Push one OnlyKey report to the host on the vendor response characteristic.
+   *
+   * UNPROMPTED, and that is the point. The vendor protocol is not
+   * request/response: `OKSETSLOT` answers nothing at all, `OKGETLABELS` answers
+   * with a report per slot, and `python-onlykey` reads whenever it likes and
+   * takes an empty list as "nothing yet" (client.py:404). Pairing each reply to
+   * a preceding write would have to invent a correlation the protocol does not
+   * have, and would drop every report after the first of a multi-report answer.
+   *
+   * So this mirrors USB HID instead: reports go up, reports come down, and
+   * nothing at this layer knows which answers which. The host correlates, the
+   * same way it does over a cable.
+   *
+   * ONE AT A TIME - the promise resolves when the last fragment is
+   * acknowledged, and a second call before that rejects with "A response is
+   * still being sent". A caller with several reports to send awaits each. That
+   * is not a limitation to work around: the queue is per LINK and fragments are
+   * reassembled by position, so overlapping sends would interleave into
+   * messages made of halves of two.
+   */
+  @SuppressLint("MissingPermission")
+  override fun sendVendorReport(hex: String, promise: Promise) {
+    try {
+      connectedDevice
+        ?: throw IllegalStateException("No connected central to notify")
+      val server = gattServer
+        ?: throw IllegalStateException("GATT server is not running")
+      /*
+       * Looked up on the LIVE server rather than cached. VendorGatt.build()
+       * returns fresh objects on every call, so a reference kept from build
+       * time is to a characteristic the server never saw - and a cached one
+       * goes stale the next time the server is rebuilt.
+       */
+      val target = server.getService(VendorGatt.SERVICE_UUID)
+        ?.getCharacteristic(VendorGatt.RESPONSE_UUID)
+        ?: throw IllegalStateException("Vendor response characteristic is not registered")
+
+      val fragments = CtapBle.fragment(
+        VendorGatt.CMD_REPORT,
+        hex.hexToByteArray(),
+        maxFragmentSize(),
+      )
+      enqueueNotifications(fragments, promise, target)
+    } catch (e: Exception) {
+      promise.reject(ERR_RESPOND, e.message ?: "sendVendorReport failed", e)
     }
   }
 
@@ -1606,14 +1636,6 @@ class NativeFidoGattModule(
        */
       val vendorAssembler = CtapBleAssembler()
 
-      /*
-       * Which pending request ids came in over the vendor service.
-       *
-       * respondToRequest() takes only an id - the JS side does not say where to
-       * send the answer, and should not have to - so the interface a request
-       * arrived on is remembered here and read back when it is answered.
-       */
-      val pendingVendor: MutableSet<String> = ConcurrentHashMap.newKeySet()
       val pendingRequests = ConcurrentHashMap<String, Int>()
       val requestCounter = AtomicInteger(0)
       val notifyQueue = ArrayDeque<ByteArray>()

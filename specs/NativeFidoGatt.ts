@@ -137,6 +137,20 @@ export interface Spec extends TurboModule {
    */
   sendKeepAlive(requestId: string, status: number): Promise<void>;
 
+  /**
+   * Push one OnlyKey report to the host on the vendor service's notify
+   * characteristic. Present only while VendorGattService.kt is.
+   *
+   * UNPROMPTED: the vendor protocol is not request/response. OKSETSLOT answers
+   * nothing, OKGETLABELS answers with a report per slot, and a host reads when
+   * it likes. So reports go up and down independently, as they do over USB HID,
+   * and the host correlates.
+   *
+   * Await each call. The notify budget is per LINK and fragments reassemble by
+   * position, so a second send before the first resolves would interleave.
+   */
+  sendVendorReport(hex: string): Promise<void>;
+
   /** Generate a P-256 credential key in the TEE/StrongBox. Returns credentialId hex. */
   createCredential(rpId: string, userHandleHex: string): Promise<string>;
 

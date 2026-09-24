@@ -80,17 +80,41 @@ object VendorGatt {
   /** Device -> host, by notification. */
   val RESPONSE_UUID: UUID = UUID.fromString("0c0ffab2-9f1e-4b1d-9c6a-0f0e1d2c3b4a")
 
+  /**
+   * The command byte every vendor fragment is framed with.
+   *
+   * `CtapBleFramer` is transport-agnostic - `[CMD|0x80][HLEN][LLEN][data]` then
+   * `[SEQ][data]` - and only its command CONSTANTS are FIDO's. The vendor
+   * service reuses the framing and needs a byte to put in that slot, but it
+   * carries one kind of thing and never varies: an OnlyKey report. So this is a
+   * constant rather than a table, and the host checks it the way it would a
+   * magic number.
+   *
+   * 0x83 is CTAP's MSG, deliberately - not because this is CTAP, but because
+   * the two services never share a characteristic, so there is nothing for the
+   * value to collide with and a familiar one is easier to read on a sniffer.
+   * The assembler strips the 0x80 flag before handing a message up, so a host
+   * sees 0x03.
+   */
+  const val CMD_REPORT: Int = 0x83
+
   /** The standard Client Characteristic Configuration descriptor. */
   private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
   /**
    * Two characteristics and nothing else.
    *
-   * The vendor protocol is request/response and the HOST already correlates:
-   * `pipeTransport.request()` subscribes before writing and filters replies
-   * with a predicate, and python's `read_bytes()` polls until its own timeout.
-   * So the radio needs no channel ids, no keepalives and no sequence numbers of
-   * its own - only to carry 64-byte reports faithfully in both directions.
+   * One direction each, and NOT a request/response pair - that reading was
+   * written here first and it is wrong. `OKSETSLOT` answers nothing at all,
+   * `OKGETLABELS` answers with a report per slot, and a host may read without
+   * having written. Reports simply go up and down, the way they do over USB
+   * HID.
+   *
+   * The HOST correlates, and already does: `pipeTransport.request()` subscribes
+   * before writing and filters replies with a predicate, and python's
+   * `read_bytes()` polls until its own timeout and returns an empty list when
+   * nothing came. So the radio needs no channel ids, no keepalives and no
+   * sequence numbers of its own - only to carry 64-byte reports faithfully.
    * That makes this simpler than the FIDO service, which has CTAPHID channels
    * to maintain.
    *
