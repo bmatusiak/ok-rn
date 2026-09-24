@@ -31,10 +31,23 @@ export type GattStatusEvent = {
   mtu: number;
 };
 
-/** One reassembled CTAP2 command awaiting a response from JS. */
+/** One reassembled request awaiting a response from JS. */
 export type CtapRequestEvent = {
   /** Opaque id to pass back to respondToRequest(). */
   requestId: string;
+  /**
+   * Which BLE service the request arrived on: 'fido', or 'vendor' when the
+   * OnlyKey vendor service is plugged in (VendorGattService.kt).
+   *
+   * One event carries both because respondToRequest() takes only the id and
+   * routes the answer itself - a second event type would have meant a second
+   * subscription in every consumer for no gain. A bridge that does not
+   * recognise an interface must IGNORE the request rather than answer it,
+   * which is what makes the vendor service removable: with the file deleted
+   * nothing ever raises 'vendor', and with it present but no vendor bridge
+   * attached, a host gets silence rather than a wrong answer.
+   */
+  iface: string;
   /**
    * CTAP BLE command byte: 0x81 PING, 0x82 KEEPALIVE, 0x83 MSG, 0xbe CANCEL,
    * 0xbf ERROR (CTAP 2.1, table in section 11.2.9).

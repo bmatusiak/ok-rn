@@ -123,6 +123,8 @@ class NativeFidoGattModule(
     set(value) { Held.connectedDevice = value }
 
   private val assembler get() = Held.assembler
+  private val vendorAssembler get() = Held.vendorAssembler
+  private val pendingVendor get() = Held.pendingVendor
   private val pendingRequests get() = Held.pendingRequests
   private val requestCounter get() = Held.requestCounter
 
@@ -149,6 +151,9 @@ class NativeFidoGattModule(
     get() = Held.pendingRespond
     set(value) { Held.pendingRespond = value }
   private val notifyLock get() = Held.notifyLock
+  private var notifyTarget: BluetoothGattCharacteristic?
+    get() = Held.notifyTarget
+    set(value) { Held.notifyTarget = value }
 
   /*
    * What the central last wrote to the Status CCCD. Read back by
@@ -756,6 +761,7 @@ class NativeFidoGattModule(
     /* No server, no foreground: the notification goes with it. */
     FidoGattService.stop(reactContext)
     pendingRequests.clear()
+    pendingVendor.clear()
     clearNotifications("GATT server stopped")
     mtu = DEFAULT_MTU
   }
@@ -1086,6 +1092,19 @@ class NativeFidoGattModule(
         return
       }
 
+      /*
+       * The vendor request characteristic, if the feature is plugged in.
+       *
+       * Deliberately BEFORE the FIDO early-return and deliberately its own
+       * branch: nothing below this point is reached by a vendor write, so
+       * removing the vendor service is removing this block and the file it
+       * calls into.
+       */
+      if (characteristic.uuid == VendorGatt.REQUEST_UUID) {
+        handleVendorWrite(value)
+        return
+      }
+
       if (characteristic.uuid != FIDO_CONTROL_POINT_UUID) {
         return
       }
@@ -1105,6 +1124,7 @@ class NativeFidoGattModule(
 
       val event = Arguments.createMap()
       event.putString("requestId", id)
+      event.putString("iface", "fido")
       event.putInt("command", message.command)
       event.putString(
         "commandName",
@@ -1119,6 +1139,45 @@ class NativeFidoGattModule(
       event.putString("rpId", "")
       emit(event, isStatus = false)
     }
+  }
+
+  /**
+   * A write on the vendor request characteristic.
+   *
+   * The same fragmentation the FIDO path uses - `[CMD|0x80][HLEN][LLEN][data]`
+   * then `[SEQ][data]` - because `CtapBleFramer` is transport-agnostic and only
+   * its command CONSTANTS are FIDO's. The command byte is not interpreted here:
+   * whatever the host leads with is stored and echoed back on the response, so
+   * the radio layer stays a faithful pipe and the meaning stays in the protocol
+   * above it.
+   *
+   * The event is the same `onCtapRequest` the FIDO path raises, tagged with
+   * `iface`. A separate event would have meant a second entry in the TurboModule
+   * spec and a second subscription in every consumer; a tag means a JS bridge
+   * that does not recognise the interface ignores the request, which is exactly
+   * what should happen when the vendor feature is present and nothing is
+   * listening for it.
+   */
+  private fun handleVendorWrite(value: ByteArray) {
+    val message = vendorAssembler.push(value) ?: run {
+      Log.d(TAG, "vendor: fragment held, message incomplete")
+      return
+    }
+    Log.d(TAG, "vendor: message cmd=0x${"%02x".format(message.command)} " +
+      "len=${message.payload.size}")
+
+    val id = "req-" + requestCounter.incrementAndGet()
+    pendingRequests[id] = message.command
+    pendingVendor.add(id)
+
+    val event = Arguments.createMap()
+    event.putString("requestId", id)
+    event.putString("iface", "vendor")
+    event.putInt("command", message.command)
+    event.putString("commandName", "")
+    event.putString("hex", message.payload.toHexString())
+    event.putString("rpId", "")
+    emit(event, isStatus = false)
   }
 
   /**
@@ -1143,12 +1202,25 @@ class NativeFidoGattModule(
     try {
       val command = pendingRequests.remove(requestId)
         ?: throw IllegalStateException("Unknown or already-answered requestId: $requestId")
+      val isVendor = pendingVendor.remove(requestId)
       val device = connectedDevice
         ?: throw IllegalStateException("No connected central to respond to")
-      val status = statusCharacteristic
-        ?: throw IllegalStateException("Status characteristic is not registered")
       val server = gattServer
         ?: throw IllegalStateException("GATT server is not running")
+      /*
+       * Looked up on the LIVE server rather than cached at build time.
+       * VendorGatt.build() constructs fresh objects on every call, so a cached
+       * reference would be to a characteristic the server never saw - and after
+       * a server restart the cached one is stale in the same way.
+       */
+      val target = if (isVendor) {
+        server.getService(VendorGatt.SERVICE_UUID)
+          ?.getCharacteristic(VendorGatt.RESPONSE_UUID)
+          ?: throw IllegalStateException("Vendor response characteristic is not registered")
+      } else {
+        statusCharacteristic
+          ?: throw IllegalStateException("Status characteristic is not registered")
+      }
 
       val payload = hex.hexToByteArray()
       val fragments = CtapBle.fragment(command, payload, maxFragmentSize())
@@ -1156,7 +1228,7 @@ class NativeFidoGattModule(
       // Queued, not looped. The promise resolves when the LAST fragment has
       // been acknowledged, so JS learns the response actually went out rather
       // than that it was handed to a queue.
-      enqueueNotifications(fragments, promise)
+      enqueueNotifications(fragments, promise, target)
     } catch (e: Exception) {
       promise.reject(ERR_RESPOND, e.message ?: "respondToRequest failed", e)
     }
@@ -1178,15 +1250,23 @@ class NativeFidoGattModule(
         throw IllegalStateException("Unknown or already-answered requestId: $requestId")
       }
       connectedDevice ?: throw IllegalStateException("No connected central to notify")
-      statusCharacteristic ?: throw IllegalStateException("Status characteristic is not registered")
+      // NOT `status` - that is this function's own keepalive-status parameter,
+      // and shadowing it turned the destination into the byte being sent.
+      val statusChar = statusCharacteristic
+        ?: throw IllegalStateException("Status characteristic is not registered")
       gattServer ?: throw IllegalStateException("GATT server is not running")
 
+      /*
+       * Always FIDO's characteristic: a keepalive is a CTAP concept. The vendor
+       * service has no equivalent and needs none - its host polls on its own
+       * timeout rather than being told to keep waiting.
+       */
       val fragments = CtapBle.fragment(
         CtapBle.CMD_KEEPALIVE,
         byteArrayOf(status.toInt().toByte()),
         maxFragmentSize(),
       )
-      enqueueNotifications(fragments, promise)
+      enqueueNotifications(fragments, promise, statusChar)
     } catch (e: Exception) {
       promise.reject(ERR_RESPOND, e.message ?: "sendKeepAlive failed", e)
     }
@@ -1194,7 +1274,11 @@ class NativeFidoGattModule(
 
   // ------------------------------------------------------- notification queue
 
-  private fun enqueueNotifications(fragments: List<ByteArray>, promise: Promise) {
+  private fun enqueueNotifications(
+    fragments: List<ByteArray>,
+    promise: Promise,
+    target: BluetoothGattCharacteristic,
+  ) {
     synchronized(notifyLock) {
       /*
        * One outstanding response at a time. Two overlapping ones would
@@ -1206,6 +1290,7 @@ class NativeFidoGattModule(
         return
       }
       pendingRespond = promise
+      notifyTarget = target
       notifyQueue.addAll(fragments)
     }
     pumpNotifications()
@@ -1225,13 +1310,14 @@ class NativeFidoGattModule(
         // Drained: the whole response is on the wire.
         pendingRespond?.resolve(null)
         pendingRespond = null
+        notifyTarget = null
         return
       }
       device = connectedDevice ?: run {
         clearNotifications("The central disconnected mid-response")
         return
       }
-      characteristic = statusCharacteristic ?: run {
+      characteristic = notifyTarget ?: statusCharacteristic ?: run {
         clearNotifications("Status characteristic is not registered")
         return
       }
@@ -1287,6 +1373,7 @@ class NativeFidoGattModule(
     synchronized(notifyLock) {
       notifyQueue.clear()
       notifyInFlight = false
+      notifyTarget = null
       promise = pendingRespond
       pendingRespond = null
     }
@@ -1492,8 +1579,41 @@ class NativeFidoGattModule(
       var gattServer: BluetoothGattServer? = null
       var advertiser: BluetoothLeAdvertiser? = null
       var statusCharacteristic: BluetoothGattCharacteristic? = null
+
+      /*
+       * Which characteristic the queued fragments are destined for.
+       *
+       * The notify budget is per LINK, not per characteristic - Android allows
+       * ONE outstanding notification on a connection whatever it is sent on -
+       * so a second service shares this queue rather than standing up its own.
+       * What it cannot share is the destination, so the target is recorded when
+       * a response is enqueued and read back by the pump. Null means FIDO's
+       * status characteristic, which is what every pre-vendor caller meant.
+       */
+      var notifyTarget: BluetoothGattCharacteristic? = null
       var connectedDevice: BluetoothDevice? = null
       val assembler = CtapBleAssembler()
+
+      /*
+       * The vendor service reassembles into its OWN assembler.
+       *
+       * A CtapBleAssembler is a state machine over one fragment stream: an
+       * initial fragment sets the expected length, and every continuation
+       * appends to it. Two services writing into one instance would splice a
+       * vendor report into the middle of a half-built CTAP message and produce
+       * a message that is neither. They are separate streams, so they get
+       * separate state.
+       */
+      val vendorAssembler = CtapBleAssembler()
+
+      /*
+       * Which pending request ids came in over the vendor service.
+       *
+       * respondToRequest() takes only an id - the JS side does not say where to
+       * send the answer, and should not have to - so the interface a request
+       * arrived on is remembered here and read back when it is answered.
+       */
+      val pendingVendor: MutableSet<String> = ConcurrentHashMap.newKeySet()
       val pendingRequests = ConcurrentHashMap<String, Int>()
       val requestCounter = AtomicInteger(0)
       val notifyQueue = ArrayDeque<ByteArray>()

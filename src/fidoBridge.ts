@@ -153,6 +153,22 @@ export function startFidoBridge({
   }
 
   async function onRequest(event: CtapRequestEvent) {
+    /*
+     * Not ours. `onCtapRequest` carries every BLE service's requests, tagged
+     * with the interface they arrived on, so this bridge answers the FIDO ones
+     * and leaves the rest alone.
+     *
+     * IGNORING IS THE CORRECT ANSWER, not an oversight. Every field below is
+     * read as CTAP - the command mask, the CTAP2 command byte, the CBOR - and
+     * a vendor report satisfies none of it. Answering one would put a CTAP
+     * error on a characteristic whose host is waiting for a 64-byte OnlyKey
+     * report. Whoever owns that interface answers it, or nobody does and the
+     * host's own timeout fires, which is what it is for.
+     */
+    if (event.iface && event.iface !== 'fido') {
+      return;
+    }
+
     const label = event.commandName || `0x${event.command.toString(16)}`;
     log('rx', `CTAP ${label} (${event.hex.length / 2} bytes)`);
 
