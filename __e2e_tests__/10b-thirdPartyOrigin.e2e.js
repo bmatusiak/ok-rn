@@ -190,7 +190,7 @@ async function deriveUnder(
   return hex(pub);
 }
 
-const {needsCtaphid} = require('./helpers/needsCtaphid');
+const {needsCtaphid, needsWebDerive} = require('./helpers/needsCtaphid');
 
 module.exports = function thirdParty({describe, it}) {
   describe(thirdParty.name, () => {
@@ -207,6 +207,7 @@ module.exports = function thirdParty({describe, it}) {
         skip('this firmware does not accept the origin this library derives under');
       }
 
+      needsWebDerive(skip, device);
       needsCtaphid(skip, device);
 
       /*

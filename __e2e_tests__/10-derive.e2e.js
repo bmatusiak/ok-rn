@@ -153,7 +153,7 @@ function pressing(log, capabilities = null) {
 const hex = bytes =>
   Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 
-const {needsCtaphid} = require('./helpers/needsCtaphid');
+const {needsCtaphid, needsWebDerive} = require('./helpers/needsCtaphid');
 
 let shared = null;
 async function connected(log) {
@@ -267,6 +267,7 @@ module.exports = function derive({describe, it}) {
     it('derives a public key for a label', async ({log, assert, skip}) => {
       const {okcrypto, status} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
       assert.ok(
         /UNLOCKED/i.test(status),
@@ -312,6 +313,7 @@ module.exports = function derive({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
 
       const first = await okcrypto.derivePublicKey('e2e.example',
@@ -337,6 +339,7 @@ module.exports = function derive({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
       assert.equal('e2e.example'.length, 'e2e.exampyy'.length);
 
@@ -358,6 +361,7 @@ module.exports = function derive({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
 
       const pub = await okcrypto.derivePublicKey('e2e.example',
@@ -409,6 +413,7 @@ module.exports = function derive({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
 
       const first = await okcrypto.deriveSharedSecretFor('vault.example',
@@ -451,6 +456,7 @@ module.exports = function derive({describe, it}) {
        */
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
       const can = device.capabilities && device.capabilities.touchFreeDerive;
       log(`touch-free derive on this firmware: ${can}`);
@@ -585,6 +591,7 @@ module.exports = function derive({describe, it}) {
        */
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
       assert.equal(okcrypto.deviceVault.canPersist, true, 'no store was wired');
 
@@ -661,6 +668,7 @@ module.exports = function derive({describe, it}) {
     it('an export carries sealed blobs and imports back', async ({log, assert, skip}) => {
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
       const press = () => ({
         requirePress: true,
@@ -735,6 +743,7 @@ module.exports = function derive({describe, it}) {
        */
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
 
       /*
@@ -827,6 +836,7 @@ module.exports = function derive({describe, it}) {
        */
       const {device, okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
       const opts = {
         requirePress: true,

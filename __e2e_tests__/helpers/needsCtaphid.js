@@ -1,5 +1,11 @@
 /*
- * needsCtaphid.js - skip, rather than fail, once config mode has been taken.
+ * needsCtaphid.js - the guards that answer "can this device run this AT ALL".
+ *
+ * Two of them, and they are different claims: needsCtaphid says this PASS took
+ * config mode and the work moves to the next one; needsWebDerive says this
+ * FIRMWARE never had the feature. A skip should say which.
+ *
+ * needsCtaphid - skip, rather than fail, once config mode has been taken.
  *
  * CONFIG MODE ENDS THE CTAPHID HALF OF A RUN. The firmware answers the vendor
  * interface from inside it and goes silent on CTAPHID (okcore.cpp:1362-1367
@@ -50,4 +56,31 @@ function needsCtaphid(skip, device) {
   }
 }
 
-module.exports = {needsCtaphid};
+/**
+ * Can this firmware derive a key from a label AT ALL?
+ *
+ * The derive pair is answered by `fido2/ok_extension.cpp` over CTAPHID, and
+ * that file gained DERIVE_PUBLIC_KEY / DERIVE_SHAREDSEC /
+ * DERIVE_PUBLIC_KEY_REQ_PRESS in v2.1.0. v0.2-beta.8 has the file and none of
+ * the feature - 291 lines with two matches for "derive", both in the BSD
+ * licence header, counted in the STAGED tree rather than the tag.
+ *
+ * So the beta does not REFUSE a derive, it ignores it: no branch for the
+ * opcode, nothing staged, and the poll that follows lands on whatever was in
+ * the buffer. That surfaces as "the device did not answer this derive", which
+ * is accurate and reads like a fault.
+ *
+ * Distinct from needsCtaphid above. That one says "this pass took config mode,
+ * come back next pass"; this one says "this firmware never had it". A skip
+ * should say which.
+ */
+function needsWebDerive(skip, device) {
+  const caps = device && device.capabilities;
+  if (caps && caps.webDerive === false) {
+    skip('this firmware has no derive opcodes in its FIDO2 extension - they '
+      + 'arrive in v2.1.0, so there is no key to be had rather than a key '
+      + 'behind a preference');
+  }
+}
+
+module.exports = {needsCtaphid, needsWebDerive};

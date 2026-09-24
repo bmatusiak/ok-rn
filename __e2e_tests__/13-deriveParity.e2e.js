@@ -90,7 +90,7 @@ function pressing(log, capabilities = null) {
   };
 }
 
-const {needsCtaphid} = require('./helpers/needsCtaphid');
+const {needsCtaphid, needsWebDerive} = require('./helpers/needsCtaphid');
 
 let shared = null;
 async function connected(log) {
@@ -127,6 +127,7 @@ module.exports = function deriveParity({describe, it}) {
     it('the shared secret matches one computed independently', async ({log, assert, skip}) => {
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
 
       const pub = await okcrypto.derivePublicKey(LABEL, {
@@ -177,6 +178,7 @@ module.exports = function deriveParity({describe, it}) {
        */
       const {okcrypto} = await connected(log);
       needsVendorOrigin(skip);
+      needsWebDerive(skip, shared && shared.device);
       needsCtaphid(skip, shared && shared.device);
 
       const pub = await okcrypto.derivePublicKey(LABEL, {
