@@ -41,6 +41,25 @@ import java.util.UUID
  * A service does not need advertising to be usable: a central connects and
  * discovers the GATT table. A host looking for this scans for the FIDO UUID or
  * the device name, connects, and finds this service in the table.
+ * ## Measured, 2026-09-24
+ *
+ * After a PURGE and a single fresh pairing with a Windows host - the only way
+ * to test this, because Windows reads a device's service list once at bond
+ * time and serves that cache forever afterwards:
+ *
+ * ```
+ * Pixel 6a  24293486EAAF  - 25 cached nodes
+ *   BR  0x1124   HID keyboard         cached
+ *   LE  0xFFFD   FIDO authenticator   cached
+ *   LE  0c0ffab0 OnlyKey vendor       cached
+ * ```
+ *
+ * Three things at once: the vendor service is DISCOVERABLE without being
+ * advertised - a central walked the GATT table on connect and kept it - and
+ * neither the FIDO service nor the Classic keyboard was displaced by adding
+ * it. Before the re-pair the same tool reported the vendor service MISSING,
+ * which is the correct answer for a bond that predates it.
+ *
  */
 object VendorGatt {
 
