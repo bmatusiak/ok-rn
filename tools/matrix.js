@@ -79,9 +79,45 @@ const WORKING_TREE = 'working-tree';
  */
 const WORKING_TREE_DUO = 'working-tree-duo';
 
+/*
+ * A PINNED RELEASE BUILT AS A DUO, named `<version>-duo`.
+ *
+ * The DUO is a different device, not a setting: 24 slots across 4 profiles
+ * with 3 buttons, and src/buildInfo.ts already gives it its own storage slot
+ * (`<version>-duo`) so it cannot share a flash image with the classic column.
+ *
+ * WHY THIS EXISTS. The matrix had twelve columns and eleven of them were
+ * classic - `working-tree-duo` is built from master, so no PINNED release was
+ * ever built as a DUO. That is exactly the shape of gap that hid a real
+ * regression: v3.0.2, v3.0.3 and v3.0.4 dropped the
+ * `if (onlykeyhw==OK_HW_DUO)` branch from the challenge computation, so a DUO
+ * on the newest signed firmware is asked for digits 4-6 it has no buttons to
+ * press. Master has it back. Nothing here could have caught it.
+ *
+ * stage.js refuses by name when a release carries no DEFINED_HWID override
+ * rather than quietly producing a classic under a DUO's name, so a version
+ * that predates the DUO fails loudly instead of lying.
+ */
+const DUO_SUFFIX = '-duo';
+
+/** `v3.0.4-duo` -> `v3.0.4`, and null for anything that is not one. */
+function duoBase(name) {
+  if (name === WORKING_TREE_DUO || !name.endsWith(DUO_SUFFIX)) return null;
+  return name.slice(0, -DUO_SUFFIX.length);
+}
+
+/*
+ * Which pinned releases are also swept as a DUO by default.
+ *
+ * ONE, deliberately. Every entry is a full native build plus its runs, and the
+ * newest signed release on the hardware whose branch went missing is where the
+ * information is. Add another when there is a question it answers.
+ */
+const DUO_COLUMNS = ['v3.0.4' + DUO_SUFFIX];
+
 function plan() {
   if (wanted.length) return wanted;
-  return [WORKING_TREE, WORKING_TREE_DUO, ...versions.list()];
+  return [WORKING_TREE, WORKING_TREE_DUO, ...versions.list(), ...DUO_COLUMNS];
 }
 
 function run(cmd, argv, env) {
@@ -116,20 +152,27 @@ function run(cmd, argv, env) {
 function envFor(version, {debug = false} = {}) {
   if (version === WORKING_TREE) return {};
   if (version === WORKING_TREE_DUO) return { OKEMU_MODEL: 'duo' };
-  return debug
-    ? { OKEMU_VERSION: version, OKEMU_DEBUG: '1' }
-    : { OKEMU_VERSION: version, OKEMU_PRODUCTION: '1' };
+  /* `<version>-duo` is the same pin, built as the other hardware. */
+  const asDuo = duoBase(version);
+  const pinned = asDuo || version;
+  const build = debug ? { OKEMU_DEBUG: '1' } : { OKEMU_PRODUCTION: '1' };
+  return asDuo
+    ? { OKEMU_VERSION: pinned, ...build, OKEMU_MODEL: 'duo' }
+    : { OKEMU_VERSION: pinned, ...build };
 }
 
 function sweep(version) {
   const env = envFor(version);
   const label = version === WORKING_TREE ? 'working tree'
-    : version === WORKING_TREE_DUO ? 'working tree (DUO)' : version;
+    : version === WORKING_TREE_DUO ? 'working tree (DUO)'
+    : duoBase(version) ? `${duoBase(version)} (DUO)`
+    : version;
 
   if (version !== WORKING_TREE && version !== WORKING_TREE_DUO) {
     let release;
     try {
-      release = versions.load(version);
+      /* A DUO column is the BASE version's script, built as other hardware. */
+      release = versions.load(duoBase(version) || version);
     } catch (e) {
       return { version, outcome: 'no script', detail: e.message.split('\n')[0] };
     }
