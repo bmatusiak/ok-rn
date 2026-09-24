@@ -125,6 +125,35 @@ export function TestingScreen({
   };
 
   /**
+   * Unlock the hard key by pressing its PIN through the debug console.
+   *
+   * A hard key has no on-screen keypad - the app tells you to use the key's own
+   * buttons - but a DEVELOPER build reads button presses from its 4th
+   * interface, the SEREMU console. device.unlock() writes the digits there by
+   * default (see 2c-pressLine.e2e.js), which is how every hard-key suite
+   * unlocks it; this is the same call from a button.
+   *
+   * ONE ATTEMPT PER TAP, no retry. A PIN the key does not hold is a wrong
+   * attempt on real hardware and ten of them wipe it, so the digits being sent
+   * are shown on the button rather than hidden behind it.
+   */
+  const [hardUnlock, setHardUnlock] = useState<string | null>(null);
+  const [unlockBusy, setUnlockBusy] = useState(false);
+
+  const unlockHardKey = async () => {
+    setUnlockBusy(true);
+    try {
+      const {device} = await getOnlyKey('usb');
+      const seen = await device.unlock(TEST_PIN, {timeoutMs: 20000});
+      setHardUnlock(String(seen ?? '').trim() || 'Sent; no reply yet.');
+    } catch (e) {
+      setHardUnlock(String((e as Error)?.message ?? e));
+    } finally {
+      setUnlockBusy(false);
+    }
+  };
+
+  /**
    * The bench key's factory reset: the firmware's own "0C" through the
    * console, which the library names (device.wipeUserspace). It wipes PIN,
    * profiles and slots and reboots the key - what hardKeyProvision does
@@ -271,6 +300,34 @@ export function TestingScreen({
           ) : null}
         </View>
       </Section>
+
+      {/*
+        Three gates. The pipe is open; the console ANSWERS - hard.canPress is
+        the inert-byte probe, which works on a locked key, unlike the
+        capability, which a locked key cannot report; and the key is not
+        already unlocked, because on an unlocked key the same presses do not
+        enter a PIN - they type slot contents.
+      */}
+      {hard.state === 'running' && hard.canPress && hard.device !== 'unlocked' ? (
+        <Section title="Unlock the Hard Key">
+          <Text style={styles.note}>
+            Presses the PIN through the key's debug console, the way the test
+            suites unlock it. One attempt per tap: a PIN this key does not
+            hold counts as a wrong attempt, and ten wipe it.
+          </Text>
+          <View style={styles.row}>
+            <View style={styles.cell}>
+              <Btn
+                title={unlockBusy ? 'Unlocking…' : 'Unlock with PIN ' + TEST_PIN}
+                tone="primary"
+                disabled={unlockBusy}
+                onPress={() => void unlockHardKey()}
+              />
+            </View>
+          </View>
+          {hardUnlock ? <Text style={styles.note}>{hardUnlock}</Text> : null}
+        </Section>
+      ) : null}
 
       {hard.state === 'running' && hard.canPress ? (
         <Section title="Wipe the Hard Key">

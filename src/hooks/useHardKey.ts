@@ -320,12 +320,28 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
           device_.version.parseStatus(String(result?.status ?? '')),
         );
         /*
-         * `=== true`, not "unless false". null means the build has not said,
-         * and probing an unknown build is how a production key got written to
-         * on an interface it does not have.
+         * PROBE WHEN THE BUILD SAYS DEBUG, OR WHEN IT HAS NOT SAID BUT THE
+         * CONSOLE INTERFACE IS THERE.
+         *
+         * This was `debugConsole === true` alone, and that re-created the
+         * deadlock the probe exists to break: a LOCKED key answers
+         * `INITIALIZED` with no version, so debugConsole is null, the probe was
+         * skipped, and canPress stayed false on exactly the key that needed a
+         * press to unlock. Measured 2026-09-24 on a v3.0.5-testc developer
+         * key: "usb connected: ... seremu=3", then "console is write-only".
+         *
+         * The guard it replaced was right about one thing: probing an unknown
+         * build is how a production key got written to on an interface it does
+         * not have. So the fallback asks the USB enumeration instead of the
+         * version - UsbPipe.carries(SEREMU) is true only when the device
+         * actually exposes the console interface, and production firmware is
+         * compiled without it. A build that SAYS it is production is still
+         * never probed.
          */
-        answers =
-          caps.debugConsole === true ? await dev.consoleAnswers() : false;
+        const probe =
+          caps.debugConsole === true ||
+          (caps.debugConsole === null && UsbPipe.carries(IFACE.SEREMU));
+        answers = probe ? await dev.consoleAnswers() : false;
       } catch (e) {
         answers = false;
         log('info', `console probe did not answer: ${String(e)}`);

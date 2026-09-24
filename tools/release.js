@@ -242,6 +242,8 @@ const FORBIDDEN = [
    */
   'Debug console',
   'Wipe the hard key',
+  /* Presses a PIN through the same interface - the third control on it. */
+  'Unlock the Hard Key',
 ];
 /*
  * Two places hold the same bundle and the AGP task that writes each has
