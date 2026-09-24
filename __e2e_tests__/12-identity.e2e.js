@@ -135,7 +135,46 @@ module.exports = function identity({describe, it}) {
         assert.equal(caps.slots, 24, 'a DUO is 24 slots across 4 profiles');
         assert.equal(caps.profiles, 4);
         assert.equal(caps.buttons, 3);
-        assert.equal(caps.challengeFormula, 'duo', 'three buttons means mod 3');
+
+        /*
+         * THE FIRMWARE ITSELF STOPPED DOING MOD 3, and this assertion is where
+         * that shows up rather than something to work around.
+         *
+         * `okcore_prime_user_confirmation()` computes the three digits as
+         * `(temp[n] % 6) + '0' + 1`, with an `if (onlykeyhw==OK_HW_DUO)` branch
+         * taking `% 3` because a DUO has three buttons. That branch is present
+         * v2.1.0 through v3.0.1, ABSENT in v3.0.2, v3.0.3 and v3.0.4, and
+         * restored in master. v3.0.1's okcore.cpp carries 27 OK_HW_DUO
+         * references and v3.0.2's carries 26; the missing one is this branch.
+         *
+         * So on those three SIGNED releases a DUO is asked for digits in 1..6
+         * while holding three buttons, and 4, 5 and 6 cannot be pressed -
+         * exactly the thing the note above warns about, done by the firmware.
+         * P(all three land in 1..3) is 1/8, so seven signing or decryption
+         * attempts in eight cannot be completed.
+         *
+         * A HOST CANNOT REPAIR THAT. It can only predict what will actually be
+         * asked, which is what capabilities() now does. Predicting mod 3 there
+         * would make the host wrong as well, and two wrongs surface as "Error
+         * incorrect challenge was entered" with nothing to say which side
+         * produced it.
+         *
+         * The window is stated here from the VERSION rather than read back from
+         * the capability, so this stays an independent check: if the gate ever
+         * claims 'modern' for a DUO outside v3.0.2..v3.0.4, this fails.
+         */
+        const at = okdevice.version.atLeast;
+        const duoBranchGone =
+          at(info.release, [3, 0, 2]) && !at(info.release, [3, 0, 5]);
+        log(`duo challenge branch present in firmware: ${!duoBranchGone}`);
+
+        assert.equal(
+          caps.challengeFormula, duoBranchGone ? 'modern' : 'duo',
+          duoBranchGone
+            ? 'v3.0.2-v3.0.4 dropped the DUO branch, so the device asks for '
+              + 'digits 1-6 and the host must predict the same'
+            : 'three buttons means mod 3',
+        );
         assert.equal(caps.configModeGesture.button, 1, 'a DUO takes config mode on button 1');
       } else {
         assert.equal(info.model, 'classic');
