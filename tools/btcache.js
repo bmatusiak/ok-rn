@@ -34,9 +34,23 @@ const {execFileSync} = require('child_process');
  * PnP node keyed by UUID, so presence in this list IS the cache entry - there
  * is nothing else to consult and no API that reports "stale".
  */
+/*
+ * A `uuid` here is the FULL 128-bit service UUID as Windows spells it in the
+ * node path. SIG-assigned services live in the Bluetooth base range and are
+ * usually written as four hex digits, so `short` keeps the output readable; a
+ * vendor service has no short form and is matched whole.
+ */
+const BASE = u => `0000${u}-0000-1000-8000-00805F9B34FB`;
+
 const WANTED = [
-  {uuid: '1124', bus: 'BR', what: 'HID keyboard'},
-  {uuid: 'FFFD', bus: 'LE', what: 'FIDO authenticator'},
+  {uuid: BASE('1124'), short: '0x1124', bus: 'BR', what: 'HID keyboard', loadBearing: true},
+  {uuid: BASE('FFFD'), short: '0xFFFD', bus: 'LE', what: 'FIDO authenticator'},
+  /*
+   * The OnlyKey VENDOR interface - slots, keys, config, backup. It is NOT
+   * advertised, so a host only ever finds it by enumerating the GATT table on
+   * connect; that it appears here at all is the proof one did, and kept it.
+   */
+  {uuid: '0c0ffab0-9f1e-4b1d-9c6a-0f0e1d2c3b4a', short: '0c0ffab0', bus: 'LE', what: 'OnlyKey vendor'},
 ];
 
 const ps = script =>
@@ -119,11 +133,11 @@ for (const mac of addresses) {
 
   for (const want of WANTED) {
     const hit = nodes.find(n =>
-      new RegExp(`\\{0000${want.uuid}-0000-1000-8000-00805F9B34FB\\}`, 'i').test(n.instance),
+      new RegExp("\{"+want.uuid+"\}", "i").test(n.instance),
     );
     const mark = hit ? 'cached' : 'MISSING';
-    console.log(`  ${want.bus}  0x${want.uuid}  ${want.what.padEnd(20)} ${mark}`);
-    if (!hit && want.uuid === '1124') poisoned = true;
+    console.log(`  ${want.bus}  ${want.short.padEnd(9)}${want.what.padEnd(20)} ${mark}`);
+    if (!hit && want.loadBearing) poisoned = true;
   }
 }
 
