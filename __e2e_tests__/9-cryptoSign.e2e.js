@@ -612,10 +612,30 @@ module.exports = function cryptoSign({describe, it}) {
         reserved = String(e.message);
       }
       log(`slot 133: ${JSON.stringify(reserved)}`);
-      assert.ok(
-        reserved && /did not answer OKGETPUBKEY/i.test(reserved),
-        'a slot past the end answered something; okcrypto_getpubkey was expected to drop it',
-      );
+
+      /*
+       * NOT TRUE BEFORE v2.1.0. The beta's last branch is `else if
+       * (buffer[6] <= 3)` with no slot condition at all, so slot 133 asked with
+       * a low field byte runs a DERIVATION and answers with 64 bytes
+       * (v0.2-beta.8:okcrypto.cpp:199-202). v2.1.0 added
+       * `buffer[5] == RESERVED_KEY_DERIVATION &&` to it.
+       *
+       * So assert what the firmware in front of us actually does. Asserting
+       * silence everywhere called the beta broken for answering, which is the
+       * shape of mistake this whole matrix exists to catch.
+       */
+      if (shared.device.capabilities.unknownSlotIsSilent) {
+        assert.ok(
+          reserved && /did not answer OKGETPUBKEY/i.test(reserved),
+          'a slot past the end answered something; okcrypto_getpubkey was expected to drop it',
+        );
+      } else {
+        log('before v2.1.0 an unrecognised slot falls into the derive branch');
+        assert.ok(
+          reserved === null || !/did not answer OKGETPUBKEY/i.test(reserved),
+          'this firmware was expected to answer a slot past the end, and did not',
+        );
+      }
     });
 
     it('a key slot can be named, read back, and the name goes with the key', async ({log, assert, skip}) => {
