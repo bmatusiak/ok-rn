@@ -776,6 +776,27 @@ class NativeFidoGattModule(
    */
   private val extraServiceBuilders = mutableListOf<() -> BluetoothGattService>()
 
+  /*
+   * THE ONE CALL that offers the vendor interface. Delete this block and
+   * VendorGattService.kt and the feature is gone.
+   *
+   * It lives HERE, after the list it appends to, and not in the init block at
+   * the top of the class: Kotlin runs property initialisers and init blocks in
+   * DECLARATION ORDER, so calling registerExtraService() from an earlier init
+   * found extraServiceBuilders still null and threw inside the constructor -
+   * which surfaces as TurboModule NativeFidoGatt failing to load and every
+   * import of it evaluating to undefined.
+   *
+   * Unconditional on purpose: a host reads a device's service list ONCE, at
+   * pairing, so a service published only while a switch is on is missing from
+   * every bond made while it was off - permanently, for that bond. Both
+   * services are offered whenever the radio is on; a switch decides what FLOWS
+   * through them, never whether they exist.
+   */
+  init {
+    registerExtraService { VendorGatt.build() }
+  }
+
   /**
    * Offer another service on this peripheral. Call before the server is opened;
    * it takes effect at the next rebuildAndAdvertise().
