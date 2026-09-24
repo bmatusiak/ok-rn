@@ -155,14 +155,25 @@ class NativeFidoGattModule(
    * onDescriptorReadRequest - a host that subscribes and then reads is
    * entitled to see what it wrote, and some check.
    */
+  /*
+   * Notifications are enabled per CHARACTERISTIC. This accessor keeps the FIDO
+   * status characteristic's answer where the existing code expects it; the
+   * vendor service asks about its own.
+   */
   private var notificationsEnabled: Boolean
-    get() = Held.notificationsEnabled
-    set(value) { Held.notificationsEnabled = value }
+    get() = Held.notifyEnabled[FIDO_STATUS_UUID] ?: false
+    set(value) { Held.notifyEnabled[FIDO_STATUS_UUID] = value }
 
-  /** Latched by onServiceAdded; advertising waits for it. */
-  private var serviceAdded: Boolean
-    get() = Held.serviceAdded
-    set(value) { Held.serviceAdded = value }
+  /**
+   * Has EVERY service we registered landed?
+   *
+   * addService() completes at onServiceAdded(); advertising must not start
+   * before all of them have, or a central that connects in the gap caches a
+   * table that is missing one and keeps using it.
+   */
+  private val serviceAdded: Boolean
+    get() = Held.servicesExpected.isNotEmpty() &&
+      Held.servicesLanded.containsAll(Held.servicesExpected)
 
   /* The JVM names are set because the spec already owns getState(). */
   @get:JvmName("heldState")
@@ -477,8 +488,25 @@ class NativeFidoGattModule(
        * Measured at 29ms between the two on this handset - small, and not
        * zero. serviceAdded is latched by the callback below.
        */
-      serviceAdded = false
-      server.addService(buildFidoService())
+      /*
+       * REGISTER SERIALLY, and await them all before advertising.
+       *
+       * Android completes one addService() at a time, so each is sent only once
+       * the previous has landed at onServiceAdded(). extraServices() is where a
+       * second service joins - see registerExtraService().
+       */
+      Held.servicesExpected.clear()
+      Held.servicesLanded.clear()
+
+      for (svc in listOf(buildFidoService()) + extraServices()) {
+        Held.servicesExpected.add(svc.uuid)
+        server.addService(svc)
+        var landed = 0
+        while (!Held.servicesLanded.contains(svc.uuid) && landed < SERVICE_ADD_TIMEOUT_MS) {
+          Thread.sleep(SERVICE_ADD_POLL_MS.toLong())
+          landed += SERVICE_ADD_POLL_MS
+        }
+      }
 
       val leAdvertiser = adapter.bluetoothLeAdvertiser
         ?: throw IllegalStateException("This device cannot act as a BLE peripheral")
@@ -493,7 +521,7 @@ class NativeFidoGattModule(
       }
       if (!serviceAdded) {
         throw IllegalStateException(
-          "the FIDO service did not register within ${SERVICE_ADD_TIMEOUT_MS}ms",
+          "not every GATT service registered within ${SERVICE_ADD_TIMEOUT_MS}ms",
         )
       }
 
@@ -732,6 +760,33 @@ class NativeFidoGattModule(
     mtu = DEFAULT_MTU
   }
 
+  /*
+   * EXTRA SERVICES, registered on the same server before advertising starts.
+   *
+   * A second service must live here rather than on a server of its own: this
+   * one is what FidoGattService (the foreground service) is wired to, what the
+   * watchdog reasserts, and what holds the advertiser and the notify queue.
+   * Standing up a second server is what "stop rebuilding a GATT server that was
+   * already fine" was about - Windows keeps a PnP device node per service and
+   * stops trusting one that comes and goes.
+   *
+   * Registered through a list so the vendor service can be added by dropping in
+   * one file and one call, and REMOVED by deleting them. Nothing here knows
+   * what the extra services are.
+   */
+  private val extraServiceBuilders = mutableListOf<() -> BluetoothGattService>()
+
+  /**
+   * Offer another service on this peripheral. Call before the server is opened;
+   * it takes effect at the next rebuildAndAdvertise().
+   */
+  fun registerExtraService(build: () -> BluetoothGattService) {
+    extraServiceBuilders.add(build)
+  }
+
+  private fun extraServices(): List<BluetoothGattService> =
+    extraServiceBuilders.map { it() }
+
   private fun buildFidoService(): BluetoothGattService {
     val service = BluetoothGattService(FIDO_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
 
@@ -804,9 +859,14 @@ class NativeFidoGattModule(
   private val gattCallback = object : BluetoothGattServerCallback() {
 
     override fun onServiceAdded(status: Int, service: BluetoothGattService) {
-      serviceAdded = status == BluetoothGatt.GATT_SUCCESS
-      if (!serviceAdded) {
-        setState(STATE_ERROR, "the FIDO service was rejected with status $status")
+      /*
+       * WHICH service landed, not merely that one did. With more than one
+       * registered, ignoring the argument latches on whichever arrives first.
+       */
+      if (status == BluetoothGatt.GATT_SUCCESS) {
+        Held.servicesLanded.add(service.uuid)
+      } else {
+        setState(STATE_ERROR, "service ${service.uuid} was rejected with status $status")
       }
     }
 
@@ -817,8 +877,12 @@ class NativeFidoGattModule(
         setState(STATE_CONNECTED, "central connected")
       } else {
         connectedDevice = null
-        notificationsEnabled = false
-        assembler.reset()
+        /*
+         * The central is gone, so nothing is subscribed to anything. Clearing
+         * the whole map rather than one flag keeps a second notify
+         * characteristic from surviving a disconnect as enabled.
+         */
+        Held.notifyEnabled.clear()
         clearNotifications("The central disconnected")
         /*
          * Android STOPS ADVERTISING when a central connects, and does not
@@ -906,7 +970,13 @@ class NativeFidoGattModule(
       descriptor: BluetoothGattDescriptor,
     ) {
       val value = if (descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
-        if (notificationsEnabled) {
+        /*
+         * Answer for THIS characteristic. Keyed on the descriptor's owner
+         * rather than a single flag, so a second notify characteristic cannot
+         * be answered with the first one's subscription state.
+         */
+        val on = Held.notifyEnabled[descriptor.characteristic?.uuid] ?: false
+        if (on) {
           BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
         } else {
           BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
@@ -927,8 +997,12 @@ class NativeFidoGattModule(
       value: ByteArray,
     ) {
       if (descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
-        notificationsEnabled =
-          value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        /* Per characteristic, so two notify characteristics cannot overwrite
+         * one another's subscription. */
+        descriptor.characteristic?.uuid?.let { owner ->
+          Held.notifyEnabled[owner] =
+            value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        }
       }
       if (responseNeeded) {
         gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
@@ -1405,8 +1479,28 @@ class NativeFidoGattModule(
       var notifyInFlight = false
       var pendingRespond: Promise? = null
       val notifyLock = Any()
-      @Volatile var notificationsEnabled = false
-      @Volatile var serviceAdded = false
+      /*
+       * WHICH SERVICES WE REGISTERED, and which have landed.
+       *
+       * This was one boolean. addService() is asynchronous and completes at
+       * onServiceAdded(), which receives the service that landed and used to
+       * ignore it - so with a second service the flag would latch on whichever
+       * arrived first, and advertising could begin over a half-built table.
+       * Hosts CACHE what they discover and Windows keeps serving that table
+       * from a PnP node afterwards, so a race here poisons a pairing until the
+       * device record is removed by hand.
+       */
+      val servicesExpected: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+      val servicesLanded: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+      /*
+       * CCCD state PER CHARACTERISTIC, not per server.
+       *
+       * This was one boolean too. A second notify characteristic would have
+       * overwritten the first one's subscription state, so a host subscribed to
+       * one would be answered about the other - and notifications sent, or
+       * withheld, on the strength of the wrong answer.
+       */
+      val notifyEnabled: ConcurrentHashMap<UUID, Boolean> = ConcurrentHashMap()
       @Volatile var state: String = STATE_IDLE
       @Volatile var mtu: Int = DEFAULT_MTU
       @Volatile var config = AuthenticatorConfig()
