@@ -43,6 +43,21 @@ function cut(text) {
   if (to === -1) throw new Error(`found ${BEGIN} but no ${END}; the run was cut short`);
 
   /*
+   * The runner INDENTS every line it streams and changes nothing else, so
+   * trimming is the whole of it.
+   *
+   * This first took the last whitespace-separated token, on the theory that a
+   * backup line is base64 or a '--' marker and never contains a space. The
+   * BEGIN marker is `-----BEGIN ONLYKEY BACKUP-----`, which does, so that
+   * produced "BACKUP-----" - caught by the header check below rather than
+   * written to a fixture, which is why that check is there.
+   */
+  return lines
+    .slice(from + 1, to)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join('\n');
+  /*
    * The runner prefixes every line it streams, so take what follows the last
    * prefix rather than the raw line. A backup line is base64 or a '--' marker
    * and never contains a space, which is what makes this unambiguous.
