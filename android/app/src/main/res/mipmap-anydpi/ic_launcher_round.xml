@@ -4,7 +4,7 @@
     <item android:width="48dp" android:height="48dp">
         <shape android:shape="oval"><solid android:color="@color/ic_launcher_background" /></shape>
     </item>
-    <item android:width="30dp" android:height="24dp" android:gravity="center">
+    <item android:width="27dp" android:height="22dp" android:gravity="center">
         <bitmap android:src="@drawable/ic_o_mark" android:tint="#FFFFFF" android:filter="true" />
     </item>
 </layer-list>

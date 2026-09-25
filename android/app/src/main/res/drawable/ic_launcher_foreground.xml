@@ -3,12 +3,12 @@
   The adaptive icon's foreground: assets/O.png (copied to
   drawable-nodpi/ic_o_mark.png), tinted white. The layer is 108dp and only the
   central 66dp is guaranteed visible under every launcher mask, so the mark is
-  drawn at 46 x 37dp (its own 257:205 aspect), centred - small enough that
+  drawn at 42 x 33dp (its own 257:205 aspect), centred - small enough that
   its corners stay inside the 66dp safe circle (at 60 x 48 the round mask cut
   the frame off, 2026-09-25).
 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:width="46dp" android:height="37dp" android:gravity="center">
+    <item android:width="42dp" android:height="33dp" android:gravity="center">
         <bitmap android:src="@drawable/ic_o_mark" android:tint="#FFFFFF" android:filter="true" />
     </item>
 </layer-list>
