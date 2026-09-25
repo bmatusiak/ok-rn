@@ -26,6 +26,8 @@
  *
  *   node tools/release.js            clean, production, assembleRelease
  *   node tools/release.js --keep     skip the wipe (for iterating; NOT a release)
+ *   node tools/release.js --signer usb   sign with a key on USB (apk-signer's backends;
+ *                                        default emulated). OKSIGN_PRESSER=pi|human
  */
 'use strict';
 
@@ -303,6 +305,11 @@ const signerTool = fs.existsSync(path.join(SIGNER_DIR, 'cli.js'))
   ? require(path.join(SIGNER_DIR, 'cli.js'))
   : null;
 
+const SIGNER_BACKEND = (() => {
+  const at = process.argv.indexOf('--signer');
+  return at === -1 ? 'emulated' : process.argv[at + 1];
+})();
+
 let signed = false;
 if (process.argv.includes('--no-sign')) {
   /* nothing: Gradle's signature stands */
@@ -316,7 +323,9 @@ if (process.argv.includes('--no-sign')) {
      * and the helper's progress, and when a sign stalls waiting for a press
      * that output is the only thing that says so.
      */
-    signerTool.sign(apk, 'emulated');
+    /* Which apk-signer backend: the emulated key by default; `usb` is a key on
+     * USB - a hard key, or the Raspberry Pi presenting the emulator. */
+    signerTool.sign(apk, SIGNER_BACKEND);
     signed = true;
   } catch (err) {
     console.error(`release: signing failed - ${err.message}`);
@@ -386,7 +395,7 @@ try {
   signer = `(apksigner could not verify: ${String(err.message).split('\n')[0]})`;
 }
 say(`release: signer     ${signer}`);
-say(`release: signed by  ${signed ? 'the OnlyKey (apk-signer)' : 'gradle, debug keystore (--no-sign or no apk-signer/)'}`);
+say(`release: signed by  ${signed ? `the OnlyKey (apk-signer, ${SIGNER_BACKEND})` : 'gradle, debug keystore (--no-sign or no apk-signer/)'}`);
 
 /*
  * THE TEMPLATE KEY IS NOT AN IDENTITY. android/app/debug.keystore is the
