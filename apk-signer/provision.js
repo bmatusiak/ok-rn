@@ -33,78 +33,25 @@
  */
 'use strict';
 
-const crypto = require('crypto');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
 
 const { open, lock, requireKit, LOCAL } = require('./session');
 const okdevice = require('node-onlykey-lib/device');
 
-const OK_RN = path.resolve(__dirname, '..');
-const KEYSTORE = path.join(OK_RN, 'android', 'app', 'debug.keystore');
 const STORAGE = path.join(LOCAL, 'storage');
 const CERT_OUT = path.join(LOCAL, 'signer.crt.pem');
 const DIGEST_OUT = path.join(STORAGE, '.fixture-digest');
 
 /* The debug keystore's own, and they are not secrets - they are in the file. */
-const STORE_PASS = 'android';
-const ALIAS = 'androiddebugkey';
 
 /** RSA slot 2. The library's convention is 1 = decryption, 2 = signature. */
 const SLOT = okdevice.keys.ROLE_SLOT.SIGNATURE;
 
 function say(...a) { console.error('[provision]', ...a); }
 
-function tool(name) {
-  const home = process.env.JAVA_HOME;
-  return home ? path.join(home, 'bin', name) : name;
-}
-
-/**
- * p, q and the certificate out of debug.keystore.
- *
- * NOT `openssl rsa -text`: that prints the primes as formatted hex that has to
- * be scraped. Node reads them straight out as a JWK, which is what
- * 19-rsa-keys.test.js does too - and for RSA-2048 they come back as exactly
- * the 128 bytes prepareKey wants.
- */
-function extractKey() {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'oksign-'));
-  const p12 = path.join(tmp, 'k.p12');
-  const keyPem = path.join(tmp, 'k.pem');
-  const certPem = path.join(tmp, 'c.pem');
-  const pass = crypto.randomBytes(18).toString('base64url');
-
-  try {
-    execFileSync(tool('keytool'), [
-      '-importkeystore', '-noprompt',
-      '-srckeystore', KEYSTORE, '-srcstorepass', STORE_PASS,
-      '-srcalias', ALIAS, '-srckeypass', STORE_PASS,
-      '-destkeystore', p12, '-deststoretype', 'PKCS12',
-      '-deststorepass', pass, '-destkeypass', pass,
-    ], { stdio: ['ignore', 'ignore', 'pipe'] });
-
-    execFileSync('openssl', ['pkcs12', '-in', p12, '-passin', `pass:${pass}`,
-      '-nodes', '-nocerts', '-out', keyPem], { stdio: ['ignore', 'ignore', 'pipe'] });
-    execFileSync('openssl', ['pkcs12', '-in', p12, '-passin', `pass:${pass}`,
-      '-nokeys', '-clcerts', '-out', certPem], { stdio: ['ignore', 'ignore', 'pipe'] });
-
-    const jwk = crypto.createPrivateKey(fs.readFileSync(keyPem, 'utf8'))
-      .export({ format: 'jwk' });
-
-    return {
-      p: Buffer.from(jwk.p, 'base64url'),
-      q: Buffer.from(jwk.q, 'base64url'),
-      n: Buffer.from(jwk.n, 'base64url'),
-      cert: fs.readFileSync(certPem, 'utf8'),
-    };
-  } finally {
-    /* The private key never outlives this function. */
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
-}
+/* The debug keystore's key - shared with provision-usb.js (see keystore.js). */
+const { extractKey } = require('./keystore');
 
 async function main() {
   const release = lock();
