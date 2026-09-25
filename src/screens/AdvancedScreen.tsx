@@ -55,8 +55,13 @@ const ONE_WAY_SETTINGS: {
     name: 'webcryptPolicy',
     word: 'BROWSER',
     consequence:
-      'Saving this ONCE - even with both boxes left off - permanently ends ' +
-      'the way older firmware decided this from the SSH/GPG setting. The key ' +
+      'Saving this ONCE permanently ends the way older firmware decided this ' +
+      'from the SSH/GPG setting. Until then the key lets the browser use ' +
+      'stored keys, so the first box starts ticked - untick it and save, and ' +
+      'web PGP turns off until you tick it and save again. The second box ' +
+      'cannot be read from the key: ' +
+      'if the extension was turned off the old way, saving turns it back on ' +
+      'unless you tick it. The key ' +
       'cannot be put back to "never configured", and a backup does not carry ' +
       'this setting, so restoring one silently returns it to the old ' +
       'behaviour rather than to what you chose.',
@@ -181,6 +186,7 @@ export function AdvancedScreen({
    */
   const [oneWayTable, setOneWayTable] = useState<
     {name: string; label: string; max: number; note?: string; oneWay?: boolean;
+     unwritten?: number;
      bits?: Record<string, string>; choices?: Record<string, string>}[]
   >([]);
   const keyLocked = emu.device !== 'unlocked';
@@ -437,6 +443,7 @@ function OneWaySetting({
     label: string;
     max: number;
     note?: string;
+    unwritten?: number;
     bits?: Record<string, string>;
     choices?: Record<string, string>;
   };
@@ -445,7 +452,14 @@ function OneWaySetting({
   disabled: boolean;
   onSet: (value: number) => Promise<void>;
 }) {
-  const [value, setValue] = useState(0);
+  /*
+   * THE FORM STARTS WHERE THE KEY IS, not at 0. None of these can be read
+   * back, so the best known state is what the firmware does before the field
+   * is ever written - the library's `unwritten`. For field 31 that is "stored
+   * keys allowed": starting at 0 made an untouched save turn web PGP off, for
+   * good (0c-coder's OnlyKey-App fixed the same in 146e585).
+   */
+  const [value, setValue] = useState(pref.unwritten ?? 0);
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const confirmed = typed.trim().toUpperCase() === word;
