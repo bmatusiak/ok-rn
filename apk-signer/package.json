@@ -1,0 +1,17 @@
+{
+  "name": "apk-signer",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Signs ok-rn's apk with an OnlyKey. An ok-rn TOOL, not part of the app - experimental and removable.",
+  "bin": {
+    "apk-signer": "cli.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "build": "build.cmd"
+  },
+  "dependencies": {
+    "@bmatusiak/rectify": "github:bmatusiak/rectify",
+    "node-onlykey-lib": "file:../../node-onlykey-lib"
+  }
+}

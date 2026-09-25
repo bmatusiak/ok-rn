@@ -35,11 +35,11 @@ android/app/debug/
 !android/app/debug.keystore
 # Signing credentials - never commit
 android/keystore.properties
-# Everything tools/oksign generates: compiled classes, the provisioned
+# Everything apk-signer generates: compiled classes, the provisioned
 # emulated device (flash.bin HOLDS THE SIGNING KEY), certificates and the
 # build lock. One directory rather than a pattern per artifact, so nothing
 # added later can escape by being a name nobody listed.
-tools/oksign/.local/
+apk-signer/.local/
 android/app/google-services.json
 
 # ---- IDE / OS ----

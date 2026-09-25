@@ -42,7 +42,7 @@ const { execFileSync } = require('child_process');
 const { open, lock, requireKit, LOCAL } = require('./session');
 const okdevice = require('node-onlykey-lib/device');
 
-const OK_RN = path.resolve(__dirname, '..', '..');
+const OK_RN = path.resolve(__dirname, '..');
 const KEYSTORE = path.join(OK_RN, 'android', 'app', 'debug.keystore');
 const STORAGE = path.join(LOCAL, 'storage');
 const CERT_OUT = path.join(LOCAL, 'signer.crt.pem');

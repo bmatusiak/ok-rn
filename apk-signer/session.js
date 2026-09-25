@@ -57,7 +57,7 @@ const okcryptoPlugin = require('node-onlykey-lib/plugins/okcrypto');
 
 const { kitPipe } = require('./kitPipe');
 
-/** tools/oksign/.local - everything this tool generates, gitignored. */
+/** apk-signer/.local - everything this tool generates, gitignored. */
 const LOCAL = path.join(__dirname, '.local');
 
 /**
@@ -69,8 +69,8 @@ const LOCAL = path.join(__dirname, '.local');
  */
 function kitRoot() {
   if (process.env.OKT_ROOT) return path.resolve(process.env.OKT_ROOT);
-  /* tools/oksign -> ok-rn -> the workspace holding all the checkouts. */
-  return path.resolve(__dirname, '..', '..', '..', 'onlykey-testing');
+  /* apk-signer -> ok-rn -> the workspace holding all the checkouts. */
+  return path.resolve(__dirname, '..', '..', 'onlykey-testing');
 }
 
 function requireKit() {
@@ -99,7 +99,7 @@ function requireKit() {
 function assertEmulatorBuilt() {
   const root = process.env.OKEMU_ROOT
     ? path.resolve(process.env.OKEMU_ROOT)
-    : path.resolve(__dirname, '..', '..', '..', 'node-onlykey-emulator', 'emulator');
+    : path.resolve(__dirname, '..', '..', 'node-onlykey-emulator', 'emulator');
   const addon = path.join(root, 'build', 'Release', 'onlykey_emulator.node');
   if (!fs.existsSync(addon)) {
     throw new Error(

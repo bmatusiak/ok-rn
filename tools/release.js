@@ -288,37 +288,35 @@ if (!fs.existsSync(apk)) {
  * Skippable with --no-sign, because a build that cannot finish because a
  * signer is unavailable is worse than one that says plainly it is unsigned.
  */
-const OKSIGN = path.join(__dirname, 'oksign');
-const SIGNER_CERT = path.join(OKSIGN, '.local', 'signer.crt.pem');
+/*
+ * THE SIGNER IS apk-signer/, A SEPARATE TOOL - optional and removable.
+ *
+ * It was tools/oksign. It moved to its own npm sub-project because it is not
+ * the app: nothing in src/, App.tsx, android/app or __e2e_tests__ uses it,
+ * and it carries dependencies the app should not (a JDK provider, the
+ * onlykey-testing kit, and for hard keys node-hid). This script is its only
+ * caller. With the folder gone the apk keeps Gradle's debug-keystore
+ * signature - the same outcome as --no-sign - and this says so.
+ */
+const SIGNER_DIR = path.join(ROOT, 'apk-signer');
+const signerTool = fs.existsSync(path.join(SIGNER_DIR, 'cli.js'))
+  ? require(path.join(SIGNER_DIR, 'cli.js'))
+  : null;
 
 let signed = false;
-if (!process.argv.includes('--no-sign')) {
+if (process.argv.includes('--no-sign')) {
+  /* nothing: Gradle's signature stands */
+} else if (!signerTool) {
+  say('release: apk-signer/ is not present, so the apk keeps Gradle\'s debug-keystore signature');
+} else {
   say('release: signing with the OnlyKey (expect two button presses, v2 and v3)');
   try {
     /*
-     * Not run(): that one prefixes gradlew. apksign.cmd is its own program -
-     * see its header for why apksigner cannot be invoked through the stock
-     * launcher when a custom provider is involved.
-     *
-     * stderr inherited rather than captured: it carries the device console
+     * stderr is inherited inside apk-signer: it carries the device console
      * and the helper's progress, and when a sign stalls waiting for a press
      * that output is the only thing that says so.
      */
-    execSync([
-      JSON.stringify(path.join(OKSIGN, 'apksign.cmd')),
-      'sign', '--ks', 'NONE', '--ks-type', 'ONLYKEY',
-      '--ks-provider-class', 'com.okrn.signer.OnlyKeyProvider',
-      '--ks-provider-arg', JSON.stringify(SIGNER_CERT),
-      '--ks-pass', 'pass:onlykey',
-      '--min-sdk-version', '24', '--max-sdk-version', '36',
-      JSON.stringify(apk),
-    ].join(' '), {
-      cwd: ROOT,
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'inherit'],
-      env: {...process.env, OKSIGN_CMD: path.join(OKSIGN, 'backend-device.cmd')},
-    });
+    signerTool.sign(apk, 'emulated');
     signed = true;
   } catch (err) {
     console.error(`release: signing failed - ${err.message}`);
@@ -369,8 +367,16 @@ if (leaked.length) {
  */
 let signer = '(not checked)';
 try {
+  /*
+   * Asked of the STOCK apksigner, not apk-signer's wrapper: verifying needs no
+   * provider, and the report has to work when apk-signer/ has been removed.
+   */
+  const sdk = process.env.ANDROID_HOME || path.join(process.env.LOCALAPPDATA || '', 'Android', 'Sdk');
+  const tools = fs.readdirSync(path.join(sdk, 'build-tools')).sort();
+  const apksigner = path.join(sdk, 'build-tools', tools[tools.length - 1],
+    process.platform === 'win32' ? 'apksigner.bat' : 'apksigner');
   const out = execSync(
-    `${JSON.stringify(path.join(OKSIGN, 'apksign.cmd'))} verify --print-certs ${JSON.stringify(apk)}`,
+    `${JSON.stringify(apksigner)} verify --print-certs ${JSON.stringify(apk)}`,
     {cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe']},
   );
   const dn = /certificate DN: (.+)/.exec(out);
@@ -380,7 +386,7 @@ try {
   signer = `(apksigner could not verify: ${String(err.message).split('\n')[0]})`;
 }
 say(`release: signer     ${signer}`);
-say(`release: signed by  ${signed ? 'the OnlyKey' : 'gradle (--no-sign)'}`);
+say(`release: signed by  ${signed ? 'the OnlyKey (apk-signer)' : 'gradle, debug keystore (--no-sign or no apk-signer/)'}`);
 
 /*
  * THE TEMPLATE KEY IS NOT AN IDENTITY. android/app/debug.keystore is the

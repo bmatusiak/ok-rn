@@ -20,7 +20,7 @@ set HERE=%~dp0
 set CLASSES=%HERE%.local\classes
 
 if not exist "%CLASSES%" (
-  echo apksign: the provider is not built - run tools\oksign\build.cmd first 1>&2
+  echo apksign: the provider is not built - run apk-signer\build.cmd first 1>&2
   exit /b 1
 )
 
@@ -46,7 +46,7 @@ set SDK=
 if defined ANDROID_HOME set SDK=%ANDROID_HOME%
 if not defined SDK (
   rem android\local.properties is what Gradle itself reads.
-  for /f "tokens=1,* delims==" %%a in ('findstr /b "sdk.dir" "%HERE%..\..\android\local.properties" 2^>nul') do set SDK=%%b
+  for /f "tokens=1,* delims==" %%a in ('findstr /b "sdk.dir" "%HERE%..\android\local.properties" 2^>nul') do set SDK=%%b
 )
 if not defined SDK set SDK=%LOCALAPPDATA%\Android\Sdk
 rem Gradle escapes the colon in local.properties as C\:/Users/...

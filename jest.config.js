@@ -40,4 +40,8 @@ module.exports = {
    * reads like a missing library dependency.
    */
   modulePaths: ['<rootDir>/node_modules'],
+
+  /* apk-signer/ is a separate project with its own `npm test`. */
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/apk-signer/'],
+  modulePathIgnorePatterns: ['<rootDir>/apk-signer/'],
 };

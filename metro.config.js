@@ -64,7 +64,16 @@ const config = {
      * removes a whole class of "the sweep died halfway" that has no other
      * explanation on the terminal.
      */
-    blockList: /android[/\\](?:okemu[/\\](?:\.cxx|\.stage)|[^/\\]+[/\\]build)[/\\]/,
+    blockList: [
+      /android[/\\](?:okemu[/\\](?:\.cxx|\.stage)|[^/\\]+[/\\]build)[/\\]/,
+      /*
+       * apk-signer/ IS NOT THE APP - a separate npm sub-project that signs the
+       * apk (see its README). It has its own node_modules, and signing creates
+       * and deletes run markers under apk-signer/.local - the same "a watched
+       * directory vanished" that took Metro down above.
+       */
+      /[/\\]apk-signer[/\\]/,
+    ],
 
     /*
      * THE TESTING SCREEN IS NOT IN A RELEASE BUNDLE.
