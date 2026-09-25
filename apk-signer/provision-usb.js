@@ -59,6 +59,28 @@ async function main() {
   const {PINS} = requireKit();
   const pin = PINS.primary;
   const enterDigits = (digits) => presser.press(String(digits).split(''));
+  const human = presser.name === 'you';
+
+  /*
+   * A PERSON'S PIN NEVER PASSES THROUGH THIS PROGRAM. With press.js on the
+   * Pi the emulated key uses the kit's PIN, and the library drives the
+   * unlock. With a person, they enter their own PIN on the key's buttons and
+   * this only watches for the key to say UNLOCKED - it neither knows the PIN
+   * nor prints one.
+   */
+  async function unlockKey(session) {
+    if (!human) {
+      await session.device.unlock(pin, {enterDigits, timeoutMs: 60000});
+      return;
+    }
+    await presser.press(['your PIN']);
+    for (let i = 0; i < 120; i++) {
+      const now = String((await session.device.connect()).status).trim();
+      if (/^UNLOCKED/i.test(now)) return;
+      await sleep(1000);
+    }
+    throw new Error('the key did not report UNLOCKED within two minutes');
+  }
 
   say('reading debug.keystore');
   const key = extractKey();
@@ -76,6 +98,9 @@ async function main() {
   let {s, status} = await connected();
   say(`key says ${status}; buttons pressed by ${presser.name}`);
   try {
+    if (/^UNINITIALIZED/i.test(status) && human) {
+      throw new Error('this key has no PIN - set one in the app first; a PIN of yours is never set from here');
+    }
     if (/^UNINITIALIZED/i.test(status)) {
       say('no PIN yet - setting one');
       await s.device.setPin(pin, {enterDigits, timeoutMs: 60000});
@@ -92,11 +117,11 @@ async function main() {
       say(`key says ${status}`);
     }
     say('unlocking');
-    await s.device.unlock(pin, {enterDigits, timeoutMs: 60000});
+    await unlockKey(s);
 
     say('entering config mode (it relocks the key)');
     await s.device.enterConfigMode({hold: (b, t) => presser.hold(b, t)});
-    await s.device.unlock(pin, {enterDigits, timeoutMs: 60000});
+    await unlockKey(s);
 
     say('stored challenge mode = 1 (one press per signature)');
     await s.device.setPreference('storedChallengeMode', 1);
@@ -116,7 +141,7 @@ async function main() {
   ({s, status} = await connected());
   try {
     say(`key says ${status}; unlocking`);
-    await s.device.unlock(pin, {enterDigits, timeoutMs: 60000});
+    await unlockKey(s);
     const pub = await s.device.getPublicKey(SLOT, {bytes: 256, keyType: 0});
     const got = Buffer.from(pub.bytes || pub);
     if (!got.equals(key.n)) {
