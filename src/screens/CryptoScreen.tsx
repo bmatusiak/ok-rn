@@ -580,7 +580,16 @@ export function CryptoScreen({
       {/* Testing mode only - see the `testing` prop. */}
       {testing ? (
       <Section title={`Derived secrets — ${keyName}`}
+        right={
+          <View style={styles.testingTag}>
+            <Text style={styles.testingTagText}>Testing mode</Text>
+          </View>
+        }
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
+        <Text style={styles.testingNote}>
+          A development feature: the OnlyKey web app does not ship it yet, and
+          its passwords change when a key updates to firmware 3.0.5.
+        </Text>
         <Text style={styles.body}>
           The key computes a secret from a label and a private key that never
           leaves it. Nothing is stored: the same label always gives the same
@@ -957,6 +966,18 @@ const styles = StyleSheet.create({
 
   body: {color: theme.textSecondary, fontSize: theme.fontSize, lineHeight: theme.lineHeight},
   note: {color: theme.textDim, fontSize: 12, lineHeight: 18},
+  /* The testing banner's colours (App.tsx styles.testing), so the panel
+   * reads as part of the same mode. */
+  testingTag: {
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderRadius: theme.radius,
+    borderWidth: 1,
+    borderColor: theme.warn,
+    backgroundColor: 'rgba(252, 211, 77, 0.10)',
+  },
+  testingTagText: {color: theme.warn, fontSize: 11, fontWeight: '600'},
+  testingNote: {color: theme.warn, fontSize: 12, lineHeight: 18, marginBottom: 6},
   status: {color: theme.ok, fontSize: 13, lineHeight: 20},
   error: {color: theme.error, fontSize: 13, lineHeight: 20},
 
