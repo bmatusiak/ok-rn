@@ -93,7 +93,7 @@ class FidoGattService : Service() {
       Notification.Builder(this)
     }
     return builder
-      .setSmallIcon(R.mipmap.ic_launcher)
+      .setSmallIcon(R.drawable.ic_stat_o)
       .setContentTitle("Acting as a security key")
       .setContentText("A paired computer can ask this phone to sign in. Tap to open.")
       .setContentIntent(open)
