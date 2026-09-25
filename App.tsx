@@ -447,6 +447,12 @@ function Shell() {
   const [openSlot, setOpenSlot] = useState<{id: string; index: number} | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [phase, setPhase] = useState<Phase>('splash');
+  /*
+   * The splash plays its animation to the end (AnimatedLogo, 3 s - the
+   * owner's choice) even when the key boots faster, so it cannot be cut off
+   * half-spread. Leaving it waits for this AND for the firmware to settle.
+   */
+  const [splashDone, setSplashDone] = useState(false);
 
   /*
    * The door opens and closes on what the DEVICE says, not on a local flag.
@@ -480,7 +486,7 @@ function Shell() {
     }
     setPhase(prev => {
       // Leaving the splash needs the firmware settled, either way it went.
-      if (prev === 'splash' && emu.state !== 'stopped' && emu.state !== 'starting') {
+      if (prev === 'splash' && splashDone && emu.state !== 'stopped' && emu.state !== 'starting') {
         return 'login';
       }
       // It relocked while we were inside.
@@ -507,7 +513,7 @@ function Shell() {
      * 'unlocked' since the PIN landed - so without it the door would never
      * reopen and the check button would look dead.
      */
-  }, [testing.enabled, emu.device, emu.state, configMode]);
+  }, [testing.enabled, emu.device, emu.state, configMode, splashDone]);
 
   const ready = phase === 'main';
 
@@ -698,7 +704,7 @@ function Shell() {
 
         <View style={styles.body} key={sessionEpoch}>
           {phase === 'splash' ? (
-            <SplashScreen />
+            <SplashScreen onDone={() => setSplashDone(true)} />
           ) : phase === 'login' ? (
             <LoginScreen
               device={emu.device}

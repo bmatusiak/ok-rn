@@ -1,22 +1,27 @@
 import React from 'react';
 import {ActivityIndicator, StyleSheet, Text, View} from 'react-native';
-import {Logo} from '../ui/Logo';
+import {AnimatedLogo} from '../ui/AnimatedLogo';
 import {theme} from '../ui/theme';
 
 /**
- * Held while the firmware boots.
+ * Held while the firmware boots - and for the logo's three seconds.
  *
  * Not decoration: setup() runs on its own thread and takes a moment to reach
  * the main loop, and every screen after this one asks the device something. A
  * login screen drawn before the device can answer shows "unknown" and then
  * flickers, which reads as a bug.
+ *
+ * The logo opens as "OK" and spreads into the full wordmark (AnimatedLogo:
+ * one second of OK, one of spreading, one of ONLYKEY). onDone fires at the
+ * end of that, and App.tsx leaves the splash only once it has AND the
+ * firmware has settled - so the animation is never cut off half-way.
  */
-export function SplashScreen({message}: {message?: string}) {
+export function SplashScreen({message, onDone}: {message?: string; onDone?: () => void}) {
   return (
     <View style={styles.root}>
-      <Logo height={48} />
+      <AnimatedLogo height={48} onDone={onDone} />
       <ActivityIndicator color={theme.textDim} style={styles.spinner} />
-      <Text style={styles.message}>{message ?? 'Starting the key\u2026'}</Text>
+      <Text style={styles.message}>{message ?? 'Starting the key…'}</Text>
     </View>
   );
 }
