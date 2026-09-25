@@ -81,6 +81,21 @@ module.exports = {
   /* Recorded from a production stage, which is how this release ships. */
   expect: { digest: 'cdd893849edb' },
 
+  /*
+   * Needed although this release SHIPS WITH DEBUG ON - it is the only pin whose
+   * onlykey.h has `#define DEBUG` live (v2.1.1 and v3.0.0 comment it out). The
+   * matrix builds releases with OKEMU_PRODUCTION=1, which turns the gate off,
+   * and then webcryptcheck() reads `buffer[0]` through the NULL that
+   * ctap.cpp's add_existing_user_info() passes it. Without this the firmware
+   * thread took SIGSEGV at device.cpp's OKCONNECT branch during thirdParty's
+   * example.test derive, the app process died, and the runner reported
+   * whatever window was behind it - Settings, or the launcher (2026-09-25,
+   * 3/3 in the sweep, reproduced alone). A Teensy maps flash at 0x0, so real
+   * keys read the vector table there and never fault; this is an emulation
+   * fix, identical to v2.1.1's.
+   */
+  debugOffPatches: [shared.okconnectBufferGuard],
+
   patches: [
     shared.flashWalkStride,
     shared.droppedTransportResponse,
