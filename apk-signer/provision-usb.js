@@ -23,8 +23,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline');
-const {execFileSync} = require('child_process');
 
 const okdevice = require('node-onlykey-lib/device');
 const {openUsb, requireKit, LOCAL} = require('./session');
@@ -32,45 +30,12 @@ const {extractKey} = require('./keystore');
 
 const SLOT = okdevice.keys.ROLE_SLOT.SIGNATURE;
 const CERT = path.join(LOCAL, 'signer.crt.pem');
-const PI = process.env.OKSIGN_PI || '192.168.51.162';
-const PI_EMULATOR = '~/projects/ok-firmware/node-onlykey-emulator';
 
 const say = (...a) => console.error('[provision-usb]', ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ---- who presses ----------------------------------------------------- */
-
-function piPresser() {
-  const ssh = (cmd) => execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', PI, cmd],
-    {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
-  return {
-    name: 'press.js on the Pi',
-    async press(buttons) {
-      ssh(`cd ${PI_EMULATOR} && ./emulator/bin/press.js ${buttons.join(' ')}`);
-    },
-    async hold(button, ticks) {
-      ssh(`cd ${PI_EMULATOR} && ./emulator/bin/press.js ${button}#${ticks}`);
-    },
-    /* A power cycle: stop the daemon; its supervisor loop starts it again. */
-    async restart() {
-      ssh("pkill -f '^node emulator/bin/daemon.js' || true");
-      await sleep(3000);
-    },
-  };
-}
-
-function humanPresser() {
-  const ask = (q) => new Promise((resolve) => {
-    const rl = readline.createInterface({input: process.stdin, output: process.stderr});
-    rl.question(`[provision-usb] ${q} - then press Enter `, () => { rl.close(); resolve(); });
-  });
-  return {
-    name: 'you',
-    press: (buttons) => ask(`press ${buttons.join(' ')} on the key`),
-    hold: (button) => ask(`hold button ${button} for about five seconds, until the key locks`),
-    restart: () => ask('unplug the key and plug it back in'),
-  };
-}
+/* Who presses: press.js on the Pi, or a person - see presser.js. */
+const {presserFrom} = require('./presser');
 
 /* ---- the steps ------------------------------------------------------- */
 
@@ -90,8 +55,7 @@ async function connected() {
 
 async function main() {
   const which = (process.argv[process.argv.indexOf('--presser') + 1]) || '';
-  const presser = which === 'pi' ? piPresser() : which === 'human' ? humanPresser()
-    : (() => { throw new Error('say --presser pi or --presser human'); })();
+  const presser = presserFrom(which);
   const {PINS} = requireKit();
   const pin = PINS.primary;
   const enterDigits = (digits) => presser.press(String(digits).split(''));

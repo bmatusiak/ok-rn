@@ -33,6 +33,8 @@ const SIGNER_CERT = path.join(HERE, '.local', 'signer.crt.pem');
 const BACKENDS = {
   emulated: path.join(HERE, 'backend-device.cmd'),
   software: path.join(HERE, 'backend-software.cmd'),
+  /* A key on USB; who presses is OKSIGN_PRESSER (pi / human), see presser.js. */
+  usb: path.join(HERE, 'backend-usb.cmd'),
 };
 
 const die = (msg) => {
