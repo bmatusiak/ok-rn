@@ -64,11 +64,42 @@ function busTap() {
   const seen = [];
   const t0 = Date.now();
   const off = OkEmu.on('stream', e => {
-    const hex = Array.from(e.bytes).slice(0, 20).map(b => b.toString(16).padStart(2, '0')).join('');
     const tag = ['kbd', 'fido', 'vend', 'ser'][e.iface] || e.iface;
-    seen.push(`+${Date.now() - t0}ms ${tag}${e.dir === 0 ? '<' : '>'} ${hex}`);
+    /*
+     * The debug console as TEXT, not hex: it is where the firmware prints its
+     * own diagnosis - ctap.cpp prints "error, invalid cmd: 0x%02x" on exactly
+     * the path this failure takes - and twenty bytes of hex would hide it.
+     */
+    const body = e.iface === 3
+      ? String.fromCharCode(...Array.from(e.bytes).filter(b => b >= 32 && b < 127)).trim()
+      : Array.from(e.bytes).slice(0, 20).map(b => b.toString(16).padStart(2, '0')).join('');
+    if (e.iface === 3 && !body) return;
+    seen.push(`+${Date.now() - t0}ms ${tag}${e.dir === 0 ? '<' : '>'} ${body}`);
   });
-  return {lines: () => seen.slice(-40), off};
+  return {lines: () => seen.slice(-150), off};
+}
+
+/**
+ * Run part of a test with the whole bus captured, and dump it if it throws.
+ *
+ * The failure this exists for - CTAP1_ERR_INVALID_COMMAND on a multi-packet
+ * clientPin request, straight after another clientPin exchange - has struck
+ * getPinToken and BOTH changePin calls, and only under load: 8 of 8 isolated
+ * runs passed on 2026-09-24, while the same suite after the six that precede
+ * it failed on run 7. Capturing one call at a time kept missing it, so the
+ * whole exchange is captured, every interface, both directions.
+ */
+async function withBus(log, label, fn) {
+  const tap = busTap();
+  try {
+    return await fn();
+  } catch (e) {
+    await delay(1500);
+    log(`bus across ${label}: ${JSON.stringify(tap.lines())}`);
+    throw e;
+  } finally {
+    tap.off();
+  }
 }
 
 
@@ -281,26 +312,28 @@ module.exports = function fidoPin({describe, it}) {
         const {fido} = await unlocked(log);
         const pin = await authenticate(fido, log);
 
-        const before = await fido.getRetries({timeoutMs: 10000});
-        assert.ok(before >= 3, `only ${before} attempts left - not spending one`);
+        await withBus(log, 'the wrong-PIN test', async () => {
+          const before = await fido.getRetries({timeoutMs: 10000});
+          assert.ok(before >= 3, `only ${before} attempts left - not spending one`);
 
-        let failure = null;
-        try {
-          await fido.getPinToken(wrongVersionOf(pin), {timeoutMs: 10000});
-        } catch (e) {
-          failure = e;
-        }
-        assert.ok(failure, 'a wrong PIN was accepted');
-        log(`refused: ${failure.message}`);
+          let failure = null;
+          try {
+            await fido.getPinToken(wrongVersionOf(pin), {timeoutMs: 10000});
+          } catch (e) {
+            failure = e;
+          }
+          assert.ok(failure, 'a wrong PIN was accepted');
+          log(`refused: ${failure.message}`);
 
-        const spent = await fido.getRetries({timeoutMs: 10000});
-        assert.equal(spent, before - 1, `one wrong PIN moved the counter from ${before} to ${spent}`);
+          const spent = await fido.getRetries({timeoutMs: 10000});
+          assert.equal(spent, before - 1, `one wrong PIN moved the counter from ${before} to ${spent}`);
 
-        /* And the firmware puts it all the way back on success, not by one. */
-        await fido.getPinToken(pin, {timeoutMs: 10000});
-        const restored = await fido.getRetries({timeoutMs: 10000});
-        log(`restored to ${restored}`);
-        assert.ok(restored > spent, 'a correct PIN did not restore the counter');
+          /* And the firmware puts it all the way back on success, not by one. */
+          await fido.getPinToken(pin, {timeoutMs: 10000});
+          const restored = await fido.getRetries({timeoutMs: 10000});
+          log(`restored to ${restored}`);
+          assert.ok(restored > spent, 'a correct PIN did not restore the counter');
+        });
       });
 
     it('a PIN can be changed, and changed back', async ({log, assert}) => {
@@ -314,49 +347,36 @@ module.exports = function fidoPin({describe, it}) {
       const other = pin === FIDO_PIN ? FIDO_PIN_ALT : FIDO_PIN;
 
       /*
-       * THE FIRST CHANGE IS THE ONE THAT FAILS. Not the second - there is
-       * never an intervening log line when it goes wrong - so the 750ms
-       * settle further down cannot be what protects it. See busTap() above.
+       * EITHER CHANGE CAN FAIL. This used to say the first one is the one that
+       * fails and capture only that; on 2026-09-24 the SECOND failed, under
+       * load, and left no capture. The whole exchange is captured now.
        */
-      const tap = busTap();
-      try {
+      await withBus(log, 'the changePin test', async () => {
         await fido.changePin(pin, other, {timeoutMs: 10000});
-      } catch (e) {
-        await delay(1500);
-        log(`bus across the failed changePin: ${JSON.stringify(tap.lines())}`);
-        throw e;
-      } finally {
-        tap.off();
-      }
-      current = other;
-      log(`changed to the ${other === FIDO_PIN ? 'primary' : 'alternate'} PIN`);
+        current = other;
+        log(`changed to the ${other === FIDO_PIN ? 'primary' : 'alternate'} PIN`);
 
-      const token = await fido.getPinToken(other, {timeoutMs: 10000});
-      assert.equal(token.length, 16, 'the new PIN did not produce a token');
+        const token = await fido.getPinToken(other, {timeoutMs: 10000});
+        assert.equal(token.length, 16, 'the new PIN did not produce a token');
 
-      /*
-       * A BEAT BETWEEN THE TWO CHANGES, seen once and not explained.
-       *
-       * Running them back to back, the second answered
-       * CTAP1_ERR_INVALID_COMMAND - not a PIN error, not a policy error, the
-       * code for a command the authenticator does not recognise, for a
-       * clientPin it had just executed. It left the key on the alternate PIN,
-       * which authenticate() then recovered at the cost of one attempt.
-       *
-       * A changePin writes flash (ctap_update_pin -> authenticator_write_state)
-       * and a second one lands while that is settling, so a pause is the
-       * cheap guess. It is a GUESS: one occurrence, no diagnosis, and the
-       * next one to see it should say so rather than assume this fixed it.
-       */
-      await delay(750);
+        /*
+         * A BEAT BETWEEN THE TWO CHANGES - and it is now shown NOT to be the
+         * fix. It was added as a guess after one CTAP1_ERR_INVALID_COMMAND on
+         * the second change, on the theory that a changePin's flash write was
+         * still settling. 2026-09-24: the second change failed the same way
+         * WITH this pause in place, under load, and in isolation the whole
+         * suite passed 8 runs of 8. Kept only because removing it is a
+         * separate experiment; do not read it as protection.
+         */
+        await delay(750);
 
-      await fido.changePin(other, FIDO_PIN, {timeoutMs: 10000});
-      current = FIDO_PIN;
-      const back = await fido.getPinToken(FIDO_PIN, {timeoutMs: 10000});
-      assert.equal(back.length, 16, 'the key did not come back to the primary PIN');
-      log('back on the primary PIN');
+        await fido.changePin(other, FIDO_PIN, {timeoutMs: 10000});
+        current = FIDO_PIN;
+        const back = await fido.getPinToken(FIDO_PIN, {timeoutMs: 10000});
+        assert.equal(back.length, 16, 'the key did not come back to the primary PIN');
+        log('back on the primary PIN');
+      });
     });
-
     it('reset needs the exact words, and a near miss reaches no device',
       async ({log, assert}) => {
         /*
