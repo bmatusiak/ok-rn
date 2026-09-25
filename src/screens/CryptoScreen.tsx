@@ -87,9 +87,25 @@ export function CryptoScreen({
   blockScreenshots = true,
   configMode,
   overrides,
+  testing = false,
 }: {
   emu: EmuSession;
   blockScreenshots?: boolean;
+  /**
+   * Testing mode is on. Gates the PASSWORD GENERATOR ("Derived secrets"),
+   * which the maintainer's web app ships only in development: on
+   * 0c-coder/onlykey.github.io master it is the one entry in
+   * src/plugins-devel.js, and webpack.config.js leaves that file out of a
+   * production build. A feature he has not released is a testing feature
+   * here too.
+   *
+   * It matters beyond parity: the password is a web-derived key, and 3.0.5
+   * changed that derivation (libraries 40464ca), so the same label gives a
+   * different password after a v3.0.4 key is updated - the reason the vault
+   * waits for 3.0.5 (firmwareFeatures.ts). Testing mode is __DEV__-only
+   * (useTestingMode.ts), so a release build never shows it.
+   */
+  testing?: boolean;
   /**
    * Signing and decryption are refused in config mode - okcore.cpp:347.
    *
@@ -561,6 +577,8 @@ export function CryptoScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      {/* Testing mode only - see the `testing` prop. */}
+      {testing ? (
       <Section title={`Derived secrets — ${keyName}`}
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
         <Text style={styles.body}>
@@ -603,6 +621,7 @@ export function CryptoScreen({
         />
         {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
       </Section>
+      ) : null}
 
       {waiting ? (
         <Section title="The key is waiting for a button">
@@ -619,7 +638,7 @@ export function CryptoScreen({
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      {secret ? (
+      {testing && secret ? (
         <Section title={`Secret for ${derivedFor}`}>
           <Text style={styles.secret}>
             {revealed ? secret : '•'.repeat(48)}

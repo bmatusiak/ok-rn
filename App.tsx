@@ -819,7 +819,7 @@ function Shell() {
           ) : tab === 'Backup' ? (
             <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Crypto' ? (
-            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} />
+            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} testing={testing.enabled} />
           ) : tab === 'Messages' ? (
             <MessagesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} overrides={caps.overrides} />
           ) : tab === 'Settings' ? (
