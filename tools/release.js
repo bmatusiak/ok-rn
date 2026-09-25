@@ -316,7 +316,7 @@ if (process.argv.includes('--no-sign')) {
 } else if (!signerTool) {
   say('release: apk-signer/ is not present, so the apk keeps Gradle\'s debug-keystore signature');
 } else {
-  say('release: signing with the OnlyKey (expect two button presses, v2 and v3)');
+  say('release: signing with the OnlyKey (one press per signature - four on the dev hard key: v2, v3, v4 and one more)');
   try {
     /*
      * stderr is inherited inside apk-signer: it carries the device console
