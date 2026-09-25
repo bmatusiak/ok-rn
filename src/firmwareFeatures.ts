@@ -21,7 +21,6 @@
  * there is a reading to fade it on.
  */
 
-import {ALLOW_OVERRIDE, type Overrides} from './capabilityOverride';
 
 /** The capabilities object the library returns, or null before a reading. */
 type Capabilities =
@@ -75,30 +74,14 @@ const FEATURES: Record<FirmwareFeature, {what: string; needs: string}> = {
 /**
  * Should this section work? True while nothing is known - see the header.
  *
- * `overrides` is the one place a forced capability is honoured, so every
- * screen gets the same answer without any of them knowing the override exists.
- * Omitting it is the same as having none - the e2e suites and any caller that
- * does not care are unaffected. See src/capabilityOverride.ts.
+ * There used to be a way to force one on (src/capabilityOverride.ts), for a
+ * hard key whose working-tree build reported the same version as the release
+ * it was ahead of. The working tree declares 3.0.5 now, and the library
+ * decides these by that version, so the lever was deleted.
  */
-export function supports(
-  caps: Capabilities,
-  feature: FirmwareFeature,
-  overrides?: Overrides,
-): boolean {
-  if (ALLOW_OVERRIDE && overrides?.[feature]) return true;
+export function supports(caps: Capabilities, feature: FirmwareFeature): boolean {
   if (!caps) return true;
   return caps[feature] !== false;
-}
-
-/** Whether this section is open because somebody forced it, not because it was detected. */
-export function isForced(
-  caps: Capabilities,
-  feature: FirmwareFeature,
-  overrides?: Overrides,
-): boolean {
-  if (!ALLOW_OVERRIDE || !overrides?.[feature]) return false;
-  /* Only "forced" when detection actually said no. */
-  return Boolean(caps) && caps![feature] === false;
 }
 
 /** The sentence a faded section shows, naming the feature and what it needs. */

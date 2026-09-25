@@ -7,7 +7,6 @@ import {theme} from '../ui/theme';
 import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {missingNote, supports} from '../firmwareFeatures';
-import type {Overrides} from '../capabilityOverride';
 import type {EmuSession} from '../hooks/useOkEmu';
 
 /*
@@ -137,7 +136,6 @@ export function KeysScreen({
   emu,
   configMode,
   onWantConfigMode,
-  overrides,
 }: {
   emu: EmuSession;
   /*
@@ -149,8 +147,6 @@ export function KeysScreen({
   configMode: ConfigState;
   /** Asks App to want config mode. Nothing here writes the flag. */
   onWantConfigMode: () => void;
-  /** Forced capabilities, if any. See src/capabilityOverride.ts. */
-  overrides?: Overrides;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -209,7 +205,7 @@ export function KeysScreen({
    * NO RELEASE DOES, so on a key from a box this section is faded. See
    * src/firmwareFeatures.ts.
    */
-  const pqc = supports(emu.capabilities, 'postQuantum', overrides);
+  const pqc = supports(emu.capabilities, 'postQuantum');
   const [genType, setGenType] = useState<string>(GENERATED_TYPES[0].name);
   const [genSlot, setGenSlot] = useState<number>(110);
   const [genChallenge, setGenChallenge] = useState<number[] | null>(null);
@@ -771,7 +767,7 @@ export function KeysScreen({
                   explain why, and this needs the why.
                 */}
                 {RAW_TYPES.find(t => t.name === keyType)?.hmacOnly &&
-                !supports(emu.capabilities, 'hmacSha1', overrides) ? (
+                !supports(emu.capabilities, 'hmacSha1') ? (
                   <Text style={styles.warn}>
                     This firmware predates HMAC-SHA1 (it arrived in 3.0.0). It
                     will accept the write and store a key it cannot use.

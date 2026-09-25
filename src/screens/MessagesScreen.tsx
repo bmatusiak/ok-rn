@@ -4,7 +4,6 @@ import {Btn, Section, Segmented} from '../ui/components';
 import {NEEDS_CONFIG_MODE, NOT_IN_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {missingNote, supports} from '../firmwareFeatures';
-import type {Overrides} from '../capabilityOverride';
 import {theme} from '../ui/theme';
 import {lookup, type Found, type Source} from '../keySearch';
 import {splitPublicKeys, summarizeKey, type KeySummary} from '../armoredKeys';
@@ -92,7 +91,6 @@ export function MessagesScreen({
   emu,
   configMode,
   onWantConfigMode,
-  overrides,
 }: {
   emu: EmuSession;
   /**
@@ -105,8 +103,6 @@ export function MessagesScreen({
   configMode: ConfigState;
   /** Asks App to want config mode. Nothing here writes the flag. */
   onWantConfigMode: () => void;
-  /** Forced capabilities, if any. See src/capabilityOverride.ts. */
-  overrides?: Overrides;
 }) {
   /* The ACTIVE key, for the composite key that lives on the device. */
   const getKey = useActiveKey();
@@ -195,7 +191,7 @@ export function MessagesScreen({
    * composite-key section is gated: the rest of this screen is ordinary PGP
    * with keys the phone holds, and that works on any key at all.
    */
-  const pqc = supports(emu.capabilities, 'postQuantum', overrides);
+  const pqc = supports(emu.capabilities, 'postQuantum');
 
   /*
    * A file picked to encrypt, kept as BYTES.

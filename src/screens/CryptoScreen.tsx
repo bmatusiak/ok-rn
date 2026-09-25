@@ -3,7 +3,6 @@ import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-nat
 import {Btn, Section, Segmented} from '../ui/components';
 import {NOT_IN_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
 import {missingNote, supports} from '../firmwareFeatures';
-import type {Overrides} from '../capabilityOverride';
 import {Keypad} from '../ui/Keypad';
 import {VaultList} from '../ui/VaultList';
 import {theme} from '../ui/theme';
@@ -86,7 +85,6 @@ export function CryptoScreen({
   emu,
   blockScreenshots = true,
   configMode,
-  overrides,
   testing = false,
 }: {
   emu: EmuSession;
@@ -114,8 +112,6 @@ export function CryptoScreen({
    * because nothing about them crosses the wire.
    */
   configMode: ConfigState;
-  /** Forced capabilities, if any. See src/capabilityOverride.ts. */
-  overrides?: Overrides;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -197,7 +193,7 @@ export function CryptoScreen({
   const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locked = emu.device !== 'unlocked';
   /* Faded when the key's firmware has no post-quantum support - firmwareFeatures.ts. */
-  const pqc = supports(emu.capabilities, 'postQuantum', overrides);
+  const pqc = supports(emu.capabilities, 'postQuantum');
 
   /*
    * THE VAULT IS A 3.0.5 FEATURE, by decision rather than by capability.
@@ -215,7 +211,7 @@ export function CryptoScreen({
    * data to protect and no reason to let any be created where an update would
    * strand it.
    */
-  const vault = supports(emu.capabilities, 'deviceVault', overrides);
+  const vault = supports(emu.capabilities, 'deviceVault');
 
   const reveal = useCallback(() => {
     setRevealed(true);

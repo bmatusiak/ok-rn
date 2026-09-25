@@ -343,15 +343,6 @@ say(`release: sha256     ${sha}`);
 say(`release: firmware   DEBUG gate ${gate}`);
 say(`release: layouts    ${layoutGate}`);
 say(`release: testing    ${leaked.length ? 'LEAKED: ' + leaked.join(', ') : 'absent from the bundle'}`);
-/*
- * A SHIPPED OVERRIDE SAYS SO. An apk that can be told its firmware has
- * features it lacks must not hide that on the build which produced it - the
- * same reason the debug-keystore note is printed every time.
- */
-const overrideOn = /export const ALLOW_OVERRIDE = true/.test(
-  fs.readFileSync(path.join(ROOT, 'src', 'capabilityOverride.ts'), 'utf8'),
-);
-say(`release: overrides   ${overrideOn ? 'ENABLED - this apk can force capabilities on' : 'off'}`);
 say(`release: commit     ${head}${dirty ? ' + uncommitted changes' : ''}`);
 say('');
 if (!gate.startsWith('OFF')) {

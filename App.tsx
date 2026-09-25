@@ -19,7 +19,6 @@ import {useFidoGatt, type FidoSession} from './src/hooks/useFidoGatt';
 import {getOnlyKey} from './src/onlykey';
 import type {Backend} from './src/hooks/keySession';
 import {useTestingMode} from './src/hooks/useTestingMode';
-import {useCapabilityOverrides} from './src/capabilityOverride';
 import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 
 import {SplashScreen} from './src/screens/SplashScreen';
@@ -261,39 +260,7 @@ function Shell() {
   });
   const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log, fidoPending: fido.pending});
 
-  /*
-   * FORCED CAPABILITIES, scoped to whichever key is active.
-   *
-   * Detection cannot see an unsigned working-tree build - it reports the same
-   * version string as the release it is ahead of - so this is the manual way
-   * to tell the app what the wire cannot. src/capabilityOverride.ts explains
-   * the whole of it, including why it is built to be deleted.
-   *
-   * Named `caps` rather than `override`, which is taken twice already: useKey
-   * has one for forcing WHICH KEY is active, and AdvancedScreen has another
-   * for the console probe.
-   */
-  /*
-   * FOR THE HARD KEY ONLY. The soft key's firmware is staged by this build, so
-   * buildInfo.unreleased already tells capabilities() what it needs and there
-   * is nothing to override. See src/capabilityOverride.ts.
-   */
-  const caps = useCapabilityOverrides();
 
-  /*
-   * A HARD KEY'S OVERRIDE DIES WITH THE KEY.
-   *
-   * useHardKey drops its capabilities to null on detach and on disconnect
-   * (useHardKey.ts:146,159). A physical key can be unplugged and a DIFFERENT
-   * one plugged in, so an override that outlived the first would quietly claim
-   * the second supports something it does not - worse than the faded section
-   * it was set to fix. Re-arm it after the next unlock, which is when the app
-   * knows which key it is talking to again.
-   */
-  useEffect(() => {
-    if (keys.backend === 'embedded') return;
-    if (!keys.hard?.capabilities) caps.clear();
-  }, [keys.backend, keys.hard?.capabilities, caps]);
   backendRef.current = keys.backend;
   unlockedRef.current = keys.key.device === 'unlocked';
   const emu = keys.key;
@@ -813,21 +780,21 @@ function Shell() {
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
             )
           ) : tab === 'Keys' ? (
-            <KeysScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} overrides={caps.overrides} />
+            <KeysScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Backup' ? (
             <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Crypto' ? (
-            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} overrides={caps.overrides} testing={testing.enabled} />
+            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} testing={testing.enabled} />
           ) : tab === 'Messages' ? (
-            <MessagesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} overrides={caps.overrides} />
+            <MessagesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Settings' ? (
             <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
-            <AdvancedScreen emu={keys.key} hard={keys.hard} keys={keys} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} caps={caps} />
+            <AdvancedScreen emu={keys.key} hard={keys.hard} keys={keys} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Log' ? (
             <LogScreen
               blockScreenshots={BLOCK_SCREENSHOTS}
