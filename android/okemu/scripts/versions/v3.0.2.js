@@ -65,6 +65,13 @@ module.exports = {
     '',
     'Both are capabilities in node-onlykey-lib/src/device/version.js, and the',
     'suite asserts the REFUSAL on this version rather than success.',
+    '',
+    '2026-09-24 sweep: cryptoSign failed runs 1-2 with "incorrect challenge"',
+    '("pressed 1-6 of 1-6-6"), passed run 3. Not this firmware - the soft',
+    'key returned a vendor write when the frame was QUEUED, so a challenge',
+    'press could be taken before the request armed it. Fixed in okemu',
+    '(ok_hal.cpp: a vendor write waits until the firmware takes the frame);',
+    'cryptoSign 8/8 on this build afterwards, working tree 104/0/34.',
   ].join(String.fromCharCode(10)),
 
   patches: [

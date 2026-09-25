@@ -92,6 +92,12 @@ struct Hal {
   struct InPkt { int iface; std::vector<uint8_t> data; };
   std::deque<InPkt> hid_in;
   std::condition_variable hid_cv;
+  /* Vendor reports queued and taken, for okemu_hid_deliver()'s wait. Vendor
+   * reports leave hid_in in order (only FIDO ones jump ahead), so a ticket is
+   * taken once vendor_taken reaches it. */
+  uint64_t vendor_pushed = 0;
+  uint64_t vendor_taken = 0;
+  std::condition_variable hid_taken_cv;
 
   /* restart latch */
   bool restart = false;
@@ -736,12 +742,41 @@ int okemu_hid_deliver(const uint8_t *data, size_t len, int iface) {
   uint8_t snap[64];
   memcpy(snap, pkt.data.data(), 64);
 
+  uint64_t ticket = 0;
   {
     std::lock_guard<std::mutex> lk(g.mu);
     g.hid_in.push_back(std::move(pkt));
+    if (iface == OKEMU_IFACE_VENDOR) ticket = ++g.vendor_pushed;
   }
   g.hid_cv.notify_one();
   stream_emit(snap, sizeof snap, iface, OKEMU_DIR_IN);
+
+  /*
+   * A VENDOR WRITE RETURNS WHEN THE FIRMWARE HAS TAKEN THE REPORT, not when it
+   * is queued - the order a USB write gives a hard key, whose OUT transfer
+   * completes when the device accepts it.
+   *
+   * Returning on the queue let a host run ahead of the device. okcrypto.sign()
+   * hands the challenge digits to its caller as soon as the last frame is
+   * written; the button presses go through a separate queue (okemu_press), and
+   * the firmware could take the first press BEFORE the frame that arms the
+   * challenge. That press was not counted as digit 1, digit 2 was checked as
+   * digit 1, and the key answered "incorrect challenge" - v3.0.2's
+   * intermittent cryptoSign failure (2026-09-24 sweep: "pressed 1-6 of
+   * 1-6-6"). The firmware is single-threaded, so once it has taken the frame
+   * it processes it - and arms the challenge - before it can take a press.
+   *
+   * Only vendor reports wait: that is where press-confirmed operations are
+   * asked for. Called from the module's write executor, never the firmware
+   * thread, so the wait cannot block the thread it waits on. The deadline
+   * keeps the old behaviour if the firmware is busy elsewhere: the write
+   * still succeeds, it just stops waiting.
+   */
+  if (ticket) {
+    std::unique_lock<std::mutex> lk(g.mu);
+    g.hid_taken_cv.wait_for(lk, std::chrono::milliseconds(1000),
+                            [ticket] { return g.vendor_taken >= ticket; });
+  }
   return 0;
 }
 
@@ -766,6 +801,11 @@ int okemu_hid_recv(void *buf, uint32_t timeout) {
   memcpy(buf, it->data.data(), 64);
   int iface = it->iface;
   g.hid_in.erase(it);
+  if (iface == OKEMU_IFACE_VENDOR) {
+    g.vendor_taken++;
+    /* Under the lock on purpose: the waiter re-checks vendor_taken under it. */
+    g.hid_taken_cv.notify_all();
+  }
   return iface;
 }
 
@@ -780,6 +820,9 @@ int okemu_hid_pending(void) {
 void okemu_hid_flush_in(void) {
   std::lock_guard<std::mutex> lk(g.mu);
   g.hid_in.clear();
+  /* A flushed report will never be taken; release anyone waiting on one. */
+  g.vendor_taken = g.vendor_pushed;
+  g.hid_taken_cv.notify_all();
 }
 
 int okemu_hid_emit(const uint8_t *data, size_t len, uint32_t /*timeout*/, int iface) {
