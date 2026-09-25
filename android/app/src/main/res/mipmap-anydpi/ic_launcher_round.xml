@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 7, round launchers: a black circle, the white O centred. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="48dp" android:height="48dp">
+        <shape android:shape="oval"><solid android:color="@color/ic_launcher_background" /></shape>
+    </item>
+    <item android:width="30dp" android:height="24dp" android:gravity="center">
+        <bitmap android:src="@drawable/ic_o_mark" android:tint="#FFFFFF" android:filter="true" />
+    </item>
+</layer-list>

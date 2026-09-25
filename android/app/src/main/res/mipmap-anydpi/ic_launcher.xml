@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 7 (minSdk 24, before adaptive icons): a black square, the white O centred. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="48dp" android:height="48dp">
+        <shape android:shape="rectangle"><solid android:color="@color/ic_launcher_background" /><corners android:radius="8dp" /></shape>
+    </item>
+    <item android:width="32dp" android:height="26dp" android:gravity="center">
+        <bitmap android:src="@drawable/ic_o_mark" android:tint="#FFFFFF" android:filter="true" />
+    </item>
+</layer-list>
