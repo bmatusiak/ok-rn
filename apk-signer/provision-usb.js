@@ -97,7 +97,31 @@ async function main() {
 
   let {s, status} = await connected();
   say(`key says ${status}; buttons pressed by ${presser.name}`);
+  /*
+   * --verify: the key has been loaded, replugged and unlocked; just read
+   * slot 2 back. --from-config-mode: the owner put the key into config mode
+   * themselves (hold button 6, PIN again) - load it and stop; the replug that
+   * ends config mode and the unlock after it are theirs.
+   */
+  if (process.argv.includes('--verify')) {
+    try {
+      if (!/^UNLOCKED/i.test(status)) await unlockKey(s);
+      await checkModulus(s);
+    } finally {
+      await s.stop();
+    }
+    return;
+  }
+  const fromConfig = process.argv.includes('--from-config-mode');
+  if (fromConfig && !/^UNLOCKED/i.test(status)) {
+    await s.stop();
+    throw new Error(`--from-config-mode needs the key unlocked in config mode, but it says ${status}`);
+  }
+
   try {
+    if (fromConfig) {
+      say('the key is in config mode already - skipping PIN and config mode');
+    } else {
     if (/^UNINITIALIZED/i.test(status) && human) {
       throw new Error('this key has no PIN - set one in the app first; a PIN of yours is never set from here');
     }
@@ -122,6 +146,7 @@ async function main() {
     say('entering config mode (it relocks the key)');
     await s.device.enterConfigMode({hold: (b, t) => presser.hold(b, t)});
     await unlockKey(s);
+    }
 
     say('stored challenge mode = 1 (one press per signature)');
     await s.device.setPreference('storedChallengeMode', 1);
@@ -136,20 +161,30 @@ async function main() {
     await s.stop();
   }
 
+  if (fromConfig) {
+    say('loaded. Now unplug the key and plug it back in (that ends config mode),');
+    say('unlock it with your PIN, and run: node provision-usb.js --presser human --verify');
+    return;
+  }
+
   say('restarting to leave config mode');
   await presser.restart();
   ({s, status} = await connected());
   try {
     say(`key says ${status}; unlocking`);
     await unlockKey(s);
-    const pub = await s.device.getPublicKey(SLOT, {bytes: 256, keyType: 0});
+    await checkModulus(s);
+  } finally {
+    await s.stop();
+  }
+
+  async function checkModulus(session) {
+    const pub = await session.device.getPublicKey(SLOT, {bytes: 256, keyType: 0});
     const got = Buffer.from(pub.bytes || pub);
     if (!got.equals(key.n)) {
       throw new Error('the modulus read back does not match debug.keystore - the key did not land');
     }
     say('modulus matches debug.keystore - provisioned');
-  } finally {
-    await s.stop();
   }
 }
 
