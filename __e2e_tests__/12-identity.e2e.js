@@ -289,5 +289,31 @@ module.exports = function identity({describe, it}) {
         'the version keyword and the actual bus traffic must agree about the console',
       );
     });
+
+    it('the settings offered are the ones this firmware has', async ({log, assert}) => {
+      /*
+       * Fields 30 and 31 do not exist before 3.0.5 - v3.0.4's set_slot() has
+       * no case for either and never answers - so the table the Settings and
+       * Advanced tabs draw from must leave them out there, and include them
+       * from 3.0.5. Read only: field 31 is a one-way latch, and writing it to
+       * prove a point would change the key for good.
+       *
+       * Run under the matrix this checks the gate against every release's
+       * REAL status line, which the lib's unit test can only simulate.
+       */
+      const {device, status} = await connected(log);
+      const caps = okdevice.version.capabilities(okdevice.version.parseStatus(status));
+      const names = device.preferences().map(p => p.name);
+      log(`userInputModeEnum=${caps.userInputModeEnum} offered=${names.length}`);
+
+      for (const n of ['webAgentDeriveMode', 'webcryptPolicy']) {
+        assert.equal(
+          names.includes(n), Boolean(caps.userInputModeEnum),
+          `${n} offered=${names.includes(n)} on a key where the field ` +
+            (caps.userInputModeEnum ? 'exists' : 'does not exist'),
+        );
+      }
+      assert.ok(names.includes('derivedChallengeMode'), 'field 21 exists on every release');
+    });
   });
 };
