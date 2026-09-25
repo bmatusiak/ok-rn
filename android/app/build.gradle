@@ -236,6 +236,8 @@ dependencies {
      * all without one - including by anything that can read the app's files.
      */
     implementation("androidx.biometric:biometric:1.1.0")
+    // The launch splash (res/values/splash.xml): Android 12's SplashScreen API, backported.
+    implementation("androidx.core:core-splashscreen:1.0.1")
 
     /*
      * EXPERIMENT (see com.okrn.credprovider + REMOVAL.md). Lets the app register

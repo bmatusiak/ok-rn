@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launch splash's icon: assets/OK.png, white, centred.
+
+  Measured on the Pixel (API 37, 2026-09-25), not taken from the docs: the
+  splash draws this at about 1.17x its own size, NOT fitted to a box, and
+  shows it through a circle about 160dp across. Drawn at 140dp the OK came
+  out ~164dp and the circle cut the O's left side off; a transparent margin
+  (in a layer-list, or padded into the PNG) did not shrink it, it only made
+  it bigger. So the size here is simply small enough: 110 x 47dp (OK.png's
+  500:215) shows at about 130dp, clear of the circle.
+
+  It is the same "OK" the animated splash (src/ui/AnimatedLogo.tsx) opens on,
+  so the hand-over from Android's splash to the app's reads as one screen.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="110dp" android:height="47dp" android:gravity="center">
+        <bitmap android:src="@drawable/ic_splash_ok" android:tint="#FFFFFF" android:filter="true" />
+    </item>
+</layer-list>
