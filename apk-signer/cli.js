@@ -6,6 +6,7 @@
  *   apk-signer provision                          load the signing key into the emulated key
  *   apk-signer sign <apk> [--backend emulated|software]
  *   apk-signer verify <apk>                       print the signer apksigner finds
+ *   apk-signer probe                              connect to a key on USB and print its status
  *
  * NOT PART OF THE APP. Nothing under ok-rn's src/, App.tsx, android/app or
  * __e2e_tests__ uses this; its one caller is ok-rn's tools/release.js, at
@@ -97,6 +98,20 @@ function main(argv) {
       if (!positional[0]) die('verify needs an apk');
       console.log(verify(positional[0]));
       return;
+    case 'probe':
+      /* One OKCONNECT over USB - what every GUI sends on connect - and the
+       * status line the key answers with. Nothing else is written. */
+      return (async () => {
+        const {openUsb} = require('./session');
+        const s = await openUsb();
+        try {
+          const r = await s.device.connect();
+          console.log(`status:   ${String(r.status).trim()}`);
+          console.log(`identity: ${JSON.stringify(r.identity)}`);
+        } finally {
+          await s.stop();
+        }
+      })().catch((e) => die(e.message));
     default:
       console.error(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 8).join('\n'));
       process.exit(cmd ? 1 : 0);

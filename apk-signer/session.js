@@ -185,4 +185,49 @@ async function open(storageDir, { runDir = path.join(LOCAL, 'run') } = {}) {
   };
 }
 
-module.exports = { open, lock, requireKit, kitRoot, LOCAL };
+/**
+ * The same library composition as open(), over a key on USB instead of the
+ * emulator process - a physical OnlyKey, or the Raspberry Pi presenting the
+ * emulator as a USB device. Only the transport plugin and its pipe differ;
+ * everything above them is the code the emulated path already proved.
+ *
+ * No kit here: there is no process to supervise. Restarts, PIN entry and
+ * config mode are the key's own business - a human's buttons, or the Pi's
+ * emulator/bin/press.js standing in for them.
+ */
+async function openUsb() {
+  const usbTransport = require('node-onlykey-lib/plugins/transport/usb');
+  const { hidPipe } = require('./hidPipe');
+  const plugins = [
+    hostPlugin,
+    usbTransport,
+    sessionPlugin,
+    devicePlugin,
+    okcryptoPlugin,
+  ];
+  const pipe = hidPipe();
+  /*
+   * Opened HERE, before the library is composed - the same order open() uses
+   * (the device is up before anything is built over it). The transport
+   * plugin's own start() call is not awaited ahead of the first write, so a
+   * pipe that only opened its handles then would refuse that write.
+   */
+  await pipe.start();
+  plugins.config = {
+    transport: { pipe },
+    host: { store: null },
+  };
+  const started = await new Promise((resolve, reject) => {
+    const app = Rectify.build(plugins, (err, ready) => (err ? reject(err) : resolve(ready)));
+    app.start();
+  });
+  return {
+    device: started.services.device,
+    okcrypto: started.services.okcrypto,
+    async stop() {
+      await pipe.stop();
+    },
+  };
+}
+
+module.exports = { open, openUsb, lock, requireKit, kitRoot, LOCAL };

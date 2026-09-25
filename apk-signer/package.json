@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@bmatusiak/rectify": "github:bmatusiak/rectify",
+    "node-hid": "^3.4.0",
     "node-onlykey-lib": "file:../../node-onlykey-lib"
   }
 }
