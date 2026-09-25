@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The main window's background: the launch splash drawn again - the app's
+  background with the OK in the middle - so the moment between Android taking
+  its splash away and React drawing the animated splash shows the OK, not an
+  empty window.
+
+  Why not just hold Android's splash (setKeepOnScreenCondition) until React
+  has drawn? Tried on the Pixel (API 37, 2026-09-25, core-splashscreen 1.0.1
+  and 1.2.0): the system took its splash away on its own schedule anyway, and
+  holding the app's first frame only turned the grey flash black. A window
+  background needs no timing at all.
+
+  128 x 55dp (OK.png's 500:215) because the splash icon (110dp, splash_icon.xml)
+  is drawn about 1.17x on screen - so the OK stays the same size.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_background" />
+    <item android:width="128dp" android:height="55dp" android:gravity="center">
+        <bitmap android:src="@drawable/ic_splash_ok" android:tint="#FFFFFF" android:filter="true" />
+    </item>
+</layer-list>

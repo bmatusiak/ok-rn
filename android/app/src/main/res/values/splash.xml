@@ -12,6 +12,16 @@
     <style name="Theme.App.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/splash_background</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
-        <item name="postSplashScreenTheme">@style/AppTheme</item>
+        <item name="postSplashScreenTheme">@style/Theme.App.Main</item>
+    </style>
+
+    <!--
+      MainActivity's theme once the splash is gone: AppTheme with the splash
+      drawn as the window background (drawable/splash_window.xml), so there is
+      no flash while React loads. Only MainActivity - the passkey window
+      (CredProviderActivity) keeps plain AppTheme.
+    -->
+    <style name="Theme.App.Main" parent="AppTheme">
+        <item name="android:windowBackground">@drawable/splash_window</item>
     </style>
 </resources>
