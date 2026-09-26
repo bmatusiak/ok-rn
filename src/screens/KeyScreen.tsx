@@ -1,5 +1,5 @@
 import React, {useEffect, useState} from 'react';
-import {ScrollView, StyleSheet, Text, View} from 'react-native';
+import {Platform, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {Btn, HoldTicks, KeyValue, LedCircle, Section} from '../ui/components';
 import {Keypad} from '../ui/Keypad';
 import {theme} from '../ui/theme';
@@ -9,6 +9,10 @@ import {SetupScreen} from './SetupScreen';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {KeyControl} from '../hooks/useKey';
 import {useActiveKey} from '../hooks/KeyContext';
+import NativeFidoGatt from '../../specs/NativeFidoGatt';
+import NativeBtKeyboard from '../../specs/NativeBtKeyboard';
+import NativeSecrets from '../../specs/NativeSecrets';
+import {buildInfo} from '../buildInfo';
 
 /**
  * The key itself: what state it is in, what it holds, and its buttons.
@@ -328,6 +332,8 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         </Section>
       ) : null}
 
+      <AppCapabilities />
+
       {operations ? (
         <Section title="What the library has proven">
           <Text style={styles.hint}>
@@ -356,6 +362,81 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
       ) : null}
 
     </ScrollView>
+  );
+}
+
+/*
+ * WHAT THIS PHONE LETS THE APP DO - the phone's side of "What this firmware
+ * can do".
+ *
+ * Asked for after the Galaxy A13 (Android 13) looked like a broken passkey
+ * flow: Chrome never offered the app, because third-party passkey providers
+ * only exist from Android 14. Nothing was wrong with the app or the key, and
+ * nothing on screen said so. A "no" in this list is the PHONE's limit, not
+ * the key's, and saying it here saves someone debugging a platform.
+ *
+ * Every row asks the same check the feature itself uses, so this cannot say
+ * yes where the feature says no:
+ *   passkeys   API 34, as CredProviderGate.kt gates the provider
+ *   Bluetooth  NativeFidoGatt / NativeBtKeyboard isSupported()
+ *   biometric  NativeSecrets.biometricStatus(), with its reason
+ * A check that throws shows "unknown" rather than a guess.
+ */
+const PASSKEY_PROVIDER_MIN_API = 34;
+
+const BIOMETRIC_TEXT: Record<string, string> = {
+  available: 'yes',
+  'none-enrolled': 'no fingerprint or face set up',
+  'no-hardware': 'not on this phone',
+  unavailable: 'unavailable right now',
+};
+
+function AppCapabilities() {
+  const api = Platform.OS === 'android' ? Number(Platform.Version) : 0;
+  const [bleKey, setBleKey] = useState<string>('checking…');
+  const [btKeyboard, setBtKeyboard] = useState<string>('checking…');
+  const [biometric, setBiometric] = useState<string>('checking…');
+
+  useEffect(() => {
+    let cancelled = false;
+    const ask = (
+      check: () => Promise<boolean | string>,
+      set: (v: string) => void,
+      text: (v: boolean | string) => string,
+    ) =>
+      check()
+        .then(v => { if (!cancelled) set(text(v)); })
+        .catch(() => { if (!cancelled) set('unknown'); });
+    const yesNo = (v: boolean | string) => (v === true ? 'yes' : 'not on this phone');
+    ask(() => NativeFidoGatt.isSupported(), setBleKey, yesNo);
+    ask(() => NativeBtKeyboard.isSupported(), setBtKeyboard, yesNo);
+    ask(() => NativeSecrets.biometricStatus(), setBiometric,
+      v => BIOMETRIC_TEXT[String(v)] ?? String(v));
+    return () => { cancelled = true; };
+  }, []);
+
+  /* No testing-mode row: that mode does not exist in a release build, and
+   * where it does it announces itself with its own banner. */
+  const build = `${buildInfo.app} ${__DEV__ ? 'debug' : 'release'}`;
+
+  return (
+    <Section title="What this app can do">
+      <Text style={styles.hint}>
+        What this phone lets the app do. A "no" here is the phone's limit, not
+        the key's.
+      </Text>
+      <View style={styles.rows}>
+        <KeyValue label="Android" value={api ? `${(Platform.constants as {Release?: string}).Release ?? '?'} (API ${api})` : Platform.OS} />
+        <KeyValue
+          label="passkeys in Chrome"
+          value={api >= PASSKEY_PROVIDER_MIN_API ? 'yes' : 'no, needs Android 14'}
+        />
+        <KeyValue label="Bluetooth authenticator" value={bleKey} />
+        <KeyValue label="Bluetooth keyboard" value={btKeyboard} />
+        <KeyValue label="biometric unlock" value={biometric} />
+        <KeyValue label="build" value={build} />
+      </View>
+    </Section>
   );
 }
 
