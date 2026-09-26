@@ -1,7 +1,8 @@
 """
 Run python-onlykey's hardware test scripts over Bluetooth, with the Pi pressing.
 
-    python tools/python_onlykey_ble.py configmode
+    python tools/python_onlykey_ble.py unlock        (a locked key: the PIN only)
+    python tools/python_onlykey_ble.py configmode    (an unlocked key: hold 6, PIN)
     python tools/python_onlykey_ble.py run <MAC> <script.py> [<script.py> ...]
 
 Run it with python-onlykey's venv (python-onlykey/.venv), whose editable install
@@ -94,6 +95,11 @@ def enter_pin():
     print('PIN entered;', 'UNLOCKED seen' if 'UNLOCKED' in tail else 'no UNLOCKED yet')
 
 
+def restart():
+    ssh("kill $(pgrep -f '^node emulator/bin/daemon.js')")
+    time.sleep(10)   # the supervisor loop brings it back; the phone re-attaches
+
+
 def configmode():
     print('holding button 6 for config mode...')
     press(CONFIG_HOLD)
@@ -122,9 +128,12 @@ def run(mac, script):
 
     real = onlykey.OnlyKey
 
+    opened = []
+
     def over_ble(*args, **kwargs):
         ok = real(connect=False)
         ok._hid = BleTransport.connect(mac)
+        opened.append(ok)
         return ok
 
     onlykey.OnlyKey = over_ble
@@ -132,6 +141,20 @@ def run(mac, script):
     sys.stdout = tee
 
     def answer_challenge(prompt=''):
+        last = tee.seen.strip().splitlines()[-1] if tee.seen.strip() else ''
+        if 'Restart the OnlyKey' in last:
+            # The scripts' pause between loading a key (config mode) and using
+            # it (not config mode). The Pi stands in for the unplug and the PIN.
+            print('[runner] restarting the emulator and entering the PIN on the Pi')
+            restart()
+            enter_pin()
+            time.sleep(3)
+            # The phone re-attaches to the restarted key and asks its status;
+            # that reply ("LOCKED...") is relayed over Bluetooth too and would
+            # be the script's next read. Drop anything queued meanwhile.
+            for ok in opened:
+                ok._hid.drain()
+            return ''
         found = re.findall(r'^\s*([1-6]) ([1-6]) ([1-6])\s*$', tee.seen, re.M)
         if not found:
             raise RuntimeError('input() called, but no challenge code was printed')
@@ -149,6 +172,8 @@ def run(mac, script):
 if __name__ == '__main__':
     if sys.argv[1:2] == ['configmode']:
         configmode()
+    elif sys.argv[1:2] == ['unlock']:
+        enter_pin()
     elif sys.argv[1:2] == ['run'] and len(sys.argv) >= 4:
         mac = sys.argv[2]
         for script in sys.argv[3:]:
