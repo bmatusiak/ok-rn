@@ -4,6 +4,8 @@ Run python-onlykey's hardware test scripts over Bluetooth, with the Pi pressing.
     python tools/python_onlykey_ble.py unlock        (a locked key: the PIN only)
     python tools/python_onlykey_ble.py configmode    (an unlocked key: hold 6, PIN)
     python tools/python_onlykey_ble.py run <MAC> <script.py> [<script.py> ...]
+    OKRUN_LOCAL=1 python tools/python_onlykey_ble.py run usb <script.py> ...
+                                                (on the Pi, USB via its UHID bridge)
 
 Run it with python-onlykey's venv (python-onlykey/.venv), whose editable install
 is the feature/ble-transport checkout - that is where BleTransport comes from.
@@ -63,11 +65,13 @@ PIN = '1111111'   # onlykey-testing's PINS.primary, which apk-signer provisioned
 CONFIG_HOLD = '6#80'
 
 
+# OKRUN_LOCAL=1 when this runs ON the Pi: the same commands, without ssh.
+LOCAL = os.environ.get('OKRUN_LOCAL') == '1'
+
+
 def ssh(cmd, timeout=60):
-    return subprocess.run(
-        ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', PI, cmd],
-        capture_output=True, text=True, timeout=timeout,
-    ).stdout
+    argv = ['bash', '-c', cmd] if LOCAL else         ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', PI, cmd]
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
 
 
 def press(spec):
@@ -124,20 +128,32 @@ class Tee(io.TextIOBase):
 
 def run(mac, script):
     import runpy
+    usb = mac == 'usb'
+    if usb:
+        # USB on the Pi, against the emulator's UHID bridge. pip's `hid` is
+        # the libusb build, which sees only real USB devices; a UHID device
+        # has no USB parent, and only the hidraw build finds it. A real key
+        # on a real port would not need this.
+        import hidraw
+        sys.modules['hid'] = hidraw
     import onlykey
-    from onlykey.transports import BleTransport
 
     real = onlykey.OnlyKey
-
     opened = []
 
     def over_ble(*args, **kwargs):
+        from onlykey.transports import BleTransport
         ok = real(connect=False)
         ok._hid = BleTransport.connect(mac)
         opened.append(ok)
         return ok
 
-    onlykey.OnlyKey = over_ble
+    def over_usb(*args, **kwargs):
+        ok = real(*args, **kwargs)
+        opened.append(ok)
+        return ok
+
+    onlykey.OnlyKey = over_usb if usb else over_ble
     tee = Tee(sys.stdout)
     sys.stdout = tee
 
@@ -159,7 +175,13 @@ def run(mac, script):
             # that reply ("LOCKED...") is relayed over Bluetooth too and would
             # be the script's next read. Drop anything queued meanwhile.
             for ok in opened:
-                ok._hid.drain()
+                if usb:
+                    # The restart recreated the device; the old handle is dead.
+                    ok._hid.close()
+                    ok._connect()
+                    ok.read_string(timeout_ms=500)   # the reconnect's status line
+                else:
+                    ok._hid.drain()
             return ''
         found = re.findall(r'^\s*([1-6]) ([1-6]) ([1-6])\s*$', tee.seen, re.M)
         if not found:
