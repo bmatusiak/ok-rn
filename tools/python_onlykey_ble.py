@@ -49,6 +49,7 @@ entry that times out COUNTS as a wrong PIN - 2026-09-25 cost the emulator two
 attempts that way. The count has a trailing CR from the firmware; strip it.
 """
 import builtins
+import os
 import io
 import re
 import subprocess
@@ -142,6 +143,11 @@ def run(mac, script):
 
     def answer_challenge(prompt=''):
         last = tee.seen.strip().splitlines()[-1] if tee.seen.strip() else ''
+        if 'slot number' in last:
+            # rsa_decrypt_testkey uses whatever key a slot already holds.
+            slot = os.environ.get('OK_SLOT', '1')
+            print(f'[runner] answering the slot prompt: {slot}')
+            return slot
         if 'Restart the OnlyKey' in last:
             # The scripts' pause between loading a key (config mode) and using
             # it (not config mode). The Pi stands in for the unplug and the PIN.
@@ -178,9 +184,14 @@ if __name__ == '__main__':
         mac = sys.argv[2]
         for script in sys.argv[3:]:
             print(f'\n===== {script}')
-            # Each script loads a key (config mode) and ends restarted and
-            # unlocked, so config mode is entered again before every one.
-            configmode()
+            # A script that loads a key needs config mode, and ends restarted
+            # and unlocked, so config mode is entered again before every one.
+            # One that only uses a key already there (rsa_decrypt_testkey)
+            # must NOT be in config mode: OKGETPUBKEY and OKDECRYPT are
+            # refused there.
+            source = open(script, encoding='utf-8').read()
+            if re.search(r'setkey\(|load_rsa_key\(|OKSETPRIV', source):
+                configmode()
             code =subprocess.run([sys.executable, __file__, 'one', mac, script]).returncode
             print(f'===== {script}: {"PASS" if code == 0 else f"FAIL (exit {code})"}')
     elif sys.argv[1:2] == ['one']:
