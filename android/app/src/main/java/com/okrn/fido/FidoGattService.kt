@@ -93,6 +93,20 @@ class FidoGattService : Service() {
       Notification.Builder(this)
     }
     return builder
+      /*
+       * The status-bar icon: drawable-nodpi/ic_stat_o.png, the O (O.png) on a
+       * transparent square. Android draws a small icon from its alpha, and the
+       * launcher icon's solid circle came out as a plain circle.
+       *
+       * A PLAIN PNG ON PURPOSE. The system tints a small icon only when it
+       * recognises it as grayscale (ContrastColorUtil.isGrayscaleIcon), and
+       * that understands a bitmap or a vector, not a layer-list. On the Galaxy
+       * A13 (Android 13, 2026-09-25) a layer-list version stayed BLACK on the
+       * dark status bar while every other icon turned white; the Pixel
+       * (Android 17) tinted it anyway, which hid that. An XML <bitmap> with
+       * gravity="center" was tinted but not scaled - it showed the middle of
+       * the O. The square PNG is both recognised and scaled.
+       */
       .setSmallIcon(R.drawable.ic_stat_o)
       .setContentTitle("Acting as a security key")
       .setContentText("A paired computer can ask this phone to sign in. Tap to open.")
