@@ -21,9 +21,12 @@ function describe(name, fn) {
     }
 }
 
-function it(name, fn) {
+// VENDORED: it(name, fn, {timeoutMs}) - a test that is slow by nature (the key
+// TYPING a full backup, which grows with what is stored on it) asks for its own
+// limit, rather than every test waiting longer before a real hang is called.
+function it(name, fn, opts = {}) {
     if (!currentSuite) throw new Error('it() must be called inside describe()');
-    currentSuite.tests.push({ name, fn });
+    currentSuite.tests.push({ name, fn, timeoutMs: opts.timeoutMs });
 }
 
 // VENDORED: skip(reason).
@@ -99,11 +102,12 @@ async function run(context = {}) {
                     await t.fn({ ...context, skip, assert: { ok, equal, notEqual } });
                 })();
 
-                if (timeoutMs > 0) {
+                const limitMs = t.timeoutMs || timeoutMs;
+                if (limitMs > 0) {
                     const timeoutPromise = new Promise((_, rej) => {
                         const id = setTimeout(() => {
-                            rej(new Error(`Test timeout after ${timeoutMs}ms`));
-                        }, timeoutMs);
+                            rej(new Error(`Test timeout after ${limitMs}ms`));
+                        }, limitMs);
                         testPromise.then(() => clearTimeout(id), () => clearTimeout(id));
                     });
                     await Promise.race([testPromise, timeoutPromise]);

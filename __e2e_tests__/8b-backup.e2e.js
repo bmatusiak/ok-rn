@@ -398,6 +398,16 @@ module.exports = function backupCapture({describe, it}) {
         for (const line of result.text.split('\n')) log(line);
         log('----- FIXTURE END -----');
       }
+    }, {
+      /*
+       * The per-test limit is 120 s, and this test is the key TYPING its
+       * backup, which grows with what the suite has stored on it: 1014
+       * characters in ~107 s when measured, 1171 still arriving at 120 s in a
+       * 2026-09-26 sweep (working-tree-duo). The capture itself only fails on
+       * silence now (captureBackup's timeoutMs is an inactivity limit), so the
+       * test's own limit is the backstop for a stall, not a stopwatch.
+       */
+      timeoutMs: 300000,
     });
 
     it('the backup RESTORES, and so does one from another key', async ({log, assert, skip}) => {
