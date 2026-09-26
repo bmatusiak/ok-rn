@@ -178,7 +178,10 @@ if __name__ == '__main__':
         mac = sys.argv[2]
         for script in sys.argv[3:]:
             print(f'\n===== {script}')
-            code = subprocess.run([sys.executable, __file__, 'one', mac, script]).returncode
+            # Each script loads a key (config mode) and ends restarted and
+            # unlocked, so config mode is entered again before every one.
+            configmode()
+            code =subprocess.run([sys.executable, __file__, 'one', mac, script]).returncode
             print(f'===== {script}: {"PASS" if code == 0 else f"FAIL (exit {code})"}')
     elif sys.argv[1:2] == ['one']:
         run(sys.argv[2], sys.argv[3])
