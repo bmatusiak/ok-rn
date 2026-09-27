@@ -1,5 +1,18 @@
 {
   "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    /*
+     * node-onlykey-lib is pinned by commit hash and installed as a real
+     * package in node_modules - no longer a file: symlink to the sibling
+     * checkout. Its plugins/* modules ship JavaScript without .d.ts; through
+     * the symlink TypeScript saw them outside node_modules and inferred their
+     * types from the JS, but inside node_modules it does not read JS at all by
+     * default (maxNodeModuleJsDepth 0) and reported TS7016 for each import.
+     * 1 lets it infer from the lib's own JS again - one level, not the whole
+     * dependency tree.
+     */
+    "maxNodeModuleJsDepth": 1
+  },
   "include": ["**/*.ts", "**/*.tsx"],
   "exclude": ["**/node_modules", "**/Pods"]
 }

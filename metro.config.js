@@ -9,12 +9,20 @@ const {getDefaultConfig, mergeConfig} = require('@react-native/metro-config');
  */
 
 /*
- * `node-onlykey-lib` and `test-moniker` are siblings of this project, installed
- * with `file:` so npm symlinks them into node_modules. Metro resolves a symlink
- * to its real path and then refuses to serve any file outside the project root
- * unless that root is watched - so without these entries the library resolves
- * and then fails to bundle, which reads as a missing-module error pointing at a
- * file that plainly exists.
+ * `test-moniker` is a sibling of this project, installed with `file:` so npm
+ * symlinks it into node_modules. Metro resolves a symlink to its real path and
+ * then refuses to serve any file outside the project root unless that root is
+ * watched - so without this entry the package resolves and then fails to
+ * bundle, which reads as a missing-module error pointing at a file that
+ * plainly exists.
+ *
+ * `node-onlykey-lib` USED to be linked the same way and is NOT any more: it is
+ * pinned by commit hash in package.json (github:...#<hash>, the lib's v0.1.0),
+ * so npm installs a real copy into node_modules and Metro resolves it like any
+ * other package. Watching the sibling checkout would now watch a folder that
+ * is not what gets bundled. Every GUI runs the same pinned library - the
+ * emulator's version matrix caught two hosts on different lib commits reading
+ * the same firmware's capabilities differently.
  *
  * Package exports and symlinks both default to ON in Metro 0.87, so nothing
  * else is needed here. The library's exports map uses plain string targets
@@ -22,9 +30,7 @@ const {getDefaultConfig, mergeConfig} = require('@react-native/metro-config');
  * it and there is no react-native-specific entry point to declare.
  */
 const workspace = path.resolve(__dirname, '..');
-const linkedPackages = ['node-onlykey-lib', 'test-moniker'].map(name =>
-  path.join(workspace, name),
-);
+const linkedPackages = ['test-moniker'].map(name => path.join(workspace, name));
 
 const config = {
   watchFolders: linkedPackages,

@@ -20,7 +20,7 @@
     "@noble/curves": "^2.4.0",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native/new-app-screen": "0.87.1",
-    "node-onlykey-lib": "file:../node-onlykey-lib",
+    "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#f734c5e7654314df53691bafa13220a1ac38f91c",
     "react": "19.2.3",
     "react-native": "0.87.1",
     "react-native-get-random-values": "^2.0.0",
