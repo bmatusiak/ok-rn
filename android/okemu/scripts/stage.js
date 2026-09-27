@@ -800,7 +800,7 @@ const PATCHES = [
       /*
        * AIRCR, the one system register okcore.h names ITSELF.
        *
-       * rewriteSystemBlock() rebases the 0xE0000000 window, but it only walks
+       * rewriteRegisterBlocks() rebases the 0xE0000000 window, but it only walks
        * core/kinetis.h and only matches the `(*(volatile T *)0x...)` shape.
        * This is a bare pointer literal in an OnlyKey header, so it matched
        * neither test and stayed at the raw address - while kinetis.h's own name
@@ -870,7 +870,9 @@ const PATCHES = [
     file: 'libraries/ADC/ADC_Module.h',
     edits: [
       ['#define ADC_BITBAND_ADDR(reg, bit) (((uint32_t)(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)',
-       '#define ADC_BITBAND_ADDR(reg, bit) (((uintptr_t)(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)'],
+       /* No bit-band alias exists any more (see rewriteRegisterBlocks()): any use
+        * must fail to LINK, not compute an address nothing backs. */
+       '#define ADC_BITBAND_ADDR(reg, bit) (okemu_bitband_unsupported())'],
     ],
   },
   {
@@ -883,13 +885,16 @@ const PATCHES = [
      * These three macros account for 190 of the 194 diagnostics on their own -
      * they expand once per GPIO register. Taking the address of a peripheral
      * register through uintptr_t rather than uint32_t is correct on every
-     * architecture; the arithmetic is unchanged, because the peripheral window
-     * really is mapped at 0x40000000 whatever the pointer width.
+     * architecture. (The bit-band one no longer computes anything - see its
+     * edit below.)
      */
     file: 'core/avr_emulation.h',
     edits: [
       ['#define GPIO_BITBAND_ADDR(reg, bit) (((uint32_t)&(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)',
-       '#define GPIO_BITBAND_ADDR(reg, bit) (((uintptr_t)&(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)'],
+       /* No bit-band alias exists any more (see rewriteRegisterBlocks()): the
+        * inline members that expand this are never called, and a call would now
+        * fail to LINK instead of writing through an address nothing backs. */
+       '#define GPIO_BITBAND_ADDR(reg, bit) (okemu_bitband_unsupported())'],
       ['#define GPIO_SETBIT_ATOMIC(reg, bit) (*(uint32_t *)(((uint32_t)&(reg) - 0xF8000000) | 0x480FF000) = 1 << (bit))',
        '#define GPIO_SETBIT_ATOMIC(reg, bit) (*(uint32_t *)(((uintptr_t)&(reg) - 0xF8000000) | 0x480FF000) = 1 << (bit))'],
       ['#define GPIO_CLRBIT_ATOMIC(reg, bit) (*(uint32_t *)(((uint32_t)&(reg) - 0xF8000000) | 0x440FF000) = ~(1 << (bit)))',
@@ -1277,54 +1282,97 @@ function applyPatches(extra = [], absent = []) {
 }
 
 /*
- * Rewrite the Cortex-M system block out of kinetis.h.
+ * Rewrite the register blocks out of kinetis.h - NO FIXED ADDRESSES.
  *
  * Every register in that header is a literal absolute address:
  *
- *     #define SYST_CVR  (*(volatile uint32_t *)0xE000E018)
+ *     #define FTFL_FSEC  (*(const uint8_t *)0x40020002)
+ *     #define SYST_CVR   (*(volatile uint32_t *)0xE000E018)
  *
- * 1561 of them, of which 91 are at 0xE0000000+. On 32-bit ARM that window is
- * kernel-only, so it can never be mapped and every one of those dereferences
- * would fault. Redirect them into an ordinary array instead: the address
- * arithmetic is resolved at compile time against okemu_scs_base, so the
+ * The emulator this was derived from mmaps those windows at their real
+ * addresses. On a phone that is a bet against the runtime, and it has been
+ * lost twice: 0xE0000000 is kernel-only on 32-bit ARM, and on a moto g 5G
+ * (2023, Android 14) ART's large object space covers 0x40000000, so the soft
+ * key could not start at all (2026-09-26). So both blocks are ordinary arrays
+ * (src/okemu_scs.cpp) and every register is redirected into them: the
+ * arithmetic still resolves at compile time against the array, so the
  * generated code is the same shape it always was.
  *
- * Only ten of the ninety-one are ever read by the firmware, the libraries or
- * the surviving core files - the DWT cycle counter, SysTick, and three SCB
- * registers - and all ten are either stubbed by core-override/okemu_pins.cpp
- * or inert. The rewrite is blanket rather than targeted so that a future
- * firmware revision touching an eleventh does not silently fault.
+ * ONE PATTERN FOR EVERY SHAPE. The first version matched only
+ * `(*(volatile T *)0x...)` with one space, which was enough for the system
+ * block but would miss most of the bridge: `const uint8_t` (FTFL_FSEC,
+ * SIM_UID*), the two-space `uint8_t  *`, struct types (KINETIS_MCG_t), the
+ * DMA `volatile const void * volatile *`, and the NVIC macros that do pointer
+ * arithmetic on a bare cast. So this matches the CAST, `(<type> *)0xAAAAAAAA`,
+ * wherever it appears, and wraps only the literal:
+ *
+ *     (*(const uint8_t *)0x40020002)   ->  (*(const uint8_t *)OKEMU_PBRIDGE(0x40020002))
+ *     ((volatile uint32_t *)0xE000E100 + n)  ->  ((volatile uint32_t *)OKEMU_SCS(0xE000E100) + n)
+ *
+ * Blanket, not targeted: only ~15 registers are really used, but a future
+ * firmware revision reaching a new one must not fault on some phone.
+ *
+ * And then CHECKED. Anything that still casts a bridge or system-block
+ * literal after this - in kinetis.h or in the firmware sources - fails the
+ * stage. A raw literal outside kinetis.h is not hypothetical: okcore.h's
+ * CPU_RESTART_ADDR was one, and it crashed the app until it was found (see
+ * PATCHES). With this check it would have failed the BUILD instead.
  *
  * A header's own #define always wins over anything predefined from outside, so
  * this cannot be done with -D or a force-included shim. Patching the staged
  * copy is the only lever, exactly as it is for the CPSID asm above.
  */
-const SCS_BASE = 0xE0000000;
-const SCS_LEN = 0x00100000;
+const REGISTER_BLOCKS = [
+  { name: 'peripheral bridge', base: 0x40000000, len: 0x00100000,
+    macro: 'OKEMU_PBRIDGE', array: 'okemu_pbridge_base' },
+  { name: 'system block', base: 0xE0000000, len: 0x00100000,
+    macro: 'OKEMU_SCS', array: 'okemu_scs_base' },
+];
 
-function rewriteSystemBlock() {
+/* `(<type> *)0xAAAAAAAA` - a type that starts with a name and ends in `*`,
+ * with anything but parentheses between (spaces, const, `* volatile`). */
+const CAST_LITERAL = /\(([A-Za-z_][^()]*?\*)\)\s*(0x[0-9A-Fa-f]{8})\b/g;
+
+function registerBlockFor(address) {
+  return REGISTER_BLOCKS.find(b => address >= b.base && address < b.base + b.len);
+}
+
+/* Casts of a block address still left in `text` (comment lines skipped). */
+function rawRegisterCasts(text) {
+  const hits = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (/^\s*(\/\/|\/?\*)/.test(line)) return;
+    for (const m of line.matchAll(CAST_LITERAL)) {
+      if (registerBlockFor(parseInt(m[2], 16))) hits.push({ line: i + 1, text: line.trim() });
+    }
+  });
+  return hits;
+}
+
+function rewriteRegisterBlocks() {
   const target = path.join(STAGE_CORE, 'kinetis.h');
   let text = fs.readFileSync(target, 'utf8');
 
-  const re = /\(\*\(volatile (uint8_t|uint16_t|uint32_t|int8_t|int16_t|int32_t) \*\)(0x[EF][0-9A-Fa-f]{7})\)/g;
-  let count = 0;
-  text = text.replace(re, (whole, type, addr) => {
-    const a = parseInt(addr, 16);
-    if (a < SCS_BASE || a >= SCS_BASE + SCS_LEN) return whole;
-    count++;
-    return `(*(volatile ${type} *)OKEMU_SCS(${addr}))`;
+  const counts = Object.fromEntries(REGISTER_BLOCKS.map(b => [b.name, 0]));
+  text = text.replace(CAST_LITERAL, (whole, type, addr) => {
+    const block = registerBlockFor(parseInt(addr, 16));
+    if (!block) return whole;       /* 0xF8.. / 0xF0003.. : Teensy LC only */
+    counts[block.name]++;
+    return `(${type})${block.macro}(${addr})`;
   });
 
-  if (!count) {
-    console.error('stage: WARNING - no system-block registers rewritten');
-    process.exitCode = 1;
-    return 0;
+  for (const b of REGISTER_BLOCKS) {
+    if (!counts[b.name]) {
+      console.error(`stage: WARNING - no ${b.name} registers rewritten`);
+      process.exitCode = 1;
+      return counts;
+    }
   }
 
   /*
-   * The macro has to be visible before the first use. kinetis.h opens with an
-   * include guard; put the declaration immediately after it so every consumer
-   * of the header gets it, in whatever order they include things.
+   * The macros have to be visible before the first use. kinetis.h opens with an
+   * include guard; put the declarations immediately after it so every consumer
+   * of the header gets them, in whatever order they include things.
    *
    * Matched as a regex rather than a literal: these checkouts are cloned on
    * Windows, so the staged copy carries CRLF and any multi-line literal would
@@ -1334,18 +1382,69 @@ function rewriteSystemBlock() {
   if (!anchor.test(text)) {
     console.error('stage: WARNING - kinetis.h include guard not where expected');
     process.exitCode = 1;
-    return 0;
+    return counts;
   }
   const decl =
-    '\n/* Injected by ok-rn/android/okemu/scripts/stage.js - see rewriteSystemBlock(). */\n' +
+    '\n/* Injected by ok-rn/android/okemu/scripts/stage.js - see rewriteRegisterBlocks(). */\n' +
     '#ifdef __cplusplus\nextern "C" {\n#endif\n' +
-    'extern unsigned char okemu_scs_base[0x00100000];\n' +
+    REGISTER_BLOCKS.map(b => `extern unsigned char ${b.array}[0x${b.len.toString(16).toUpperCase()}];\n`).join('') +
+    /* Bit-band: nothing compiled uses it, and there is no alias region any
+     * more. Declared, never defined - see the avr_emulation.h / ADC patches. */
+    'extern unsigned long okemu_bitband_unsupported(void);\n' +
     '#ifdef __cplusplus\n}\n#endif\n' +
-    '#define OKEMU_SCS(a) ((void *)(okemu_scs_base + ((unsigned long)(a) - 0xE0000000UL)))\n\n';
-
+    REGISTER_BLOCKS.map(b =>
+      `#define ${b.macro}(a) ((void *)(${b.array} + ((unsigned long)(a) - 0x${b.base.toString(16).toUpperCase()}UL)))\n`).join('') +
+    '\n';
   text = text.replace(anchor, (m) => m + decl);
   fs.writeFileSync(target, text);
-  return count;
+
+  /*
+   * EVERY STAGED SOURCE, not just kinetis.h. Libraries carry their own copies
+   * of register definitions: the first run of the check below found
+   * InternalTemperature.h defining SIM_SDID as a raw
+   * `*(const uint32_t *)0x40048024`. Nothing includes it today - which is
+   * exactly the kind of assumption this removes. They all see the macros
+   * through kinetis.h (every Arduino translation unit includes it); a file
+   * that did not would fail to COMPILE, which is the safe direction.
+   */
+  const sources = [];
+  const walk = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) { walk(full); continue; }
+      if (/\.(c|cpp|h|hpp|ino)$/i.test(ent.name) && full !== target) sources.push(full);
+    }
+  };
+  walk(STAGE_CORE);
+  walk(STAGE_LIB);
+  walk(STAGE_SKETCH);
+  for (const full of sources) {
+    const before = fs.readFileSync(full, 'utf8');
+    const after = before.replace(CAST_LITERAL, (whole, type, addr) => {
+      const block = registerBlockFor(parseInt(addr, 16));
+      if (!block) return whole;
+      counts[block.name]++;
+      return `(${type})${block.macro}(${addr})`;
+    });
+    if (after !== before) fs.writeFileSync(full, after);
+  }
+
+  /* The check: anything still casting a block address fails the stage. */
+  const leftovers = rawRegisterCasts(text).map(h => `core/kinetis.h:${h.line}: ${h.text}`);
+  for (const full of sources) {
+    for (const h of rawRegisterCasts(fs.readFileSync(full, 'utf8'))) {
+      leftovers.push(`${path.relative(STAGE, full)}:${h.line}: ${h.text}`);
+    }
+  }
+  if (leftovers.length) {
+    console.error('stage: ERROR - a raw hardware register address survived the rewrite.\n' +
+      '  The soft key must not depend on a fixed address (it collides with the\n' +
+      '  runtime on some phones). Rebase these onto OKEMU_PBRIDGE / OKEMU_SCS:\n' +
+      leftovers.slice(0, 20).map(l => `    ${l}`).join('\n'));
+    process.exitCode = 1;
+  }
+  return counts;
 }
 
 /*
@@ -1987,7 +2086,7 @@ function main() {
     ...release.absentPatterns,
     ...(debugOn === false ? release.debugOffAbsentPatterns : []),
   ]);
-  const scs = rewriteSystemBlock();
+  const registerCounts = rewriteRegisterBlocks();
 
   const stats = digestStage();
   const info = writeBuildInfo(stats, release, debugOn, stdEdition, duoModel,
@@ -1999,7 +2098,7 @@ function main() {
     `  emulator overrides applied:                ${overrides}\n` +
     `  bare-metal files dropped:                  ${dropped}\n` +
     `  literal patches applied:                   ${patched}\n` +
-    `  system-block registers rebased:            ${scs}\n` +
+    `  registers rebased (no fixed addresses):    ${Object.entries(registerCounts).map(([k, v]) => `${k} ${v}`).join(', ')}\n` +
     `  Time.h consumers repointed at TimeLib.h:   ${renamed}\n` +
     (shaRenamed < 0 ? '' :
       `  Crypto/SHA256.h renamed, consumers repointed: ${shaRenamed}

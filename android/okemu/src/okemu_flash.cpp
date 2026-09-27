@@ -4,9 +4,10 @@
  * The upstream flashkinetis.cpp issues FTFL command sequences and spins on
  * FTFL_FSTAT waiting for the flash controller to retire them; with no
  * controller behind the register those loops never complete. We provide the
- * same entry points against the file-backed flash array the HAL mapped at the
- * real MK20DX256 addresses, so the firmware's own `*(unsigned int *)adr` reads
- * observe our writes exactly as they would on hardware.
+ * same entry points against the file-backed flash array the HAL mapped (at
+ * OKEMU_FLASH_BASE, wherever the kernel put it), so the firmware's own
+ * `*(unsigned int *)adr` reads observe our writes exactly as they would on
+ * hardware.
  *
  * Upstream's flashkinetis.cpp is simply not compiled; the source is untouched.
  *
@@ -44,7 +45,8 @@ inline bool in_flash(uintptr_t a) {
          a < (uintptr_t)OKEMU_FLASH_BASE + (uintptr_t)OKEMU_FLASH_SIZE;
 }
 
-volatile uint8_t *ftfl_fsec() { return (volatile uint8_t *)0x40020002UL; }  /* kinetis.h:2350 */
+/* FTFL_FSEC (kinetis.h:2350), through the same relocated block the firmware uses. */
+volatile uint8_t *ftfl_fsec() { return (volatile uint8_t *)OKEMU_PBRIDGE(0x40020002UL); }
 
 }  // namespace
 

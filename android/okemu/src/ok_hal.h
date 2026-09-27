@@ -5,13 +5,18 @@
  * addon. The firmware compiles verbatim against the real Teensyduino headers;
  * the peripherals it reaches for are backed here instead of by silicon.
  *
- * The central trick: hal_init() mmaps the Kinetis peripheral windows and the
- * 256 KB flash array at their *real* MK20DX256 addresses. Every
- * `*(volatile uint32_t *)0x40020000` in the firmware then lands in ordinary
- * process memory rather than faulting, so kinetis.h needs no shimming at all.
- * The flash mapping is file-backed and MAP_SHARED, which makes the firmware's
- * direct `*(unsigned int *)adr` reads of its own storage work verbatim and
- * gives persistence for free.
+ * NOTHING IS AT A FIXED ADDRESS. The firmware's hardware lives in memory this
+ * library owns, wherever the process put it:
+ *   - the register blocks (peripheral bridge 0x40000000, system block
+ *     0xE0000000) are static arrays in okemu_scs.cpp, and scripts/stage.js
+ *     rewrites kinetis.h so every register indexes them (OKEMU_PBRIDGE,
+ *     OKEMU_SCS);
+ *   - the 256 KB flash array is file-backed and MAP_SHARED at an address the
+ *     kernel picks (OKEMU_FLASH_BASE below), which makes the firmware's
+ *     direct `*(unsigned int *)adr` reads of its own storage work and gives
+ *     persistence for free.
+ * The upstream emulator mapped them at their real MK20DX256 addresses; on a
+ * phone the runtime already owns some of those (see okemu_scs.cpp).
  */
 #ifndef OK_HAL_H
 #define OK_HAL_H
@@ -43,6 +48,13 @@ extern "C" {
 #define OKEMU_FLASH_BASE   0x00000000UL
 #endif
 #define OKEMU_FLASH_SIZE   0x00040000UL   /* 256 KB - MK20DX256 */
+
+/*
+ * A peripheral-bridge register, by its hardware address - the same mapping the
+ * staged kinetis.h uses, so the HAL and the firmware see one set of registers.
+ */
+extern unsigned char okemu_pbridge_base[0x00100000];
+#define OKEMU_PBRIDGE(a)   ((void *)(okemu_pbridge_base + ((uintptr_t)(a) - 0x40000000UL)))
 #define OKEMU_EEPROM_SIZE  2048           /* Teensy 3.1 emulated EEPROM     */
 
 /* MK20DX256 has 6 touch-sensed buttons; firmware numbers them 1..6. */

@@ -23,36 +23,23 @@
 
 namespace {
 
-/* ------------------------------------------------------------ regions */
-
-struct Region { uintptr_t base; size_t len; const char *name; bool required; };
+/* ---------------------------------------------------------- registers */
 
 /*
- * Kinetis peripheral windows the firmware touches, plus the Cortex-M system
- * block. Backing them with anonymous memory is what lets kinetis.h be used
- * unmodified: FTFL_*, SIM_*, PORTx_PCR*, TSI0_* all become plain loads/stores.
+ * No fixed windows. The peripheral bridge and the system block are static
+ * arrays (okemu_scs.cpp) and the staged kinetis.h indexes them; the HAL
+ * reaches the same registers through the same mapping, OKEMU_PBRIDGE.
+ *
+ * This used to mmap the peripheral bridge at 0x40000000 and the 32 MB
+ * bit-band alias at 0x42000000 with MAP_FIXED_NOREPLACE. Both were bets
+ * against the runtime's allocator: the bit-band alias collided with V8's heap
+ * in the Node emulator, and the bridge collided with ART's large object space
+ * on a moto g 5G (2023), where the soft key could not start at all. The
+ * bit-band alias is simply gone - nothing compiled uses it, and stage.js
+ * makes any future use fail to link.
  */
-const Region kPeripherals[] = {
-  { 0x40000000UL, 0x00100000UL, "peripheral bridge", true  }, /* FTFL, SIM, PORT, TSI, ADC */
-  /*
-   * The bit-band alias is 32 MB and the firmware never uses the bit-band
-   * macros, so it is optional. Reserving that much fixed address space
-   * regularly collided with V8's own heap - MAP_FIXED_NOREPLACE then returns
-   * EEXIST and, because ASLR moves the heap each run, the daemon crash-looped
-   * intermittently. Skip it when the address is taken.
-   */
-  { 0x42000000UL, 0x02000000UL, "bitband alias",     false },
-  /*
-   * The Cortex-M system block is NOT mapped on Android. 0xE0000000 is above
-   * the 3 GB user/kernel split on 32-bit ARM, so the mapping is impossible
-   * rather than merely contended. scripts/stage.js rewrites every register
-   * in that window to index okemu_scs_base[] instead - see okemu_scs.cpp.
-   */
-};
-
-/* Registers the firmware reads for identity/state, by absolute address. */
-volatile uint32_t *reg32(uintptr_t a) { return (volatile uint32_t *)a; }
-volatile uint8_t  *reg8 (uintptr_t a) { return (volatile uint8_t  *)a; }
+volatile uint32_t *reg32(uintptr_t a) { return (volatile uint32_t *)OKEMU_PBRIDGE(a); }
+volatile uint8_t  *reg8 (uintptr_t a) { return (volatile uint8_t  *)OKEMU_PBRIDGE(a); }
 
 const uintptr_t kSIM_SDID  = 0x40048024UL;
 const uintptr_t kSIM_UIDH  = 0x40048054UL;
@@ -152,50 +139,24 @@ int open_backing(const std::string &dir, const char *name, size_t size,
 }
 
 /*
- * Peripheral mapping must happen before ANY static initializer in the
- * firmware runs, not when okemu_hal_init() is called.
+ * Register SEEDING must happen before ANY static initializer in the firmware
+ * runs, not when okemu_hal_init() is called.
  *
- * T3Mac.cpp has a file-scope initializer that dereferences registers directly:
+ * T3Mac.cpp has a file-scope initializer that reads registers directly:
  *     unsigned long chipNum[4] = { SIM_UIDH, SIM_UIDMH, SIM_UIDML, SIM_UIDL };
- * That runs during dlopen(), long before JS can call start(). Without the
- * mapping already in place the addon segfaults as it loads.
+ * That runs during dlopen(), long before JS can call start(), so the identity
+ * registers must already hold their values. The arrays themselves need no
+ * setup - they are static storage and exist from load - only these values do.
  *
  * A constructor priority below the default (65535) orders this ahead of every
  * C++ global constructor in the module. Priorities 0-100 are reserved for the
  * implementation, so 101 is the earliest slot available to us.
- *
- * Only the anonymous peripheral windows are set up here - they need no
- * configuration. The flash mapping is file-backed and needs the storage
- * directory, so it stays in okemu_hal_init(); nothing reads flash until
- * setup() runs.
  */
-int g_map_status = -1;   /* 0 = mapped, -1 = not yet, >0 = errno */
-char g_map_error[256] = "peripheral mapping never ran";
-
 __attribute__((constructor(101)))
 void okemu_map_peripherals(void) {
-  for (const Region &r : kPeripherals) {
-    void *p = mmap((void *)r.base, r.len, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-    if (p == MAP_FAILED || (uintptr_t)p != r.base) {
-      if (p != MAP_FAILED) munmap(p, r.len);
-      if (!r.required) {
-        fprintf(stderr, "[okemu] note: %s at %#lx unavailable (%s) - skipped\n",
-                r.name, (unsigned long)r.base, strerror(errno));
-        continue;
-      }
-      g_map_status = errno ? errno : EFAULT;
-      snprintf(g_map_error, sizeof g_map_error,
-               "cannot map %s at %#lx: %s", r.name, (unsigned long)r.base,
-               strerror(errno));
-      return;
-    }
-  }
-
   /*
-   * Identity registers must hold their values before chipNum's initializer
-   * samples them. SIM_SDID's PINID nibble selects the hardware variant: the
-   * firmware reads 5 as OK_HW_COLOR (the NeoPixel build) and 9 as OK_HW_DUO.
+   * SIM_SDID's PINID nibble selects the hardware variant: the firmware reads
+   * 5 as OK_HW_COLOR (the NeoPixel build) and 9 as OK_HW_DUO.
    */
   *reg32(kSIM_SDID) = 0x00000005;
 
@@ -207,8 +168,6 @@ void okemu_map_peripherals(void) {
 
   /* CCIF set = "flash controller idle", so the firmware's wait loops exit. */
   *reg8(kFTFL_FSTAT) = 0x80;
-
-  g_map_status = 0;
 }
 
 }  // namespace
@@ -242,23 +201,15 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
   g.dir = storage_dir ? storage_dir : ".";
   mkdir(g.dir.c_str(), 0700);
 
-  /* 1. peripheral windows ---------------------------------------------
-   * Already done by okemu_map_peripherals() during module load; here we only
-   * surface a failure, since by now the firmware's static initializers have
-   * run against whatever was (or wasn't) mapped. */
-  if (g_map_status != 0) {
-    snprintf(err, errlen, "%s", g_map_error);
-    return -1;
-  }
+  /* 1. registers: static arrays, seeded at load by okemu_map_peripherals().
+   * Nothing to map, so nothing that can fail here. */
 
-  /* 2. flash array, file-backed at its real address -------------------
+  /* 2. flash array, file-backed wherever the kernel puts it -----------
    *
-   * The firmware reads its own storage through raw pointers, and fw_hash()
-   * walks from fwstartadr (0x6060). Mapping from 0 needs mmap_min_addr to be
-   * lowered (or CAP_SYS_RAWIO). If we cannot, we still map everything from
-   * mmap_min_addr up - which covers the whole storage area at 0x3A800 - and
-   * mark the device as already provisioned so the one-time block that calls
-   * fw_hash() never runs.
+   * The firmware reads its own storage through raw pointers; stage.js rebases
+   * okcore.h's address literals onto OKEMU_FLASH_BASE, so the layout is the
+   * hardware's and only its origin moves. Why not the real address (0): see
+   * the note on the mmap below.
    */
   char e2[256];
   g.flash_fd = open_backing(g.dir, "flash.bin", OKEMU_FLASH_SIZE, 0xFF, e2, sizeof e2);
@@ -327,7 +278,7 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
    * the silent degraded mode of FINDING-emu-degraded-mode-is-silent.md. With
    * a full mapping guaranteed there is no such state to hide.
    */
-  *(volatile uint8_t *)kFTFL_FSEC = 0xFF;
+  *reg8(kFTFL_FSEC) = 0xFF;
 
   okemu_time_start();
   okemu_systick_start();   /* millis() must advance without the firmware asking */
