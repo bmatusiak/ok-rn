@@ -361,6 +361,16 @@ module.exports = function pqcSlots({describe, it}) {
     it('GENERATES an X-Wing key in the device and hands back only the public half',
       async ({log, assert, skip}) => {
         const s = await ready(log);
+        /*
+         * SUPPORT FIRST, then config mode. Config mode alone is not this
+         * suite's to trust: another suite can leave the device in it - the
+         * signing suites enter it to provision an empty slot - and then this
+         * test pressed out a generation on v3.0.4, which has no post-quantum
+         * slots, and failed after 60 s waiting for a key (matrix, 2026-09-26).
+         */
+        if (!s.caps.postQuantum) {
+          skip('no post-quantum support');
+        }
         if (!s.device.inConfigMode) {
           skip('config mode was not reached');
         }
@@ -416,6 +426,9 @@ module.exports = function pqcSlots({describe, it}) {
          * for both.
          */
         const s = await ready(log);
+        if (!s.caps.postQuantum) {
+          skip('no post-quantum support');   /* support first - see X-Wing above */
+        }
         if (!s.device.inConfigMode) {
           skip('config mode was not reached');
         }
@@ -485,6 +498,9 @@ module.exports = function pqcSlots({describe, it}) {
          * fail with an unexplained timeout.
          */
         const s = await ready(log);
+        if (!s.caps.postQuantum) {
+          skip('no post-quantum support');   /* this suite entered nothing */
+        }
         if (!s.device.inConfigMode) {
           skip('config mode was never entered');
         }

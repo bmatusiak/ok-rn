@@ -234,10 +234,21 @@ module.exports = function identity({describe, it}) {
        * if they ever disagree, the string is what to distrust, because the
        * traffic is the device itself.
        */
-      const {status} = await connected(log);
+      const {status, device} = await connected(log);
       const info = okdevice.version.parseStatus(status);
       const caps = okdevice.version.capabilities(info);
 
+      /*
+       * LISTEN, THEN MAKE THE DEVICE TALK. This used to open a 4-second window
+       * after connecting and wait for whatever the firmware happened to print
+       * - and an idle key prints nothing until its 5-second wipe timer, so on
+       * debug builds it missed (2 of 3 matrix runs, 2026-09-26) while the
+       * console was plainly there. connected() is cached and sends nothing
+       * here, so this sends its own OKCONNECT once the listener is up: a debug
+       * build answers it on SEREMU ("OKCONNECT MESSAGE RECEIVED"), a
+       * production build has no SEREMU to answer on. The window is kept as the
+       * deadline, not as the hope.
+       */
       const seen = await new Promise(resolve => {
         let done = false;
         const off = OkEmu.on('stream', event => {
@@ -254,6 +265,7 @@ module.exports = function identity({describe, it}) {
             resolve(false);
           }
         }, 4000);
+        device.connect().catch(err => log(`OKCONNECT for the console check: ${err.message}`));
       });
 
       log(`SEREMU traffic seen: ${seen}, build says console: ${caps.debugConsole}`);
