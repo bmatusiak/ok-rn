@@ -129,7 +129,7 @@ test('nothing to compare is not a complaint', () => {
 /* ----------------------------- the pin list against the bundled folder */
 
 test('every release file named by a pin is bundled', () => {
-  const pins = require('../ok-versions.json') as Record<string, {file?: string}>;
+  const pins = require('node-onlykey-lib/versions').TABLE as Record<string, {file?: string}>;
   const have = new Set(fs.readdirSync(DIR));
 
   const absent: string[] = [];
@@ -157,7 +157,7 @@ test('the only pins without a signed file are the two that cannot have one', () 
    * version look like a missing file; naming them says which is which, and
    * still catches a pin that quietly loses its image.
    */
-  const pins = require('../ok-versions.json') as Record<string, {file?: string}>;
+  const pins = require('node-onlykey-lib/versions').TABLE as Record<string, {file?: string}>;
   const unsigned = Object.entries(pins).filter(([, e]) => !e.file).map(([k]) => k);
   expect(unsigned.sort()).toEqual(['v3.0.0', 'v3.0.5']);
 });

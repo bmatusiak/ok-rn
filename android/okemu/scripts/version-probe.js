@@ -22,7 +22,7 @@
  * for this project.
  *
  * Usage:
- *   node scripts/version-probe.js            all versions in ok-versions.json
+ *   node scripts/version-probe.js            all versions in node-onlykey-lib/versions
  *   node scripts/version-probe.js v3.0.2     just one
  */
 'use strict';
@@ -33,7 +33,8 @@ const { execFileSync } = require('child_process');
 const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..', '..');
-const VERSIONS = path.join(ROOT, 'ok-versions.json');
+/* The release table is node-onlykey-lib's (see versions/index.js). */
+const libVersions = require('node-onlykey-lib/versions');
 
 /* The patch tables live in stage.js; importing them keeps one copy. */
 const stage = require('./stage.js');
@@ -200,21 +201,22 @@ function probe(name, pins, extra, absentPatterns = []) {
 }
 
 function main() {
-  if (!fs.existsSync(VERSIONS)) {
-    console.error(`version-probe: ${VERSIONS} not found`);
-    process.exit(1);
-  }
-  const all = JSON.parse(fs.readFileSync(VERSIONS, 'utf8'));
   const only = process.argv[2];
-  const names = only ? [only] : Object.keys(all);
+  const names = only ? [only] : libVersions.list();
 
   console.log('Probing stage.js patches against released firmware versions.');
   console.log('Nothing is built and no repository is modified.\n');
 
   for (const name of names) {
-    const pins = all[name];
+    let pins;
+    try {
+      pins = libVersions.pinsFor(name);
+    } catch (err) {
+      console.error(`version-probe: ${err.message}`);
+      continue;
+    }
     if (!pins) {
-      console.error(`version-probe: no such version "${name}"`);
+      console.log(`${name.padEnd(8)} SKIPPED - not cut yet; it builds the working tree`);
       continue;
     }
 
