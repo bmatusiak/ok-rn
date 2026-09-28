@@ -45,24 +45,30 @@ const workingTree = require('./working-tree');
 module.exports = {
   ...workingTree,
   version: 'v3.0.5',
+  /*
+   * PINNED 2026-09-28 (node-onlykey-lib/versions): never released, it is the
+   * "3.0.5 compatibility tree" this app was built and tested against -
+   * 0c-coder's masters. A blank row built whatever was checked out, which
+   * stopped being 3.0.5 the day the working tree moved to 3.1.0.
+   */
+  pins: { libraries: '57340df', 'OnlyKey-Firmware': '1f7e726' },
+  /* Its own storage slot now: it is no longer the working tree. */
+  slot: 'v3.0.5',
 
   /*
-   * Not 'tested' yet. It is the same sources the working tree runs, and those
-   * pass, but this entry has not been swept UNDER THIS NAME and saying
-   * otherwise would put a claim in the matrix that nobody made.
+   * 'untried' again, deliberately: the 'boots' this carried was the working
+   * tree as it then was. Pinned, it is a signed build from 57340df / 1f7e726 -
+   * not yet run under this name on Android.
    */
-  status: 'boots',
+  status: 'untried',
 
   notes: [
-    'NAMED BUT NOT CUT. onlykey.h declares 3.0.5 and upstream has a',
-    'release/v3.0.5 branch, but neither repo has a v3.0.5 tag, so the pins in',
-    'ok-versions.json are blank and this builds the working tree.',
+    'NEVER RELEASED - the 3.0.5 compatibility tree, pinned 2026-09-28 to',
+    '0c-coder\'s masters (libraries 57340df, OnlyKey-Firmware 1f7e726). It',
+    'reports v3.0.5 and carries the CTAPHID wipe fix; the 3.1.0 candidate',
+    'that followed it (v3.1.0.js) does not.',
     '',
-    'Identical to working-tree by construction - same patches, same storage',
-    'slot - so it is not a second thing to keep in step while it is blank.',
-    '',
-    'On release day: fill in both hashes, then give this file its own',
-    'measured patch list instead of the spread.',
+    'Same patch set as working-tree (spread), its own storage slot.',
     '',
     'THE UPGRADE PATH FROM v3.0.4, read at the pins (libraries c8804e3 against',
     'b412e78). v3.0.4 derives web keys with the origin in the HKDF (v1); this',
