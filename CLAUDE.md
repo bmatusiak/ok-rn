@@ -209,13 +209,13 @@ important projects
 
 * ok-app-rewrite = moder rewrite for onlykey-app, under development by another maintainer
 * ok-rn = react-native mobile app
-* OnlyKey-App = the onlykey-app, this is the desktop app, contain firmware api logic for setup and management of the onlykey device
-* onlykey.github.io = the web-app,  contains fido2 logic and tools using ctap2 protocal
+* OnlyKey-App = the onlykey-app, this is the desktop app for setup and management of the onlykey device; its device code is node-onlykey-lib (bm-ok master, nw 0.114)
+* apps.onlykey.io = the web-app (4.0.0, bm-ok/0c-coder-onlykey.github.io main), fido2 tools using ctap2 protocal; its device code is node-onlykey-lib. (onlykey.github.io = the old pre-port checkout)
 * node-onlykey-lib = the javascript functionality API for the firmware, allowing GUIs to use the firmware
-* node-onlykey-emulator = the javascript emulator for the firmware, showing us how to emulate the firmware on a device*linux only
+* node-onlykey-emulator = the javascript emulator for the firmware, showing us how to emulate the firmware on a device - linux (usb gadget) and windows (okvhid)
 * OnlyKey-Firmware & libraries = firmware source code and libraries, written in C, for the onlykey device, this is the source code for the firmware that runs on the onlykey device
-* onlykey-testing = new testing kit for the firmware using the node-onlykey-emulator, *linux only
-* ok-versions.json = firmware releases, each pinning a `libraries` and an `OnlyKey-Firmware` commit; the input to the version matrix
+* onlykey-testing = new testing kit for the firmware using the node-onlykey-emulator - linux and windows
+* node-onlykey-lib/versions = firmware releases, each pinning a `libraries` and an `OnlyKey-Firmware` commit; the input to the version matrix (the old ok-versions.json at the checkouts root is stale)
 
 when a value has to match another client, the ORACLE is `onlykey-testing/test/`
 and the two reference apps - not our own expectations. inventing a vector and
