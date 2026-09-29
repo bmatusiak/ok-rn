@@ -16,7 +16,7 @@
     "e2e:matrix": "node tools/matrix.js"
   },
   "dependencies": {
-    "@bmatusiak/rectify": "github:bmatusiak/rectify",
+    "@bmatusiak/rectify": "github:bmatusiak/rectify#a0d9f0e6e537053122273b1f763ac87ae461361c",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native/new-app-screen": "0.87.1",
     "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#3dfbfd0a972c510eed78483fffdd9494aeade433",
