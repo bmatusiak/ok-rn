@@ -766,7 +766,7 @@ module.exports = function derive({describe, it}) {
        * not be asked.
        */
       if (device.capabilities && device.capabilities.xwingDerive === false) {
-        skip('KEYTYPE_XWING is development-line only - the key type is absent, not refused');
+        skip('KEYTYPE_XWING needs firmware 3.1.0 or later - the key type is absent, not refused');
       }
 
       const first = await okcrypto.derivePublicKey('xwing.example', {
@@ -849,7 +849,7 @@ module.exports = function derive({describe, it}) {
        * type cannot hold an identity in it. Nothing to encrypt to.
        */
       if (device.capabilities && device.capabilities.xwingDerive === false) {
-        skip('the age format is X-Wing end to end, and KEYTYPE_XWING is development-line only');
+        skip('the age format is X-Wing end to end, and KEYTYPE_XWING needs firmware 3.1.0 or later');
       }
 
       const id = await okcrypto.deviceAge.identity('age.example', opts);

@@ -69,40 +69,7 @@ const OTHER_SLOT = 111;
 const MLKEM_SLOT = 112;
 const XWING_BYTES = 1216;
 
-/** A tap: long enough to register, short enough not to be a gesture. */
-const TAP = 4;
-
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Press the three buttons, and STOP EARLY once the device has answered.
- *
- * For slots 101..116 the firmware reads the stored-key challenge preference,
- * and when it is on it never computes the digits at all - CRYPTO_AUTH goes
- * straight to 3 and ANY single press confirms (okcore.cpp:7567-7573).
- * Measured here: one generation took two presses and the next took one,
- * against digits of 1-2-1.
- *
- * The presses after the answer are not harmless. On an unlocked device a
- * stray press runs gen_press() and types a slot at the keyboard.
- */
-async function pressChallenge(digits, log, isAnswered = () => false) {
-  const pressed = [];
-  for (const d of digits) {
-    /* HANDED to the firmware, not sensed - one sense round rather than ~14. */
-    await OkEmu.pressQueue(String(d), TAP);
-    pressed.push(d);
-    /*
-     * payload() runs a press only once key_off has passed two further loop
-     * iterations (okcore.cpp:2723), so back-to-back holds count as one long
-     * one. The gap is that, not a guess at the device's speed.
-     */
-    await delay(600);
-    if (isAnswered()) break;
-  }
-  log(`pressed ${pressed.join('-')} of ${digits.join('-')}`);
-  return pressed;
-}
 
 let shared = null;
 
@@ -154,7 +121,7 @@ module.exports = function pqcSlots({describe, it}) {
       const {caps} = await ready(log);
       log(`postQuantum: ${caps.postQuantum}`);
       if (!caps.postQuantum) {
-        skip('this firmware predates post-quantum support - no release has it');
+        skip('this firmware predates post-quantum support (3.1.0 and later have it)');
       }
       assert.ok(caps.postQuantum);
     });
@@ -251,7 +218,6 @@ module.exports = function pqcSlots({describe, it}) {
         log(`age file: ${file.length} bytes, encrypted with no device at all`);
 
         const opened = await okcrypto.deviceAge.decryptWithSlot(file, SLOT, {
-          confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
           timeoutMs: 60000,
         });
 
@@ -283,7 +249,6 @@ module.exports = function pqcSlots({describe, it}) {
           secret, pqc.encodeRecipient(s.stored));
 
         const opened = await okcrypto.deviceAge.decryptWithIdentity(file, identity, {
-          confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
           timeoutMs: 60000,
         });
 
@@ -376,13 +341,11 @@ module.exports = function pqcSlots({describe, it}) {
         }
 
         /*
-         * ONE request. The firmware replays it itself on the third press
-         * (OnlyKey.ino:846-859), so a client that re-sent here would be
-         * ignored, and the extra presses would type slot contents at the
-         * keyboard of an unlocked device.
+         * No challenge: keygen asks for no presses since firmware 97f0149
+         * (3.1.0 okcore.cpp:4903), and the library stopped raising one
+         * (node-onlykey-lib 59d11c7).
          */
         const key = await s.device.generateKey(SLOT, KEY_TYPE.XWING, {
-          confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
           timeoutMs: 60000,
         });
 
@@ -407,7 +370,6 @@ module.exports = function pqcSlots({describe, it}) {
        * stale buffer rather than from the slot that was asked for.
        */
       const other = await s.device.generateKey(OTHER_SLOT, KEY_TYPE.XWING, {
-        confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
         timeoutMs: 60000,
       });
 
@@ -434,7 +396,6 @@ module.exports = function pqcSlots({describe, it}) {
         }
 
         const key = await s.device.generateKey(MLKEM_SLOT, KEY_TYPE.MLKEM768, {
-          confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
           timeoutMs: 60000,
         });
 
