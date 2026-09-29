@@ -22,6 +22,8 @@
  */
 
 
+import {list, compatibilityOf} from 'node-onlykey-lib/versions';
+
 /** The capabilities object the library returns, or null before a reading. */
 type Capabilities =
   | {postQuantum?: boolean; hmacSha1?: boolean; deviceVault?: boolean}
@@ -32,26 +34,48 @@ export type FirmwareFeature = 'postQuantum' | 'hmacSha1' | 'deviceVault';
 
 
 /**
- * What each feature is called on screen, and the firmware that carries it.
+ * The oldest release that carries a feature - from node-onlykey-lib's
+ * compatibility table, not written here.
  *
- * The post-quantum line is the one worth reading twice. Every post-quantum
- * path - composite PGP keys, X-Wing age identities, ML-KEM keys in a slot -
- * was measured absent from EVERY released firmware, up to and including
- * v3.0.2: okpqc.cpp does not exist at any pinned release, and neither
- * KEYTYPE_MLKEM768 nor KEYTYPE_XWING is in okcore.h at any of them. So this
- * is not an old-firmware warning that a few people will see. Anyone holding a
- * key that came in a box sees it, and will until a release ships with it.
+ * The table (node-onlykey-lib/versions) is the one record of what each release
+ * supports: its rows are generated from the library's capabilities() and a lib
+ * test fails if they drift. Writing "firmware 3.0.5 or newer" by hand in this
+ * file was a second copy of that answer, and it went stale - it said no release
+ * had post-quantum keys after the table gained 3.1.0, and named 3.0.5 after it
+ * was dropped. Now a new row, or a dropped one, changes these sentences by
+ * itself. v3.1.0 is the proposed release, treated there like a signed one.
  */
-const FEATURES: Record<FirmwareFeature, {what: string; needs: string}> = {
+function oldestReleaseWith(feature: FirmwareFeature): string | null {
+  for (const version of [...list()].reverse()) {      // oldest first
+    const row = compatibilityOf(version);
+    if (row && row.capabilities && row.capabilities[feature] === true) {
+      return version.replace(/^v/, '');
+    }
+  }
+  return null;
+}
+
+/** "firmware X or newer", or - if no release in the table has it - say so. */
+function needsFirmware(feature: FirmwareFeature): string {
+  const version = oldestReleaseWith(feature);
+  return version ? `firmware ${version} or newer` : 'no released firmware has this yet';
+}
+
+/**
+ * What each feature is called on screen, and the firmware that carries it
+ * (from the table - see oldestReleaseWith).
+ */
+/* `is` or `are`: "The vault is", "Post-quantum keys are" - the sentences below name one. */
+const FEATURES: Record<FirmwareFeature, {what: string; is: 'is' | 'are'; needs: string}> = {
   postQuantum: {
     what: 'Post-quantum keys',
-    needs:
-      'no released firmware has them yet — they are in the development line ' +
-      'the bench keys run',
+    is: 'are',
+    needs: needsFirmware('postQuantum'),
   },
   hmacSha1: {
     what: 'HMAC-SHA1 slot keys',
-    needs: 'firmware 3.0.0 or newer',
+    is: 'are',
+    needs: needsFirmware('hmacSha1'),
   },
   /*
    * NOT a limit of the firmware, unlike the two above, and the note says so
@@ -64,9 +88,10 @@ const FEATURES: Record<FirmwareFeature, {what: string; needs: string}> = {
    */
   deviceVault: {
     what: 'The vault',
+    is: 'is',
     needs:
-      'firmware 3.0.5 or newer — older firmware can derive, but 3.0.5 ' +
-      'changed how, so anything sealed before it would stop opening after ' +
+      `${needsFirmware('deviceVault')} — older firmware can derive, but it ` +
+      'derives differently, so anything sealed before would stop opening after ' +
       'the update',
   },
 };
@@ -76,7 +101,7 @@ const FEATURES: Record<FirmwareFeature, {what: string; needs: string}> = {
  *
  * There used to be a way to force one on (src/capabilityOverride.ts), for a
  * hard key whose working-tree build reported the same version as the release
- * it was ahead of. The working tree declares 3.0.5 now, and the library
+ * it was ahead of. The working tree declares its own version (3.1.0 now), and the library
  * decides these by that version, so the lever was deleted.
  */
 export function supports(caps: Capabilities, feature: FirmwareFeature): boolean {
@@ -86,8 +111,8 @@ export function supports(caps: Capabilities, feature: FirmwareFeature): boolean 
 
 /** The sentence a faded section shows, naming the feature and what it needs. */
 export function missingNote(feature: FirmwareFeature): string {
-  const {what, needs} = FEATURES[feature];
-  return `${what} are not on this key: ${needs}. Everything here is switched off.`;
+  const {what, is, needs} = FEATURES[feature];
+  return `${what} ${is} not on this key: ${needs}. Everything here is switched off.`;
 }
 
 /**
@@ -99,9 +124,9 @@ export function missingNote(feature: FirmwareFeature): string {
  * be the first hint.
  */
 export function forcedNote(feature: FirmwareFeature): string {
-  const {what} = FEATURES[feature];
+  const {what, is} = FEATURES[feature];
   return (
-    `${what} are switched on because this key was told it has them, not ` +
+    `${what} ${is} switched on because this key was told it has them, not ` +
     'because it said so. If the firmware does not, these will fail at the key. ' +
     'Advanced -> Capabilities turns it back off.'
   );
