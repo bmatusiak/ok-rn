@@ -141,19 +141,20 @@ test('every release file named by a pin is bundled', () => {
   expect(absent).toEqual([]);
 });
 
-test('the only pins without a signed file are the three that cannot have one', () => {
+test('the only pins without a signed file are the two that cannot have one', () => {
   /*
    * A pin names the signed image it was built from, and two do not - for
    * DIFFERENT reasons, which is why they are listed rather than counted.
    *
    *   v3.0.0  went out as an unsigned beta and was skipped for production, so
    *           there is no Signed_OnlyKey_3_0_0_STD and there never will be.
-   *   v3.0.5  was never released. It is pinned (2026-09-28) to the 3.0.5
-   *           compatibility tree this app was built and tested against -
-   *           0c-coder's masters - and no signed image of it exists or will.
-   *   v3.1.0  the release candidate (trustcrypto release-3.1.0 PRs), pinned at
-   *           its PR heads. No signed image YET: one is named here when 3.1.0
-   *           is signed and tagged, and this list shrinks by one.
+   *   v3.1.0  the proposed release (trustcrypto release-3.1.0 PRs), pinned at
+   *           its PR heads and treated like the signed release. No signed image
+   *           YET: one is named here when 3.1.0 is signed and tagged, and this
+   *           list shrinks by one.
+   *
+   * v3.0.5 was on this list until node-onlykey-lib 3dfbfd0 dropped its row
+   * (2026-09-29): never released or signed, superseded by 3.1.0.
    *
    * This used to assert `named === total - 1`, i.e. exactly one exception, and
    * it broke the moment v3.0.5 was pinned. Counting made a new unreleased
@@ -162,5 +163,5 @@ test('the only pins without a signed file are the three that cannot have one', (
    */
   const pins = require('node-onlykey-lib/versions').TABLE as Record<string, {file?: string}>;
   const unsigned = Object.entries(pins).filter(([, e]) => !e.file).map(([k]) => k);
-  expect(unsigned.sort()).toEqual(['v3.0.0', 'v3.0.5', 'v3.1.0']);
+  expect(unsigned.sort()).toEqual(['v3.0.0', 'v3.1.0']);
 });
