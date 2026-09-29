@@ -150,7 +150,7 @@ function list() {
  *
  * Null for the working tree, which is pinned to nothing - it is whatever the
  * checkouts are at - and null for a release NAMED but not CUT (both commits
- * blank; v3.0.5 today), so it builds what the checkouts hold, which is what
+ * blank; none today), so it builds what the checkouts hold, which is what
  * that version currently IS; writeBuildInfo() and `unreleased: !release.pins`
  * already treat the two alike. The library throws on an unknown release and on
  * a half-pinned row: one repo pinned and the other floating would be neither
