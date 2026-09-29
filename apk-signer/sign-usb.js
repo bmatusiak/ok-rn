@@ -28,13 +28,26 @@ const SLOT = 2;
 const say = (...a) => console.error('[sign-usb]', ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/*
+ * The key's status line, or '' when it did not answer. A LOCKED key does not
+ * answer OKCONNECT at all (okcore.cpp set_time has no locked branch), so silence
+ * is "locked", not an error - provision-usb.js hit that on a real key.
+ */
+async function statusOf(s) {
+  try {
+    return String((await s.device.connect()).status).trim();
+  } catch (err) {
+    if (/no reply/i.test(String(err && err.message))) return '';
+    throw err;
+  }
+}
+
 async function main() {
   const presser = presserFrom(process.env.OKSIGN_PRESSER || 'pi', {waitForEnter: false});
   const s = await openUsb();
   try {
-    const r = await s.device.connect();
-    const status = String(r.status).trim();
-    say(`key says ${status}; buttons pressed by ${presser.name}`);
+    const status = await statusOf(s);
+    say(`key says ${status || 'nothing (locked)'}; buttons pressed by ${presser.name}`);
 
     if (!/^UNLOCKED/i.test(status)) {
       if (presser.name === 'you') {
@@ -42,7 +55,7 @@ async function main() {
         await presser.press(['your PIN']);
         for (let i = 0; i < 120; i++) {
           await sleep(1000);
-          const now = String((await s.device.connect()).status).trim();
+          const now = await statusOf(s);
           if (/^UNLOCKED/i.test(now)) break;
           if (i === 119) throw new Error('the key was not unlocked within two minutes');
         }

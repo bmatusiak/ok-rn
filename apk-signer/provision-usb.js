@@ -75,7 +75,20 @@ async function main() {
     }
     await presser.press(['your PIN']);
     for (let i = 0; i < 120; i++) {
-      const now = String((await session.device.connect()).status).trim();
+      /*
+       * A LOCKED key does not answer OKCONNECT: set_time (okcore.cpp) has
+       * branches for uninitialized, unlocked and config-mode-unlocked, and none
+       * for locked - it returns without a word. So a poll that times out means
+       * "not unlocked yet", not a failure. Measured 2026-09-29 on a real key:
+       * the unlock after config mode (which relocks) outlasted one 3 s poll and
+       * the uncaught timeout ended provisioning.
+       */
+      let now = '';
+      try {
+        now = String((await session.device.connect()).status).trim();
+      } catch (err) {
+        if (!/no reply/i.test(String(err && err.message))) throw err;
+      }
       if (/^UNLOCKED/i.test(now)) return;
       await sleep(1000);
     }
