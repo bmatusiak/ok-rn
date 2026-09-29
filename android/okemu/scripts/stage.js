@@ -132,7 +132,8 @@ const DROP = [
  *
  *     OKEMU_PRODUCTION=1   force it OFF, the way the firmware ships
  *     OKEMU_DEBUG=1        force it ON, so the device can be provisioned
- *     neither              leave the sources as they are, and say which
+ *     neither              the WORKING TREE: ON - it is the development build
+ *                          a pinned release: leave its sources as they are
  *
  * ## It is not a compiler flag
  *
@@ -169,10 +170,23 @@ const DROP = [
  * already has on. It changes no protocol and no behaviour the firmware does not
  * itself define; it is the difference between the two builds upstream ships.
  */
+/*
+ * THE WORKING TREE BUILDS WITH DEBUG ON. It used to follow its sources, which
+ * had DEBUG on until release 3.1.0 shipped it OFF (2026-09-28, when the
+ * checkouts moved to the bm-ok masters = release-3.1.0 + the CTAPHID wipe
+ * fix). Following them turned the development build into a production one:
+ * the Pixel matrix's working tree went from 104 passed to 96, eight DEBUG-only
+ * tests skipping. The working tree is the development build, so it is ON -
+ * the same rule node-onlykey-emulator's stager has (4e4d640). A signed build
+ * of the tree is OKEMU_PRODUCTION=1; a pinned release still follows its sources.
+ */
+const IS_WORKING_TREE =
+  !process.env.OKEMU_VERSION || process.env.OKEMU_VERSION === 'working-tree';
 const WANT_DEBUG =
   process.env.OKEMU_DEBUG === '1' ? true
   : process.env.OKEMU_PRODUCTION === '1' ? false
-  : null;                                      /* leave the sources alone */
+  : IS_WORKING_TREE ? true
+  : null;                                      /* a pinned release: leave its sources alone */
 
 /** Multi-line replacement text is written as lines and joined with this. */
 const NL = String.fromCharCode(10);
