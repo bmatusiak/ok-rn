@@ -541,7 +541,7 @@ module.exports = function cryptoSign({describe, it}) {
         skip('no key in the slot');
       }
 
-      const {ed25519} = require('@noble/curves/ed25519.js');
+      const {ed25519} = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
       const {toHex} = require('node-onlykey-lib').bytes;
 
       const pub = await device.getPublicKey(SLOT, {bytes: 32});
@@ -791,7 +791,7 @@ module.exports = function cryptoSign({describe, it}) {
         assert.ok(true);
         return;
       }
-      const {ed25519} = require('@noble/curves/ed25519.js');
+      const {ed25519} = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
       const {fromHex} = require('node-onlykey-lib').bytes;
 
       const payload = new Uint8Array(32).map((_, i) => (i * 5 + 2) & 0xff);

@@ -23,9 +23,15 @@ module.exports = {
    * build and even its own Jest mock are ESM. Left out, every suite that
    * reaches src/onlykey.ts stopped RUNNING rather than failing, which shows up
    * in the summary as a smaller number of tests rather than as a red line.
+   *
+   * node-onlykey-lib is on the list too, since it VENDORS @noble (its one copy,
+   * src/vendor/node_modules/@noble): those files sit under
+   * node_modules/node-onlykey-lib/.../node_modules/@noble/, and the pattern
+   * ignores a path if it matches at ANY node_modules/ segment - the first one,
+   * node-onlykey-lib, would have excluded the vendored ESM from the transform.
    */
   transformIgnorePatterns: [
-    'node_modules/(?!((jest-)?react-native|@react-native(-community|-async-storage)?|@noble)/)',
+    'node_modules/(?!((jest-)?react-native|@react-native(-community|-async-storage)?|@noble|node-onlykey-lib)/)',
   ],
 
   /*

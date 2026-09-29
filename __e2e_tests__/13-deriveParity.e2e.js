@@ -48,7 +48,7 @@
  */
 'use strict';
 
-const {p256} = require('@noble/curves/nist.js');
+const {p256} = require('node-onlykey-lib/vendor/@noble/curves/nist.js');
 const {getOnlyKey} = require('../src/onlykey');
 const {bytes: okbytes} = require('node-onlykey-lib');
 
