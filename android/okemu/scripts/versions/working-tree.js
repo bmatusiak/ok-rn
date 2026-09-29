@@ -4,7 +4,7 @@
  * The working tree - what stage.js builds when OKEMU_VERSION is unset.
  *
  * Not a release, and its own script for exactly that reason. Everything else
- * here is pinned to a commit in ok-versions.json; this one is whatever
+ * here is pinned to a commit in node-onlykey-lib/versions; this one is whatever
  * OnlyKey-Firmware and libraries happen to be checked out at, which is the
  * generation ahead of the newest release. Without a script for it, every edit
  * the current sources need and no release does would have had to live in
@@ -19,10 +19,11 @@
  *
  * ## DEBUG is ON here and OFF in every release
  *
- * onlykey.h:81 is `#define DEBUG` in this tree and `//#define DEBUG` at v3.0.2.
- * The difference is upstream's, not ours - somebody left the switch on while
- * working. It is why the soft key can be given a PIN at all by default, and why
- * a pinned release needs OKEMU_DEBUG=1 before it can be.
+ * The SOURCES have it off - onlykey.h:81 is `//#define DEBUG` in the current tree
+ * (3.1.0, 213e670), as in every release. stage.js turns it ON for the working
+ * tree (WANT_DEBUG): that is why the soft key can be given a PIN at all by
+ * default, and why a pinned release needs OKEMU_DEBUG=1 before it can be. (Older
+ * trees had it on in the source - somebody left the switch on while working.)
  */
 const shared = require('./_shared');
 
@@ -33,7 +34,7 @@ module.exports = {
 
   notes: [
     'Whatever the checkouts are at. The full e2e suite runs against this.',
-    'Ships with the DEBUG gate ON, unlike every release.',
+    'Built with the DEBUG gate ON (stage.js turns it on), unlike every release.',
   ].join('\n'),
 
   /**

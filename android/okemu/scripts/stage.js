@@ -158,9 +158,10 @@ const DROP = [
  *
  * ## Why turning it ON had to exist
  *
- * A RELEASE SHIPS WITH IT OFF. v3.0.2's onlykey.h has `//#define DEBUG`, and
- * the working tree has it uncommented because somebody was working on it. So
- * every pinned version in ok-versions.json builds as a production device -
+ * A RELEASE SHIPS WITH IT OFF. v3.0.2's onlykey.h has `//#define DEBUG`, and so
+ * do the current sources (3.1.0); older working trees had it uncommented because
+ * somebody was working on them. So every pinned version in node-onlykey-lib/versions
+ * builds as a production device -
  * correctly, that is how it shipped - and a production device CANNOT BE GIVEN
  * A PIN at all (FINDING-provisioning-needs-a-debug-build.md). Its fresh
  * per-version storage would stay UNINITIALIZED forever and no suite that needs
@@ -449,8 +450,9 @@ function gateDefine(name, on, want, { universal = true } = {}) {
  * Set - or just read - the DEBUG gate in the staged onlykey.h.
  *
  * A TOGGLE rather than a text patch, because the sources arrive on either side
- * of it: a release has the define commented out, the working tree has it live,
- * and a patch written for one silently fails to find its pattern in the other.
+ * of it: a release has the define commented out, a working tree may have it live
+ * (older ones did; 3.1.0 does not), and a patch written for one silently fails to
+ * find its pattern in the other.
  * This finds whichever spelling is there and reports the state it leaves.
  *
  * DEBUG_CTAP_VERBOSE is a SEPARATE define that only newer trees carry, and it

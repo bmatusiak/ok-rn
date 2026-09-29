@@ -109,7 +109,7 @@ user has. `OKEMU_DEBUG=1` forces the other one, and provisioning needs it.
 ### Building a released firmware version
 
 `OKEMU_VERSION` builds a pinned release instead of the working tree, from the
-commits `ok-versions.json` names:
+commits `node-onlykey-lib/versions` names:
 
 ```bash
 npm run e2e:matrix                             # build and run every release
@@ -408,6 +408,13 @@ And two more since:
   now boots, provisions and answers.
 
 ## The firmware matrix (swept 2026-09-12, as production)
+
+**Latest (2026-09-29):** the working tree is 3.1.0 (bm-ok libraries 213e670 +
+OnlyKey-Firmware 9fceea1) and passes **104, 0 failed, 34 skipped** on the Pixel 6a
+(soft key; the skips are the hard-key and armed-only suites). The table below is
+the 2026-09-12 sweep and has not been re-run: testing now targets the latest tree
+only. Since then v3.0.5 was dropped from the matrix (never released) and v3.1.0 -
+the proposed release, treated like the signed one - was added, not yet swept.
 
 Every pinned release, built from its own sources and run against the whole
 suite on the phone. `node tools/matrix.js` does all of it; one name does one.

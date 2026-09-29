@@ -1,5 +1,5 @@
 /*
- * v3.1.0 - the release candidate, for the Android build.
+ * v3.1.0 - the proposed release, treated like the signed release, for the Android build.
  *
  * trustcrypto/libraries PR #33 and trustcrypto/OnlyKey-Firmware PR #183,
  * branch release-3.1.0, one squashed commit each, pinned in
