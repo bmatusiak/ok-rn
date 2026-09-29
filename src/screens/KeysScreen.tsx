@@ -201,14 +201,13 @@ export function KeysScreen({
    * thing to set a passphrase.
    */
   /*
-   * Post-quantum generation, and whether this firmware has it at all - which
-   * NO RELEASE DOES, so on a key from a box this section is faded. See
+   * Post-quantum generation, and whether this firmware has it at all - 3.0.5
+   * and later do; on a key from an older release this section is faded. See
    * src/firmwareFeatures.ts.
    */
   const pqc = supports(emu.capabilities, 'postQuantum');
   const [genType, setGenType] = useState<string>(GENERATED_TYPES[0].name);
   const [genSlot, setGenSlot] = useState<number>(110);
-  const [genChallenge, setGenChallenge] = useState<number[] | null>(null);
   const [pubSlot, setPubSlot] = useState<number>(101);
   const [pubKind, setPubKind] = useState<string>(PUB_KEY_SIZES[0].name);
   const [pubKey, setPubKey] = useState<{slot: number; hex: string; b64: string} | null>(null);
@@ -510,10 +509,12 @@ export function KeysScreen({
       const chosen = GENERATED_TYPES.find(t => t.name === genType) ?? GENERATED_TYPES[0];
       const {device, okcrypto} = await getKey();
 
+      /*
+       * No challenge: since firmware 97f0149 (in 3.0.5 and 3.1.0) generating a
+       * post-quantum key on the device asks for no button presses, and the
+       * library stopped raising one (node-onlykey-lib 59d11c7).
+       */
       const publicKey = await device.generateKey(genSlot, chosen.type, {
-        confirm: ({digits}: {digits: number[]}) => {
-          setGenChallenge(digits);
-        },
         timeoutMs: 60000,
       });
 
@@ -544,17 +545,9 @@ export function KeysScreen({
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
-      setGenChallenge(null);
       setBusy(null);
     }
   }, [getKey, genType, genSlot, keyRows, refreshKeys]);
-
-  /** Press the challenge on the key's behalf, where the key takes presses. */
-  const pressGenChallenge = useCallback(async () => {
-    if (!genChallenge) return;
-    /* One crossing for the whole challenge - see CryptoScreen.pressChallenge. */
-    await emu.pressRun(genChallenge);
-  }, [genChallenge, emu]);
 
   return (
     <ScrollView
@@ -925,17 +918,6 @@ export function KeysScreen({
           disabled={busy !== null || !pqc}
           onPress={generate}
         />
-
-        {genChallenge ? (
-          <>
-            <Text style={styles.status}>
-              The key is waiting: press {genChallenge.join(' - ')} on it.
-            </Text>
-            {emu.canPress === true ? (
-              <Btn title="Press them for me" onPress={pressGenChallenge} />
-            ) : null}
-          </>
-        ) : null}
 
         {generated ? (
           <>
