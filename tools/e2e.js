@@ -282,11 +282,35 @@ async function main() {
    */
   await waitForApp({timeoutMs: 60000});
 
-  try {
-    await tapText('Enter testing mode', {timeoutMs: 60000});
-    await sleep(800);
-  } catch {
-    /* Already past the login screen - see the note above. */
+  /*
+   * DECIDED BY THE SCREEN, NOT THE CLOCK. This was a 60 s try for the button,
+   * then "already past the login screen" on timeout. A cold bundle load (Metro
+   * had just lost and regained the phone, 2026-09-28) kept the screen blank
+   * for longer than that, the runner gave up a moment before the login screen
+   * arrived, and then waited 120 s for "Menu" behind a button nobody pressed.
+   * So wait for whichever comes first: the button (tap it) or the top bar
+   * (already in).
+   */
+  {
+    const deadline = Date.now() + 180000;
+    let xml = '';
+    for (;;) {
+      xml = dumpUi();
+      if (findByText(xml, 'Enter testing mode')) {
+        await tapText('Enter testing mode');
+        await sleep(800);
+        break;
+      }
+      if (findByText(xml, 'Menu')) {
+        trace('already past the login screen');
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error('neither "Enter testing mode" nor "Menu" appeared within 180000ms.' +
+          `\n  on screen: ${visibleLabels(xml)}`);
+      }
+      await sleep(500);
+    }
   }
 
   await tapText('Menu', {timeoutMs: 120000});
