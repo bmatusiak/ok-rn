@@ -51,15 +51,30 @@ describe('supports', () => {
 });
 
 describe('missingNote', () => {
-  it('names the feature and what it needs, without blaming the user', () => {
+  /*
+   * The version a note names comes from node-onlykey-lib's compatibility
+   * table, so the expectation does too: the oldest release whose row has the
+   * flag. Hard-coding "3.1.0" here would be the same second copy the screen
+   * text used to be.
+   */
+  const {list, compatibilityOf} = require('node-onlykey-lib/versions');
+  const oldestWith = (flag: string): string =>
+    [...list()].reverse().find((v: string) => compatibilityOf(v)?.capabilities?.[flag] === true).replace(/^v/, '');
+
+  it('names the feature and the firmware the table says has it, without blaming the user', () => {
     const note = missingNote('postQuantum');
-    expect(note).toContain('Post-quantum keys');
-    expect(note).toContain('no released firmware');
+    expect(note).toContain('Post-quantum keys are not on this key');
+    expect(note).toContain(`firmware ${oldestWith('postQuantum')} or newer`);
     /* It says what the state of the section is, so a faded box is not a puzzle. */
     expect(note).toContain('switched off');
   });
 
   it('gives a version for a feature that has one', () => {
-    expect(missingNote('hmacSha1')).toContain('3.0.0');
+    expect(missingNote('hmacSha1')).toContain(`firmware ${oldestWith('hmacSha1')} or newer`);
+    expect(oldestWith('hmacSha1')).toBe('3.0.0');
+  });
+
+  it('says "is" for the vault, a single thing', () => {
+    expect(missingNote('deviceVault')).toContain('The vault is not on this key');
   });
 });
