@@ -69,7 +69,46 @@ const OTHER_SLOT = 111;
 const MLKEM_SLOT = 112;
 const XWING_BYTES = 1216;
 
+/** A tap: long enough to register, short enough not to be a gesture. */
+const TAP = 4;
+
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+
+/**
+ * Press the three buttons, and STOP EARLY once the device has answered.
+ *
+ * DECRYPTS ONLY. Key generation stopped asking for a challenge in 3.1.0
+ * (libraries 97f0149; the lib dropped it in 59d11c7), but a decrypt with a
+ * stored key still raises one. 5df4806 removed this from the decrypts too,
+ * and the key sat waiting for a press until the decrypt failed.
+ *
+ * For slots 101..116 the firmware reads the stored-key challenge preference,
+ * and when it is on it never computes the digits at all - CRYPTO_AUTH goes
+ * straight to 3 and ANY single press confirms (okcore.cpp:7567-7573).
+ * Measured here: one generation took two presses and the next took one,
+ * against digits of 1-2-1.
+ *
+ * The presses after the answer are not harmless. On an unlocked device a
+ * stray press runs gen_press() and types a slot at the keyboard.
+ */
+async function pressChallenge(digits, log, isAnswered = () => false) {
+  const pressed = [];
+  for (const d of digits) {
+    /* HANDED to the firmware, not sensed - one sense round rather than ~14. */
+    await OkEmu.pressQueue(String(d), TAP);
+    pressed.push(d);
+    /*
+     * payload() runs a press only once key_off has passed two further loop
+     * iterations (okcore.cpp:2723), so back-to-back holds count as one long
+     * one. The gap is that, not a guess at the device's speed.
+     */
+    await delay(600);
+    if (isAnswered()) break;
+  }
+  log(`pressed ${pressed.join('-')} of ${digits.join('-')}`);
+  return pressed;
+}
 
 let shared = null;
 
@@ -218,6 +257,7 @@ module.exports = function pqcSlots({describe, it}) {
         log(`age file: ${file.length} bytes, encrypted with no device at all`);
 
         const opened = await okcrypto.deviceAge.decryptWithSlot(file, SLOT, {
+          confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
           timeoutMs: 60000,
         });
 
@@ -249,6 +289,7 @@ module.exports = function pqcSlots({describe, it}) {
           secret, pqc.encodeRecipient(s.stored));
 
         const opened = await okcrypto.deviceAge.decryptWithIdentity(file, identity, {
+          confirm: ({digits, isAnswered}) => pressChallenge(digits, log, isAnswered),
           timeoutMs: 60000,
         });
 
