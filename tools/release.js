@@ -123,6 +123,14 @@ if (KEEP) {
 
 /* ------------------------------------------------------------------ build */
 
+/*
+ * WHAT GOES IN, READ NOW: stage.js compiles the firmware from the sibling
+ * working trees, which record nothing. Their commits are taken here, before
+ * the build, and travel with the apk into the notes' "Built from" table.
+ */
+const builtFrom = require('./release-dist').readBuiltFrom(head);
+say(`release: built from lib ${builtFrom.lib}, libraries ${builtFrom.libraries}, OnlyKey-Firmware ${builtFrom.firmware}`);
+
 say('release: building with OKEMU_PRODUCTION=1, cold');
 const env = {...process.env, OKEMU_PRODUCTION: '1'};
 let out = '';
@@ -420,6 +428,7 @@ if (KEEP || !signed) {
     commit: head,
     versionCode: Number(execSync('git rev-list --count HEAD', {cwd: ROOT, encoding: 'utf8'}).trim()),
     signedBy: `a physical OnlyKey (apk-signer, ${SIGNER_BACKEND})`,
+    built: builtFrom,
   });
   /*
    * THE TREE AS IT WAS BEFORE THE BUILD (`dirty`, read at the top), not now:
@@ -427,7 +436,8 @@ if (KEEP || !signed) {
    * here would always answer "changed". Tracked files only - an untracked
    * note beside the tree is not in the build.
    */
-  const changed = dirty.split(/\r?\n/).filter(l => l && !l.startsWith('??'));
+  const changed = dirty.split(/\r?\n/)
+    .filter(l => l && !l.startsWith('??') && !l.endsWith('android/okemu/.stage-identity'));
   if (changed.length) say('release: WARNING - built with uncommitted changes: the commit in the names is not all of it');
 }
 say('');
