@@ -22,7 +22,6 @@ import {Linking, ScrollView, StyleSheet, Text, TextInput, View} from 'react-nati
 import {Btn, KeyValue, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {device as okdevice} from 'node-onlykey-lib';
-import {FirmwareScreen} from './FirmwareScreen';
 import {KeySource} from '../ui/KeySource';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {ON, NEEDS_CONFIG_MODE, type ConfigState} from '../ui/configModeNotes';
@@ -333,16 +332,7 @@ export function AdvancedScreen({
         })}
       </Section>
 
-      {hard.state === 'running' ? (
-        <FirmwareScreen emu={emu} backend={backend} configMode={configMode} />
-      ) : (
-        <Section title="Firmware update">
-          <Text style={styles.note}>
-            Needs a hard key on the USB bus. The soft key runs firmware built
-            from source by this repository, so there is nothing to update.
-          </Text>
-        </Section>
-      )}
+      {/* Firmware update has its own tab now (FirmwareTabScreen), as in the desktop App. */}
 
       <Section title="Model">
         <KeyValue label="detected" value={detected ?? 'not said yet'} />
@@ -398,20 +388,15 @@ export function AdvancedScreen({
       {/*
         THE WAY IN, AT THE FOOT - after the panels it unlocks.
     
-        Firmware update is the one thing on this tab that needs config
-        mode: the reboot-into-bootloader request is refused outside it.
-        That screen used to carry its own Enter button, which pressed
-        button 6 through the debug console and so could not work on the
-        production key it exists to update. This panel replaces it, and
-        on a hard key it asks for the only thing that can do the job - a
-        thumb on button 6.
+        The settings that cannot be undone are written only in config mode.
+        Firmware update, which needs it too, has its own tab now.
       */}
       <ConfigModePanel
         state={configMode}
         emu={emu}
         backend={backend}
         onWant={onWantConfigMode}
-        purpose="update the firmware"
+        purpose="change a setting that cannot be undone"
       />
     </ScrollView>
   );

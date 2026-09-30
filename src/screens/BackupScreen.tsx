@@ -41,12 +41,24 @@ const BACKUP_SOURCES = ['Passphrase', 'PGP key'] as const;
 
 type BackupSource = (typeof BACKUP_SOURCES)[number];
 
+/**
+ * The panels on this screen. The Backup/Restore tab shows all three; Setup
+ * shows only the backup key, because the desktop App's Setup is where a
+ * backup passphrase is set ("Set Backup Passphrase") and ok-rn follows the
+ * original apps' layout.
+ */
+export type BackupPart = 'capture' | 'backupKey' | 'restore';
+const ALL_BACKUP_PARTS: readonly BackupPart[] = ['capture', 'backupKey', 'restore'];
+
 export function BackupScreen({
   emu,
   blockScreenshots = true,
   configMode,
   onWantConfigMode,
+  show = ALL_BACKUP_PARTS,
 }: {
+  /** Which panels to draw. Unset: all of them. */
+  show?: readonly BackupPart[];
   emu: EmuSession;
   blockScreenshots?: boolean;
   /*
@@ -363,6 +375,7 @@ export function BackupScreen({
     }
   }, [getKey, restoreText]);
 
+  const has = (p: BackupPart) => show.includes(p);
   return (
     <ScrollView
       style={styles.root}
@@ -386,6 +399,7 @@ export function BackupScreen({
         the section below is dimmed, and it carries its own one-line reason.
         A fourth statement of the same fact was noise.
       */}
+      {has('capture') ? (<>
       <Section
         title={`Backup — ${keyName}`}
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
@@ -417,12 +431,23 @@ export function BackupScreen({
         />
         {locked ? <Text style={styles.note}>Unlock the key first.</Text> : null}
       </Section>
+      </>) : null}
 
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
+      {/*
+        The backup key panel is on Setup, as in the desktop App, whose
+        Backup/Restore step 1 likewise says "ensure that you have a backup
+        passphrase set". So a refusal for want of one points there.
+      */}
+      {needsPassphrase && !has('backupKey') ? (
+        <Text style={styles.warn}>
+          This backup needs a backup passphrase or key first: Setup, Set Backup Passphrase.
+        </Text>
+      ) : null}
 
-      {text ? (
+      {has('capture') && text ? (
         <Section title={verified ? 'Backup captured' : 'Backup captured — unverified'}>
           {verified === false ? (
             <Text style={styles.error}>
@@ -471,6 +496,7 @@ export function BackupScreen({
         Dimmed, not hidden: the point of the panel being at the foot is that
         you can see what config mode would give you before committing to it.
       */}
+      {has('backupKey') ? (<>
         <Section
           title="Set a backup key"
           unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
@@ -566,6 +592,7 @@ export function BackupScreen({
           </>
           ) : null}
         </Section>
+      </>) : null}
 
       {/*
         * RESTORE NEEDS CONFIG MODE on a provisioned key.
@@ -580,6 +607,7 @@ export function BackupScreen({
         * looked like it worked and did nothing is the worst thing this screen
         * could do, so the panel goes dim and inert rather than inviting it.
         */}
+      {has('restore') ? (<>
       <Section title="Restore" unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
         <Text style={styles.body}>
           Choose a backup file, or paste one, to write it back. Read it first:
@@ -665,6 +693,7 @@ export function BackupScreen({
             : 'Read the file first. A restore replaces what is on the key.'}
         </Text>
       </Section>
+      </>) : null}
 
       {/*
         THE WAY IN, AT THE FOOT - after the panels it unlocks.
@@ -679,7 +708,7 @@ export function BackupScreen({
         emu={emu}
         backend={backend}
         onWant={onWantConfigMode}
-        purpose="set a backup key or restore a backup"
+        purpose={has('restore') ? 'set a backup key or restore a backup' : 'set a backup key'}
       />
     </ScrollView>
   );

@@ -39,11 +39,33 @@ function layoutOptions() {
   return keystrokes.layouts();
 }
 
+export type PinKind = 'primary' | 'secondary' | 'selfDestruct';
+
+/**
+ * The panels on this screen. The Preferences tab shows the settings; Setup
+ * shows the PIN change, because the desktop App's Setup is where a PIN is
+ * changed ("Change Primary PIN" ...) and ok-rn follows the original apps.
+ */
+export type PrefsPart = 'prefs' | 'pins';
+/** The desktop App's own names for the three PIN changes. */
+export const PIN_TITLE: Record<PinKind, string> = {
+  primary: 'Change Primary PIN',
+  secondary: 'Change Secondary PIN',
+  selfDestruct: 'Change Self-Destruct PIN',
+};
+const ALL_PREFS_PARTS: readonly PrefsPart[] = ['prefs', 'pins'];
+
 export function PreferencesScreen({
   emu,
   configMode,
   onWantConfigMode,
+  show = ALL_PREFS_PARTS,
+  pin,
 }: {
+  /** Which panels to draw. Unset: all of them. */
+  show?: readonly PrefsPart[];
+  /** Offer only this PIN in the Change PINs panel - Setup's one-PIN views. */
+  pin?: PinKind;
   emu: EmuSession;
   /*
    * Only the Advanced group. Its preferences carry `requires: 'configMode'`
@@ -189,7 +211,7 @@ export function PreferencesScreen({
    * does: enter config mode (the key locks), PIN again, then the setup
    * bracket for the one PIN chosen, then a restart to leave config mode.
    */
-  type PinKind = 'primary' | 'secondary' | 'selfDestruct';
+  // PinKind is declared above the component: the Setup tab names one.
   const [changing, setChanging] = useState<PinKind | null>(null);
   const [changed, setChanged] = useState(false);
   /*
@@ -389,11 +411,13 @@ export function PreferencesScreen({
     },
   ];
 
+  const has = (p: PrefsPart) => show.includes(p);
   return (
     <ScrollView
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
+      {has('prefs') ? (<>
       <Section title="Permissions">
         <Text style={styles.body}>
           What the security-key role needs from the phone. A dialog dismissed
@@ -423,7 +447,9 @@ export function PreferencesScreen({
         {permNote ? <Text style={styles.error}>{permNote}</Text> : null}
         <Btn title="Open the system settings for this app" onPress={() => FidoGatt.openAppSettings()} />
       </Section>
+      </>) : null}
 
+      {has('pins') ? (<>
       <Section title={`Change PINs — ${keyName}`}>
         {changed ? (
           <>
@@ -446,6 +472,8 @@ export function PreferencesScreen({
             <View style={styles.chips}>
               {emu.model === 'duo' ? (
                 <Btn title="Set or change the DUO's PINs" tone="primary" onPress={() => setChanging('primary')} />
+              ) : pin ? (
+                <Btn title={PIN_TITLE[pin]} tone="primary" onPress={() => setChanging(pin)} />
               ) : (
                 <>
                   <Btn title="Primary" tone="primary" onPress={() => setChanging('primary')} />
@@ -457,7 +485,9 @@ export function PreferencesScreen({
           </>
         )}
       </Section>
+      </>) : null}
 
+      {has('prefs') ? (<>
       <Section title={`Preferences — ${keyName}`}>
         <Text style={styles.body}>
           The key does not report its settings, so this screen changes them
@@ -602,6 +632,7 @@ export function PreferencesScreen({
           write it.
         </Text>
       </Section>
+      </>) : null}
       {/*
         THE WAY IN, AT THE FOOT - after the panels it unlocks.
     
@@ -609,13 +640,16 @@ export function PreferencesScreen({
         in the library's own table; Settings takes any unlocked key, and the
         setup-only group is refused here whatever the mode.
       */}
-      <ConfigModePanel
-        state={configMode}
-        emu={emu}
-        backend={backend}
-        onWant={onWantConfigMode}
-        purpose="change an Advanced preference"
-      />
+      {/* Not on Setup's PIN views: a PIN change works in or out of config mode. */}
+      {has('prefs') ? (
+        <ConfigModePanel
+          state={configMode}
+          emu={emu}
+          backend={backend}
+          onWant={onWantConfigMode}
+          purpose="change an Advanced preference"
+        />
+      ) : null}
     </ScrollView>
   );
 }

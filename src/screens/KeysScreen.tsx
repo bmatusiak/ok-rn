@@ -8,6 +8,7 @@ import {device as okdevice, bytes as okbytes} from 'node-onlykey-lib';
 import {useActiveKey, useBackend, useKeyName} from '../hooks/KeyContext';
 import {missingNote, supports} from '../firmwareFeatures';
 import type {EmuSession} from '../hooks/useOkEmu';
+import {CryptoScreen} from './CryptoScreen';
 
 /*
  * Loading keys onto the device.
@@ -966,8 +967,22 @@ export function KeysScreen({
         </Section>
       ) : null}
       {/*
+        USE A KEY IN A SLOT - moved here from the old Crypto tab. Signing or
+        decrypting with a loaded key changes nothing on the device, so it
+        belongs beside the keys it uses rather than with the settings. It is
+        CryptoScreen's panel, drawn alone; screenshots follow the build as
+        App.tsx's BLOCK_SCREENSHOTS does (a result can be a decrypted secret).
+      */}
+      <CryptoScreen
+        emu={emu}
+        configMode={configMode}
+        blockScreenshots={!__DEV__}
+        show={['slotKey']}
+        embedded
+      />
+      {/*
         THE WAY IN, AT THE FOOT - after the panels it unlocks.
-    
+
         Writing a key to a slot, and wiping one, are the same firmware rule:
         OKSETPRIV and the wipes are on the config-mode allowlist and refused
         outside it. Four panels on this tab need it.

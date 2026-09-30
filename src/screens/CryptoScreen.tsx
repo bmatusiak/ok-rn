@@ -81,12 +81,54 @@ const unbase64 = (text: string): Uint8Array => okbytes.fromBase64(text);
 
 const hex = (bytes: Uint8Array): string => okbytes.toHex(bytes);
 
+/**
+ * The panels this screen holds, each of which now lives on a different tab.
+ *
+ * The old Crypto tab was a drawer of everything that used the key without
+ * configuring it. The layout that follows the original apps splits it: age
+ * goes under Encrypt / Decrypt > AGE (the web app's age-encrypt and
+ * age-decrypt pages), "use a key in a slot" goes to Keys beside the keys it
+ * uses, and the three the maintainer has not released - derived secrets,
+ * the vault and what it stored - go to In-Development.
+ */
+export type CryptoPart = 'derive' | 'vault' | 'stored' | 'slotKey' | 'ageEncrypt' | 'ageDecrypt';
+const ALL_PARTS: readonly CryptoPart[] = ['derive', 'vault', 'stored', 'slotKey', 'ageEncrypt', 'ageDecrypt'];
+
+/*
+ * The screen's own scroll view, or a plain View when another screen's scroll
+ * view holds it. Declared at module level ON PURPOSE: a component made inside
+ * render is a new type every render, so React would remount everything under
+ * it on each keystroke and a text box would lose its focus and its text.
+ */
+function Root({embedded, children}: {embedded: boolean; children: React.ReactNode}) {
+  return embedded ? (
+    <View style={styles.embedded}>{children}</View>
+  ) : (
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}>
+      {children}
+    </ScrollView>
+  );
+}
+
 export function CryptoScreen({
   emu,
   blockScreenshots = true,
   configMode,
   testing = false,
+  show = ALL_PARTS,
+  embedded = false,
 }: {
+  /**
+   * Drawn inside another screen's scroll view (Keys draws 'slotKey'), so this
+   * renders a plain View - a scroll view inside a scroll view fights over the
+   * gesture on Android.
+   */
+  embedded?: boolean;
+  /** Which panels to draw. Unset: all of them, as the old Crypto tab had. */
+  show?: readonly CryptoPart[];
   emu: EmuSession;
   blockScreenshots?: boolean;
   /**
@@ -119,6 +161,7 @@ export function CryptoScreen({
   const keyName = useKeyName();
 
   useSecureScreen(blockScreenshots);
+  const has = (p: CryptoPart) => show.includes(p);
 
   const [label, setLabel] = useState('');
   const [secret, setSecret] = useState<string | null>(null);
@@ -569,12 +612,9 @@ export function CryptoScreen({
   }, [getKey, ageFile, ageLabel, vaultOpts]);
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}>
+    <Root embedded={embedded}>
       {/* Testing mode only - see the `testing` prop. */}
-      {testing ? (
+      {testing && has('derive') ? (
       <Section title={`Derived secrets — ${keyName}`}
         right={
           <View style={styles.testingTag}>
@@ -663,6 +703,7 @@ export function CryptoScreen({
         </Section>
       ) : null}
 
+      {has('vault') ? (
       <Section title={`Vault — ${keyName}`} faded={!vault}
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
         {vault ? null : <Text style={styles.note}>{missingNote('deviceVault')}</Text>}
@@ -748,10 +789,12 @@ export function CryptoScreen({
           </>
         ) : null}
       </Section>
+      ) : null}
 
       {/* Faded with the Vault above: these ARE vault entries, and a list that
         * stayed live beside a faded sealer would offer to open what it cannot
         * make. */}
+      {has('stored') ? (
       <Section title={`Stored on this phone — ${keyName}`} faded={!vault}>
         <Text style={styles.body}>
           Credentials sealed by this key and kept here. The list costs no
@@ -766,7 +809,9 @@ export function CryptoScreen({
           reloadKey={vaultEpoch}
         />
       </Section>
+      ) : null}
 
+      {has('slotKey') ? (
       <Section title={`Use a key in a slot — ${keyName}`}
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
         <Text style={styles.body}>
@@ -829,7 +874,9 @@ export function CryptoScreen({
         {opNote ? <Text style={styles.note}>{opNote}</Text> : null}
         {opResult ? <Text style={styles.secret} selectable>{opResult}</Text> : null}
       </Section>
+      ) : null}
 
+      {has('ageEncrypt') || has('ageDecrypt') ? (
       <Section title="Encrypted files (age)" faded={!pqc}
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
         {pqc ? null : <Text style={styles.note}>{missingNote('postQuantum')}</Text>}
@@ -854,14 +901,16 @@ export function CryptoScreen({
           editable={!busy}
           style={styles.input}
         />
+        {has('ageEncrypt') ? (
         <Btn
           title={busy ? 'Working…' : 'Get the recipient'}
           tone="primary"
           disabled={busy || locked || !pqc || !ageLabel.trim()}
           onPress={ageIdentity}
         />
+        ) : null}
 
-        {recipient ? (
+        {has('ageEncrypt') && recipient ? (
           <>
             <Text style={styles.note}>
               Anyone can encrypt to this. It is public, and it is the only thing
@@ -905,6 +954,29 @@ export function CryptoScreen({
           </>
         ) : null}
 
+        {/*
+          * ON THE ENCRYPT TAB ALONE the result has nowhere to land: it used to
+          * go into the decrypt box below, which that tab does not draw. So it
+          * is shown here, abbreviated like the recipient, with a copy.
+          */}
+        {has('ageEncrypt') && !has('ageDecrypt') && ageFile ? (
+          <>
+            <Text style={styles.note}>Encrypted (base64), {ageFile.length} characters:</Text>
+            <Text style={styles.secret}>
+              {ageFile.slice(0, 28)}…{ageFile.slice(-12)}
+            </Text>
+            <Btn
+              title="Copy the encrypted file"
+              onPress={async () => {
+                await NativeSecrets.copySensitive(ageFile, CLIPBOARD_TTL_MS);
+                setStatus('Encrypted file copied.');
+              }}
+            />
+          </>
+        ) : null}
+
+        {has('ageDecrypt') ? (
+        <>
         <TextInput
           value={ageFile}
           onChangeText={setAgeFile}
@@ -951,14 +1023,18 @@ export function CryptoScreen({
             <Text style={styles.secret}>{agePlain}</Text>
           </>
         ) : null}
+        </>
+        ) : null}
       </Section>
-    </ScrollView>
+      ) : null}
+    </Root>
   );
 }
 
 const styles = StyleSheet.create({
   root: {flex: 1},
   content: {padding: 16, gap: 16, paddingBottom: 48},
+  embedded: {gap: 16},
 
   body: {color: theme.textSecondary, fontSize: theme.fontSize, lineHeight: theme.lineHeight},
   note: {color: theme.textDim, fontSize: 12, lineHeight: 18},

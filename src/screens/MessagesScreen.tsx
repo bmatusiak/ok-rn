@@ -87,11 +87,44 @@ const SOURCE_PLACEHOLDER: Record<Source, string> = {
 /** RSA slots 1-4 are where a composite key lives, as the reference CLI's setpqc puts it. */
 const RSA_SLOTS = ['1', '2', '3', '4'] as const;
 
+/**
+ * Which of the web app's sub-tabs this screen is standing in for.
+ *
+ * The web app's top nav is Encrypt and Decrypt, each with the same four
+ * kinds under it - Message, File, PQC-PGP, AGE (apps.onlykey.io
+ * src/plugins/pages/mode-tabs.js). ok-rn follows that layout so someone who
+ * knows the web app finds things where they already are. Three of the four
+ * are this screen with a narrower view; AGE is CryptoScreen's age panel.
+ */
+export type MessagesPart = 'message' | 'file' | 'pqc';
+export type Direction = 'encrypt' | 'decrypt';
+
+/*
+ * The modes each view offers. Encrypt holds encrypt and sign, Decrypt holds
+ * decrypt and verify - the two directions of the web app's pages. A file is
+ * encrypted or decrypted only: signing a file is not something this screen
+ * has ever done, so offering it would be a button that fails.
+ */
+function modesFor(direction?: Direction, part?: MessagesPart): Mode[] {
+  if (!direction) return MODES;
+  if (part === 'file') return [direction];
+  return direction === 'encrypt' ? ['encrypt', 'sign'] : ['decrypt', 'verify'];
+}
+
+/** The section title for a view, named as the web app's sub-tab is. */
+const PART_TITLE: Record<MessagesPart, string> = {message: 'Message', file: 'File', pqc: 'PQC-PGP'};
+
 export function MessagesScreen({
   emu,
   configMode,
   onWantConfigMode,
+  direction,
+  part,
 }: {
+  /** Encrypt or Decrypt tab. Unset: every mode, as the old Messages tab had. */
+  direction?: Direction;
+  /** The sub-tab. Unset: every panel, as the old Messages tab had. */
+  part?: MessagesPart;
   emu: EmuSession;
   /**
    * Signing and decryption are refused in config mode - okcore.cpp:347.
@@ -109,7 +142,14 @@ export function MessagesScreen({
   const keyName = useKeyName();
   const backend = useBackend();
 
-  const [mode, setMode] = useState<Mode>('encrypt');
+  const modes = modesFor(direction, part);
+  const [mode, setMode] = useState<Mode>(modes[0]);
+  /* The composite key panel belongs to PQC-PGP; the whole tab shows it too. */
+  const showComposite = part === undefined || part === 'pqc';
+  /* Picking a file is the File sub-tab's job; the old tab offered it on encrypt. */
+  const filePicking = part === undefined ? mode === 'encrypt' : part === 'file';
+  /* The name a decrypted file is saved under, from the message or the file. */
+  const [outName, setOutName] = useState<string | null>(null);
 
   /*
    * THE COMPOSITE KEY ON THE DEVICE.
@@ -283,6 +323,18 @@ export function MessagesScreen({
          * mojibake.
          */
         setOutput(typeof result.data === 'string' ? result.data : '');
+        /*
+         * Decrypt > File saves under the name the sender gave the file, as
+         * the web app's decrypt-file page does; failing that, the picked
+         * file's name without its .asc/.gpg/.pgp.
+         */
+        setOutName(
+          result.filename && result.filename !== 'msg.txt'
+            ? result.filename
+            : file
+              ? file.name.replace(/\.(asc|gpg|pgp)$/i, '')
+              : null,
+        );
         const signed = describeSignatures(result.signatures);
         setStatus(
           result.filename && result.filename !== 'msg.txt'
@@ -388,12 +440,28 @@ export function MessagesScreen({
         return;
       }
       setFile({name: picked.name, bytes: okbytes.utf8ToBytes(picked.content)});
-      setInput('');
-      setStatus(`Picked ${picked.name}. It will be encrypted as a file.`);
+      if (mode === 'decrypt') {
+        /*
+         * DECRYPT > FILE reads the picked file as the message. The picker
+         * returns text, so this opens an ARMORED file (.asc, or a .gpg saved
+         * with armour, which is what Encrypt > File here produces). A binary
+         * .gpg needs a byte picker - not built yet, and the error says so
+         * rather than decrypting garbage.
+         */
+        if (!picked.content.includes('-----BEGIN PGP')) {
+          setFile(null);
+          throw new Error(`${picked.name} is not an armored PGP file - binary .gpg files cannot be opened here yet`);
+        }
+        setInput(picked.content);
+        setStatus(`Picked ${picked.name}. It will be decrypted.`);
+      } else {
+        setInput('');
+        setStatus(`Picked ${picked.name}. It will be encrypted as a file.`);
+      }
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     }
-  }, [reset]);
+  }, [reset, mode]);
 
   const share = useCallback(async () => {
     if (!output) {
@@ -401,7 +469,7 @@ export function MessagesScreen({
     }
     try {
       await NativeShare.shareFile(
-        mode === 'encrypt' ? 'message.asc' : 'message.txt',
+        mode === 'encrypt' ? (file ? `${file.name}.asc` : 'message.asc') : outName ?? 'message.txt',
         output,
         mode === 'encrypt' ? 'application/pgp-encrypted' : 'text/plain',
         'PGP',
@@ -409,7 +477,7 @@ export function MessagesScreen({
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     }
-  }, [output, mode]);
+  }, [output, mode, file, outName]);
 
   const copy = useCallback(async () => {
     if (!output) {
@@ -425,22 +493,27 @@ export function MessagesScreen({
       style={styles.root}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Section title="Messages">
-        <Segmented
-          options={MODES}
-          value={mode}
-          onChange={next => {
-            setMode(next);
-            setFile(null);
-            reset();
-          }}
-        />
+      <Section title={part ? PART_TITLE[part] : 'Messages'}>
+        {modes.length > 1 ? (
+          <Segmented
+            options={modes}
+            value={mode}
+            onChange={next => {
+              setMode(next);
+              setFile(null);
+              setInput('');
+              reset();
+            }}
+          />
+        ) : null}
         <Text style={styles.hint}>
-          PGP over composite post-quantum keys. Encrypting needs only the other
-          person's public key; reading needs a private one.
+          {showComposite
+            ? "PGP over composite post-quantum keys. Encrypting needs only the other person's public key; reading needs a private one."
+            : "Encrypting needs only the other person's public key; reading needs a private one."}
         </Text>
       </Section>
 
+      {showComposite ? (
       <Section title={`Composite key on the device — ${keyName}`} faded={!pqc}
         unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
         {pqc ? null : <Text style={styles.hint}>{missingNote('postQuantum')}</Text>}
@@ -493,6 +566,7 @@ export function MessagesScreen({
           </>
         ) : null}
       </Section>
+      ) : null}
 
       <Section title={KEY_LABEL[mode]}>
         {mode === 'encrypt' || mode === 'verify' ? (
@@ -595,14 +669,18 @@ export function MessagesScreen({
       </Section>
 
       <Section
-        title={mode === 'encrypt' ? 'Message or file' : 'Input'}
+        title={part === 'file' ? (mode === 'encrypt' ? 'File to encrypt' : 'Encrypted file') : mode === 'encrypt' && !part ? 'Message or file' : 'Input'}
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
-        {file ? (
+        {part === 'file' && !file ? (
+          <Text style={styles.body}>
+            {mode === 'encrypt' ? 'Pick the file to encrypt.' : 'Pick the .asc file to decrypt.'}
+          </Text>
+        ) : file ? (
           <View style={styles.row}>
             <Text style={styles.body}>
               {file.name} — {file.bytes.length} bytes
             </Text>
-            <Btn title="Clear" onPress={() => setFile(null)} />
+            <Btn title="Clear" onPress={() => { setFile(null); if (mode === 'decrypt') setInput(''); }} />
           </View>
         ) : (
           <TextInput
@@ -625,7 +703,7 @@ export function MessagesScreen({
             onPress={run}
             disabled={busy}
           />
-          {mode === 'encrypt' ? <Btn title="Pick a file" onPress={pickFile} /> : null}
+          {filePicking ? <Btn title="Pick a file" onPress={pickFile} /> : null}
         </View>
       </Section>
 
@@ -651,13 +729,15 @@ export function MessagesScreen({
         decrypting are refused WHILE in config mode. A panel for one section,
         and worth it, because that section is otherwise a dead end.
       */}
-      <ConfigModePanel
-        state={configMode}
-        emu={emu}
-        backend={backend}
-        onWant={onWantConfigMode}
-        purpose="put the composite key on the device"
-      />
+      {showComposite ? (
+        <ConfigModePanel
+          state={configMode}
+          emu={emu}
+          backend={backend}
+          onWant={onWantConfigMode}
+          purpose="put the composite key on the device"
+        />
+      ) : null}
     </ScrollView>
   );
 }

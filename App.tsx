@@ -32,7 +32,9 @@ import {KeysScreen} from './src/screens/KeysScreen';
 import {BackupScreen} from './src/screens/BackupScreen';
 import {BluetoothScreen} from './src/screens/BluetoothScreen';
 import {CryptoScreen} from './src/screens/CryptoScreen';
-import {MessagesScreen} from './src/screens/MessagesScreen';
+import {EncryptDecryptScreen} from './src/screens/EncryptDecryptScreen';
+import {SetupTabScreen} from './src/screens/SetupTabScreen';
+import {FirmwareTabScreen} from './src/screens/FirmwareTabScreen';
 import {PreferencesScreen} from './src/screens/PreferencesScreen';
 import {PasskeysScreen} from './src/screens/PasskeysScreen';
 import {LogScreen} from './src/screens/LogScreen';
@@ -51,17 +53,37 @@ import {TestingScreen} from './src/screens/TestingScreen';
  * either - the same screen reads whichever key is selected - so naming it for
  * one of them would be wrong half the time. The screen itself says which.
  */
+/*
+ * THE ORDER FOLLOWS THE ORIGINAL APPS (owner, 2026-09-29: "follow the user
+ * feel of the original apps, starting with the tab layout and where things
+ * are").
+ *
+ * - This Key stays first: the landing page, ok-rn's own.
+ * - Then the desktop App's menu in its order - Setup, Slots, Keys,
+ *   Backup/Restore, Firmware, Preferences, Advanced (OnlyKey-App
+ *   app/app.html:36-43) - with the web app's two, Encrypt and Decrypt
+ *   (apps.onlykey.io mode-tabs.js), after Setup. The desktop's Tools tab
+ *   is left out: it only links to the web app's encrypt/decrypt pages,
+ *   which ok-rn has as tabs of its own.
+ * - ok-rn's own tabs where the owner placed them: Passkeys after Keys,
+ *   Bluetooth above Advanced, Log last.
+ * - Preferences holds what can be changed back, Advanced what cannot (the
+ *   library's `oneWay` flag decides). The desktop keeps both in its
+ *   Preferences; this is the one deliberate difference.
+ */
 const TABS = [
   'This Key',
+  'Setup',
+  'Encrypt',
+  'Decrypt',
   'Slots',
   'Keys',
-  'Bluetooth',
-  'Backup',
-  'Crypto',
-  'Messages',
-  'Settings',
-  'Advanced',
   'Passkeys',
+  'Backup/Restore',
+  'Firmware',
+  'Preferences',
+  'Bluetooth',
+  'Advanced',
   'Log',
 ] as const;
 /**
@@ -81,7 +103,15 @@ const TABS = [
 const BLOCK_SCREENSHOTS = !__DEV__;
 
 const TESTING_TAB = 'Testing' as const;
-type Tab = (typeof TABS)[number] | typeof TESTING_TAB;
+/*
+ * What the maintainer has not released - the vault, what it stored on this
+ * phone, derived secrets / the password generator. His web app ships them
+ * only in its development build (plugins-devel.js), so here they are shown
+ * only in testing mode, which is __DEV__-only: a release build never has
+ * this tab.
+ */
+const IN_DEV_TAB = 'In-Development' as const;
+type Tab = (typeof TABS)[number] | typeof IN_DEV_TAB | typeof TESTING_TAB;
 
 /** Splash until the device can answer, then a door, then the app. */
 type Phase = 'splash' | 'login' | 'pin' | 'setup' | 'main';
@@ -789,14 +819,28 @@ function Shell() {
             <KeysScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
-          ) : tab === 'Backup' ? (
-            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
-          ) : tab === 'Crypto' ? (
-            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} testing={testing.enabled} />
-          ) : tab === 'Messages' ? (
-            <MessagesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
-          ) : tab === 'Settings' ? (
-            <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+          ) : tab === 'Setup' ? (
+            <SetupTabScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+          ) : tab === 'Encrypt' || tab === 'Decrypt' ? (
+            <EncryptDecryptScreen
+              key={tab}
+              direction={tab === 'Encrypt' ? 'encrypt' : 'decrypt'}
+              emu={emu}
+              blockScreenshots={BLOCK_SCREENSHOTS}
+              configMode={configMode}
+              onWantConfigMode={() => setConfigMode(WANTED)}
+              testing={testing.enabled}
+            />
+          ) : tab === 'Backup/Restore' ? (
+            /* The backup key is on Setup, as in the desktop App. */
+            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['capture', 'restore']} />
+          ) : tab === 'Firmware' ? (
+            <FirmwareTabScreen emu={keys.key} hardRunning={keys.hard.state === 'running'} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+          ) : tab === 'Preferences' ? (
+            /* The PIN changes are on Setup, as in the desktop App. */
+            <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['prefs']} />
+          ) : tab === IN_DEV_TAB ? (
+            <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} testing={testing.enabled} show={['derive', 'vault', 'stored']} />
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
@@ -851,7 +895,7 @@ function Shell() {
 
         <Drawer
           open={drawer && ready}
-          tabs={__DEV__ && testing.enabled ? [...TABS, TESTING_TAB] : TABS}
+          tabs={__DEV__ && testing.enabled ? [...TABS, IN_DEV_TAB, TESTING_TAB] : TABS}
           value={tab}
           onChange={setTab}
           onClose={() => setDrawer(false)}
