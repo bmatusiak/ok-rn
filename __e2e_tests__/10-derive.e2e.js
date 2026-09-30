@@ -864,7 +864,36 @@ module.exports = function derive({describe, it}) {
       log(`age file: ${file.length} bytes`);
       assert.ok(file.length > message.length, 'an age file carries its header');
 
-      const opened = await okcrypto.deviceAge.decrypt(file, 'age.example', opts);
+      /*
+       * THE DECAP IS CONFIRMED BY `confirm`, NOT A KEEPALIVE. It is a chunked
+       * OKDECRYPT over the VENDOR interface, and there field 30 in press mode
+       * (the firmware's first-use default) waits for a button SILENTLY - no
+       * keepalive, so opts.onKeepAlive never fires. This test passed only while
+       * field 30 was "none"; on "press" nobody pressed, the firmware's 20 s
+       * timeout sentence came back, and the lib (before it learned that
+       * sentence is a refusal) decoded it as the secret - "invalid tag".
+       *
+       * Wait for the final chunk to be taken (0.5 s after the upload was too
+       * early on the emulator: the press landed mid-stream and was lost), then
+       * press the challenge digits one at a time, stopping once the device has
+       * answered: in press mode the first button confirms, in challenge mode
+       * all three are needed. Measured 2026-09-30 (VM emulator + Pixel).
+       */
+      const decryptOpts = {
+        ...opts,
+        confirm: async ({digits, isAnswered}) => {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          const pressed = [];
+          for (const d of digits) {
+            if (isAnswered()) break;
+            await OkEmu.pressQueue(String(d), 4);
+            pressed.push(d);
+            await new Promise(resolve => setTimeout(resolve, 600));
+          }
+          log(`pressed ${pressed.join('-')} of ${digits.join('-')} for the decap`);
+        },
+      };
+      const opened = await okcrypto.deviceAge.decrypt(file, 'age.example', decryptOpts);
       const text = String.fromCharCode(...opened);
       log(`opened: ${JSON.stringify(text)}`);
       assert.equal(text, message);
