@@ -63,6 +63,19 @@ const FORWARD_KEY = 'ok-rn/bt/auto-keyboard';
 /** How often to ask the profile who is connected, while published. */
 const HOST_POLL_MS = 3000;
 
+/**
+ * How long one connect attempt is given before it is cleared and retried.
+ *
+ * The poll used to call connect() every HOST_POLL_MS while disconnected. A
+ * host takes longer than that to answer (NITRO16: ~8 s), so the second call
+ * landed on the first one still in flight, the stack refused it
+ * ("hidd_conn_initiate: connection already in progress", HID_DevConnect
+ * returned 9), and the attempt that WAS in flight could wedge half-open - the
+ * keyboard said "connecting" until someone chose None (which disconnects) and
+ * chose the host again. Owner, 2026-09-29, after an app restart.
+ */
+const CONNECT_STALL_MS = 12000;
+
 export type BtKeyboard = {
   supported: boolean | null;
   /** Whether the radio is on right now. Null until asked. */
@@ -171,6 +184,15 @@ export function useBtKeyboard(): BtKeyboard {
    * that arrives during the gap is a character the host never sees.
    */
   const connectedRef = useRef(false);
+  /*
+   * WHICH host is connected, not just whether one is. chooseHost needs it to
+   * tell "the host you picked is already the live one" from "a different host
+   * still holds the link" - the boolean alone read both as "connected, nothing
+   * to do", which is how switching A -> B kept typing into A.
+   */
+  const connectedAddrRef = useRef<string | null>(null);
+  /** When the connect attempt in flight started; 0 when none is. See CONNECT_STALL_MS. */
+  const attemptAtRef = useRef(0);
 
   /** True while something has deliberately made the key type - see `suspend`. */
   const suspendedRef = useRef(false);
@@ -279,6 +301,8 @@ export function useBtKeyboard(): BtKeyboard {
 
       const connected = event.state === 'connected';
       connectedRef.current = connected;
+      connectedAddrRef.current = connected ? event.address || null : null;
+      if (connected) attemptAtRef.current = 0;
       if (connected) setSent(0);
       /* The host went away mid-word: say everything is up, in case it comes
          back to a keyboard it still thinks is holding a key down. */
@@ -380,6 +404,8 @@ export function useBtKeyboard(): BtKeyboard {
       const live = list.find(h => h.connected);
       if (live) {
         connectedRef.current = true;
+        connectedAddrRef.current = live.address;
+        attemptAtRef.current = 0;
         setState('connected');
         setHost(live.name || live.address);
       }
@@ -487,6 +513,7 @@ export function useBtKeyboard(): BtKeyboard {
   const connect = useCallback(async (address: string) => {
     setBusy(true);
     setError(null);
+    attemptAtRef.current = Date.now();
     try {
       await NativeBtKeyboard.connect(address);
     } catch (e) {
@@ -525,7 +552,27 @@ export function useBtKeyboard(): BtKeyboard {
         return;
       }
       await AsyncStorage.setItem(HOST_KEY, address);
-      if (!connectedRef.current) void connect(address);
+      /*
+       * SWITCHING HOSTS DROPS THE OLD ONE. This used to be
+       * `if (!connectedRef.current) connect(address)`: with the old host still
+       * connected it did nothing at all - the panel said "connecting" to the
+       * new computer while every key went on typing into the old one, and
+       * only None-then-the-host (the one path that disconnected) worked.
+       * Owner's repro, 2026-09-29: NITRO16 -> Pi said "connecting" while
+       * still on NITRO16; Pi -> NITRO16 the same.
+       *
+       * Picking the host that is already live changes nothing.
+       */
+      if (connectedRef.current && connectedAddrRef.current === address) return;
+      /*
+       * Otherwise release (a held modifier must not stay down on the old
+       * host), disconnect - which also clears an attempt wedged half-open, the
+       * other thing None used to fix by accident - and dial the new one.
+       */
+      await NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+      await NativeBtKeyboard.disconnect().catch(() => {});
+      attemptAtRef.current = 0;
+      void connect(address);
     },
     [connect],
   );
@@ -547,6 +594,19 @@ export function useBtKeyboard(): BtKeyboard {
     if (!chosenHost) return undefined;
     const timer = setInterval(() => {
       if (connectedRef.current || busyRef.current) return;
+      /*
+       * ONE attempt at a time. A connect already in flight is left alone
+       * until CONNECT_STALL_MS; past that it is treated as wedged, cleared
+       * with a disconnect, and the next tick dials again. Calling connect()
+       * every tick is what stacked attempts up - see CONNECT_STALL_MS.
+       */
+      const started = attemptAtRef.current;
+      if (started && Date.now() - started < CONNECT_STALL_MS) return;
+      if (started) {
+        attemptAtRef.current = 0;
+        void NativeBtKeyboard.disconnect().catch(() => {});
+        return;
+      }
       void connect(chosenHost);
     }, HOST_POLL_MS);
     return () => clearInterval(timer);
