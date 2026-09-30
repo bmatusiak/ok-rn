@@ -464,7 +464,7 @@ export function FirmwareScreen({
             this key
           </Text>
           <Text style={styles.warn}>
-            This key runs firmware older than 3.0.5, and 3.0.5 changed how a key
+            This key runs firmware older than 3.1.0, and 3.1.0 changed how a key
             is derived from a label. Updating it makes these stop opening —
             silently. The blobs stay where they are and look fine.
           </Text>

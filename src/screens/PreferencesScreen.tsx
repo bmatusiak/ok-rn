@@ -55,6 +55,12 @@ export const PIN_TITLE: Record<PinKind, string> = {
 };
 const ALL_PREFS_PARTS: readonly PrefsPart[] = ['prefs', 'pins'];
 
+/*
+ * The library's `section` name for fields 21, 22 and 30 - the desktop App's
+ * panel title - which is also this screen's heading for them.
+ */
+const USER_INPUT_MODES = 'User Input Modes';
+
 export function PreferencesScreen({
   emu,
   configMode,
@@ -68,7 +74,8 @@ export function PreferencesScreen({
   pin?: PinKind;
   emu: EmuSession;
   /*
-   * Only the Advanced group. Its preferences carry `requires: 'configMode'`
+   * Only the Config mode and User Input Modes groups. Their preferences carry
+   * `requires: 'configMode'`
    * in the library's own table (plugins/device/index.js:418) - OKSETSLOT wants
    * `configmode == true` on a provisioned key (okcore.cpp:452) - while the
    * Settings group takes any unlocked key and the setup-only group is refused
@@ -157,6 +164,10 @@ export function PreferencesScreen({
       requires: string;
       note?: string;
       bits?: Record<string, string>;
+      choices?: Record<string, string>;
+      /* Rows the desktop App shows as one panel - see the groups below. */
+      section?: string;
+      oneWay?: boolean;
     }[]
   >([]);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -374,17 +385,48 @@ export function PreferencesScreen({
     !p.oneWay &&
     !(p.name === 'ledBrightness' && backend !== 'usb');
 
-  const groups = [
+  /*
+   * THE DESKTOP APP'S ORDER, as far as the gates allow. OnlyKey-App lists
+   * Keyboard Type Speed, Keyboard Layout, LED Brightness, Sysadmin Mode, HMAC
+   * User Input Mode, Full Wipe Mode, Inactivity Lockout Timer, Lock Button,
+   * User Input Modes, Webcrypt Access, Backup Key Mode. The one-way three live
+   * on the Advanced tab (above), and this tab groups by what a write needs -
+   * so the always-settable ones come first, then Sysadmin and HMAC, then User
+   * Input Modes last, which is where the desktop puts it among the rest.
+   *
+   * A panel is gated by `needsConfigMode`, not by its title: two panels need
+   * it now, and a title is wording the owner changes.
+   */
+  const groups: {
+    title: string;
+    note: string;
+    needsConfigMode: boolean;
+    rows: typeof table;
+  }[] = [
     {
       title: 'Settings',
       note: 'These can be changed whenever the key is unlocked.',
+      needsConfigMode: false,
       rows: table.filter(p => p.requires === 'always').filter(rowApplies),
     },
     {
-      title: 'Advanced',
+      /*
+       * WAS "Advanced", with the note "The firmware refuses these on a key that
+       * is already set up. They are shown so the key can be read, not so it
+       * can be changed here." Both halves were wrong for `configMode` rows:
+       * the firmware ACCEPTS them in config mode (set_slot's
+       * `configmode == true || !initcheck`), and nothing here reads them -
+       * the key cannot report any of them back. The name also collided with
+       * the Advanced tab, which is a different thing (one-way settings).
+       * Named for the mode a write needs, which is what the panel's dimmed
+       * state and the way-in panel at the foot are both about.
+       */
+      title: 'Config mode',
       note:
-        'The firmware refuses these on a key that is already set up. They are ' +
-        'shown so the key can be read, not so it can be changed here.',
+        'These can be changed only while the key is in config mode; out of it ' +
+        'the firmware refuses them. The key cannot report them, so the current ' +
+        'value is not shown - choose one and Set it.',
+      needsConfigMode: true,
       /*
        * Named by what is left rather than by the library's own word for the
        * precondition. `requires` is the LIBRARY's description of a firmware
@@ -396,10 +438,33 @@ export function PreferencesScreen({
        * over", so it adopted every row the other two did not claim - and
        * rowApplies was only ever applied to Settings above. That is how a
        * one-way setting could sit here unnoticed, and how the NEXT one would
-       * have.
+       * have. Rows the library files under a `section` are left out too, or
+       * they would be drawn twice.
        */
       rows: table.filter(p => p.requires !== 'always' && p.requires !== 'firstUse')
+        .filter(p => !p.section)
         .filter(rowApplies),
+    },
+    {
+      /*
+       * ASKED, NOT LISTED - the same argument as `oneWay`. The library files
+       * fields 21, 22 and 30 under this section, in the desktop's order, on
+       * every firmware line where they exist; this panel only draws it. On a
+       * key older than 3.0.5 field 30 is absent and 21 is still the bitmask,
+       * and the panel shows exactly what the library hands it.
+       *
+       * The first sentence of the note is the desktop App's own.
+       */
+      title: USER_INPUT_MODES,
+      note:
+        'How you confirm an operation on the device. Each family is its own ' +
+        'setting: SSH/GPG derived keys, stored keys, and web and agent derived ' +
+        'keys are each approved with a Challenge Code (enter 3 digits) or a ' +
+        'Button Press, and web and agent derived keys can also need none. ' +
+        'Changed in config mode. The key cannot report them, so the current ' +
+        'value is not shown. A new key starts on Button Press.',
+      needsConfigMode: true,
+      rows: table.filter(p => p.section === USER_INPUT_MODES).filter(rowApplies),
     },
     {
       title: 'Set during setup only',
@@ -407,6 +472,7 @@ export function PreferencesScreen({
         'The firmware accepts these only before setup is finished. On a key ' +
         'that is already provisioned they are refused, so they are shown for ' +
         'completeness rather than offered.',
+      needsConfigMode: false,
       rows: table.filter(p => p.requires === 'firstUse').filter(rowApplies),
     },
   ];
@@ -564,7 +630,7 @@ export function PreferencesScreen({
           key={group.title}
           title={group.title}
           unavailable={
-            group.title === 'Advanced' && configMode !== ON ? NEEDS_CONFIG_MODE : null
+            group.needsConfigMode && configMode !== ON ? NEEDS_CONFIG_MODE : null
           }>
           <Text style={styles.note}>{group.note}</Text>
 
@@ -574,7 +640,8 @@ export function PreferencesScreen({
             * reason sits directly above.
             *
             *   Settings   OKSETSLOT on any unlocked key
-            *   Advanced   OKSETSLOT wants `configmode == true` on a
+            *   Config mode, User Input Modes
+            *              OKSETSLOT wants `configmode == true` on a
             *              provisioned key (okcore.cpp:452)
             *   setup only `!initcheck`, so refused here whatever we do -
             *              shown for completeness, never offered
@@ -636,9 +703,10 @@ export function PreferencesScreen({
       {/*
         THE WAY IN, AT THE FOOT - after the panels it unlocks.
     
-        The Advanced group only. Its preferences carry `requires: configMode`
-        in the library's own table; Settings takes any unlocked key, and the
-        setup-only group is refused here whatever the mode.
+        The Config mode and User Input Modes groups only. Their preferences
+        carry `requires: configMode` in the library's own table; Settings takes
+        any unlocked key, and the setup-only group is refused here whatever the
+        mode.
       */}
       {/* Not on Setup's PIN views: a PIN change works in or out of config mode. */}
       {has('prefs') ? (
@@ -647,7 +715,7 @@ export function PreferencesScreen({
           emu={emu}
           backend={backend}
           onWant={onWantConfigMode}
-          purpose="change an Advanced preference"
+          purpose="change a config-mode preference or a User Input Mode"
         />
       ) : null}
     </ScrollView>
@@ -719,13 +787,13 @@ function PrefRow({
         * AN ENUM IS NOT A NUMBER TO TYPE EITHER, and for the same reason the
         * bitmask above is not: "2" means nothing without knowing the firmware
         * calls it USER_INPUT_NONE. These three values are three different
-        * behaviours, not a scale, and one of them - "no confirmation" - is the
+        * behaviours, not a scale, and one of them - "None (no confirmation)" - is the
         * one that removes a confirmation step, so it had better be readable
         * rather than arithmetic.
         *
         * A COLUMN OF BUTTONS, not the Segmented control. Segmented lays its
         * options out with flex:1 across the row, and these labels are
-        * sentences - "Three-digit challenge" in a third of a phone's width
+        * sentences - "Challenge Code (enter 3 digits)" in a third of a phone's width
         * wraps to two cramped lines. The bits above already had this problem
         * and already solved it this way, so this is the file's existing
         * pattern rather than a second one.

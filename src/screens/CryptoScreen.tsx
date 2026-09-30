@@ -624,7 +624,7 @@ export function CryptoScreen({
         unavailable={configMode === ON ? NOT_IN_CONFIG_MODE : null}>
         <Text style={styles.testingNote}>
           A development feature: the OnlyKey web app does not ship it yet, and
-          its passwords change when a key updates to firmware 3.0.5.
+          its passwords change when a key updates to firmware 3.1.0.
         </Text>
         <Text style={styles.body}>
           The key computes a secret from a label and a private key that never
