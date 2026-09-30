@@ -404,4 +404,28 @@ if (signer.startsWith('fac61745')) {
   say('release: public, so anyone can sign an update to this apk. Fine for a');
   say('release: pre-release; never for a real one.');
 }
+
+/*
+ * DIST/ FOR THE PRE-RELEASE - apk, zip, notes - done here so a rebuild after
+ * a late change can never leave old names or hashes behind (tools/release-dist.js
+ * says why). Only for what could ship: a --keep build is not a release, and
+ * an apk the OnlyKey did not sign is not the one that goes out.
+ */
+if (KEEP || !signed) {
+  say(`release: dist       skipped (${KEEP ? '--keep is not a release' : 'not signed by the OnlyKey'})`);
+} else {
+  require('./release-dist').makeDist({
+    apk,
+    version: require(path.join(ROOT, 'package.json')).version,
+    commit: head,
+    versionCode: Number(execSync('git rev-list --count HEAD', {cwd: ROOT, encoding: 'utf8'}).trim()),
+    signedBy: `a physical OnlyKey (apk-signer, ${SIGNER_BACKEND})`,
+  });
+  /* Tracked files only: an untracked note beside the tree is not in the build. */
+  let changed = '';
+  try {
+    changed = execSync('git status --short --untracked-files=no', {cwd: ROOT, encoding: 'utf8'}).trim();
+  } catch {}
+  if (changed) say('release: WARNING - built with uncommitted changes: the commit in the names is not all of it');
+}
 say('');
