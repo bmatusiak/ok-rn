@@ -421,11 +421,13 @@ if (KEEP || !signed) {
     versionCode: Number(execSync('git rev-list --count HEAD', {cwd: ROOT, encoding: 'utf8'}).trim()),
     signedBy: `a physical OnlyKey (apk-signer, ${SIGNER_BACKEND})`,
   });
-  /* Tracked files only: an untracked note beside the tree is not in the build. */
-  let changed = '';
-  try {
-    changed = execSync('git status --short --untracked-files=no', {cwd: ROOT, encoding: 'utf8'}).trim();
-  } catch {}
-  if (changed) say('release: WARNING - built with uncommitted changes: the commit in the names is not all of it');
+  /*
+   * THE TREE AS IT WAS BEFORE THE BUILD (`dirty`, read at the top), not now:
+   * the build itself rewrites android/okemu/.stage-identity, so asking git
+   * here would always answer "changed". Tracked files only - an untracked
+   * note beside the tree is not in the build.
+   */
+  const changed = dirty.split(/\r?\n/).filter(l => l && !l.startsWith('??'));
+  if (changed.length) say('release: WARNING - built with uncommitted changes: the commit in the names is not all of it');
 }
 say('');
