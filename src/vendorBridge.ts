@@ -13,8 +13,10 @@
  * ## It is a PIPE, not a protocol
  *
  * Nothing here parses a report. A write from the host goes to IFACE.VENDOR
- * unexamined, and every vendor report the device produces is notified back
- * unexamined. That is deliberate: the vendor protocol is not request/response -
+ * unexamined, and every vendor report the device produces WHILE A BLE COMPUTER
+ * OWNS THE CONVERSATION is notified back unexamined (see `owner` below - it
+ * used to be every report, the app's own answers included). That is
+ * deliberate: the vendor protocol is not request/response -
  * OKSETSLOT answers nothing, OKGETLABELS answers with a report per slot - so
  * there is no correlation to maintain and inventing one would drop every report
  * after the first of a multi-report answer.
@@ -34,7 +36,7 @@
  */
 import {bytes as okbytes, protocol, transport as oktransport} from 'node-onlykey-lib';
 import NativeFidoGatt from '../specs/NativeFidoGatt';
-import FidoGatt, {type CtapRequestEvent} from './transport/FidoGatt';
+import FidoGatt, {isFromTarget, type CtapRequestEvent} from './transport/FidoGatt';
 import type {OnlyKeyApp} from './onlykey';
 import type {LogLevel} from './hooks/useLog';
 
@@ -85,16 +87,73 @@ type Options = {
   log: (level: LogLevel, text: string) => void;
   /** The key to relay to, supplied rather than imported - see fidoBridge. */
   getKey: () => Promise<OnlyKeyApp>;
-  /** Whether requests should be served at all. Read through a function,
-   *  because the bridge is attached once and the answer changes under it. */
-  isRelaying?: () => boolean;
+  /**
+   * The "API" switch on the Bluetooth tab - this door's gate, separate from
+   * WebAuthn's. Read through a function, because the bridge is attached once
+   * and the answer changes under it.
+   */
+  isApi?: () => boolean;
+  /** The targeted computer's address, or null for None. See onRequest. */
+  getTarget?: () => string | null;
 };
 
-export function startVendorBridge({log, getKey, isRelaying}: Options): () => void {
+/*
+ * A BLE write we are about to make, as the 'write' event will echo it: the
+ * transport pads a vendor report to 64 bytes, so the echo is our bytes and
+ * then zeros. See `ours` in startVendorBridge.
+ */
+function isEchoOf(sent: Uint8Array, echoed: Uint8Array): boolean {
+  if (echoed.length < sent.length) return false;
+  for (let i = 0; i < sent.length; i++) {
+    if (echoed[i] !== sent[i]) return false;
+  }
+  for (let i = sent.length; i < echoed.length; i++) {
+    if (echoed[i] !== 0) return false;
+  }
+  return true;
+}
+
+export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () => void {
   /* Which transport the report subscription is attached to, so a key change
    * moves it rather than leaving it listening to the previous device. */
   let boundTo: unknown = null;
   let offReport: (() => void) | null = null;
+  let offWrite: (() => void) | null = null;
+
+  /*
+   * WHO THE KEY IS ANSWERING: the address of the BLE computer whose request
+   * went to the key last, or null when the last vendor write was the APP's.
+   *
+   * THE LEAK THIS CLOSES. Every IFACE.VENDOR report the key produced used to
+   * be notified to the central whenever the switch was on - including the
+   * answers to the app's OWN requests. Opening the Slots tab asks the key for
+   * its labels over this same interface, so a paired computer, listening,
+   * received the slot list without having asked for anything.
+   *
+   * Why ownership and not "only the reply to that request": the vendor
+   * protocol has no correlation. OKSETSLOT answers nothing, OKGETLABELS
+   * answers with a report per slot, and a signing request answers only after
+   * a button press that may be twenty seconds away - so there is no rule
+   * that says which report answers which write, and one invented here would
+   * drop the tail of every multi-report answer. What IS knowable is who
+   * spoke to the key last. The key answers whoever last addressed it, the
+   * same way a single USB host owns the conversation over a cable, so the
+   * reports belong to that speaker until someone else speaks.
+   *
+   * The app's writes are seen on the transport's 'write' event - both keys'
+   * pipes report every write, in both directions. Our own BLE writes appear
+   * there too, so they are recognised by content (`ours`) and do not hand
+   * the conversation back to the app.
+   *
+   * What it does not cover: an unsolicited report the key volunteers while a
+   * BLE computer owns the conversation goes to that computer. That is what
+   * the computer would see on a cable too, and it is still only ever the
+   * target (the native side sends nowhere else).
+   */
+  let owner: string | null = null;
+  /* BLE writes on their way to the key, so their echo is not read as the
+   * app speaking. Bounded: a pipe that never echoes must not grow it. */
+  const ours: Uint8Array[] = [];
 
   /*
    * Sends are SERIALISED through this chain.
@@ -110,6 +169,19 @@ export function startVendorBridge({log, getKey, isRelaying}: Options): () => voi
    * them.
    */
   let sending: Promise<void> = Promise.resolve();
+
+  /*
+   * The whole outbound gate: the API door open, and the computer that owns
+   * the conversation still the target. This is the first gate and
+   * sendVendorReport the last - it sends only to the target's connection,
+   * and only with API on.
+   */
+  function mayForward(): boolean {
+    if (isApi && !isApi()) return false;
+    if (!owner) return false;
+    if (getTarget && !isFromTarget(owner, getTarget())) return false;
+    return true;
+  }
 
   function push(data: Uint8Array) {
     sending = sending
@@ -132,13 +204,31 @@ export function startVendorBridge({log, getKey, isRelaying}: Options): () => voi
       log('info', '[vendor] the active key changed; rebinding');
       offReport();
     }
+    if (offWrite) offWrite();
+    offWrite = null;
+    /* A different key has had no conversation with anyone yet. */
+    owner = null;
+    ours.length = 0;
     boundTo = transport;
     offReport = transport.on(
       'report',
       ({iface, data}: {iface: number; data: Uint8Array}) => {
         if (iface !== IFACE_VENDOR) return;
-        if (isRelaying && !isRelaying()) return;
+        if (!mayForward()) return;
         push(data);
+      },
+    );
+    offWrite = transport.on(
+      'write',
+      ({iface, data}: {iface: number; data: Uint8Array}) => {
+        if (iface !== IFACE_VENDOR) return;
+        const mine = ours.findIndex(sent => isEchoOf(sent, data));
+        if (mine >= 0) {
+          ours.splice(mine, 1);
+          return;
+        }
+        /* The app spoke to the key: what comes back is the app's. */
+        owner = null;
       },
     );
     return transport;
@@ -147,8 +237,19 @@ export function startVendorBridge({log, getKey, isRelaying}: Options): () => voi
   async function onRequest(event: CtapRequestEvent) {
     if (event.iface !== 'vendor') return;
 
-    if (isRelaying && !isRelaying()) {
-      log('info', '[vendor] relaying is off; the write was dropped');
+    /*
+     * THE SECOND GATE. The native side refuses a vendor write from anyone but
+     * the target, and with API off, before it ever becomes an event; this
+     * asks again because a request can cross a change of target in flight,
+     * and a gate that is only in Kotlin is one no test here can see. Dropped
+     * rather than answered - the vendor protocol has no refusal report.
+     */
+    if (getTarget && !isFromTarget(event.address, getTarget())) {
+      log('info', `[vendor] refused a write from ${event.address || 'an unknown computer'} - not the target`);
+      return;
+    }
+    if (isApi && !isApi()) {
+      log('info', '[vendor] API is off; the write was dropped');
       return;
     }
 
@@ -169,6 +270,10 @@ export function startVendorBridge({log, getKey, isRelaying}: Options): () => voi
 
       const transport = await ensureSubscribed();
       log('rx', `[vendor] ${data.length} bytes -> the key`);
+      /* Before the write: a fast key answers before write() resolves. */
+      owner = event.address;
+      ours.push(data);
+      if (ours.length > 8) ours.shift();
       await transport.write(IFACE_VENDOR, data);
     } catch (err) {
       /*
@@ -186,7 +291,10 @@ export function startVendorBridge({log, getKey, isRelaying}: Options): () => voi
   return () => {
     off();
     if (offReport) offReport();
+    if (offWrite) offWrite();
     offReport = null;
+    offWrite = null;
+    owner = null;
     boundTo = null;
   };
 }

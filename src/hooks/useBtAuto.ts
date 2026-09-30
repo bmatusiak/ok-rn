@@ -31,6 +31,12 @@ export type BtAutos = {
 const KEYS = {
   start: 'ok-rn/bt/auto-start',
   keyboard: 'ok-rn/bt/auto-keyboard',
+  /*
+   * The same stored value as the Bluetooth tab's "WebAuthn" switch
+   * (useFidoGatt's RELAY_KEY) - it was the "Authenticator" switch, and the key
+   * name was kept so the saved setting survived the rename. The new "API"
+   * switch has its own key there and none here.
+   */
   authenticator: 'ok-rn/bt/auto-authenticator',
 } as const;
 

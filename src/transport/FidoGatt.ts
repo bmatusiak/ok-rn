@@ -41,6 +41,20 @@ export type {AuthenticatorConfig, CtapRequestEvent, GattStatusEvent, PermissionS
 
 export type GattState = 'idle' | 'advertising' | 'connected' | 'stopped' | 'error';
 
+/**
+ * Did this request come from the target? The bridges' second gate - the
+ * native one has already asked (setIoPolicy).
+ *
+ * Case-insensitive: the native side hands addresses out upper-case, but the
+ * target comes out of storage, and a lower-case copy of the same computer
+ * must not read as a stranger. A missing address or a missing target is
+ * never a match - the gate fails shut.
+ */
+export function isFromTarget(address: string | undefined, target: string | null): boolean {
+  if (!address || !target) return false;
+  return address.toUpperCase() === target.toUpperCase();
+}
+
 /*
  * CTAP2 status codes, from the library.
  *
@@ -172,6 +186,11 @@ class FidoGattClient {
 
   getState(): GattState {
     return NativeFidoGatt.getState() as GattState;
+  }
+
+  /** Who may talk to the key, over which door - see the spec. */
+  setIoPolicy(target: string | null, webauthn: boolean, api: boolean): void {
+    NativeFidoGatt.setIoPolicy(target, webauthn, api);
   }
 
   respondToRequest(requestId: string, hex: string): Promise<void> {

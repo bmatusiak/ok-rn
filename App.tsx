@@ -122,6 +122,29 @@ type Phase = 'splash' | 'login' | 'pin' | 'setup' | 'main';
  * child, and would get zeros.
  */
 /**
+ * Hands the Bluetooth TARGET to the authenticator's IO gate.
+ *
+ * "Each door has a gate, and a device must be targeted." The target is the
+ * keyboard's chosen host - one computer, approved for IO in both directions -
+ * and the gates (WebAuthn, API) are useFidoGatt's. That hook is built in the
+ * Shell, ABOVE BtKeyboardProvider, so it cannot read the target from the
+ * context; this sits inside the provider, always mounted, and passes it
+ * across. useFidoGatt then tells the radio (setIoPolicy) whenever the target
+ * or either gate changes.
+ *
+ * Here, not on the Bluetooth tab: the tab unmounts whenever another is
+ * shown, and the gate has to follow a target that is forgotten because its
+ * bond went away while nobody was looking at the tab.
+ */
+function IoPolicySync({setTarget}: {setTarget: (address: string | null) => void}) {
+  const {chosenHost} = useSharedBtKeyboard();
+  useEffect(() => {
+    setTarget(chosenHost);
+  }, [chosenHost, setTarget]);
+  return null;
+}
+
+/**
  * Bluetooth, keyboard, authenticator - blue armed, green connected, grey off.
  *
  * AND the thing that starts them, which is not a coincidence.
@@ -584,6 +607,7 @@ function Shell() {
         * key's. Outside it, the bridge would forward the wrong key's typing.
         */}
       <BtKeyboardProvider>
+      <IoPolicySync setTarget={fido.setTarget} />
       <StatusBar barStyle="light-content" />
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
         {ready ? (

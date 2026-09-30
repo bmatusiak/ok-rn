@@ -9,7 +9,9 @@ import type {CodegenTypes} from 'react-native';
  * The native side is a TRANSPORT, not an authenticator. It advertises the FIDO
  * service, reassembles Control Point writes into whole CTAP2 messages, hands
  * each one to JS as an onCtapRequest event, and fragments whatever JS gives
- * back. It never answers a command itself and never rejects one.
+ * back. It never answers a command itself - with ONE exception, the IO gate
+ * (setIoPolicy): a request from a computer that is not the target, or on a
+ * door that is shut, is refused at the radio before it reaches JS.
  *
  * That last sentence used to read "the CTAP2/CBOR command handlers and the
  * KeyStore signing path are stubs that reject with CTAP2_ERR_NOT_ALLOWED",
@@ -62,6 +64,15 @@ export type CtapRequestEvent = {
   hex: string;
   /** Relying-party id if the payload parsed, else ''. */
   rpId: string;
+  /**
+   * The address of the central that sent it, upper-case.
+   *
+   * The native gate has already checked it against the target (setIoPolicy);
+   * it is carried so the bridges can check it a SECOND time, because a
+   * request can be in flight across a change of target, and because a gate
+   * nobody can see from JS is one nobody can test from JS.
+   */
+  address: string;
 };
 
 export type AuthenticatorConfig = {
@@ -110,6 +121,22 @@ export interface Spec extends TurboModule {
   openAppSettings(): void;
 
   configure(config: AuthenticatorConfig): void;
+
+  /**
+   * WHO MAY TALK TO THE KEY, and over which door.
+   *
+   * `target` is the one computer approved for IO in both directions (the
+   * Bluetooth tab's target; null = None, nothing in or out). `webauthn` gates
+   * the FIDO service, `api` the vendor service. A write that fails either
+   * test is still acknowledged on the wire - a refused write teaches Windows
+   * to abandon the service - and then refused above it: a FIDO request gets
+   * CTAP2_ERR_OPERATION_DENIED, to its sender only, and a vendor write is
+   * dropped. Replies and reports go only to the target's own connection.
+   *
+   * Held by the process, like the GATT server. The default before the first
+   * call is the safe one: no target, both doors shut.
+   */
+  setIoPolicy(target: string | null, webauthn: boolean, api: boolean): void;
 
   /** Opens the GATT server and starts advertising service 0xFFFD. */
   startAdvertising(): Promise<void>;

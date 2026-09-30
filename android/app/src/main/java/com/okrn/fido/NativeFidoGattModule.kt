@@ -118,9 +118,18 @@ class NativeFidoGattModule(
   private var statusCharacteristic: BluetoothGattCharacteristic?
     get() = Held.statusCharacteristic
     set(value) { Held.statusCharacteristic = value }
-  private var connectedDevice: BluetoothDevice?
-    get() = Held.connectedDevice
-    set(value) { Held.connectedDevice = value }
+  /*
+   * EVERY CONNECTED CENTRAL, BY ADDRESS - not "the" connected device.
+   *
+   * This was one field, `connectedDevice`, overwritten by whoever connected
+   * last and nulled by whoever disconnected. Every reply went to it. With two
+   * computers in range - the owner's Windows laptop and the Pi, both bonded -
+   * that meant an answer to one could be notified to the other, and a second
+   * machine connecting silently took over the first one's conversation. A
+   * reply now goes to a named device, and only ever to the TARGET (see
+   * IoPolicy below).
+   */
+  private val centrals get() = Held.centrals
 
   private val assembler get() = Held.assembler
   private val vendorAssembler get() = Held.vendorAssembler
@@ -198,6 +207,44 @@ class NativeFidoGattModule(
     val requireUserVerification: Boolean = true,
     val preferStrongBox: Boolean = true,
   )
+
+  /*
+   * WHO MAY TALK TO THE KEY, AND OVER WHICH DOOR. The owner's model: "each
+   * door has a gate, and a device must be targeted".
+   *
+   * `target` is the ONE computer approved for IO, in both directions - the
+   * Bluetooth tab's target picker. Null is "None": nothing in, nothing out.
+   * `webauthn` gates the FIDO service, `api` the vendor service; a request is
+   * served only when its door's gate is open AND it came from the target.
+   *
+   * Enforced HERE, at the radio, and not only in JS. The services stay
+   * published for as long as Bluetooth is on (see the note on
+   * registerExtraService), so every bonded computer in range can connect and
+   * write - the Pi as readily as the laptop. The GATT server is the one place
+   * that knows WHICH central sent a write; by the time a request reached JS it
+   * used to carry no sender at all, so JS could not have told them apart.
+   *
+   * Immutable and swapped whole, so a GATT thread reading it mid-update sees
+   * the old policy or the new one, never half of each. The default is the
+   * safe one - nobody, nothing - and it is what holds until JS has read its
+   * saved settings and said otherwise.
+   */
+  private data class IoPolicy(
+    /** Upper-case address, or null for None. */
+    val target: String? = null,
+    val webauthn: Boolean = false,
+    val api: Boolean = false,
+  )
+
+  /** A FIDO request JS still owes an answer, and WHO asked it. */
+  private data class Pending(val command: Int, val sender: String)
+
+  /*
+   * Addresses compared upper-case: Android hands them out upper-case, but the
+   * target arrives from JS storage and a stored lower-case copy must not be
+   * read as a different computer. uppercase() is locale-invariant.
+   */
+  private fun addressKey(address: String?): String = (address ?: "").uppercase()
 
   // ---------------------------------------------------------------- lifecycle
 
@@ -384,6 +431,126 @@ class NativeFidoGattModule(
         config.preferStrongBox
       },
     )
+  }
+
+  // ---------------------------------------------------------------- io policy
+
+  /*
+   * JS says who the target is and which doors are open; see IoPolicy.
+   *
+   * Called on every change of the target or either switch, and once on mount -
+   * App.tsx's IoPolicySync. Lives in Held like everything else here, so a JS
+   * reload does not drop the gates back open or shut; the next mount simply
+   * says the same thing again.
+   */
+  override fun setIoPolicy(target: String?, webauthn: Boolean, api: Boolean) {
+    val next = IoPolicy(
+      target = target?.takeIf { it.isNotBlank() }?.let { addressKey(it) },
+      webauthn = webauthn,
+      api = api,
+    )
+    val previous = Held.policy
+    Held.policy = next
+    if (previous.target != next.target) {
+      /*
+       * A NEW TARGET STARTS CLEAN. Half a message from the old target must not
+       * be completed by the new one's first continuation fragment, and a reply
+       * still being notified to the old one is to a computer that is no longer
+       * approved - it is abandoned, and its promise rejected, rather than
+       * finished.
+       */
+      synchronized(Held.assemblerLock) {
+        assembler.reset()
+        vendorAssembler.reset()
+      }
+      val inFlightTo = synchronized(notifyLock) { Held.notifyDevice?.address }
+      if (inFlightTo != null && addressKey(inFlightTo) != next.target) {
+        clearNotifications("the target changed mid-response")
+      }
+    }
+    if (previous != next) {
+      val connected = next.target?.let { centrals.containsKey(it) } ?: false
+      report(
+        "IO policy: target ${next.target ?: "none"}" +
+          (if (next.target != null) (if (connected) " (connected)" else " (not connected)") else "") +
+          ", WebAuthn ${if (next.webauthn) "on" else "off"}, API ${if (next.api) "on" else "off"}",
+      )
+    }
+  }
+
+  /**
+   * Why a write from [device] on a door whose gate is [gateOpen] must be
+   * refused - or null when it may pass. The order is the order of the
+   * question: is anything targeted, is this the target, is this door open.
+   */
+  private fun refusalReason(device: BluetoothDevice, gateOpen: Boolean, door: String): String? {
+    val policy = Held.policy
+    val target = policy.target ?: return "no target"
+    if (addressKey(device.address) != target) return "not the target"
+    if (!gateOpen) return "$door is off"
+    return null
+  }
+
+  /**
+   * The connection a reply to [sender] may go out on.
+   *
+   * Throws rather than returning null so each caller rejects its promise with
+   * the actual reason - "the target changed" and "the target dropped" are
+   * different reports from the owner's point of view.
+   */
+  private fun approvedDevice(sender: String): BluetoothDevice {
+    val target = Held.policy.target
+      ?: throw IllegalStateException("No target - replies go to nobody")
+    if (sender != target) {
+      throw IllegalStateException("$sender is no longer the target; the reply was not sent")
+    }
+    return centrals[target]
+      ?: throw IllegalStateException("The target is not connected")
+  }
+
+  /*
+   * A line for the app's Log tab. Native has no log sink of its own there:
+   * the Log tab shows what JS logs, and useFidoGatt logs every onGattStatus
+   * event as "[ble] <state> - <message>". So a status event re-sent with the
+   * CURRENT state is how native says something without changing anything -
+   * the same way the MTU negotiation already reports itself.
+   *
+   * NEVER A PAYLOAD. Addresses, doors and reasons only; see the note on
+   * onCharacteristicWriteRequest about where bytes may be logged.
+   */
+  private fun report(message: String) {
+    Log.i(TAG, message)
+    setState(state, message)
+  }
+
+  /*
+   * Remember a central the first time it is seen, and say who it is next to
+   * who the target is - once per connection.
+   *
+   * The comparison the owner has to be able to make on the phone: the target
+   * picker lists CLASSIC bonds by their BR/EDR address, and the gate compares
+   * that with the address the GATT server sees for an LE central. For a bonded
+   * computer Android reports the LE identity address, which on Windows is the
+   * same public address as its classic one - but that is a claim about
+   * someone else's stack, and this line is how it gets checked rather than
+   * trusted.
+   *
+   * Also reached from a write: Windows can bring an LE link up through the
+   * stack (for SMP) without onConnectionStateChange firing here, and a
+   * central that writes is connected by definition.
+   */
+  @SuppressLint("MissingPermission")
+  private fun noteCentral(device: BluetoothDevice, how: String) {
+    val key = addressKey(device.address)
+    if (centrals.put(key, device) != null) return
+    val target = Held.policy.target
+    val bonded = runCatching { device.bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(false)
+    val verdict = when {
+      target == null -> "no target set"
+      target == key -> "this IS the target"
+      else -> "not the target ($target)"
+    }
+    report("central $key $how (${if (bonded) "bonded" else "not bonded"}) - $verdict")
   }
 
   // --------------------------------------------------------------- gatt server
@@ -665,7 +832,7 @@ class NativeFidoGattModule(
            * healthy.
            */
           if (Held.wantAdvertising &&
-            (Held.connectedDevice == null || Held.live?.serviceIsLive() == false)
+            (Held.centrals.isEmpty() || Held.live?.serviceIsLive() == false)
           ) {
             Held.live?.reassert()
           }
@@ -703,11 +870,25 @@ class NativeFidoGattModule(
             Held.advertisingOn = false
             return
           }
+          if (action == BluetoothDevice.ACTION_ACL_DISCONNECTED) {
+            /*
+             * An LE link is gone, so that central is gone - even if this GATT
+             * server never heard it connect. noteCentral() also records a
+             * central on its first WRITE, because a link the stack brought up
+             * for pairing never reaches onConnectionStateChange; this is the
+             * matching way out, or such a central would sit in the map for
+             * good and keep the checks below believing something is
+             * connected.
+             */
+            @Suppress("DEPRECATION")
+            val gone: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+            gone?.address?.let { Held.centrals.remove(it.uppercase()) }
+          }
           val adapterOn = action == android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED &&
             intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1) ==
               android.bluetooth.BluetoothAdapter.STATE_ON
           if ((action == BluetoothDevice.ACTION_ACL_DISCONNECTED || adapterOn) &&
-              Held.wantAdvertising && Held.connectedDevice == null) {
+              Held.wantAdvertising && Held.centrals.isEmpty()) {
             Held.live?.reassert()
           }
         }
@@ -755,8 +936,13 @@ class NativeFidoGattModule(
     advertiser = null
     gattServer = null
     statusCharacteristic = null
-    connectedDevice = null
-    assembler.reset()
+    centrals.clear()
+    Held.mtus.clear()
+    Held.refusalAssemblers.clear()
+    synchronized(Held.assemblerLock) {
+      assembler.reset()
+      vendorAssembler.reset()
+    }
     /* No server, no foreground: the notification goes with it. */
     FidoGattService.stop(reactContext)
     pendingRequests.clear()
@@ -896,19 +1082,35 @@ class NativeFidoGattModule(
     }
 
     override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+      val key = addressKey(device.address)
       if (newState == BluetoothGatt.STATE_CONNECTED) {
         Held.advertisingOn = false
-        connectedDevice = device
         setState(STATE_CONNECTED, "central connected")
+        noteCentral(device, "connected")
       } else {
-        connectedDevice = null
+        centrals.remove(key)
+        Held.mtus.remove(key)
+        Held.refusalAssemblers.remove(key)
         /*
          * The central is gone, so nothing is subscribed to anything. Clearing
          * the whole map rather than one flag keeps a second notify
          * characteristic from surviving a disconnect as enabled.
+         *
+         * ONLY WHEN THE LAST ONE GOES. Subscriptions are recorded per
+         * characteristic, not per central, so the Pi dropping off used to be
+         * able to wipe the laptop's record too - clearing on any disconnect is
+         * only right while there is only ever one.
          */
-        Held.notifyEnabled.clear()
-        clearNotifications("The central disconnected")
+        if (centrals.isEmpty()) Held.notifyEnabled.clear()
+        /*
+         * A reply in flight is abandoned only if it was going to THIS central.
+         * Clearing on every disconnect let a second computer walking out of
+         * range cut off the target's answer mid-notification.
+         */
+        val inFlightTo = synchronized(notifyLock) { Held.notifyDevice?.address }
+        if (inFlightTo != null && addressKey(inFlightTo) == key) {
+          clearNotifications("The central disconnected")
+        }
         /*
          * Android STOPS ADVERTISING when a central connects, and does not
          * resume on disconnect. This used to set the state back to
@@ -916,10 +1118,14 @@ class NativeFidoGattModule(
          * discoverable while being invisible, and the only way back was to
          * toggle the screen's switch off and on.
          */
-        if (gattServer != null && beginAdvertising()) {
-          setState(STATE_ADVERTISING, "central disconnected - advertising again")
-        } else {
-          setState(if (gattServer != null) STATE_ERROR else STATE_STOPPED, "central disconnected")
+        val advertising = gattServer != null && beginAdvertising()
+        when {
+          centrals.isNotEmpty() ->
+            setState(STATE_CONNECTED, "central $key disconnected - ${centrals.size} still connected")
+          advertising ->
+            setState(STATE_ADVERTISING, "central disconnected - advertising again")
+          else ->
+            setState(if (gattServer != null) STATE_ERROR else STATE_STOPPED, "central disconnected")
         }
       }
     }
@@ -941,6 +1147,13 @@ class NativeFidoGattModule(
     }
 
     override fun onMtuChanged(device: BluetoothDevice, newMtu: Int) {
+      /*
+       * Per central: the MTU is negotiated per LINK, and fragmenting a reply
+       * for the laptop at the size the Pi negotiated would send fragments one
+       * of them cannot take. `mtu` stays as the last-negotiated value, which is
+       * all the status line ever meant by it.
+       */
+      Held.mtus[addressKey(device.address)] = newMtu
       mtu = newMtu
       setState(state, "MTU negotiated to $newMtu")
     }
@@ -962,7 +1175,7 @@ class NativeFidoGattModule(
       val value = when (characteristic.uuid) {
         // Max Control Point write, big-endian, capped to the negotiated MTU.
         FIDO_CONTROL_POINT_LENGTH_UUID -> {
-          val len = maxFragmentSize()
+          val len = maxFragmentSize(device)
           byteArrayOf(((len shr 8) and 0xff).toByte(), (len and 0xff).toByte())
         }
         // Bit 5 set = FIDO2 (CTAP2) supported.
@@ -1098,8 +1311,38 @@ class NativeFidoGattModule(
        * removing the vendor service is removing this block and the file it
        * calls into.
        */
+      /*
+       * THE GATES. Each door is checked AFTER the write has been acknowledged
+       * above and BEFORE anything is routed - never by answering the write
+       * with an error. WRITE_NOT_PERMITTED is what the Service Revision note
+       * just above warns about: a host that is refused a write abandons the
+       * service, and Windows then stops offering this phone at all. Refusing
+       * at the ATT layer would punish the target for a moment when its switch
+       * was off. So every write is accepted on the wire, and a refused one is
+       * refused in the framing above it - a BLE ERROR frame to the sender, for FIDO
+       * and the vendor service alike - where a host expects refusals to come from.
+       */
+      noteCentral(device, "seen writing")
+
       if (characteristic.uuid == VendorGatt.REQUEST_UUID) {
-        handleVendorWrite(value)
+        val refused = refusalReason(device, Held.policy.api, "API")
+        if (refused != null) {
+          /*
+           * DIVERTED, never forwarded: the write goes nowhere near the key,
+           * and the sender gets a rejection instead - the owner's rule for
+           * every door ("we still don't send the data to the firmware, we send
+           * a rejection by diverting the message"). It used to be dropped,
+           * which left onlykey-js --ble waiting out its own timeout with no
+           * idea why. Answered and logged on the INITIAL fragment only (the
+           * high bit of the first byte): one refusal per message, not one per
+           * fragment.
+           */
+          if (value.isNotEmpty() && (value[0].toInt() and 0x80) != 0) {
+            refuseVendor(device, refused)
+          }
+          return
+        }
+        handleVendorWrite(device, value)
         return
       }
 
@@ -1107,7 +1350,13 @@ class NativeFidoGattModule(
         return
       }
 
-      val message = assembler.push(value)
+      val refused = refusalReason(device, Held.policy.webauthn, "WebAuthn")
+      if (refused != null) {
+        refuseFido(device, value, refused)
+        return
+      }
+
+      val message = synchronized(Held.assemblerLock) { assembler.push(value) }
       if (message == null) {
         Log.d(TAG, "control point: fragment held, message incomplete")
         return
@@ -1115,7 +1364,8 @@ class NativeFidoGattModule(
       Log.d(TAG, "control point: message cmd=0x${"%02x".format(message.command)} " +
         "len=${message.payload.size}")
       val id = "req-" + requestCounter.incrementAndGet()
-      pendingRequests[id] = message.command
+      val sender = addressKey(device.address)
+      pendingRequests[id] = Pending(message.command, sender)
 
       // The CTAP2 command byte leads the payload; the rest is CBOR.
       val ctap2Command = message.payload.firstOrNull()?.toInt()?.and(0xff) ?: -1
@@ -1135,7 +1385,103 @@ class NativeFidoGattModule(
       event.putString("hex", message.payload.toHexString())
       // Extracting rpId needs a CBOR decoder, which is not wired up yet.
       event.putString("rpId", "")
+      /* Who asked - so JS can check the gate a second time. */
+      event.putString("address", sender)
       emit(event, isStatus = false)
+    }
+  }
+
+  /**
+   * Turn away a FIDO request from a central the gate refused.
+   *
+   * A BLE ERROR frame, to THAT central and nobody else, and the key is never
+   * asked. Silence makes a browser sit on "talking to your security key" until
+   * it times out; CTAP2_ERR_OPERATION_DENIED made Windows ask again every few
+   * seconds (measured). The ERROR frame is meant to make the ceremony skip this
+   * phone and move on to the next device - see the comment at the send.
+   *
+   * Reassembled in an assembler OF ITS OWN, per central. The shared one
+   * belongs to the target's stream; feeding a refused computer's fragments
+   * into it would splice them into the target's half-built message. Only a
+   * whole message can be answered, and only a MSG gets one - PING and CANCEL
+   * are not CTAP2 commands and fidoBridge does not answer them either.
+   *
+   * Best effort: the notify queue is one-at-a-time, and a reply already going
+   * out to the target is not interrupted to deliver this. When it is busy the
+   * refusal is dropped - logged - and the refused host's timeout answers.
+   */
+  /**
+   * What a refused FIDO message was asking for, for the log - never its bytes.
+   * CTAP2 leads with a command byte; a CTAP1/U2F request is an APDU, whose
+   * first byte (CLA) is 0x00.
+   */
+  private fun ctapCommandName(payload: ByteArray): String = when (payload.firstOrNull()?.toInt()?.and(0xff)) {
+    null -> "empty"
+    0x00 -> "U2F"
+    0x01 -> "MakeCredential"
+    0x02 -> "GetAssertion"
+    0x04 -> "GetInfo"
+    0x06 -> "ClientPIN"
+    0x07 -> "Reset"
+    0x08 -> "GetNextAssertion"
+    else -> "0x%02x".format(payload[0].toInt() and 0xff)
+  }
+
+  /**
+   * Turn away a vendor (API) write from a central the gate refused.
+   *
+   * The same BLE ERROR frame refuseFido sends, on the vendor RESPONSE
+   * characteristic, to THAT central only. The vendor protocol itself has no
+   * refusal report (a real key that will not act simply stays silent), so the
+   * refusal is made one layer down, in the framing the pipe already uses:
+   * CMD_ERROR is not a command any key ever sends, so a host cannot mistake it
+   * for a firmware reply. node-onlykey-lib's cli/transport-ble.js turns it
+   * into an error that says the phone refused.
+   *
+   * Best effort like refuseFido: when a reply to the target is going out, the
+   * refusal is dropped - logged - and the host's timeout answers.
+   */
+  private fun refuseVendor(device: BluetoothDevice, reason: String) {
+    val key = addressKey(device.address)
+    report("refused an API request from $key - $reason")
+    val response = gattServer?.getService(VendorGatt.SERVICE_UUID)
+      ?.getCharacteristic(VendorGatt.RESPONSE_UUID) ?: return
+    val fragments = CtapBle.fragment(
+      CtapBle.CMD_ERROR,
+      byteArrayOf(BLE_ERR_REFUSED.toByte()),
+      maxFragmentSize(device),
+    )
+    if (!enqueueNotifications(fragments, null, response, device)) {
+      report("the refusal to $key was not sent - a reply to the target was in flight")
+    }
+  }
+
+  private fun refuseFido(device: BluetoothDevice, value: ByteArray, reason: String) {
+    val key = addressKey(device.address)
+    val refusals = Held.refusalAssemblers.computeIfAbsent(key) { CtapBleAssembler() }
+    val message = synchronized(refusals) { refusals.push(value) } ?: return
+    if ((message.command and 0x7f) != (CtapBle.CMD_MSG and 0x7f)) return
+
+    report("refused a WebAuthn request (${ctapCommandName(message.payload)}) from $key - $reason")
+    val status = statusCharacteristic ?: return
+    /*
+     * A BLE ERROR frame, not a CTAP "operation denied" inside a MSG.
+     *
+     * DENIED (0x27) was tried first and measured on Windows 11 (2026-09-29):
+     * it reads as "a working authenticator said no", so Windows asked again
+     * every 2-3.4 s for as long as the ceremony lasted and the browser sat on
+     * its spinner. The owner wants the refused phone to be SKIPPED so the
+     * ceremony moves on to the next device. CMD_ERROR is the transport's own
+     * "this request cannot be served here" (CTAP BLE framing), a failure of the
+     * device for this request rather than an answer to retry.
+     */
+    val fragments = CtapBle.fragment(
+      CtapBle.CMD_ERROR,
+      byteArrayOf(BLE_ERR_REFUSED.toByte()),
+      maxFragmentSize(device),
+    )
+    if (!enqueueNotifications(fragments, null, status, device)) {
+      report("the refusal to $key was not sent - a reply to the target was in flight")
     }
   }
 
@@ -1156,8 +1502,8 @@ class NativeFidoGattModule(
    * what should happen when the vendor feature is present and nothing is
    * listening for it.
    */
-  private fun handleVendorWrite(value: ByteArray) {
-    val message = vendorAssembler.push(value) ?: run {
+  private fun handleVendorWrite(device: BluetoothDevice, value: ByteArray) {
+    val message = synchronized(Held.assemblerLock) { vendorAssembler.push(value) } ?: run {
       Log.d(TAG, "vendor: fragment held, message incomplete")
       return
     }
@@ -1171,6 +1517,7 @@ class NativeFidoGattModule(
     event.putString("commandName", "")
     event.putString("hex", message.payload.toHexString())
     event.putString("rpId", "")
+    event.putString("address", addressKey(device.address))
     emit(event, isStatus = false)
   }
 
@@ -1186,30 +1533,35 @@ class NativeFidoGattModule(
    * ever following. From the phone it looks like a host that connected and
    * then did nothing; from the browser it looks like the key never responded.
    */
-  private fun maxFragmentSize(): Int =
-    (mtu - ATT_HEADER_BYTES).coerceIn(MIN_FRAGMENT, MAX_FRAGMENT)
+  private fun maxFragmentSize(device: BluetoothDevice): Int =
+    ((Held.mtus[addressKey(device.address)] ?: DEFAULT_MTU) - ATT_HEADER_BYTES)
+      .coerceIn(MIN_FRAGMENT, MAX_FRAGMENT)
 
   // ------------------------------------------------------------------ respond
 
   @SuppressLint("MissingPermission")
   override fun respondToRequest(requestId: String, hex: String, promise: Promise) {
     try {
-      val command = pendingRequests.remove(requestId)
+      val pending = pendingRequests.remove(requestId)
         ?: throw IllegalStateException("Unknown or already-answered requestId: $requestId")
-      val device = connectedDevice
-        ?: throw IllegalStateException("No connected central to respond to")
+      /*
+       * To the central that ASKED, and only while it is still the target.
+       * This went to whoever had connected last; a target switched away
+       * mid-ceremony now gets nothing rather than its answer landing on the
+       * new one.
+       */
+      val device = approvedDevice(pending.sender)
       val target = statusCharacteristic
         ?: throw IllegalStateException("Status characteristic is not registered")
-      val server = gattServer
-        ?: throw IllegalStateException("GATT server is not running")
+      gattServer ?: throw IllegalStateException("GATT server is not running")
 
       val payload = hex.hexToByteArray()
-      val fragments = CtapBle.fragment(command, payload, maxFragmentSize())
+      val fragments = CtapBle.fragment(pending.command, payload, maxFragmentSize(device))
 
       // Queued, not looped. The promise resolves when the LAST fragment has
       // been acknowledged, so JS learns the response actually went out rather
       // than that it was handed to a queue.
-      enqueueNotifications(fragments, promise, target)
+      enqueueNotifications(fragments, promise, target, device)
     } catch (e: Exception) {
       promise.reject(ERR_RESPOND, e.message ?: "respondToRequest failed", e)
     }
@@ -1227,10 +1579,10 @@ class NativeFidoGattModule(
   @SuppressLint("MissingPermission")
   override fun sendKeepAlive(requestId: String, status: Double, promise: Promise) {
     try {
-      if (!pendingRequests.containsKey(requestId)) {
-        throw IllegalStateException("Unknown or already-answered requestId: $requestId")
-      }
-      connectedDevice ?: throw IllegalStateException("No connected central to notify")
+      val pending = pendingRequests[requestId]
+        ?: throw IllegalStateException("Unknown or already-answered requestId: $requestId")
+      /* To the asker, while it is the target - as respondToRequest. */
+      val device = approvedDevice(pending.sender)
       // NOT `status` - that is this function's own keepalive-status parameter,
       // and shadowing it turned the destination into the byte being sent.
       val statusChar = statusCharacteristic
@@ -1245,9 +1597,9 @@ class NativeFidoGattModule(
       val fragments = CtapBle.fragment(
         CtapBle.CMD_KEEPALIVE,
         byteArrayOf(status.toInt().toByte()),
-        maxFragmentSize(),
+        maxFragmentSize(device),
       )
-      enqueueNotifications(fragments, promise, statusChar)
+      enqueueNotifications(fragments, promise, statusChar, device)
     } catch (e: Exception) {
       promise.reject(ERR_RESPOND, e.message ?: "sendKeepAlive failed", e)
     }
@@ -1273,12 +1625,20 @@ class NativeFidoGattModule(
    * is not a limitation to work around: the queue is per LINK and fragments are
    * reassembled by position, so overlapping sends would interleave into
    * messages made of halves of two.
+   *
+   * ONLY TO THE TARGET, AND ONLY WHILE API IS ON. Unprompted means there is no
+   * asker to address the report to, so the policy names the destination: the
+   * target's own connection, never whoever connected last. With no target, the
+   * target not connected, or API switched off, the report goes nowhere and
+   * the promise says why - this is the last gate on the way OUT, behind the
+   * one vendorBridge applies before it ever calls here.
    */
   @SuppressLint("MissingPermission")
   override fun sendVendorReport(hex: String, promise: Promise) {
     try {
-      connectedDevice
-        ?: throw IllegalStateException("No connected central to notify")
+      val policy = Held.policy
+      if (!policy.api) throw IllegalStateException("API is off - the report was not sent")
+      val device = approvedDevice(policy.target ?: "")
       val server = gattServer
         ?: throw IllegalStateException("GATT server is not running")
       /*
@@ -1294,9 +1654,9 @@ class NativeFidoGattModule(
       val fragments = CtapBle.fragment(
         VendorGatt.CMD_REPORT,
         hex.hexToByteArray(),
-        maxFragmentSize(),
+        maxFragmentSize(device),
       )
-      enqueueNotifications(fragments, promise, target)
+      enqueueNotifications(fragments, promise, target, device)
     } catch (e: Exception) {
       promise.reject(ERR_RESPOND, e.message ?: "sendVendorReport failed", e)
     }
@@ -1304,26 +1664,42 @@ class NativeFidoGattModule(
 
   // ------------------------------------------------------- notification queue
 
+  /**
+   * Queue one whole reply for [device]. False when another is still going out.
+   *
+   * [promise] is null for a reply nobody in JS is waiting on - the gate's own
+   * DENIED to a refused central - which is why "busy" is its own flag rather
+   * than "a promise is pending", as it used to be.
+   */
   private fun enqueueNotifications(
     fragments: List<ByteArray>,
-    promise: Promise,
+    promise: Promise?,
     target: BluetoothGattCharacteristic,
-  ) {
+    device: BluetoothDevice,
+  ): Boolean {
     synchronized(notifyLock) {
       /*
        * One outstanding response at a time. Two overlapping ones would
        * interleave their fragments on the wire, and the host reassembles by
        * position - so it would decode a message made of halves of two.
        */
-      if (pendingRespond != null) {
-        promise.reject(ERR_RESPOND, "A response is still being sent")
-        return
+      if (Held.notifyBusy) {
+        promise?.reject(ERR_RESPOND, "A response is still being sent")
+        return false
       }
+      Held.notifyBusy = true
       pendingRespond = promise
       notifyTarget = target
+      /*
+       * The destination travels WITH the reply. It used to be read at pump
+       * time from the one global connected device, so a central connecting
+       * mid-reply received the rest of somebody else's answer.
+       */
+      Held.notifyDevice = device
       notifyQueue.addAll(fragments)
     }
     pumpNotifications()
+    return true
   }
 
   /** Send the next fragment, if the stack is ready for one. */
@@ -1341,12 +1717,16 @@ class NativeFidoGattModule(
         pendingRespond?.resolve(null)
         pendingRespond = null
         notifyTarget = null
+        Held.notifyDevice = null
+        Held.notifyBusy = false
         return
       }
-      device = connectedDevice ?: run {
-        clearNotifications("The central disconnected mid-response")
-        return
-      }
+      device = Held.notifyDevice
+        ?.takeIf { centrals.containsKey(addressKey(it.address)) }
+        ?: run {
+          clearNotifications("The central disconnected mid-response")
+          return
+        }
       characteristic = notifyTarget ?: statusCharacteristic ?: run {
         clearNotifications("Status characteristic is not registered")
         return
@@ -1404,6 +1784,8 @@ class NativeFidoGattModule(
       notifyQueue.clear()
       notifyInFlight = false
       notifyTarget = null
+      Held.notifyDevice = null
+      Held.notifyBusy = false
       promise = pendingRespond
       pendingRespond = null
     }
@@ -1621,7 +2003,28 @@ class NativeFidoGattModule(
        * status characteristic, which is what every pre-vendor caller meant.
        */
       var notifyTarget: BluetoothGattCharacteristic? = null
-      var connectedDevice: BluetoothDevice? = null
+      /* Which central the queued fragments go to; set with notifyTarget. */
+      var notifyDevice: BluetoothDevice? = null
+      /* A reply is queued or going out; see enqueueNotifications. */
+      var notifyBusy = false
+
+      /* Connected centrals by upper-case address; see `centrals` above. */
+      val centrals = ConcurrentHashMap<String, BluetoothDevice>()
+      /* Negotiated MTU per central; see onMtuChanged. */
+      val mtus = ConcurrentHashMap<String, Int>()
+      /* Who may talk, over which door. Swapped whole; see IoPolicy. */
+      @Volatile var policy = IoPolicy()
+      /* Per refused central, so its fragments never touch the target's
+       * stream; see refuseFido. */
+      val refusalAssemblers = ConcurrentHashMap<String, CtapBleAssembler>()
+      /*
+       * Guards the two shared assemblers. They were only ever fed from GATT
+       * callbacks; setIoPolicy now resets them from the module's own thread
+       * when the target changes, and a reset landing mid-push would leave a
+       * state machine that is half of each.
+       */
+      val assemblerLock = Any()
+
       val assembler = CtapBleAssembler()
 
       /*
@@ -1636,7 +2039,7 @@ class NativeFidoGattModule(
        */
       val vendorAssembler = CtapBleAssembler()
 
-      val pendingRequests = ConcurrentHashMap<String, Int>()
+      val pendingRequests = ConcurrentHashMap<String, Pending>()
       val requestCounter = AtomicInteger(0)
       val notifyQueue = ArrayDeque<ByteArray>()
       var notifyInFlight = false
@@ -1708,6 +2111,21 @@ class NativeFidoGattModule(
 
     /** CTAP 2.1 11.2.5.2: fidoControlPointLength shall be 20..512. */
     private const val MAX_FRAGMENT = 512
+
+    /*
+     * CTAP 2.1 section 8.2, and the same byte fidoBridge sends
+     * (protocol.ctaphid.CTAP2_STATUS.OPERATION_DENIED in node-onlykey-lib).
+     * Written out here because the gate answers before JS is involved.
+     */
+    private const val CTAP2_ERR_OPERATION_DENIED = 0x27
+
+    /**
+     * The code in a refusal's BLE ERROR frame: ERR_OTHER (0x7f) in the CTAP BLE
+     * framing's error list (ERR_INVALID_CMD 0x01 ... ERR_BUSY 0x06, ERR_OTHER
+     * 0x7f). ERR_BUSY would invite a retry; ERR_INVALID_CMD would claim the
+     * request was malformed. See refuseFido.
+     */
+    private const val BLE_ERR_REFUSED = 0x7f
     private const val USER_AUTH_VALIDITY_SECONDS = 30
     private const val TAG = "FidoGatt"
     private const val SERVICE_ADD_TIMEOUT_MS = 2000

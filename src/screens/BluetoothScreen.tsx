@@ -20,13 +20,25 @@ import type {BtAuto} from '../hooks/useBtAuto';
  *
  *   1. Bluetooth      - on or off; nothing below exists while it is off
  *   2. Target         - WHICH computer, chosen once
- *   3. Keyboard       - whether the key's typing crosses the link
- *   4. Authenticator  - whether a browser's request reaches the key
+ *   3. Keyboard       - whether the key's typing crosses the link (OUT)
+ *   4. Authenticator  - WebAuthn: whether a browser's request reaches the key
+ *                       API: whether software's vendor requests do (IN)
  *
  * The target is shared and comes FIRST because it is shared: a host is bonded
  * to the phone, not to a feature, and both of these type into the same chosen
  * computer. Saying it twice on one screen was most of why the tab read as two
  * apps bolted together.
+ *
+ * ## Each door has a gate, and a device must be targeted
+ *
+ * The owner's model, and what the radio enforces (setIoPolicy in
+ * NativeFidoGattModule.kt). The TARGET is the one computer approved for IO in
+ * BOTH directions; None means nothing in and nothing out. Every channel is a
+ * door with its own switch - Keyboard out, WebAuthn in, API in - and a
+ * request passes only when its door is open AND it comes from the target.
+ * Every other bonded computer in range can still connect, because the
+ * services are published to all of them (below); it is refused at the gate,
+ * and the Log tab says which gate and why.
  *
  * ## The switches are IO, not existence
  *
@@ -356,20 +368,34 @@ export function BluetoothScreen({
           </Section>
 
           {/* 5 ─ authenticator */}
-          <Section
-            title="Authenticator"
-            right={
-              <Switch
-                value={fido.relaying}
-                disabled={fido.supported === false}
-                onValueChange={fido.setRelaying}
-              />
-            }>
+          {/*
+            * TWO DOORS, TWO GATES. This section had one switch on its heading,
+            * and it opened both GATT services at once - the FIDO one a browser
+            * uses and the vendor one onlykey-js --ble uses. Those are not the
+            * same consent: an assertion for a website is a far smaller thing
+            * than a computer reading labels and loading keys. So each door has
+            * its own row, and both answer only the target above.
+            */}
+          <Section title="Authenticator">
+            <AutoRow
+              label="WebAuthn"
+              hint="A browser on the target can use the key as a security key."
+              value={fido.webauthn}
+              disabled={fido.supported === false}
+              onChange={fido.setWebAuthn}
+            />
+            <AutoRow
+              label="API"
+              hint="Software on the target (onlykey-js --ble) can operate the key."
+              value={fido.api}
+              disabled={fido.supported === false}
+              onChange={fido.setApi}
+            />
             <View style={styles.stateRow}>
               <StatusPill state={fido.state} />
             </View>
             <Text style={styles.note}>
-              {fido.relaying
+              {fido.webauthn
                 ? `A browser can use this phone as a security key. ${keyName} must be unlocked — the firmware answers, not this screen.`
                 : 'Offered to paired computers, but requests are turned away. Switch this on to let a browser reach the key.'}
             </Text>
@@ -450,11 +476,15 @@ function AutoRow({
   hint,
   value,
   onChange,
+  disabled,
 }: {
   label: string;
   hint: string;
   value: boolean;
   onChange: (next: boolean) => void;
+  /* For a switch the phone cannot honour - the Authenticator's two, on a
+   * phone that cannot advertise. */
+  disabled?: boolean;
 }) {
   return (
     <View style={styles.autoRow}>
@@ -462,7 +492,7 @@ function AutoRow({
         <Text style={styles.autoLabel}>{label}</Text>
         <Text style={styles.note}>{hint}</Text>
       </View>
-      <Switch value={value} onValueChange={onChange} />
+      <Switch value={value} disabled={disabled} onValueChange={onChange} />
     </View>
   );
 }

@@ -21,7 +21,7 @@
  * transport, and what to say when the device cannot answer.
  */
 import {bytes as okbytes, protocol} from 'node-onlykey-lib';
-import FidoGatt, {type CtapRequestEvent} from './transport/FidoGatt';
+import FidoGatt, {isFromTarget, type CtapRequestEvent} from './transport/FidoGatt';
 import type {OnlyKeyApp} from './onlykey';
 import OkEmu from './transport/OkEmu';
 import type {LogLevel} from './hooks/useLog';
@@ -83,8 +83,18 @@ type Options = {
    *
    * Read through a function rather than captured, because the bridge is
    * attached once and the answer changes under it.
+   *
+   * This is the "WebAuthn" switch on the Bluetooth tab - the FIDO door's
+   * gate. The vendor service has its own ("API"); one switch used to open
+   * both.
    */
-  isRelaying?: () => boolean;
+  isWebAuthn?: () => boolean;
+
+  /**
+   * The targeted computer's address, or null for None - the one computer
+   * approved for IO. See the second gate in onRequest.
+   */
+  getTarget?: () => string | null;
 
   /**
    * Whether the active key is unlocked.
@@ -110,7 +120,8 @@ export function startFidoBridge({
   onPending,
   onPresence,
   getKey,
-  isRelaying,
+  isWebAuthn,
+  getTarget,
   isUnlocked,
 }: Options): () => void {
   let bridge: ReturnType<typeof protocol.bridge.createCtapBridge> | null = null;
@@ -183,12 +194,31 @@ export function startFidoBridge({
     }
 
     /*
+     * THE SECOND GATE: is this the targeted computer?
+     *
+     * The native side has already asked (setIoPolicy) and turns every other
+     * sender away at the radio, so reaching here from anyone else means the
+     * target changed while the request was in flight - or the native gate is
+     * broken, which is exactly what a second gate is for. Answered DENIED like
+     * the others; native routes a reply only to the target, so if the asker
+     * is no longer it, the answer goes nowhere and the promise says so.
+     */
+    if (getTarget && !isFromTarget(event.address, getTarget())) {
+      log('info', `refusing ${label} from ${event.address || 'an unknown computer'} - not the target`);
+      await FidoGatt.respondToRequest(
+        event.requestId,
+        CTAP2_ERR_OPERATION_DENIED.toString(16).padStart(2, '0'),
+      ).catch(() => {});
+      return;
+    }
+
+    /*
      * Answered, not ignored. Silence makes a browser sit on "talking to your
      * security key" until it times out, which reads as a broken authenticator
      * rather than one that is switched off; DENIED tells it to move on.
      */
-    if (isRelaying && !isRelaying()) {
-      log('info', `refusing ${label} - the bridge to the key is switched off`);
+    if (isWebAuthn && !isWebAuthn()) {
+      log('info', `refusing ${label} - WebAuthn is switched off`);
       await FidoGatt.respondToRequest(
         event.requestId,
         CTAP2_ERR_OPERATION_DENIED.toString(16).padStart(2, '0'),
