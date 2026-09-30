@@ -382,6 +382,14 @@ function makeDist({apk, version, commit, versionCode, signedBy, built, dist, fre
   say(`release: dist       ${path.relative(ROOT, apkOut)}  ${apkSha}`);
   say(`release: dist       ${path.relative(ROOT, zipOut)}  ${zipSha}`);
   say(`release: dist       ${path.relative(ROOT, notesPath)} (${kept ? 'header rewritten, your text kept' : 'generated draft - rewrite it as you like'})`);
+  /*
+   * A TITLE, because GitHub does not take one from the notes: 0.0.4 went out
+   * with none, and 0.0.5's was typed by hand afterwards ("ok-rn 0.0.5-pre:
+   * firmware 3.1.0"). That is the version plus the notes' own reason for the
+   * release, so it is read from there - rewrite the heading, the title follows.
+   */
+  const reason = /^## The reason for this release: (.+)$/m.exec(body);
+  say(`release: title      ok-rn ${version}-pre${reason ? `: ${reason[1].trim()}` : ''}`);
   say(`release: built from ok-rn ${built.app}, lib ${built.lib}, libraries ${built.libraries}, OnlyKey-Firmware ${built.firmware}`);
   if (/\+ changes/.test(`${built.libraries} ${built.firmware}`)) {
     say('release: WARNING - a firmware checkout had uncommitted changes: its commit is not all of it');
