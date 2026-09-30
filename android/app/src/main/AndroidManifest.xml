@@ -43,6 +43,16 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />
         </intent>
+        <!-- The passkey-provider Settings screen: without this, Android 11+
+             package visibility hides it and the app would report every
+             phone as having no way to switch the provider on. -->
+        <intent>
+            <action android:name="android.settings.CREDENTIAL_PROVIDER" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.CREDENTIAL_PROVIDER" />
+            <data android:scheme="package" />
+        </intent>
     </queries>
 
 

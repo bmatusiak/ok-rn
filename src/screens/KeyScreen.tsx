@@ -13,6 +13,7 @@ import NativeFidoGatt from '../../specs/NativeFidoGatt';
 import NativeBtKeyboard from '../../specs/NativeBtKeyboard';
 import NativeSecrets from '../../specs/NativeSecrets';
 import {buildInfo} from '../buildInfo';
+import {usePasskeyProvider} from '../hooks/usePasskeyProvider';
 
 /**
  * The key itself: what state it is in, what it holds, and its buttons.
@@ -377,12 +378,13 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
  *
  * Every row asks the same check the feature itself uses, so this cannot say
  * yes where the feature says no:
- *   passkeys   API 34, as CredProviderGate.kt gates the provider
+ *   passkeys   Android's own answer: enabled as a provider, or why not
+ *              (usePasskeyProvider - API 34 alone said "yes" on a moto
+ *              whose Settings cannot switch it on)
  *   Bluetooth  NativeFidoGatt / NativeBtKeyboard isSupported()
  *   biometric  NativeSecrets.biometricStatus(), with its reason
  * A check that throws shows "unknown" rather than a guess.
  */
-const PASSKEY_PROVIDER_MIN_API = 34;
 
 const BIOMETRIC_TEXT: Record<string, string> = {
   available: 'yes',
@@ -392,6 +394,7 @@ const BIOMETRIC_TEXT: Record<string, string> = {
 };
 
 function AppCapabilities() {
+  const passkeys = usePasskeyProvider();
   const api = Platform.OS === 'android' ? Number(Platform.Version) : 0;
   const [bleKey, setBleKey] = useState<string>('checking…');
   const [btKeyboard, setBtKeyboard] = useState<string>('checking…');
@@ -429,7 +432,7 @@ function AppCapabilities() {
         <KeyValue label="Android" value={api ? `${(Platform.constants as {Release?: string}).Release ?? '?'} (API ${api})` : Platform.OS} />
         <KeyValue
           label="passkeys in Chrome"
-          value={api >= PASSKEY_PROVIDER_MIN_API ? 'yes' : 'no, needs Android 14'}
+          value={passkeys.text}
         />
         <KeyValue label="Bluetooth authenticator" value={bleKey} />
         <KeyValue label="Bluetooth keyboard" value={btKeyboard} />

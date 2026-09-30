@@ -163,6 +163,21 @@ jest.mock('./specs/NativeShare', () => ({
   },
 }));
 
+jest.mock('./specs/NativeCredProvider', () => ({
+  __esModule: true,
+  default: {
+    providerStatus: jest.fn(() =>
+      Promise.resolve({supported: false, enabled: false, settingsAvailable: false}),
+    ),
+    openProviderSettings: jest.fn(() => Promise.resolve(false)),
+    getPendingRequest: jest.fn(() =>
+      Promise.resolve({action: 'NONE', callerPackage: '', requestJson: '', clientDataHashB64: ''}),
+    ),
+    respond: jest.fn(() => Promise.resolve(true)),
+    fail: jest.fn(() => Promise.resolve(true)),
+  },
+}));
+
 jest.mock('./specs/NativeBtKeyboard', () => ({
   __esModule: true,
   default: {

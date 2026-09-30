@@ -13,6 +13,7 @@ import OkEmu from '../transport/OkEmu';
 import type {EmuSession} from '../hooks/useOkEmu';
 import {FidoGatt} from '../transport/FidoGatt';
 import type {PermissionStatus} from '../transport/FidoGatt';
+import {usePasskeyProvider} from '../hooks/usePasskeyProvider';
 
 const {keystrokes} = okdevice;
 
@@ -185,6 +186,7 @@ export function PreferencesScreen({
    * app returns from the system settings page, and offers the ask again.
    */
   const [perms, setPerms] = useState<PermissionStatus | null>(null);
+  const passkeys = usePasskeyProvider();
   const [permNote, setPermNote] = useState<string | null>(null);
   const readPerms = useCallback(() => {
     FidoGatt.permissionStatus().then(setPerms).catch(e => setPermNote(String((e as Error)?.message ?? e)));
@@ -512,6 +514,32 @@ export function PreferencesScreen({
         ) : null}
         {permNote ? <Text style={styles.error}>{permNote}</Text> : null}
         <Btn title="Open the system settings for this app" onPress={() => FidoGatt.openAppSettings()} />
+      </Section>
+
+      <Section title="Passkeys on this phone">
+        <Text style={styles.body}>
+          Chrome on this phone can use the OnlyKey for passkeys once Android
+          lists it as a passkey provider. Only Android's settings can switch
+          that on or off.
+        </Text>
+        <View style={styles.permRow}>
+          <Text style={styles.body}>OnlyKey as a passkey provider</Text>
+          <Text style={passkeys.status?.enabled ? styles.permOn : styles.permOff}>
+            {passkeys.status?.enabled ? 'on' : passkeys.status?.settingsAvailable ? 'off' : passkeys.status ? 'unavailable' : '…'}
+          </Text>
+        </View>
+        {passkeys.status && !passkeys.status.enabled ? (
+          <Text style={styles.body}>
+            {!passkeys.status.settingsAvailable
+              ? passkeys.text
+              : passkeys.stillOffAfterVisit
+                ? "Still off. If OnlyKey wasn't listed, this phone's settings can't switch it on."
+                : "Switch on OnlyKey there. If it isn't listed, this phone can't use it for passkeys."}
+          </Text>
+        ) : null}
+        {passkeys.status?.settingsAvailable ? (
+          <Btn title="Open Android's passkey settings" onPress={() => void passkeys.openSettings()} />
+        ) : null}
       </Section>
       </>) : null}
 

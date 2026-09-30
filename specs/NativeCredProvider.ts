@@ -54,7 +54,25 @@ export type PendingCredRequest = {
   clientDataHashB64: string;
 };
 
+/**
+ * Whether Chrome on this phone can hand passkeys to the app - read from
+ * Android, never assumed (see NativeCredProviderModule.providerStatus).
+ */
+export type ProviderStatus = {
+  /** The build carries the provider and Android is 14 or newer. */
+  supported: boolean;
+  /** Android lists the app as an enabled credential provider. */
+  enabled: boolean;
+  /** The phone has the Settings screen that switches providers on. */
+  settingsAvailable: boolean;
+};
+
 export interface Spec extends TurboModule {
+  providerStatus(): Promise<ProviderStatus>;
+
+  /** Opens that Settings screen; false when the phone has none. */
+  openProviderSettings(): Promise<boolean>;
+
   /**
    * The request this activity was launched for. Rejects only if the activity
    * is gone; an absent request comes back as action 'NONE'.
