@@ -163,6 +163,11 @@ jest.mock('./specs/NativeShare', () => ({
   },
 }));
 
+jest.mock('./specs/NativeKdf', () => ({
+  __esModule: true,
+  default: {pbkdf2Sha256: jest.fn(() => Promise.reject(new Error('no native PBKDF2 in jest')))},
+}));
+
 jest.mock('./specs/NativeRsaGen', () => ({
   __esModule: true,
   default: {generatePrimes: jest.fn(() => Promise.reject(new Error('no RSA generator in jest')))},

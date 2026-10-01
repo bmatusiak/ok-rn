@@ -82,3 +82,6 @@ tools/.last-e2e.json
 # Built artifacts. A 49MB apk does not belong in git history - it is
 # attached to a GitHub release instead, where it can be replaced.
 /dist/
+
+# native-sea-openssl release cache (android/okssl/build.gradle; pinned by sha256)
+android/.openssl/

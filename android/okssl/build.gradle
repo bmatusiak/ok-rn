@@ -1,0 +1,88 @@
+apply plugin: "com.android.library"
+// gradle.properties sets android.builtInKotlin=false (see okemu/build.gradle).
+apply plugin: "org.jetbrains.kotlin.android"
+
+/*
+ * OKSSL - OpenSSL for the App's own key work (owner, 2026-10-01).
+ *
+ * Key Chain makes RSA keys and stretches passphrases (PBKDF2, 600000 rounds)
+ * on the phone. These are done by OpenSSL from the owner's native-sea-openssl
+ * build (github.com/bmatusiak/native-sea-openssl - the same package the App
+ * will need anyway), through a small JNI library here: libokssl.so, with
+ * libcrypto linked in STATICALLY so only the functions called end up in the
+ * APK. The Kotlin face is com.okrn.okssl.OkSsl; NativeKdf and NativeRsaGen
+ * call it.
+ *
+ * THE RELEASE IS PINNED BY VERSION AND SHA-256. The zip is fetched once into
+ * android/.openssl/<version>/ (git-ignored), checked against the hash below,
+ * and only the release AAR's prefab/ tree (static libs + headers per ABI) is
+ * kept. A changed or corrupted download stops the build rather than linking
+ * something else. To move to a new release: set both lines from that
+ * release's zip (sha256sum native-sea-openssl.zip).
+ *
+ * Fetched at CONFIGURATION time, as okemu stages its sources, because CMake
+ * resolves its project while the build is being configured and the headers
+ * must exist by then.
+ */
+def OPENSSL_RELEASE = "v3.5.9"
+def OPENSSL_ZIP_SHA256 = "bd18836567f93a9e6a460cc6997e816274f127fc2027e82fa6aa743ac9507328"
+
+def osslDir = new File(rootDir, ".openssl/${OPENSSL_RELEASE}")
+def prefabDir = new File(osslDir, "prefab")
+if (!new File(prefabDir, "modules/openssl/libs").exists()) {
+    osslDir.mkdirs()
+    def zip = new File(osslDir, "native-sea-openssl.zip")
+    if (!zip.exists()) {
+        def url = "https://github.com/bmatusiak/native-sea-openssl/releases/download/${OPENSSL_RELEASE}/native-sea-openssl.zip"
+        logger.lifecycle("okssl: fetching ${url}")
+        new URL(url).withInputStream { input -> zip.withOutputStream { it << input } }
+    }
+    def digest = java.security.MessageDigest.getInstance("SHA-256")
+    zip.withInputStream { input ->
+        byte[] buf = new byte[1 << 16]
+        int n
+        while ((n = input.read(buf)) > 0) digest.update(buf, 0, n)
+    }
+    def got = digest.digest().encodeHex().toString()
+    if (got != OPENSSL_ZIP_SHA256) {
+        zip.delete()
+        throw new GradleException("okssl: native-sea-openssl ${OPENSSL_RELEASE} zip has sha256 ${got}, expected ${OPENSSL_ZIP_SHA256} - deleted; refusing to link it")
+    }
+    project.copy {
+        from zipTree(zip)
+        include "android/native-sea-openssl-release.aar"
+        into osslDir
+    }
+    project.copy {
+        from zipTree(new File(osslDir, "android/native-sea-openssl-release.aar"))
+        include "prefab/**"
+        into osslDir
+    }
+}
+
+android {
+    namespace "com.okrn.okssl"
+    compileSdk rootProject.ext.compileSdkVersion
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+        externalNativeBuild {
+            cmake {
+                arguments "-DOKSSL_OPENSSL=${new File(prefabDir, 'modules/openssl').absolutePath.replace('\\', '/')}"
+            }
+        }
+        /* The same three as okemu - see the note there on armeabi-v7a. */
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86_64"
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+}

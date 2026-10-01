@@ -10,6 +10,7 @@ import com.okrn.specs.NativeCredProviderSpec
 import com.okrn.specs.NativeFidoGattSpec
 import com.okrn.specs.NativeOkEmuSpec
 import com.okrn.specs.NativeRsaGenSpec
+import com.okrn.specs.NativeKdfSpec
 import com.okrn.specs.NativeSecretsSpec
 import com.okrn.specs.NativeShareSpec
 import com.okrn.specs.NativeUsbHidSpec
@@ -19,6 +20,7 @@ import com.okrn.credprovider.NativeCredProviderModule
 import com.okrn.emu.NativeOkEmuModule
 import com.okrn.fido.NativeFidoGattModule
 import com.okrn.rsagen.NativeRsaGenModule
+import com.okrn.kdf.NativeKdfModule
 import com.okrn.secrets.NativeSecretsModule
 import com.okrn.share.NativeShareModule
 import com.okrn.usb.NativeUsbHidModule
@@ -42,6 +44,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeBtKeyboardSpec.NAME -> NativeBtKeyboardModule(reactContext)
       NativeCredProviderSpec.NAME -> NativeCredProviderModule(reactContext)
       NativeRsaGenSpec.NAME -> NativeRsaGenModule(reactContext)
+      NativeKdfSpec.NAME -> NativeKdfModule(reactContext)
       else -> null
     }
 
@@ -55,6 +58,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeBtKeyboardSpec.NAME to moduleInfo(NativeBtKeyboardSpec.NAME),
       NativeCredProviderSpec.NAME to moduleInfo(NativeCredProviderSpec.NAME),
       NativeRsaGenSpec.NAME to moduleInfo(NativeRsaGenSpec.NAME),
+      NativeKdfSpec.NAME to moduleInfo(NativeKdfSpec.NAME),
     )
   }
 

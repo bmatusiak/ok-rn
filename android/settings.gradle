@@ -4,4 +4,5 @@ extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autoli
 rootProject.name = 'OkRN'
 include ':app'
 include ':okemu'
+include ':okssl'
 includeBuild('../node_modules/@react-native/gradle-plugin')

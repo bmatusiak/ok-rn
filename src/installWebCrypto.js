@@ -26,6 +26,7 @@ import {install} from 'node-onlykey-lib/webcrypto';
 import {installTextCodecs} from 'node-onlykey-lib/webcrypto/text';
 import {bytes} from 'node-onlykey-lib';
 import NativeRsaGen from '../specs/NativeRsaGen';
+import NativeKdf from '../specs/NativeKdf';
 
 /*
  * RSA GENERATION - Android's generator, lent to the shim (Key Chain).
@@ -40,7 +41,15 @@ async function rsaGenerate(bits, e) {
   return {p: bytes.fromHex(p), q: bytes.fromHex(q)};
 }
 
-const result = install({rsaGenerate});
+/*
+ * PBKDF2 - Android's, natively (specs/NativeKdf.ts). Key Chain's encrypted
+ * copies use 600000 rounds: about a second here, a long wait in JavaScript.
+ */
+async function pbkdf2(password, salt, iterations, dkLen) {
+  return bytes.fromHex(await NativeKdf.pbkdf2Sha256(bytes.toHex(password), bytes.toHex(salt), iterations, dkLen));
+}
+
+const result = install({rsaGenerate, pbkdf2});
 
 /*
  * TextEncoder and TextDecoder, absent from Hermes for the same reason.

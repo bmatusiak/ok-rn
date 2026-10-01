@@ -3,21 +3,15 @@ package com.okrn.rsagen
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.okrn.specs.NativeRsaGenSpec
-import java.math.BigInteger
-import java.security.KeyPairGenerator
-import java.security.SecureRandom
-import java.security.interfaces.RSAPrivateCrtKey
-import java.security.spec.RSAKeyGenParameterSpec
+import com.okrn.okssl.OkSsl
 
 /**
- * Android's RSA generator for Key Chain - see specs/NativeRsaGen.ts.
+ * RSA key generation for Key Chain - see specs/NativeRsaGen.ts.
  *
- * The DEFAULT provider, deliberately not AndroidKeyStore: a Keystore key can
- * never leave the phone, and this key's whole purpose is to be loaded onto an
- * OnlyKey (and optionally exported, encrypted). So it is generated in memory,
- * its primes handed to JavaScript, and the references dropped.
- *
- * Off the JS thread: a 4096-bit key can take seconds.
+ * OpenSSL's generator (native-sea-openssl, via android/okssl), in memory:
+ * the key's whole purpose is to be loaded onto an OnlyKey (and maybe
+ * exported, encrypted), so it is never a Keystore key. Only p and q cross to
+ * JavaScript. Off the JS thread: 4096 bits can take a few seconds.
  */
 class NativeRsaGenModule(reactContext: ReactApplicationContext) :
   NativeRsaGenSpec(reactContext) {
@@ -30,28 +24,21 @@ class NativeRsaGenModule(reactContext: ReactApplicationContext) :
     }
     Thread {
       try {
-        val gen = KeyPairGenerator.getInstance("RSA")
-        gen.initialize(RSAKeyGenParameterSpec(size, BigInteger.valueOf(publicExponent.toLong())), SecureRandom())
-        val key = gen.generateKeyPair().private as RSAPrivateCrtKey
+        val primes = OkSsl.rsaPrimes(size, publicExponent.toInt())
         val half = size / 16
-        promise.resolve("${fixedHex(key.primeP, half)}:${fixedHex(key.primeQ, half)}")
+        val result = "${toHex(primes[0], half)}:${toHex(primes[1], half)}"
+        primes.forEach { it.fill(0) }
+        promise.resolve(result)
       } catch (e: Exception) {
         promise.reject("RSA_GEN", e.message ?: "RSA key generation failed", e)
       }
     }.start()
   }
 
-  /** Big-endian, exactly `length` bytes: BigInteger adds a sign byte, or drops leading zeros. */
-  private fun fixedHex(value: BigInteger, length: Int): String {
-    val raw = value.toByteArray()
-    val out = ByteArray(length)
-    val from = maxOf(0, raw.size - length)
-    System.arraycopy(raw, from, out, length - (raw.size - from), raw.size - from)
-    val hex = StringBuilder(length * 2)
-    for (b in out) hex.append(String.format("%02x", b.toInt() and 0xff))
-    out.fill(0)
-    raw.fill(0)
-    return hex.toString()
+  private fun toHex(bytes: ByteArray, length: Int): String {
+    val sb = StringBuilder(length * 2)
+    for (i in 0 until length) sb.append(String.format("%02x", bytes[i].toInt() and 0xff))
+    return sb.toString()
   }
 
   companion object {
