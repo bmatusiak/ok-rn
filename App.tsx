@@ -5,6 +5,7 @@ import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import {Btn, StatusPill} from './src/ui/components';
 import {WANTED, OFF, PRE, ON, type ConfigState} from './src/ui/configModeNotes';
 import OkEmu from './src/transport/OkEmu';
+import {rememberTab, takeResumeTab} from './src/resumeTab';
 import {Drawer} from './src/ui/Drawer';
 import {Logo} from './src/ui/Logo';
 import {ledColor, theme} from './src/ui/theme';
@@ -493,6 +494,22 @@ function Shell() {
   const [tab, setTab] = useState<Tab>('This Key');
 
   /*
+   * BACK TO THE LAST TAB after a restart you asked for (src/resumeTab.ts).
+   * Every in-app restart goes through OkEmu.restartApp, which waits for this
+   * hook; the first time the app opens after a login, the tab comes back -
+   * within five minutes of the restart, once.
+   */
+  const tabRef = useRef<Tab>(tab);
+  tabRef.current = tab;
+  useEffect(() => {
+    OkEmu.beforeRestart = () => rememberTab(tabRef.current);
+    return () => {
+      OkEmu.beforeRestart = null;
+    };
+  }, []);
+  const resumeChecked = useRef(false);
+
+  /*
    * The slot being edited, if any.
    *
    * Held here rather than inside SlotsScreen because the editor is a FULL
@@ -502,6 +519,21 @@ function Shell() {
   const [openSlot, setOpenSlot] = useState<{id: string; index: number; label: string | null} | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [phase, setPhase] = useState<Phase>('splash');
+  /* The first time inside after this process started: take the remembered tab, if any. */
+  useEffect(() => {
+    if (phase !== 'main' || resumeChecked.current) return;
+    resumeChecked.current = true;
+    /*
+     * Only tabs that are SHOWN now. Testing mode is deliberately not kept
+     * across a restart (see Log out), so the Testing and In-Development tabs
+     * must not come back through here - the render's last branch IS the
+     * Testing screen, and this would walk round its gate.
+     */
+    const valid: readonly string[] = __DEV__ && testing.enabled ? [...TABS, IN_DEV_TAB, TESTING_TAB] : [...TABS];
+    void takeResumeTab(valid).then(remembered => {
+      if (remembered) setTab(remembered as Tab);
+    });
+  }, [phase, testing.enabled]);
   /*
    * The splash plays its animation to the end (AnimatedLogo, 3 s - the
    * owner's choice) even when the key boots faster, so it cannot be cut off
@@ -715,13 +747,7 @@ function Shell() {
           that is offered wherever the halt is seen.
         */}
         {keys.backend === 'embedded' && keys.soft.state === 'halted' ? (
-          <View style={styles.testing}>
-            <Text style={styles.testingText}>
-              The soft key has stopped — its firmware thread cannot be replaced
-              in this process. Nothing is lost.
-            </Text>
-            <Btn title="Restart the app" tone="primary" onPress={() => OkEmu.restartApp()} />
-          </View>
+          <HaltedBanner countdown={phase === 'login'} />
         ) : null}
 
         {/*
@@ -972,7 +998,59 @@ function Shell() {
   );
 }
 
+/*
+ * THE SOFT KEY HAS STOPPED - and on the login page, the app restarts itself
+ * after a minute (owner, 2026-10-01).
+ *
+ * On the login page there is nothing else to do: no key, so no way in, and
+ * an app left open there just sits. So it counts down and restarts (the
+ * resume hook still runs - see src/resumeTab.ts), with Cancel for someone who
+ * wants to read the screen first. Elsewhere a restart would throw away what
+ * is on screen, so it waits to be asked, as before.
+ */
+const HALT_RESTART_SECONDS = 60;
+
+function HaltedBanner({countdown}: {countdown: boolean}) {
+  const [left, setLeft] = useState(HALT_RESTART_SECONDS);
+  const [cancelled, setCancelled] = useState(false);
+  const running = countdown && !cancelled;
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setLeft(s => s - 1), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+  useEffect(() => {
+    if (running && left <= 0) void OkEmu.restartApp();
+  }, [running, left]);
+  return (
+    <View style={styles.testing}>
+      <Text style={styles.testingText}>
+        The soft key has stopped — its firmware thread cannot be replaced
+        in this process. Nothing is lost.
+        {running ? ` Restarting the app in ${Math.max(left, 0)} s.` : ''}
+      </Text>
+      {countdown ? (
+        <View style={styles.haltButtons}>
+          <View style={styles.haltButton}>
+            <Btn title="Restart now" tone="primary" onPress={() => OkEmu.restartApp()} />
+          </View>
+          {running ? (
+            <View style={styles.haltButton}>
+              <Btn title="Cancel" onPress={() => setCancelled(true)} />
+            </View>
+          ) : null}
+        </View>
+      ) : (
+        <Btn title="Restart the app" tone="primary" onPress={() => OkEmu.restartApp()} />
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  haltButtons: {flexDirection: 'row', gap: 8},
+  /* Each button an equal share of the row; alone (after Cancel), the whole row. */
+  haltButton: {flex: 1},
   safe: {flex: 1, backgroundColor: theme.bg},
   /*
    * No manual bottom padding. SafeAreaView already insets the bottom edge, and

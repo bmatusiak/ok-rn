@@ -145,10 +145,26 @@ class OkEmuClient {
   }
 
   /** Stop and boot again against the same storage - the firmware's CPU_RESTART(). */
-  /** Relaunch the app process. Never returns on success. */
-  restartApp(): Promise<void> {
+  /**
+   * Relaunch the app process. Never returns on success.
+   *
+   * Runs the before-restart hook first and WAITS for it - the app registers
+   * one that remembers the open tab (src/resumeTab.ts), so every caller of
+   * this gets it without each having to know.
+   */
+  async restartApp(): Promise<void> {
+    if (this.beforeRestart) {
+      try {
+        await this.beforeRestart();
+      } catch {
+        /* A hook that fails must not stop the restart that was asked for. */
+      }
+    }
     return NativeOkEmu.restartApp();
   }
+
+  /** Set by the app: work to finish before restartApp() ends the process. */
+  beforeRestart: (() => Promise<void>) | null = null;
 
   restart(): Promise<StartResult> {
     this.ensureSubscribed();
