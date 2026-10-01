@@ -5,6 +5,7 @@ import {theme} from './theme';
 import {WANTED, PRE, ON, type ConfigState} from './configModeNotes';
 import type {EmuSession} from '../hooks/useOkEmu';
 import type {Backend} from '../hooks/keySession';
+import OkEmu from '../transport/OkEmu';
 
 /**
  * The way into config mode, as four states.
@@ -82,7 +83,12 @@ export function ConfigModePanel({
     onWant();
   };
 
-  /* Through it. Nothing to offer somebody already inside. */
+  /*
+   * Through it. The one thing left to offer is the way OUT: config mode ends
+   * only at a restart, and for the soft key that restart is the app's (owner,
+   * 2026-10-01) - so it is a button here, beside the sentence that says so.
+   * A hard key restarts by being unplugged, which no button can do.
+   */
   if (state === ON) {
     return (
       <Section title="Config mode">
@@ -90,6 +96,9 @@ export function ConfigModePanel({
           In config mode — you can {purpose}. It ends only when the key
           restarts: unplug a hard key, restart the app for the soft key.
         </Text>
+        {soft ? (
+          <Btn title="Restart the app" tone="primary" onPress={() => void OkEmu.restartApp()} />
+        ) : null}
       </Section>
     );
   }
