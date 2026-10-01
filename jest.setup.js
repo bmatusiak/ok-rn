@@ -163,6 +163,11 @@ jest.mock('./specs/NativeShare', () => ({
   },
 }));
 
+jest.mock('./specs/NativeRsaGen', () => ({
+  __esModule: true,
+  default: {generatePrimes: jest.fn(() => Promise.reject(new Error('no RSA generator in jest')))},
+}));
+
 jest.mock('./specs/NativeCredProvider', () => ({
   __esModule: true,
   default: {

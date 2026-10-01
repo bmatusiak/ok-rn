@@ -24,8 +24,23 @@
  */
 import {install} from 'node-onlykey-lib/webcrypto';
 import {installTextCodecs} from 'node-onlykey-lib/webcrypto/text';
+import {bytes} from 'node-onlykey-lib';
+import NativeRsaGen from '../specs/NativeRsaGen';
 
-const result = install();
+/*
+ * RSA GENERATION - Android's generator, lent to the shim (Key Chain).
+ *
+ * The shim cannot make an RSA key on its own (@noble has no RSA), so it asks
+ * the host for two primes and builds the rest itself; openpgp's RSA keygen and
+ * Key Chain's hostKey('rsa') both go through it. specs/NativeRsaGen.ts says
+ * why the platform's generator and not a JavaScript one.
+ */
+async function rsaGenerate(bits, e) {
+  const [p, q] = (await NativeRsaGen.generatePrimes(bits, e)).split(':');
+  return {p: bytes.fromHex(p), q: bytes.fromHex(q)};
+}
+
+const result = install({rsaGenerate});
 
 /*
  * TextEncoder and TextDecoder, absent from Hermes for the same reason.
