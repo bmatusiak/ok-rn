@@ -63,11 +63,38 @@ function trace(message) {
  * `am start` and reported "nothing is on screen" for an app that Android
  * displayed 400 ms later - a false alarm from the runner's own check.
  */
+/*
+ * THE PHONE ITSELF CAN BE IN FRONT. A bench phone left on its charger starts
+ * the Clock's screen saver (a DreamActivity) when idle, and over it - or once
+ * it times out - its own lock screen (NotificationShade). The runner used to
+ * wait out its whole minute and then blame the app ("deskclock is there
+ * instead", 2026-10-01). A screen saver it can end; a lock screen it cannot -
+ * that needs the phone's own PIN - so it says that at once.
+ */
+const SCREEN_SAVER = /deskclock|dream/i;
+const LOCK_SCREEN = /NotificationShade|Keyguard|Bouncer/i;
+
 async function waitForApp({timeoutMs = 60000} = {}) {
   const started = Date.now();
   let front = null;
+  let woke = false;
   for (;;) {
     front = foregroundApp();
+    if (front && SCREEN_SAVER.test(front) && !woke) {
+      woke = true;
+      trace(`a screen saver is in front (${front}) - waking the phone`);
+      adb(['shell', 'input', 'keyevent', '224']);
+      adb(['shell', 'input', 'tap', '540', '1200']);
+      await sleep(800);
+      adb(['shell', 'am', 'start', '-n', ACTIVITY]);
+      continue;
+    }
+    if (front && LOCK_SCREEN.test(front)) {
+      throw new Error(
+        `the phone is LOCKED - its lock screen (${front}) is in front of ${PACKAGE}. ` +
+        'Unlock the phone and run again; the runner cannot enter the phone\'s own PIN.',
+      );
+    }
     if (front === PACKAGE) {
       const took = Date.now() - started;
       trace(`${PACKAGE} is on screen` + (took > 1000 ? ` after ${(took / 1000).toFixed(1)}s` : ''));

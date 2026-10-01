@@ -2,6 +2,7 @@
 module.exports = [
     require('./0-provision.e2e.js'),
     require('./1-softKey.e2e.js'),
+    require('./1b-openssl.e2e.js'),
     require('./2-buttonProbe.e2e.js'),
     require('./2c-pressLine.e2e.js'),
     require('./3-deviceFlow.e2e.js'),
@@ -22,7 +23,9 @@ module.exports = [
     require('./13-deriveParity.e2e.js'),
     require('./14-biometrics.e2e.js'),
     require('./14a-passkeys.e2e.js'),
+    require('./14a5-keychain.e2e.js'),
     require('./14b-pqcSlots.e2e.js'),
+    require('./14c-keychainWrite.e2e.js'),
     require('./15-hardKey.e2e.js'),
     require('./16-hardKeyProvision.e2e.js'),
     require('./17-hardKeyConfig.e2e.js'),
