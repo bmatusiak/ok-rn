@@ -23,7 +23,8 @@ import {device as okdevice} from 'node-onlykey-lib';
 export function SlotsScreen({
   onOpen,
 }: {
-  onOpen: (slot: {id: string; index: number}) => void;
+  /* `label` is what the grid shows for the slot - the one field the key reports. */
+  onOpen: (slot: {id: string; index: number; label: string | null}) => void;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -96,11 +97,14 @@ export function SlotsScreen({
           /* A DUO: three buttons, four profiles, and its own photo. See DuoSlotGrid. */
           <DuoSlotGrid
             labels={labels ?? new Array(count).fill(null)}
-            onSelect={onOpen}
+            onSelect={slot => onOpen({...slot, label: labels?.[slot.index - 1] ?? null})}
             deviceType={deviceType}
           />
         ) : (
-          <SlotGrid labels={labels ?? new Array(count).fill(null)} onSelect={onOpen} />
+          <SlotGrid
+            labels={labels ?? new Array(count).fill(null)}
+            onSelect={slot => onOpen({...slot, label: labels?.[slot.index - 1] ?? null})}
+          />
         )
       )}
 

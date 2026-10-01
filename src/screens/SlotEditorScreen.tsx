@@ -185,7 +185,8 @@ export function SlotEditorScreen({
   onBack,
   blockScreenshots = true,
 }: {
-  slot: {id: string; index: number};
+  /* `label` is what the key reports for the slot (null: none) - see `keyLabel`. */
+  slot: {id: string; index: number; label?: string | null};
   /** The active key's handle - what presses the button for a read. */
   emu: EmuSession;
   onBack: () => void;
@@ -197,13 +198,23 @@ export function SlotEditorScreen({
   /* What the key types in, remembered per key. See useKeyboardLayout. */
   const {layout} = useKeyboardLayout();
 
-  const [values, setValues] = useState<Values>({});
+  /*
+   * THE LABEL IS SHOWN AND EDITED IN PLACE. It is the one thing the key reports
+   * about a slot, so the Label field starts with it: the screen says what you
+   * are editing, and renaming is editing that field (owner, 2026-10-01).
+   * `keyLabel` is what the key holds now; Save writes the label only when the
+   * field differs from it, so saving another field never rewrites the label.
+   */
+  const [keyLabel, setKeyLabel] = useState(slot.label ?? '');
+  const [values, setValues] = useState<Values>(slot.label ? {label: slot.label} : {});
   const [tfa, setTfa] = useState<TfaMode>('none');
   const [totpSecret, setTotpSecret] = useState('');
   const [yubi, setYubi] = useState({publicId: '', privateId: '', secretKey: ''});
   const [captured, setCaptured] = useState<string[] | null>(null);
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<null | 'reading' | 'saving'>(null);
+  /* The desktop App's "WIPE OnlyKey Slot …?" step, open while true. */
+  const [confirmWipe, setConfirmWipe] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -244,13 +255,18 @@ export function SlotEditorScreen({
      * Everything resets when the slot changes. Leaving a captured password on
      * screen while the header says a different slot is the worst kind of wrong
      * - it is legible, plausible and someone else's.
+     *
+     * Reset TO THIS SLOT'S LABEL, not to nothing: this also runs when the
+     * screen opens, and resetting to {} there blanked the label it had just
+     * been given (it flickered in and out).
      */
-    setValues({});
+    setValues(slot.label ? {label: slot.label} : {});
+    setKeyLabel(slot.label ?? '');
     setCaptured(null);
     setRevealed(new Set());
     setStatus(null);
     setError(null);
-  }, [slot.index]);
+  }, [slot.index, slot.label]);
 
   const set = useCallback((name: string, text: string) => {
     setValues(v => ({...v, [name]: text}));
@@ -300,7 +316,9 @@ export function SlotEditorScreen({
   }, [getKey, slot.id]);
 
   const save = useCallback(async () => {
-    const dirty = Object.entries(values).filter(([, v]) => v !== '');
+    const dirty = Object.entries(values).filter(
+      ([name, v]) => v !== '' && !(name === 'label' && v === keyLabel),
+    );
     setBusy('saving');
     setError(null);
     setStatus(null);
@@ -323,6 +341,7 @@ export function SlotEditorScreen({
       }
       const applied = await device.setSlot(slot.id, toWrite);
       setStatus(`Saved ${applied.length} field(s).`);
+      if (typeof toWrite.label === 'string') setKeyLabel(toWrite.label);
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
@@ -331,21 +350,28 @@ export function SlotEditorScreen({
   }, [getKey, slot.id, tfa, totpSecret, values, yubi]);
 
   /**
-   * Wipe ONE field, or the whole slot. The library has had per-field wipe
-   * (OKWIPESLOT with a field byte) since before this screen; the screen told
-   * people to wipe the whole slot instead.
+   * Wipe the WHOLE slot - there is no single-field wipe.
+   *
+   * This screen used to offer one (OKWIPESLOT with a field byte), but for
+   * slots 1-24 the firmware ignores the field byte and wipes every field
+   * (wipe_slot(); proven against 3.1.0 by the kit's 01-protocol/34): "Wipe
+   * password" erased the label, URL and all. The desktop App never offered it
+   * either: its slot screen has one "Wipe All Slot Data" button and a warning
+   * dialog, and this screen now does what it does, in its words (owner,
+   * 2026-09-30). To change a field, write the new value; nothing needs a wipe.
    */
   const wipe = useCallback(
-    async (field: string | null) => {
+    async () => {
+      setConfirmWipe(false);
       setBusy('saving');
       setError(null);
       setStatus(null);
       try {
         const {device} = await getKey();
-        await device.wipeSlot(slot.id, field);
-        setStatus(field ? `${LABELS[field] ?? field} wiped on the key.` : `Slot ${slot.id} wiped on the key.`);
-        if (field) set(field, '');
-        else setValues({});
+        await device.wipeSlot(slot.id);
+        setStatus(`Slot ${slot.id} wiped on the key.`);
+        setValues({});
+        setKeyLabel('');
       } catch (e) {
         setError(String((e as Error)?.message ?? e));
       } finally {
@@ -434,8 +460,27 @@ export function SlotEditorScreen({
           disabled={busy !== null}
           onPress={save}
         />
-        <Btn title="Wipe slot" tone="danger" disabled={busy !== null} onPress={() => wipe(null)} />
+        <Btn title="Wipe All Slot Data" tone="danger" disabled={busy !== null} onPress={() => setConfirmWipe(true)} />
       </View>
+
+      {/*
+        * The desktop App's confirmation, word for word (app.html
+        * #slot-wipe-confirm). Shown in place rather than as a pop-up, as ok-rn
+        * does for its other destructive actions.
+        */}
+      {confirmWipe ? (
+        <View style={styles.confirm}>
+          <Text style={styles.confirmTitle}>WARNING:</Text>
+          <Text style={styles.confirmText}>
+            You are about to wipe everything from this slot, including all login and MFA data!
+          </Text>
+          <Text style={styles.confirmQuestion}>WIPE OnlyKey Slot {slot.id} ?</Text>
+          <View style={styles.actions}>
+            <Btn title="Wipe" tone="danger" disabled={busy !== null} onPress={wipe} />
+            <Btn title="Cancel" disabled={busy !== null} onPress={() => setConfirmWipe(false)} />
+          </View>
+        </View>
+      ) : null}
 
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -462,7 +507,6 @@ export function SlotEditorScreen({
               revealed={revealed.has(name)}
               onToggle={() => toggleReveal(name)}
               onChange={text => set(name, text)}
-              onWipe={() => wipe(name)}
             />
           ))}
         </View>
@@ -488,7 +532,6 @@ export function SlotEditorScreen({
             revealed={revealed.has('totpSecret')}
             onToggle={() => toggleReveal('totpSecret')}
             onChange={setTotpSecret}
-            onWipe={() => wipe('totpKey')}
           />
         ) : null}
         {tfa === 'yubico' ? (
@@ -498,15 +541,15 @@ export function SlotEditorScreen({
             <Field name="yubiPrivateId" value={yubi.privateId} secret revealed={revealed.has('yubiPrivateId')}
               onToggle={() => toggleReveal('yubiPrivateId')} onChange={t => setYubi(y => ({...y, privateId: t}))} />
             <Field name="yubiSecretKey" value={yubi.secretKey} secret revealed={revealed.has('yubiSecretKey')}
-              onToggle={() => toggleReveal('yubiSecretKey')} onChange={t => setYubi(y => ({...y, secretKey: t}))}
-              onWipe={() => wipe('yubikey')} />
+              onToggle={() => toggleReveal('yubiSecretKey')} onChange={t => setYubi(y => ({...y, secretKey: t}))} />
           </>
         ) : null}
       </View>
 
       <Text style={styles.footer}>
-        A field left blank is not written. Wipe clears one field on the key;
-        Wipe slot clears all of them.
+        The label is the key's own; Save writes it only when you change it. A
+        field left blank is not written. Wipe All Slot Data clears every field
+        of this slot on the key.
       </Text>
     </ScrollView>
   );
@@ -580,7 +623,6 @@ function Field({
   revealed,
   onToggle,
   onChange,
-  onWipe,
 }: {
   name: string;
   value: string;
@@ -588,8 +630,6 @@ function Field({
   revealed: boolean;
   onToggle: () => void;
   onChange: (text: string) => void;
-  /** Clears this one field on the key. Absent for inputs that are not a device field. */
-  onWipe?: () => void;
 }) {
   const spec = SPEC.get(name);
   const numeric = spec?.encoding === ENCODING.DIGIT || spec?.encoding === ENCODING.BYTE;
@@ -612,15 +652,6 @@ function Field({
           placeholderTextColor={theme.textDim}
           style={styles.input}
         />
-        {onWipe ? (
-          <Pressable
-            onPress={onWipe}
-            accessibilityRole="button"
-            accessibilityLabel={`Wipe ${name}`}
-            style={({pressed}) => [styles.reveal, pressed && styles.revealPressed]}>
-            <Text style={styles.revealText}>Wipe</Text>
-          </Pressable>
-        ) : null}
         {secret ? (
           <Pressable
             onPress={onToggle}
@@ -719,4 +750,16 @@ const styles = StyleSheet.create({
   revealText: {color: theme.textSecondary, fontSize: 12},
 
   footer: {color: theme.textDim, fontSize: 12, lineHeight: 18},
+
+  confirm: {
+    gap: 10,
+    padding: 14,
+    borderRadius: theme.radius,
+    borderWidth: 1,
+    borderColor: theme.error,
+    backgroundColor: theme.surface,
+  },
+  confirmTitle: {color: theme.error, fontSize: 15, fontWeight: '700'},
+  confirmText: {color: theme.text, fontSize: 14, lineHeight: 20},
+  confirmQuestion: {color: theme.text, fontSize: 15, fontWeight: '600'},
 });

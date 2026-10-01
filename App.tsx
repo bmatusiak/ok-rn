@@ -497,7 +497,7 @@ function Shell() {
    * SCREEN with a back arrow, not a sheet - there is too much in a slot for a
    * modal on a phone - so it replaces the body and the drawer alike.
    */
-  const [openSlot, setOpenSlot] = useState<{id: string; index: number} | null>(null);
+  const [openSlot, setOpenSlot] = useState<{id: string; index: number; label: string | null} | null>(null);
   const [drawer, setDrawer] = useState(false);
   const [phase, setPhase] = useState<Phase>('splash');
   /*
