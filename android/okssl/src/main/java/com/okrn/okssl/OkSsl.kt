@@ -16,4 +16,9 @@ object OkSsl {
 
   /** A fresh RSA key's primes [p, q], each bits/16 bytes, big-endian. */
   @JvmStatic external fun rsaPrimes(bits: Int, publicExponent: Int): Array<ByteArray>
+
+  /** Self-checks for the e2e suite: the linked OpenSSL's version line, RAND_status(), raw RAND_bytes. */
+  @JvmStatic external fun version(): String
+  @JvmStatic external fun randStatus(): Boolean
+  @JvmStatic external fun randomBytes(n: Int): ByteArray
 }

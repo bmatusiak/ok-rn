@@ -16,6 +16,7 @@
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <openssl/rsa.h>
 #include <string>
 #include <vector>
@@ -61,6 +62,39 @@ Java_com_okrn_okssl_OkSsl_pbkdf2Sha256(JNIEnv *env, jclass, jbyteArray password,
   if (ok != 1) {
     OPENSSL_cleanse(out.data(), out.size());
     throwError(env, "PKCS5_PBKDF2_HMAC failed");
+    return nullptr;
+  }
+  jbyteArray result = arrayOf(env, out.data(), out.size());
+  OPENSSL_cleanse(out.data(), out.size());
+  return result;
+}
+
+/*
+ * SELF-CHECKS (owner, 2026-10-01: "OpenSSL is all about security - test its
+ * core for sanity and randomness"). The e2e suite asks which OpenSSL is linked
+ * (it must be the release build.gradle pins), whether its RNG says it is
+ * seeded, and draws raw bytes from it to run the same statistics it runs on
+ * the primes.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_okrn_okssl_OkSsl_version(JNIEnv *env, jclass) {
+  return env->NewStringUTF(OpenSSL_version(OPENSSL_VERSION));
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_okrn_okssl_OkSsl_randStatus(JNIEnv *, jclass) {
+  return RAND_status() == 1 ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_okrn_okssl_OkSsl_randomBytes(JNIEnv *env, jclass, jint n) {
+  if (n < 1 || n > 65536) {
+    throwError(env, "randomBytes takes 1..65536 bytes");
+    return nullptr;
+  }
+  std::vector<unsigned char> out(static_cast<size_t>(n));
+  if (RAND_bytes(out.data(), n) != 1) {
+    throwError(env, "RAND_bytes failed");
     return nullptr;
   }
   jbyteArray result = arrayOf(env, out.data(), out.size());

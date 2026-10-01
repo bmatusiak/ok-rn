@@ -168,6 +168,15 @@ jest.mock('./specs/NativeKdf', () => ({
   default: {pbkdf2Sha256: jest.fn(() => Promise.reject(new Error('no native PBKDF2 in jest')))},
 }));
 
+jest.mock('./specs/NativeOkSsl', () => ({
+  __esModule: true,
+  default: {
+    version: jest.fn(() => Promise.reject(new Error('no OpenSSL in jest'))),
+    randStatus: jest.fn(() => Promise.reject(new Error('no OpenSSL in jest'))),
+    randomBytes: jest.fn(() => Promise.reject(new Error('no OpenSSL in jest'))),
+  },
+}));
+
 jest.mock('./specs/NativeRsaGen', () => ({
   __esModule: true,
   default: {generatePrimes: jest.fn(() => Promise.reject(new Error('no RSA generator in jest')))},

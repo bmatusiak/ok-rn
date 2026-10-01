@@ -1,9 +1,10 @@
-import React from 'react';
+import React, {useEffect, useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
 import {Logo} from '../ui/Logo';
 import {Btn} from '../ui/components';
 import {theme} from '../ui/theme';
 import {buildInfo} from '../buildInfo';
+import NativeOkSsl from '../../specs/NativeOkSsl';
 import type {DeviceState} from '../hooks/useOkEmu';
 
 /**
@@ -33,6 +34,18 @@ export function LoginScreen({
       ? null
       : 'Waiting for the key…';
 
+  /*
+   * THE OPENSSL THE APP IS LINKED WITH (owner, 2026-10-01): Key Chain's RSA
+   * keys and passphrase stretching run on it, so it is provenance like the
+   * rest. Asked of the library itself, not copied from the build file - this
+   * is what is actually inside the APK. Hidden when it cannot be read.
+   */
+  const [openssl, setOpenssl] = useState<string | null>(null);
+  useEffect(() => {
+    NativeOkSsl.version()
+      .then(v => setOpenssl((/OpenSSL\s+(\S+)/.exec(v) || [])[1] || v))
+      .catch(() => setOpenssl(null));
+  }, []);
 
   return (
     <View style={styles.root}>
@@ -43,6 +56,7 @@ export function LoginScreen({
         {buildInfo.sources ? <Row label="sources" value={buildInfo.sources} /> : null}
         <Row label="built for" value={buildInfo.builtFor} />
         <Row label="library" value={buildInfo.library} />
+        {openssl ? <Row label="openssl" value={openssl} /> : null}
         <Row label="app" value={buildInfo.app} />
       </View>
 
