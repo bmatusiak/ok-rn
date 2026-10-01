@@ -30,6 +30,7 @@ import {KeyScreen} from './src/screens/KeyScreen';
 import {SlotsScreen} from './src/screens/SlotsScreen';
 import {SlotEditorScreen} from './src/screens/SlotEditorScreen';
 import {KeysScreen} from './src/screens/KeysScreen';
+import {KeyChainScreen} from './src/screens/KeyChainScreen';
 import {BackupScreen} from './src/screens/BackupScreen';
 import {BluetoothScreen} from './src/screens/BluetoothScreen';
 import {CryptoScreen} from './src/screens/CryptoScreen';
@@ -68,8 +69,9 @@ import {TestingScreen} from './src/screens/TestingScreen';
  *   (apps.onlykey.io mode-tabs.js), after Setup. The desktop's Tools tab
  *   is left out: it only links to the web app's encrypt/decrypt pages,
  *   which ok-rn has as tabs of its own.
- * - ok-rn's own tabs where the owner placed them: Passkeys after Keys,
- *   Bluetooth above Advanced, Log last.
+ * - ok-rn's own tabs where the owner placed them: Key Chain right before
+ *   Keys (key management: generate, derive, export - the Keys tab stays as
+ *   it is for now), Passkeys after Keys, Bluetooth above Advanced, Log last.
  * - Preferences holds what can be changed back, Advanced what cannot (the
  *   library's `oneWay` flag decides). The desktop keeps both in its
  *   Preferences; this is the one deliberate difference.
@@ -80,6 +82,7 @@ const TABS = [
   'Encrypt',
   'Decrypt',
   'Slots',
+  'Key Chain',
   'Keys',
   'Passkeys',
   'Backup/Restore',
@@ -876,6 +879,8 @@ function Shell() {
             ) : (
               <SlotsScreen onOpen={slot => setOpenSlot(slot)} />
             )
+          ) : tab === 'Key Chain' ? (
+            <KeyChainScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} blockScreenshots={BLOCK_SCREENSHOTS} />
           ) : tab === 'Keys' ? (
             <KeysScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Bluetooth' ? (
