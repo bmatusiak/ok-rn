@@ -55,6 +55,29 @@ export const PIN_TITLE: Record<PinKind, string> = {
   selfDestruct: 'Change Self-Destruct PIN',
 };
 const ALL_PREFS_PARTS: readonly PrefsPart[] = ['prefs', 'pins'];
+const PIN_KINDS: readonly PinKind[] = ['primary', 'secondary', 'selfDestruct'];
+/*
+ * What each PIN does, said once per panel. The facts are SetupScreen's
+ * (its BLURB, for first-time setup) and the firmware's: a PIN is 7 to 10
+ * digits ("Error PIN is not between 7 - 10 digits"), the key reads it only
+ * at boot, and ten wrong tries on a locked key wipe it.
+ */
+const PIN_BLURB: Record<PinKind, string> = {
+  primary:
+    'The PIN that unlocks the key. It cannot be recovered: ten wrong tries wipe the key, and there is no reset that keeps what is on it.',
+  secondary:
+    'An optional second PIN that unlocks a separate profile — its own set of slots on the same key, apart from the first. Most keys never need one.',
+  selfDestruct:
+    'An optional PIN that WIPES THE KEY when entered — every slot, every private key — with no confirmation and nothing to undo.',
+};
+const PIN_RULES = '7 to 10 digits. The key reads its PINs only when it boots, so a change takes effect after a restart.';
+
+/** Each PIN's panel heading; the button inside keeps the desktop's name. */
+const PIN_PANEL: Record<PinKind, string> = {
+  primary: 'Primary PIN',
+  secondary: 'Secondary PIN',
+  selfDestruct: 'Self-Destruct PIN',
+};
 
 /*
  * The library's `section` name for fields 21, 22 and 30 - the desktop App's
@@ -67,12 +90,9 @@ export function PreferencesScreen({
   configMode,
   onWantConfigMode,
   show = ALL_PREFS_PARTS,
-  pin,
 }: {
   /** Which panels to draw. Unset: all of them. */
   show?: readonly PrefsPart[];
-  /** Offer only this PIN in the Change PINs panel - Setup's one-PIN views. */
-  pin?: PinKind;
   emu: EmuSession;
   /*
    * Only the Config mode and User Input Modes groups. Their preferences carry
@@ -543,9 +563,23 @@ export function PreferencesScreen({
       </Section>
       </>) : null}
 
+      {/*
+        ONE PANEL PER PIN, in a list - not a row of sub-tabs that swaps one
+        panel for another (owner's call). Every PIN change is in sight at once,
+        in the desktop App's order, under the desktop App's button names.
+        After a change the list gives way to the one thing left to do:
+        restart, because the key reads its PIN only at boot.
+
+        CONFIG MODE GATES ALL THREE. Firmware 3.1.0 okcore.cpp:343-359 takes
+        OKPIN / OKPINSEC / OKPINSD only on first use or in config mode; on a
+        set-up key, outside config mode, it DROPS the message - no reply, no
+        error. So the panels go dim and inert until config mode is on, and the
+        panel at the foot of the tab is how to get there. (First-time setup,
+        where no config mode is needed, is This Key's job, not this tab's.)
+      */}
       {has('pins') ? (<>
+      {changed ? (
       <Section title={`Change PINs — ${keyName}`}>
-        {changed ? (
           <>
             <Text style={styles.body}>
               The PIN is set. The key is still in config mode, and only reads
@@ -560,25 +594,20 @@ export function PreferencesScreen({
               </Text>
             )}
           </>
-        ) : (
-          <>
-            <Text style={styles.body}>In config mode. Which PIN?</Text>
-            <View style={styles.chips}>
-              {emu.model === 'duo' ? (
-                <Btn title="Set or change the DUO's PINs" tone="primary" onPress={() => setChanging('primary')} />
-              ) : pin ? (
-                <Btn title={PIN_TITLE[pin]} tone="primary" onPress={() => setChanging(pin)} />
-              ) : (
-                <>
-                  <Btn title="Primary" tone="primary" onPress={() => setChanging('primary')} />
-                  <Btn title="Second profile" onPress={() => setChanging('secondary')} />
-                  <Btn title="Self-destruct" onPress={() => setChanging('selfDestruct')} />
-                </>
-              )}
-            </View>
-          </>
-        )}
       </Section>
+      ) : emu.model === 'duo' ? (
+        <Section title={`PINs — ${keyName}`} unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
+          <Btn title="Set or change the DUO's PINs" tone="primary" onPress={() => setChanging('primary')} />
+        </Section>
+      ) : (
+        PIN_KINDS.map(kind => (
+          <Section key={kind} title={`${PIN_PANEL[kind]} — ${keyName}`} unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
+            <Text style={styles.body}>{PIN_BLURB[kind]}</Text>
+            <Btn title={PIN_TITLE[kind]} tone="primary" onPress={() => setChanging(kind)} />
+            <Text style={styles.note}>{PIN_RULES}</Text>
+          </Section>
+        ))
+      )}
       </>) : null}
 
       {has('prefs') ? (<>
@@ -736,14 +765,16 @@ export function PreferencesScreen({
         any unlocked key, and the setup-only group is refused here whatever the
         mode.
       */}
-      {/* Not on Setup's PIN views: a PIN change works in or out of config mode. */}
-      {has('prefs') ? (
+      {/* On PIN Setup too: a set-up key takes a PIN change only in config mode. */}
+      {has('prefs') || has('pins') ? (
         <ConfigModePanel
           state={configMode}
           emu={emu}
           backend={backend}
           onWant={onWantConfigMode}
-          purpose="change a config-mode preference or a User Input Mode"
+          purpose={has('prefs')
+            ? 'change a config-mode preference or a User Input Mode'
+            : 'change a PIN'}
         />
       ) : null}
     </ScrollView>

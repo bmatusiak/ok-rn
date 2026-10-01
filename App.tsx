@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
+import {KeyboardAvoidingView, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
 import {Btn, StatusPill} from './src/ui/components';
@@ -59,7 +59,9 @@ import {TestingScreen} from './src/screens/TestingScreen';
  * are").
  *
  * - This Key stays first: the landing page, ok-rn's own.
- * - Then the desktop App's menu in its order - Setup, Slots, Keys,
+ * - Then the desktop App's menu in its order - Setup (here "PIN Setup":
+ *   it holds only the PIN changes; the backup passphrase sits on
+ *   Backup/Restore beside the restore that uses it), Slots, Keys,
  *   Backup/Restore, Firmware, Preferences, Advanced (OnlyKey-App
  *   app/app.html:36-43) - with the web app's two, Encrypt and Decrypt
  *   (apps.onlykey.io mode-tabs.js), after Setup. The desktop's Tools tab
@@ -73,7 +75,7 @@ import {TestingScreen} from './src/screens/TestingScreen';
  */
 const TABS = [
   'This Key',
-  'Setup',
+  'PIN Setup',
   'Encrypt',
   'Decrypt',
   'Slots',
@@ -756,7 +758,16 @@ function Shell() {
           </View>
         ) : null}
 
-        <View style={styles.body} key={sessionEpoch}>
+        {/*
+          THE KEYBOARD MUST NOT COVER THE FIELD BEING TYPED IN.
+          With edge-to-edge on (gradle.properties edgeToEdgeEnabled, target SDK
+          36) Android no longer resizes the window for the keyboard, so the
+          manifest's adjustResize does nothing: the keyboard is drawn over the
+          app and every field below its top edge was typed into blind. One
+          wrapper here, around every tab, shrinks the content by the keyboard's
+          height instead, so the tab's ScrollView can bring the field into view.
+        */}
+        <KeyboardAvoidingView style={styles.body} key={sessionEpoch} behavior="padding">
           {phase === 'splash' ? (
             <SplashScreen onDone={() => setSplashDone(true)} />
           ) : phase === 'login' ? (
@@ -843,7 +854,7 @@ function Shell() {
             <KeysScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
-          ) : tab === 'Setup' ? (
+          ) : tab === 'PIN Setup' ? (
             <SetupTabScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Encrypt' || tab === 'Decrypt' ? (
             <EncryptDecryptScreen
@@ -856,12 +867,12 @@ function Shell() {
               testing={testing.enabled}
             />
           ) : tab === 'Backup/Restore' ? (
-            /* The backup key is on Setup, as in the desktop App. */
-            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['capture', 'restore']} />
+            /* The backup key is here, beside the restore that needs it. */
+            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['capture', 'backupKey', 'restore']} />
           ) : tab === 'Firmware' ? (
             <FirmwareTabScreen emu={keys.key} hardRunning={keys.hard.state === 'running'} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Preferences' ? (
-            /* The PIN changes are on Setup, as in the desktop App. */
+            /* The PIN changes are on PIN Setup. */
             <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['prefs']} />
           ) : tab === IN_DEV_TAB ? (
             <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} testing={testing.enabled} show={['derive', 'vault', 'stored']} />
@@ -915,7 +926,7 @@ function Shell() {
               onE2EStart={() => setBtOn(false)}
             />
           )}
-        </View>
+        </KeyboardAvoidingView>
 
         <Drawer
           open={drawer && ready}

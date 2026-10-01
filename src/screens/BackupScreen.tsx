@@ -42,10 +42,10 @@ const BACKUP_SOURCES = ['Passphrase', 'PGP key'] as const;
 type BackupSource = (typeof BACKUP_SOURCES)[number];
 
 /**
- * The panels on this screen. The Backup/Restore tab shows all three; Setup
- * shows only the backup key, because the desktop App's Setup is where a
- * backup passphrase is set ("Set Backup Passphrase") and ok-rn follows the
- * original apps' layout.
+ * The panels on this screen. The Backup/Restore tab shows all three. The
+ * desktop App sets the backup passphrase on its Setup tab; ok-rn keeps it
+ * here instead (owner's call), next to the restore that needs the same
+ * passphrase. `show` still lets a caller draw one part alone.
  */
 export type BackupPart = 'capture' | 'backupKey' | 'restore';
 const ALL_BACKUP_PARTS: readonly BackupPart[] = ['capture', 'backupKey', 'restore'];
@@ -89,6 +89,22 @@ export function BackupScreen({
   const [restoreFrom, setRestoreFrom] = useState<string | null>(null);
   const [checked, setChecked] = useState<BackupSummary | null>(null);
   const [passphrase, setPassphrase] = useState('');
+  /*
+   * The restore's own passphrase - separate from the one being SET above, so
+   * typing here never arms "Set passphrase" and the reverse.
+   *
+   * Optional. With it, the library sets the backup key itself and chooses
+   * which form of the passphrase opens the file: UTF-8 (this app, python, the
+   * rewrite) or the Latin-1 the classic desktop App used. It decides on the
+   * phone, by the device's own acceptance test, BEFORE sending anything -
+   * because a key refused by the device restarts it, and a second try means
+   * the PIN and config mode all over again (or never, with backup-key mode
+   * locked). Blank keeps the old behaviour: the key's current backup key.
+   */
+  const [restorePassphrase, setRestorePassphrase] = useState('');
+  /* Both forms passed the device's test: the person has to say which App
+   * made the backup. Cleared whenever the passphrase or the file changes. */
+  const [ambiguous, setAmbiguous] = useState(false);
   const [backupSource, setBackupSource] = useState<BackupSource>('Passphrase');
   const [backupArmored, setBackupArmored] = useState('');
   const [backupKeyPassphrase, setBackupKeyPassphrase] = useState('');
@@ -358,22 +374,39 @@ export function BackupScreen({
     setChecked(summarizeBackup(restoreText));
   }, [restoreText]);
 
-  const restore = useCallback(async () => {
+  const restore = useCallback(async (encoding?: 'utf-8' | 'latin-1-legacy') => {
     setBusy('restore');
     setError(null);
     setStatus(null);
     try {
       const {device} = await getKey();
-      const result = await device.restore(restoreText);
+      const result = restorePassphrase
+        ? await device.restore(restoreText, {
+            passphrase: restorePassphrase,
+            ...(encoding ? {passphraseEncoding: encoding} : {}),
+          })
+        : await device.restore(restoreText);
+      setAmbiguous(false);
       setStatus(
-        `Restored ${result.bytes} bytes. Restart the app so the key reloads what it now holds.`,
+        `Restored ${result.bytes} bytes`
+        + (result.passphraseEncoding
+          ? ` (passphrase read as ${result.passphraseEncoding === 'utf-8' ? 'UTF-8' : "Latin-1, the classic desktop App's form"})`
+          : '')
+        + '. Restart the app so the key reloads what it now holds.',
       );
     } catch (e) {
-      setError(String((e as Error)?.message ?? e));
+      const message = String((e as Error)?.message ?? e);
+      /* The library refused to guess; nothing was sent, so asking is free. */
+      if (/cannot be told apart/.test(message)) {
+        setAmbiguous(true);
+        setError('This passphrase fits the backup in two forms, and the key cannot tell which is right. Nothing was sent. Which app made this backup?');
+      } else {
+        setError(message);
+      }
     } finally {
       setBusy(null);
     }
-  }, [getKey, restoreText]);
+  }, [getKey, restoreText, restorePassphrase]);
 
   const has = (p: BackupPart) => show.includes(p);
   return (
@@ -437,13 +470,13 @@ export function BackupScreen({
       {status ? <Text style={styles.status}>{status}</Text> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {/*
-        The backup key panel is on Setup, as in the desktop App, whose
-        Backup/Restore step 1 likewise says "ensure that you have a backup
-        passphrase set". So a refusal for want of one points there.
+        The backup key panel is on this tab (Set a backup key, below). The
+        warning only matters when a caller draws the capture without it, so
+        it names where the panel lives.
       */}
       {needsPassphrase && !has('backupKey') ? (
         <Text style={styles.warn}>
-          This backup needs a backup passphrase or key first: Setup, Set Backup Passphrase.
+          This backup needs a backup passphrase or key first: Backup/Restore, Set a backup key.
         </Text>
       ) : null}
 
@@ -633,6 +666,7 @@ export function BackupScreen({
             if (restoreFrom) setRestoreFrom(null);
             /* And no longer the text that was read, so the verdict goes. */
             setChecked(null);
+            setAmbiguous(false);
           }}
           multiline
           autoCapitalize="none"
@@ -681,12 +715,53 @@ export function BackupScreen({
          * an overwrite, and makes pressing the one that is a deliberate second
          * act rather than the first thing to hand.
          */}
-        <Btn
-          title={busy === 'restore' ? 'Restoring…' : 'Restore'}
-          tone="danger"
-          disabled={busy !== null || locked || !checked?.ok}
-          onPress={restore}
+        <Text style={styles.body}>
+          The backup passphrase, if the backup was made with one. Leave it
+          blank when the key already holds this backup's key, or the backup
+          was made with a PGP key.
+        </Text>
+        <TextInput
+          value={restorePassphrase}
+          onChangeText={t => {
+            setRestorePassphrase(t);
+            setAmbiguous(false);
+          }}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="backup passphrase (optional)"
+          placeholderTextColor={theme.textDim}
+          style={styles.input}
         />
+        {restorePassphrase ? (
+          <Text style={styles.note}>
+            The app checks which form of the passphrase opens this backup before
+            sending anything, so a wrong passphrase changes nothing on the key.
+          </Text>
+        ) : null}
+        {ambiguous ? (
+          <>
+            <Btn
+              title="The classic OnlyKey desktop App"
+              tone="danger"
+              disabled={busy !== null || locked || !checked?.ok}
+              onPress={() => restore('latin-1-legacy')}
+            />
+            <Btn
+              title="Anything else (ok-rn, the CLI, the new App)"
+              tone="danger"
+              disabled={busy !== null || locked || !checked?.ok}
+              onPress={() => restore('utf-8')}
+            />
+          </>
+        ) : (
+          <Btn
+            title={busy === 'restore' ? 'Restoring…' : 'Restore'}
+            tone="danger"
+            disabled={busy !== null || locked || !checked?.ok}
+            onPress={() => restore()}
+          />
+        )}
         <Text style={styles.note}>
           {checked?.ok
             ? 'A restore replaces what is on the key.'
