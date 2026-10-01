@@ -45,14 +45,26 @@ function dumpUi({trace = noop} = {}) {
   );
 }
 
+/*
+ * ONE ATTRIBUTE OF A UI-DUMP NODE, decoded. uiautomator writes a value that
+ * contains a double quote with SINGLE quotes (content-desc='A signing key
+ * "fixture"...'), and escapes &, <, > and newlines as entities. Reading only
+ * text="..." made every label with a quote in it invisible - untappable and
+ * missing from --labels - and showed '<' as '&lt;'.
+ */
+function attr(node, name) {
+  const m = new RegExp(`\\b${name}=(?:"([^"]*)"|'([^']*)')`).exec(node);
+  if (!m) return null;
+  return (m[1] ?? m[2]).replace(/&(lt|gt|quot|apos|amp|#(\d+));/g, (all, e, n) =>
+    n ? String.fromCharCode(Number(n)) : ({lt: '<', gt: '>', quot: '"', apos: "'", amp: '&'})[e]);
+}
+
 /** Centre of the node carrying this label, preferring a clickable one. */
 function findByText(xml, label) {
   let fallback = null;
 
   for (const node of xml.split('<node ')) {
-    const text = /text="([^"]*)"/.exec(node);
-    const desc = /content-desc="([^"]*)"/.exec(node);
-    const matches = (text && text[1] === label) || (desc && desc[1] === label);
+    const matches = attr(node, 'text') === label || attr(node, 'content-desc') === label;
     if (!matches) continue;
 
     const b = /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(node);
@@ -84,9 +96,9 @@ function findByText(xml, label) {
 function allLabels(xml) {
   const seen = new Set();
   for (const node of xml.split('<node ')) {
-    for (const attr of [/text="([^"]+)"/, /content-desc="([^"]+)"/]) {
-      const m = attr.exec(node);
-      if (m && m[1].trim()) seen.add(m[1].trim());
+    for (const name of ['text', 'content-desc']) {
+      const v = attr(node, name);
+      if (v && v.trim()) seen.add(v.trim());
     }
   }
   return [...seen];
@@ -95,9 +107,9 @@ function allLabels(xml) {
 function visibleLabels(xml, limit = 25) {
   const seen = new Set();
   for (const node of xml.split('<node ')) {
-    for (const attr of [/text="([^"]+)"/, /content-desc="([^"]+)"/]) {
-      const m = attr.exec(node);
-      if (m && m[1].trim()) seen.add(m[1].trim());
+    for (const name of ['text', 'content-desc']) {
+      const v = attr(node, name);
+      if (v && v.trim()) seen.add(v.trim());
     }
   }
   const all = [...seen];
