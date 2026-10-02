@@ -141,6 +141,11 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * fork (or, if the copy itself skips a seq, a gap) - stop and say so, never
    * smooth it over. The Edge Worker's copy comes next, once it exists.
    */
+  async acceptLoss(from: number, to: number, onPress?: () => void) {
+    await this.edge.loss({from, to, onPress: this.pressing(onPress)});
+    this.pressWanted = null;
+  }
+
   async vouch() {
     try {
       const v = await this.edge.vouch();

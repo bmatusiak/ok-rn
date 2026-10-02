@@ -194,12 +194,12 @@ static struct {
  * resuming one (R15a) or waiving the debts (R18). One at a time; a new one
  * replaces it.
  */
-enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE };
+enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE, PRESS_LOSS };
 static struct {
   uint8_t what;
   unsigned long since;
   uint32_t id;                /* PRESS_RESUME: the budget; PRESS_REPLAY_DONE: the newest seq the copies hold */
-  uint32_t vouch_seq;         /* PRESS_REPLAY_DONE: the seq the vouch tag (in verified[0..16]) is for */
+  uint32_t vouch_seq;         /* PRESS_REPLAY_DONE: the seq the vouch tag (in verified[0..16]) is for; PRESS_LOSS: from */
   /*
    * R27: the head the host verified its copy up to (GRANT_CREATE: its first
    * GRANT_HEAD_BYTES, all that fits; GRANT_RESUME: all 32). Checked when the
@@ -792,6 +792,8 @@ static void replay_done_pressed(void) {
   uint8_t want[VOUCH_BYTES];
   int ok = tent_active && tent.seq == press.vouch_seq && vouch_tag(tent.seq, tent.head, want) &&
            same_ct(want, press.verified, VOUCH_BYTES);
+  /* the newest seq lost if this replay is not committed: what the host said, else how far its replay got */
+  uint32_t replayed = tent_active ? tent.seq : SEQ_NONE;
   if (ok) {
     uint32_t gen = st.gen;
     tent.gen = gen;
@@ -806,6 +808,7 @@ static void replay_done_pressed(void) {
   st.replay_closed = 0;
   st.replayed_to = st.seq;
   uint32_t newest = press.id;
+  if (!ok && newest == SEQ_NONE) newest = replayed;
   uint32_t from = st.seq == SEQ_NONE ? 0 : st.seq + 1;
   if (!ok || (newest != SEQ_NONE && newest >= from)) {
     uint8_t subject[32] = {0};
@@ -815,6 +818,22 @@ static void replay_done_pressed(void) {
     state_save();
   }
   if (ok) reply_seq_head(); else status(EDGE_NOT_VOUCHED);
+}
+
+/*
+ * R24 LOSS {from, to}, a press (firmware.md R24; built ahead of the rest of E5
+ * for the tab's red banner, Brad 2026-10-02): the person accepts #from..#to as
+ * unrecoverable - no copy anywhere holds it. One link, op = loss, decision
+ * approve, slot 0, the press flag, grant_id = from, subject = to (u32 LE) then
+ * zeros (the same layout REPLAY_DONE writes). It records the acceptance; it
+ * pays no debt (R16: only a ticket or a waive does). A host then accepts a gap
+ * covered by it under R27. reply: seq . head . tag after it.
+ */
+static void loss_pressed(void) {
+  uint8_t subject[32] = {0};
+  put32(subject, press.id);
+  append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, press.vouch_seq, 0, NULL);
+  reply_seq_head();
 }
 
 /*
@@ -881,6 +900,7 @@ void okplugin_edge_decision(int decision) {
     else if (what == PRESS_RESUME) resume_pressed();
     else if (what == PRESS_WAIVE) waive_pressed();
     else if (what == PRESS_REPLAY_DONE) replay_done_pressed();
+    else if (what == PRESS_LOSS) loss_pressed();
     press_drop();
     return;
   }
@@ -1154,6 +1174,23 @@ void okplugin_edge_recv(uint8_t *buffer) {
     case OKEDGE_REPLAY:
       replay(buffer);
       return;
+    case OKEDGE_LOSS: {
+      /*
+       * from u32 . to u32, a press. Only a past range (to at or before the head)
+       * can be lost; refused while restoring - the Restore card's REPLAY_DONE
+       * writes that LOSS.
+       */
+      uint32_t from = get32(buffer + 6), to = get32(buffer + 10);
+      uint8_t what[32];
+      press_drop();
+      if (st.restored) { status(EDGE_RESTORING); return; }
+      if (st.seq == SEQ_NONE || from > to || to > st.seq) { status(EDGE_BAD_RANGE); return; }
+      press.vouch_seq = from;
+      press.id = to;
+      H(what, "OKEDGE-LOSS", buffer + 6, 8, st.head, 32, NULL, 0);
+      press_wait(PRESS_LOSS, what);
+      return;
+    }
     case OKEDGE_REPLAY_DONE: {
       /*
        * [6..9] the seq the host replayed to, [10..25] the key's vouch tag for

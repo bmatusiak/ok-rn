@@ -24,6 +24,7 @@ const PICKUP = 0x02;
 const CHECKPOINT = 0x03;
 const PUBKEY = 0x04;
 const VOUCH = 0x05;
+const LOSS = 0x34;
 const GRANT_CREATE = 0x10;
 const GRANT_REVOKE = 0x12;
 const GRANT_HOLD = 0x13;
@@ -596,6 +597,7 @@ module.exports = function register({ it }, ctx) {
       let after = await restore('restore 1');
       assert.equal(await edge(device, VOUCH, null, { signal, text: true }), 'EDGE:0E', 'the key vouched while restoring');
       assert.equal(await edge(device, CHECKPOINT, null, { signal, text: true }), 'EDGE:0E', 'the key signed a checkpoint while restoring');
+      assert.equal(await edge(device, LOSS, Buffer.concat([u32(0), u32(0)]), { signal, text: true }), 'EDGE:0E', 'a standalone LOSS went through while restoring');
       assert.equal(await armFor(device, after.head, agentPayload('okt restoring'), { signal }), 'EDGE:0E', 'ARM went through while restoring');
       assert.equal(await edge(device, GRANT_CREATE, grantRequest(1, sha256(Buffer.from('r')), after.head), { signal, text: true }), 'EDGE:0E', 'a budget opened while restoring');
       assert.equal(await replay(c2.link, c2.head), 'EDGE:0F', 'a link out of order was replayed');
@@ -774,6 +776,23 @@ module.exports = function register({ it }, ctx) {
       log(`after 62 s: live ${JSON.stringify(h.live)}`);
       assert.ok(!h.live.includes(b.grantId), 'HEAD still lists an expired budget');
       assert.equal(await armFor(device, h.head, agentPayload('okt after expiry'), { signal }), 'EDGE:0D', 'ARM went through under an expired budget');
+    });
+
+  /* R24: the person accepts a range as lost - a pressed link with the spec layout (the tab's red banner) */
+  it('edge: LOSS {from, to} takes a press and links the accepted range; a range past the head is refused (R24)',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      let h = await head(device, { signal });
+      assert.equal(await edge(device, LOSS, Buffer.concat([u32(0), u32(h.seq + 5)]), { signal, text: true }), 'EDGE:12', 'a loss past the head was taken');
+      assert.equal(await edge(device, LOSS, Buffer.concat([u32(2), u32(1)]), { signal, text: true }), 'EDGE:12', 'a backwards range was taken');
+      const [r] = await edge(device, LOSS, Buffer.concat([u32(0), u32(1)]), { signal, press: true });
+      const seq = r.readUInt32LE(0);
+      h = await head(device, { signal });
+      assert.equal(seq, h.seq);
+      const [l] = await pickup(device, seq, 1, { signal });
+      const f = chain.decodeLink(l.link);
+      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId, f.grantStep, Buffer.from(f.subject).readUInt32LE(0), Buffer.from(f.subject).subarray(4).every((x) => x === 0)]),
+        JSON.stringify([11, APPROVE, 0, PRESS_OBSERVED, 0, 0, 1, true]), 'the LOSS link is not the spec layout');
     });
 
   it('edge: a checkpoint is the Edge key\'s signature over the head',

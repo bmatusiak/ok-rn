@@ -58,6 +58,8 @@ export interface EdgeSource {
   replayCopy?(): Promise<EdgeReplay>;
   /** R26: "restored to #N" - a physical press; the key links a LOSS over anything not replayed. */
   finishRestore?(newestSeq: number, onPress?: () => void): Promise<void>;
+  /** R24: accept #from..#to as gone for good - a physical press; the key links a LOSS. */
+  acceptLoss?(from: number, to: number, onPress?: () => void): Promise<void>;
   /** R26: the key's vouch tag for its current head; null while restoring. */
   vouch?(): Promise<{seq: number; head: Uint8Array; tag: Uint8Array} | null>;
   /** Budgets a lock or reboot ended, with uses and time left (Continue). */

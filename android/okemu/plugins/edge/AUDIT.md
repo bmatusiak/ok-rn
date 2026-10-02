@@ -43,6 +43,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 | `21 WAIVE` | `EDGE:08` when nothing is owed; else after a **press**, `seq` · `head` · vouch tag after the waive link: a ticket `0x8F` with the press flag, grant id = the oldest waived, subject = `SHA256("OKEDGE-WAIVE-v1" ‖ the waived seqs ‖ overflow)` (R18) |
 | `22 ARM` token = SHA256("OKEDGE-ARM-v1" ‖ head ‖ subject) (R13a) | `EDGE:00` arms ONE self-press for the ONE request whose subject (SHA-256 of exactly the bytes primed) and head make the same token; any other request uses the arm up and is pressed. `EDGE:0E` restoring, `EDGE:0B` not the current head, `EDGE:0C` a ticket is owed, `EDGE:0D` no live budget off hold with uses left (R13a). Any link clears it |
 | `23 REPLAY` the link's first 46 bytes · the first 8 bytes of the head the copy stored after it | only while restoring (R26): `EDGE:00` when it is the next seq and welds to that head - a TENTATIVE head and debts move on, in RAM only (the record keeps the backup's state); `EDGE:0F` otherwise (where the copy forks); `EDGE:10` once the key wrote a link of its own, or when not restoring |
+| `34 LOSS` from u32 · to u32 | R24, ahead of E5 (the tab's red banner): after a **press**, a `loss` link - decision approve, slot 0, the press flag, grant id = from, subject = to (u32 LE) then zeros - and `seq` · `head` · tag. It records the person's acceptance and pays no debt. `EDGE:0E` while restoring, `EDGE:12` (CHOSEN) when from > to or to is past the head |
 | `24 REPLAY_DONE` seq u32 · vouch tag 16 · newest seq u32 (CHOSEN) | after a **press**: commits the tentative replay ONLY if the tag is the key's own for exactly the tentative (seq, head) (constant-time compare); otherwise throws it away and answers `EDGE:11`. Then, if anything past what is committed is lost (an unvouched replay: everything since the backup; or the copies held more), a pressed `loss` link: grant id = the first seq lost, subject = the newest (u32) then zeros. Ends restoring. Reply `seq` · `head` · tag, or `EDGE:11` |
 
 ## What it stores
@@ -77,13 +78,14 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - hold: nothing to arm; a pressed resume; then it arms again;
 - revoke.
 
-`tests/kit.test.js` (the emulator), 9 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
+`tests/kit.test.js` (the emulator), 10 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
 - `HEAD` and the Edge key;
 - a pressed sign owes a ticket; a timeout does not clear it; a late ticket pays it; a second is refused; R17's empty hook;
 - a budget is signed through the chain; a sign without ARM is pressed; ARM -> use -> ticket -> ARM -> use -> ticket; ARM and GRANT_CREATE refused while owed; a stale head refused; nothing to arm when used up;
 - hold: nothing arms; resume refused while owed, then taken with a press; the hold and resume links;
 - five pressed uses: 4 owed + overflow; a restart keeps them; an unpressed WAIVE does nothing; a pressed one clears all, and the library reads "waived" / "waived, not listed";
 - a hold/resume or GRANT_CREATE on a head the host did not verify is refused (R27);
+- a standalone LOSS takes a press and links the spec layout; a backwards range or one past the head is refused (`EDGE:12`); it is refused while restoring (R24);
 - **the subject proof (R13a):** per op type - RSA sign (slot 2), ECC sign (slot 101), RSA decrypt (slot 1, five packets), a three-packet agent sign - a self-press goes through on a token the LIBRARY computed (`grants.requestSubject`), and the link's subject, which the firmware writes from `pend.subject`, equals the library's. An ARM for one request does not pay for another: that one is pressed, the arm is spent, and the agent's own request is pressed too; a stale head shows at the sign;
 - a budget with a 1-minute lifetime: its opening link carries the lifetime; after it, HEAD drops it and nothing arms (R15b);
 - a backup keeps the head and the debts; three restores from it (R26, row 5b): **invented links** - a made-up ticket paying the backup's debt and a made-up "pressed" waive - replay only tentatively (HEAD does not move), VOUCH, CHECKPOINT and ARM are refused while restoring, a human press writes onto the backup's head and closes replay, and a forged tag commits nothing (`EDGE:11`, LOSS since the backup, the debt still owed); **a power cut** mid-replay leaves the backup's state and restoring; **an older real vouch** commits only up to its own point, the LOSS names the rest; **the whole copy** with the newest vouch commits it all, heads and debts back, no LOSS;

@@ -137,6 +137,15 @@ export function useEdge() {
     await s.continueBudget?.(grantId);
     return evaluate(await loadMirror(s.deviceId), await s.head());
   }), [run]);
+  /* R24 / the red banner: Yes on screen, then the press; the key links LOSS {from, to} */
+  const acceptLoss = useCallback((from: number, to: number) => run(async s => {
+    try {
+      await s.acceptLoss?.(from, to, () => setPressFor('loss'));
+    } finally {
+      setPressFor(null);
+    }
+    return (await syncMirror(s)).view;
+  }), [run]);
   /* testing mode: an agent's pressed sign with no ticket (soft key only) */
   const agentSign = useCallback(() => run(async s => {
     const k = s as Source & {agentSign?: (t: string) => Promise<void>};
@@ -180,6 +189,6 @@ export function useEdge() {
   return {
     view, budgets, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
-    hold, resume, waive, replayCopy, finishRestore, agentSign, continueBudget,
+    hold, resume, waive, replayCopy, finishRestore, agentSign, continueBudget, acceptLoss,
   };
 }

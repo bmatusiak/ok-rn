@@ -13,7 +13,7 @@
  *     hashes to its ticket link.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {chain, tickets} from 'node-onlykey-lib/edge';
+import {chain, copy, tickets} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeLinkRecord, EdgeSource} from './edgeFake';
 
@@ -47,7 +47,8 @@ export type Verdict =
   | {kind: 'no-edge'}
   | {kind: 'locked'}
   | {kind: 'not-synced'}
-  | {kind: 'verified'; through: number}
+  /* lost: ranges the person accepted as gone (LOSS links, R24) - verified around them */
+  | {kind: 'verified'; through: number; lost?: {from: number; to: number}[]}
   | {kind: 'gap'; through: number; from: number; to: number}
   | {kind: 'tampered'; seq: number; reason: string};
 
@@ -143,8 +144,11 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
   const unverified = new Set<number>();
   for (const g of result.gaps) for (let s = g.from; s <= g.to; s++) unverified.add(s);
   let verdict: Verdict;
+  /* a gap a LOSS link covers is not a gap any more (R24, R27): the person accepted it - the lib's own rule */
+  const open: {from: number; to: number}[] = copy.uncoveredGaps(mirror.links, result.gaps);
   if (result.failure) verdict = {kind: 'tampered', seq: result.failure.seq, reason: result.failure.reason};
-  else if (result.gaps.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: result.gaps[0].from, to: result.gaps[0].to};
+  else if (open.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: open[0].from, to: open[0].to};
+  else if (result.gaps.length) verdict = {kind: 'verified', through: head.seq, lost: result.gaps};
   else verdict = {kind: 'verified', through: result.verifiedThrough};
   return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror)};
 }

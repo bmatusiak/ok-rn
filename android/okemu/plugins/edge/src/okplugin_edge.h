@@ -29,6 +29,7 @@
 #define OKEDGE_WAIVE 0x21        /* R18: press; replies seq . head */
 #define OKEDGE_ARM 0x22          /* R13a: ARM {head} */
 #define OKEDGE_REPLAY 0x23       /* R26: a link of the newest copy, while restoring */
+#define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts; refused while restoring */
 #define OKEDGE_REPLAY_DONE 0x24  /* R26: {seq, tag, newest}, press; commits only a vouched replay; replies seq . head . tag or EDGE:11 */
 
 /*
@@ -52,6 +53,7 @@
 #define EDGE_RESTORING 0x0E         /* R26: restored, not finished - no ARM, GRANT_CREATE or GRANT_RESUME */
 #define EDGE_REPLAY_MISMATCH 0x0F   /* REPLAY: not the next seq, or it does not weld to the head the copy stored */
 #define EDGE_REPLAY_CLOSED 0x10     /* REPLAY: not restoring, or the key already wrote a link of its own */
+#define EDGE_BAD_RANGE 0x12         /* LOSS: from > to, or to past the key's head (CHOSEN, pending the spec) */
 #define EDGE_NOT_VOUCHED 0x11       /* REPLAY_DONE: the tag is not the key's for the replayed head - thrown away, LOSS since the backup */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */
