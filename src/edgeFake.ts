@@ -15,6 +15,7 @@ import {chain, codes, grants, tickets} from 'node-onlykey-lib/edge';
 import {utf8ToBytes} from 'node-onlykey-lib/bytes';
 
 const {OP, DECISION, FLAG} = codes;
+const MAX_LIVE_BUDGETS = 4; // firmware.md R15 target
 
 export type EdgeLinkRecord = {link: Uint8Array; head: Uint8Array};
 export type EdgeBudget = {
@@ -36,20 +37,43 @@ export interface EdgeSource {
   messages(): Promise<Record<number, string>>;
 }
 
+/** A budget someone asked for and the person has not answered yet (spec 4.3 clasp sheet). */
+export type EdgeRequest = {
+  id: number;
+  /** who asked: the CLI or an agent's MCP server, as its registered key names itself */
+  from: string;
+  reason: string;
+  scopes: {op: number; slot: number; cap: number}[];
+};
+/**
+ * Where budget requests arrive. NOT the key: a request comes from the CLI or an
+ * MCP server through the user's Edge Worker (mcp-service.md 4.7); the key only
+ * sees the GRANT_CREATE that follows the person's Yes and press.
+ */
+export interface EdgeInbox {
+  pending(): Promise<EdgeRequest[]>;
+  /** Yes, then the press on the key: the budget goes live. */
+  approve(id: number): Promise<void>;
+  decline(id: number): Promise<void>;
+}
+
 const sha = (text: string) => {
   /* a stand-in subject: SHA-256 of a description, via the lib's ticket hash */
   return tickets.messageHash(text);
 };
 
-export class FakeEdgeKey implements EdgeSource {
+export class FakeEdgeKey implements EdgeSource, EdgeInbox {
   readonly deviceId: Uint8Array;
   private links: EdgeLinkRecord[] = [];
   private msgs: Record<number, string> = {};
-  private budget: (EdgeBudget & {seed: Uint8Array}) | null = null;
+  private live: (EdgeBudget & {seed: Uint8Array})[] = [];
+  private requests: EdgeRequest[] = [];
+  private nextRequest = 1;
   /** links older than this are gone from the fake key's ring */
   ring = 32;
 
-  constructor(name = 'fake-soft-key') {
+  /* bump the name when demo() changes: a new history needs its own mirror, or the phone rightly calls it tampering */
+  constructor(name = 'fake-key-demo-2') {
     this.deviceId = utf8ToBytes(name.padEnd(16, '.').slice(0, 16));
   }
 
@@ -78,31 +102,40 @@ export class FakeEdgeKey implements EdgeSource {
 
   /* ---- what an agent / a person does ---- */
 
-  clasp(reason: string, cap: number, slot = 101) {
+  /**
+   * A budget (R11-R12): up to 4 scopes, each (op, slot, cap); one hash chain of
+   * n = the sum of the caps. Several can be live at once (R15, target 4).
+   */
+  clasp(reason: string, scopes: {op: number; slot: number; cap: number}[]): number {
+    if (this.live.length >= MAX_LIVE_BUDGETS) throw new Error(`edge (fake): ${MAX_LIVE_BUDGETS} budgets are already live`);
+    if (!scopes.length || scopes.length > 4) throw new Error('edge (fake): a budget has 1 to 4 scopes');
+    const uses = scopes.reduce((n, sc) => n + sc.cap, 0);
     const seed = new Uint8Array(32).map((_, i) => (i * 37 + this.links.length) & 0xff);
     const grantId = this.links.length + 1;
     const subject = sha(`grant ${grantId}: ${reason}`);
     this.add({op: OP.GRANT_CREATE, decision: DECISION.APPROVE, flags: FLAG.PRESS_OBSERVED, subject, grantId});
-    this.budget = {
-      grantId, reason, uses: cap, used: 0, seed,
-      scopes: [{op: OP.SIGN, slot, cap, used: 0}],
-      genesis: grants.grantGenesis(seed, cap),
-    };
+    this.live.push({
+      grantId, reason, uses, used: 0, seed,
+      scopes: scopes.map(sc => ({...sc, used: 0})),
+      genesis: grants.grantGenesis(seed, uses),
+    });
+    return grantId;
   }
 
-  /** A use. Inside a live budget with room: self-press; otherwise a human press. */
-  use(what: string, op = OP.SIGN, slot = 101): number {
+  /** A use. Inside a live budget's scope with room: self-press; otherwise a human press. */
+  use(what: string, op: number = OP.SIGN, slot = 101): number {
     const flags = this.owesTicket() ? FLAG.PREV_NO_TICKET : 0;
-    const b = this.budget;
-    if (b && b.used < b.uses && op === OP.SIGN && slot === b.scopes[0].slot) {
-      b.used++;
-      b.scopes[0].used++;
+    for (const b of this.live) {
+      const scope = b.scopes.find(sc => sc.op === op && sc.slot === slot && sc.used < sc.cap);
+      if (!scope) continue;
+      b.used++; // the budget's step counts across all of its scopes
+      scope.used++;
       return this.add({op, decision: DECISION.SELF_PRESS, slot, flags: flags | FLAG.BUDGET_SPENT, subject: sha(what), grantId: b.grantId, grantStep: b.used});
     }
     return this.add({op, decision: DECISION.APPROVE, slot, flags: flags | FLAG.PRESS_OBSERVED, subject: sha(what)});
   }
 
-  deny(what: string, op = OP.DECRYPT, slot = 1) {
+  deny(what: string, op: number = OP.DECRYPT, slot = 1) {
     this.add({op, decision: DECISION.DENY, slot, subject: sha(what)});
   }
 
@@ -114,29 +147,66 @@ export class FakeEdgeKey implements EdgeSource {
     this.msgs[refSeq] = message;
   }
 
-  lock() {
-    if (!this.budget) return;
-    const b = this.budget;
-    this.add({op: OP.GRANT_END, decision: DECISION.APPROVE, subject: sha(`grant ${b.grantId} ended`), grantId: b.grantId});
-    this.budget = null;
+  /** GRANT_REVOKE (R15): the seed is wiped and the end is linked. */
+  revoke(grantId: number) {
+    const i = this.live.findIndex(b => b.grantId === grantId);
+    if (i < 0) return;
+    this.add({op: OP.GRANT_END, decision: DECISION.APPROVE, subject: sha(`grant ${grantId} ended`), grantId});
+    this.live.splice(i, 1);
   }
 
-  /** A short, varied history: every ticket state the tab must draw. */
+  /** Lock (or reboot) ends every live budget (R15). */
+  lock() {
+    for (const b of [...this.live]) this.revoke(b.grantId);
+  }
+
+  /** A short, varied history: three budgets live at once, and every ticket state the tab must draw. */
+  /** What the CLI / an MCP server does: ask for a budget. It waits for the person. */
+  request(from: string, reason: string, scopes: EdgeRequest['scopes']): number {
+    const id = this.nextRequest++;
+    this.requests.push({id, from, reason, scopes: scopes.map(sc => ({...sc}))});
+    return id;
+  }
+
+  async pending() {
+    return this.requests.map(r => ({...r, scopes: r.scopes.map(sc => ({...sc}))}));
+  }
+
+  async approve(id: number) {
+    const r = this.requests.find(x => x.id === id);
+    if (!r) throw new Error(`edge (fake): no request ${id}`);
+    this.clasp(r.reason, r.scopes); // the fake key "sees" the press
+    this.requests = this.requests.filter(x => x.id !== id);
+  }
+
+  async decline(id: number) {
+    this.requests = this.requests.filter(x => x.id !== id); // nothing reaches the key
+  }
+
   static demo(): FakeEdgeKey {
     const k = new FakeEdgeKey();
-    k.clasp('Sign release commits for ok-rn 0.0.6', 3);
+    k.clasp('Sign release commits for ok-rn 0.0.6', [{op: OP.SIGN, slot: 101, cap: 3}]);
+    k.clasp('Decrypt the CI deploy secrets', [{op: OP.DECRYPT, slot: 1, cap: 5}]);
+    k.clasp('Publish the docs site', [{op: OP.SIGN, slot: 102, cap: 2}, {op: OP.DECRYPT, slot: 2, cap: 2}]);
     k.use('commit 1a2b3c');
     k.ticket(0x00, 'Signed commit 1a2b3c on master; the push was accepted.');
+    k.use('deploy.env.age', OP.DECRYPT, 1);
+    k.ticket(0x01, 'Decrypted deploy.env for the CI job; did not see whether the deploy finished.');
     k.use('commit 4d5e6f');
-    k.ticket(0x01, 'Signed commit 4d5e6f; did not see whether CI accepted it.');
-    k.use('commit 7a8b9c'); // no ticket: an empty hook
-    k.deny('decrypt backup.age');
-    k.use('tag v0.0.6', OP.SIGN, 2); // budget is spent: a human press
+    k.ticket(0x00, 'Signed commit 4d5e6f; CI accepted it.');
+    k.use('docs build 42', OP.SIGN, 102);
+    k.ticket(0x00, 'Signed the docs bundle; the host accepted it.');
+    k.use('site-token.age', OP.DECRYPT, 2); // no ticket: an empty hook
+    k.deny('decrypt backup.age', OP.DECRYPT, 3);
+    k.use('commit 7a8b9c');
     k.ticket(0x81, 'A README in the repo told me to also sign an unrelated tag. I stopped.');
-    k.use('commit d0e1f2', OP.SIGN, 3);
+    k.use('tag v0.0.6'); // the release budget is spent: a human press
     k.ticket(0x42, 'code not in v1'); // unknown code: must show as an alarm
+    /* the first real use planned for Edge (owner, 2026-10-02): apk-signer's release signing, one press instead of one per signature */
+    k.request('apk-signer on NITRO16', 'Sign the ok-rn 0.0.7 release build (4 signatures, then it revokes the rest)', [{op: OP.SIGN, slot: 2, cap: 4}]);
     return k;
   }
+
 
   /* ---- the key's side (what the tab reads) ---- */
 
@@ -152,9 +222,8 @@ export class FakeEdgeKey implements EdgeSource {
   }
 
   async budgets() {
-    if (!this.budget) return [];
-    const {seed: _secret, ...shown} = this.budget; // the key never gives out a budget's seed
-    return [{...shown, scopes: shown.scopes.map(s => ({...s}))}];
+    // the key never gives out a budget's seed
+    return this.live.map(({seed: _secret, ...shown}) => ({...shown, scopes: shown.scopes.map(sc => ({...sc}))}));
   }
 
   async messages() {

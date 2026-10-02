@@ -7,7 +7,7 @@
  * does not throw its history away.
  */
 import {useCallback, useEffect, useState} from 'react';
-import {FakeEdgeKey, type EdgeBudget} from '../edgeFake';
+import {FakeEdgeKey, type EdgeBudget, type EdgeRequest} from '../edgeFake';
 import {evaluate, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
 
 let fake: FakeEdgeKey | null = null;
@@ -16,6 +16,7 @@ const source = () => (fake ??= FakeEdgeKey.demo());
 export function useEdge() {
   const [view, setView] = useState<EdgeView | null>(null);
   const [budgets, setBudgets] = useState<EdgeBudget[]>([]);
+  const [requests, setRequests] = useState<EdgeRequest[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,6 +26,7 @@ export function useEdge() {
     try {
       setView(await work());
       setBudgets(await source().budgets());
+      setRequests(await source().pending());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -51,6 +53,15 @@ export function useEdge() {
     fn(source());
     return sync();
   }, [sync]);
+  /* the clasp: Yes, then the press (the fake key takes the press as given) */
+  const approve = useCallback((id: number) => run(async () => {
+    await source().approve(id);
+    return (await syncMirror(source())).view;
+  }), [run]);
+  const decline = useCallback((id: number) => run(async () => {
+    await source().decline(id);
+    return evaluate(await loadMirror(source().deviceId), await source().head());
+  }), [run]);
   const resetFake = useCallback(async () => {
     await tamperMirror(source().deviceId, 'forget');
     fake = FakeEdgeKey.demo();
@@ -62,5 +73,5 @@ export function useEdge() {
     void sync();
   }, [sync]);
 
-  return {view, budgets, busy, error, sync, verify, tamper, act, resetFake};
+  return {view, budgets, requests, busy, error, sync, verify, tamper, act, approve, decline, resetFake};
 }

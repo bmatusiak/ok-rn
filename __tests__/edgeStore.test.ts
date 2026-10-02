@@ -26,14 +26,16 @@ test('the chain rows carry every ticket state the tab draws', async () => {
   const {view} = await sync(FakeEdgeKey.demo());
   const uses = view.rows.filter(r => r.ticket).map(r => [r.seq, r.ticket!.status, r.ticket!.ticket?.name ?? null]);
   expect(uses).toEqual([
-    [9, 'alarm', null], // 0x42: not a v1 code - fails closed
-    [7, 'alarm', 'SUSPECTED_INJECTION'],
-    [6, 'no-ticket-owed', null], // denied
-    [5, 'missing', null], // the empty hook
-    [3, 'ticketed', 'OK_UNCONFIRMED'],
-    [1, 'ticketed', 'OK'],
+    [15, 'alarm', null], // 0x42: not a v1 code - fails closed
+    [13, 'alarm', 'SUSPECTED_INJECTION'],
+    [12, 'no-ticket-owed', null], // denied
+    [11, 'missing', null], // the empty hook: a newer use came after it
+    [9, 'ticketed', 'OK'],
+    [7, 'ticketed', 'OK'],
+    [5, 'ticketed', 'OK_UNCONFIRMED'],
+    [3, 'ticketed', 'OK'],
   ]);
-  expect(view.rows.find(r => r.seq === 1)!.ticket!.message).toMatch(/push was accepted/);
+  expect(view.rows.find(r => r.seq === 3)!.ticket!.message).toMatch(/push was accepted/);
 });
 
 test('a later sync reads only the new links and still verifies', async () => {
@@ -79,6 +81,22 @@ test('a key whose head went back since the last verified sync is a rollback', as
   const older = new FakeEdgeKey(); // same device id, shorter history
   older.use('commit 1');
   expect((await sync(older)).view.verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
+});
+
+test('three budgets are live at once, each spending its own steps', async () => {
+  const k = FakeEdgeKey.demo();
+  const live = await k.budgets();
+  expect(live.map(b => [b.reason, b.used, b.uses])).toEqual([
+    ['Sign release commits for ok-rn 0.0.6', 3, 3],
+    ['Decrypt the CI deploy secrets', 1, 5],
+    ['Publish the docs site', 2, 4],
+  ]);
+  expect(JSON.stringify(live)).not.toMatch(/seed/); // the key never gives a seed out
+  k.revoke(live[1].grantId);
+  expect((await k.budgets()).map(b => b.grantId)).toEqual([live[0].grantId, live[2].grantId]);
+  k.lock();
+  expect(await k.budgets()).toEqual([]);
+  expect((await sync(k)).view.verdict.kind).toBe('verified');
 });
 
 test('never synced: not-synced, and nothing claimed', async () => {
