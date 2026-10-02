@@ -27,7 +27,7 @@ OKEMU_PLUGINS=edge,hello node scripts/stage.js        # stage only
 
 **Hooks:** `{file, anchor, insert: 'before' | 'after', text}`. The anchor must occur **exactly once** in the staged file. Otherwise the stage stops, so a plugin never builds into a firmware it wasn't written against. Keep hooks to the minimum: an `#include`, and a `case` in the vendor switch.
 
-**The mechanism:** `scripts/plugins.js`, called from `scripts/stage.js` after the literal patches and before the digest. The e2e suite `1c-softKeyPlugins` arms itself only on a plugin build.
+**The mechanism:** the library's loader (`node-onlykey-lib/cli/firmware-plugins`, shared with node-onlykey-emulator, which builds the same plugins with `OKEMU_PLUGINS_DIR` pointing here), called from `scripts/stage.js` after the literal patches and before the digest. The e2e suite `1c-softKeyPlugins` arms itself only on a plugin build.
 
 ## Plugins
 | Name | What |

@@ -1048,8 +1048,12 @@ const PATCHES = [
 const VERSION = process.env.OKEMU_VERSION || null;
 
 const versions = require('./versions');
-/* Soft-key firmware plugins (okemu/plugins/<name>/) - see scripts/plugins.js. */
-const plugins = require('./plugins');
+/*
+ * Soft-key firmware plugins (okemu/plugins/<name>/, OKEMU_PLUGINS). The loader
+ * is the library's, shared with node-onlykey-emulator's stager - one copy.
+ */
+const plugins = require('node-onlykey-lib/cli/firmware-plugins');
+const PLUGINS_DIR = path.join(OKEMU, 'plugins');
 const PLUGINS = plugins.selected();
 
 /**
@@ -1955,7 +1959,7 @@ function main() {
    * See cleanOnSwap().
    */
   cleanOnSwap(release);
-  const pluginSet = plugins.load(PLUGINS, release);
+  const pluginSet = plugins.load(PLUGINS, { dir: PLUGINS_DIR, release });
 
   /*
    * A release may DECLARE the build options it has to be staged with - see
