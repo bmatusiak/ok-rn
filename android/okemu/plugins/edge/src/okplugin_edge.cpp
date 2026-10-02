@@ -778,6 +778,31 @@ static void waive_pressed(void) {
 }
 
 /*
+ * R24 LOSS subject: to (u32 LE), then the first 28 bytes of SHA-256(link to+1)
+ * when the key holds that link - its latest, or one in the ring - from its own
+ * memory (Brad, 2026-10-02). Its predecessor is in the lost range, so its own
+ * bytes can never be welded again; this is the key naming them, and a host
+ * counts the copy's #to+1 only when it hashes to this. Not held (or past the
+ * head): zeros, and the host offers #from..#to+1 instead.
+ */
+static void loss_subject(uint32_t to, uint8_t subject[32]) {
+  memset(subject, 0, 32);
+  put32(subject, to);
+  if (st.seq == SEQ_NONE || to == SEQ_NONE || to >= st.seq) return; /* no link to+1 in this chain */
+  uint32_t next = to + 1;
+  const uint8_t *link = NULL;
+  if (next == st.seq) link = st.last_link;
+  else {
+    struct held_link *h = &held[next % HELD];
+    if (h->used && h->seq == next) link = h->link;
+  }
+  if (!link) return;
+  uint8_t d[32];
+  H(d, NULL, link, LINK_BYTES, NULL, 0, NULL, 0);
+  memcpy(subject + 4, d, 28);
+}
+
+/*
  * R26: the person accepts "restored to #N" with a press. The tentative replay
  * becomes the record ONLY if the host presents the key's own vouch tag for
  * exactly the tentative (seq, head); otherwise it is thrown away and the LOSS
@@ -811,8 +836,8 @@ static void replay_done_pressed(void) {
   if (!ok && newest == SEQ_NONE) newest = replayed;
   uint32_t from = st.seq == SEQ_NONE ? 0 : st.seq + 1;
   if (!ok || (newest != SEQ_NONE && newest >= from)) {
-    uint8_t subject[32] = {0};
-    put32(subject, newest);
+    uint8_t subject[32];
+    loss_subject(newest, subject);
     append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, from, 0, NULL);
   } else {
     state_save();
@@ -824,14 +849,14 @@ static void replay_done_pressed(void) {
  * R24 LOSS {from, to}, a press (firmware.md R24; built ahead of the rest of E5
  * for the tab's red banner, Brad 2026-10-02): the person accepts #from..#to as
  * unrecoverable - no copy anywhere holds it. One link, op = loss, decision
- * approve, slot 0, the press flag, grant_id = from, subject = to (u32 LE) then
- * zeros (the same layout REPLAY_DONE writes). It records the acceptance; it
+ * approve, slot 0, the press flag, grant_id = from, subject = loss_subject(to)
+ * (the same layout REPLAY_DONE writes). It records the acceptance; it
  * pays no debt (R16: only a ticket or a waive does). A host then accepts a gap
  * covered by it under R27. reply: seq . head . tag after it.
  */
 static void loss_pressed(void) {
-  uint8_t subject[32] = {0};
-  put32(subject, press.id);
+  uint8_t subject[32];
+  loss_subject(press.id, subject);
   append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, press.vouch_seq, 0, NULL);
   reply_seq_head();
 }

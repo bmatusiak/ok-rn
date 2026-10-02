@@ -825,8 +825,28 @@ module.exports = function register({ it }, ctx) {
       assert.equal(seq, h.seq);
       const [l] = await pickup(device, seq, 1, { signal });
       const f = chain.decodeLink(l.link);
+      /* #2 is long out of the key's ring (8) by now, so the LOSS names no next link: zeros */
+      assert.ok(seq - 1 - 2 >= 8, `the story is too short for #2 to be out of the ring (head #${seq - 1})`);
       assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId, f.grantStep, Buffer.from(f.subject).readUInt32LE(0), Buffer.from(f.subject).subarray(4).every((x) => x === 0)]),
         JSON.stringify([11, APPROVE, 0, PRESS_OBSERVED, 0, 0, 1, true]), 'the LOSS link is not the spec layout');
+
+      /*
+       * R24 (Brad, 2026-10-02): when the key holds link to+1 - its latest, or one
+       * in the ring - the subject carries the first 28 bytes of SHA-256 of it,
+       * from the key's own memory.
+       */
+      const named = async (to) => {
+        const [want] = await pickup(device, to + 1, 1, { signal });
+        const [rr] = await edge(device, LOSS, Buffer.concat([u32(to), u32(to)]), { signal, press: true });
+        const [ll] = await pickup(device, rr.readUInt32LE(0), 1, { signal });
+        const sub = Buffer.from(chain.decodeLink(ll.link).subject);
+        assert.equal(sub.readUInt32LE(0), to);
+        assert.bytes(sub.subarray(4), sha256(Buffer.from(want.link)).subarray(0, 28));
+      };
+      h = await head(device, { signal });
+      await named(h.seq - 1); /* to+1 = the latest link */
+      h = await head(device, { signal });
+      await named(h.seq - 3); /* to+1 = a link in the ring */
     });
 
   it('edge: a checkpoint is the Edge key\'s signature over the head',
