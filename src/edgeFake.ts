@@ -17,7 +17,11 @@ import {utf8ToBytes} from 'node-onlykey-lib/bytes';
 const {OP, DECISION, FLAG} = codes;
 const MAX_LIVE_BUDGETS = 4; // firmware.md R15 target
 
-export type EdgeLinkRecord = {link: Uint8Array; head: Uint8Array};
+/** A link as a copy keeps it: the link, the head after it, and a self-press's reveal (R27 checks it against its budget's G). */
+export type EdgeLinkRecord = {link: Uint8Array; head: Uint8Array; reveal?: Uint8Array | null};
+
+/** R27: may a budget be asked for from this copy? The first thing that fails, in words. */
+export type EdgeCopyCheck = {ok: true} | {ok: false; reason: string; seq?: number};
 export type EdgeBudget = {
   grantId: number;
   reason: string;
@@ -63,6 +67,8 @@ export interface EdgeInbox {
   approve(id: number, onPress?: () => void): Promise<void>;
   press(): Promise<void>;
   decline(id: number): Promise<void>;
+  /** R27: does this phone's copy verify up to the key's live head? Yes stays off until it does. */
+  check(): Promise<EdgeCopyCheck>;
 }
 
 const sha = (text: string) => {
@@ -180,6 +186,11 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
 
   async pending() {
     return this.requests.map(r => ({...r, scopes: r.scopes.map(sc => ({...sc}))}));
+  }
+
+  /* the fake key has no copy check of its own: its chain is built in memory by the library */
+  async check(): Promise<EdgeCopyCheck> {
+    return {ok: true};
   }
 
   async approve(id: number, onPress?: () => void) {

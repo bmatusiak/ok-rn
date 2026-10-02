@@ -14,17 +14,24 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {chain, codes, tickets} from 'node-onlykey-lib/edge';
-import {toHex} from 'node-onlykey-lib/bytes';
+import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
 import {loadMirror} from './edgeStore';
-import type {EdgeBudget, EdgeInbox, EdgeLinkRecord, EdgeRequest, EdgeSource} from './edgeFake';
+import type {EdgeBudget, EdgeCopyCheck, EdgeInbox, EdgeLinkRecord, EdgeRequest, EdgeSource} from './edgeFake';
 
 const {DECISION} = codes;
 const PICKUP_MAX = 8;
 const REGISTRY = 'okrn.edge.budgets.';
 
-type Kept = {reason: string; scopes: EdgeRequest['scopes']; uses: number; genesis: string; from: string};
+/*
+ * What this phone keeps of a budget it approved: the request, G, and the
+ * checkpoint signature its press answered with - the opening R27 checks
+ * (grants.verifyBudgetOpening). A budget kept without a signature (approved
+ * before this was stored) cannot be checked, so a copy holding it does not
+ * verify.
+ */
+type Kept = {reason: string; scopes: EdgeRequest['scopes']; uses: number; genesis: string; from: string; signature?: string};
 
 export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   readonly deviceId: Uint8Array;
@@ -60,7 +67,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     const out: EdgeLinkRecord[] = [];
     for (let s = from; s <= last; s += PICKUP_MAX) {
       const got = await this.edge.pickup(s, Math.min(PICKUP_MAX, last - s + 1));
-      for (const l of got) out.push({link: l.link, head: l.head});
+      for (const l of got) out.push({link: l.link, head: l.head, reveal: l.reveal});
     }
     return out;
   }
@@ -113,15 +120,45 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return this.requests.map(r => ({...r, scopes: r.scopes.map(sc => ({...sc}))}));
   }
 
+  /*
+   * The copy R27 checks: every link this phone holds (with reveals) and the
+   * opening of every budget it approved. A budget opened elsewhere has no
+   * opening here, so a copy with its grant-create link does not verify -
+   * fail closed, and the reason says which budget.
+   */
+  private async copy() {
+    const mirror = await loadMirror(this.deviceId);
+    const openings: Record<number, unknown> = {};
+    const prefix = REGISTRY + toHex(this.deviceId) + '.';
+    for (const k of await AsyncStorage.getAllKeys()) {
+      if (!k.startsWith(prefix)) continue;
+      const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
+      if (!kept || !kept.signature) continue;
+      openings[Number(k.slice(prefix.length))] = {
+        scopes: kept.scopes, reasonHash: tickets.messageHash(kept.reason), genesis: fromHex(kept.genesis),
+        uses: kept.uses, signature: fromHex(kept.signature),
+      };
+    }
+    return {links: mirror.links, openings};
+  }
+
+  /** R27: the library's verdict on this phone's copy, against the key's live head. */
+  async check(): Promise<EdgeCopyCheck> {
+    const v = await this.edge.grants.check(await this.copy());
+    return v.ok ? {ok: true} : {ok: false, reason: v.reason, seq: v.seq ?? undefined};
+  }
+
   /**
-   * Yes -> GRANT_CREATE -> the key waits for a PHYSICAL press (no press, no
-   * budget). `onPress` says the key is waiting; press() presses it.
+   * Yes -> the copy check (R27) -> GRANT_CREATE with the head it verified -> the
+   * key waits for a PHYSICAL press (no press, no budget). A copy that does not
+   * verify sends nothing. `onPress` says the key is waiting; press() presses it.
    */
   async approve(id: number, onPress?: () => void) {
     const r = this.requests.find(x => x.id === id);
     if (!r) throw new Error(`edge: no request ${id}`);
     const reasonHash = tickets.messageHash(r.reason);
-    const g = await this.edge.grant({
+    const g = await this.edge.grants.create({
+      copy: await this.copy(),
       scopes: r.scopes,
       reasonHash,
       onPress: () => {
@@ -130,7 +167,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       },
     });
     this.pressWanted = null;
-    const kept: Kept = {reason: r.reason, scopes: r.scopes, uses: g.uses, genesis: toHex(g.genesis), from: r.from};
+    const kept: Kept = {reason: r.reason, scopes: r.scopes, uses: g.uses, genesis: toHex(g.genesis), from: r.from, signature: toHex(g.checkpoint.signature)};
     await AsyncStorage.setItem(REGISTRY + toHex(this.deviceId) + '.' + g.grantId, JSON.stringify(kept));
     this.requests = this.requests.filter(x => x.id !== id);
   }

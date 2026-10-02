@@ -22,7 +22,7 @@ const READ_BATCH = 16;
 
 type StoredMirror = {
   deviceId: string;
-  links: {link: string; head: string}[];
+  links: {link: string; head: string; reveal?: string}[];
   messages: Record<string, string>;
   lastSeen: {seq: number; head: string} | null;
   lastSync: number | null;
@@ -68,7 +68,7 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
   const s = JSON.parse(raw) as StoredMirror;
   return {
     deviceId: fromHex(s.deviceId),
-    links: s.links.map(l => ({link: fromHex(l.link), head: fromHex(l.head)})),
+    links: s.links.map(l => ({link: fromHex(l.link), head: fromHex(l.head), reveal: l.reveal ? fromHex(l.reveal) : null})),
     messages: Object.fromEntries(Object.entries(s.messages).map(([k, v]) => [Number(k), v])),
     lastSeen: s.lastSeen ? {seq: s.lastSeen.seq, head: fromHex(s.lastSeen.head)} : null,
     lastSync: s.lastSync,
@@ -78,7 +78,7 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
 export async function saveMirror(m: Mirror): Promise<void> {
   const s: StoredMirror = {
     deviceId: toHex(m.deviceId),
-    links: m.links.map(l => ({link: toHex(l.link), head: toHex(l.head)})),
+    links: m.links.map(l => ({link: toHex(l.link), head: toHex(l.head), ...(l.reveal ? {reveal: toHex(l.reveal)} : {})})),
     messages: Object.fromEntries(Object.entries(m.messages).map(([k, v]) => [String(k), v])),
     lastSeen: m.lastSeen ? {seq: m.lastSeen.seq, head: toHex(m.lastSeen.head)} : null,
     lastSync: m.lastSync,

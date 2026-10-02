@@ -29,7 +29,7 @@ test('the chain rows carry every ticket state the tab draws', async () => {
     [15, 'alarm', null], // 0x42: not a v1 code - fails closed
     [13, 'alarm', 'SUSPECTED_INJECTION'],
     [12, 'no-ticket-owed', null], // denied
-    [11, 'missing', null], // the empty hook: a newer use came after it
+    [11, 'waiting', null], // unpaid, and still on the key's list of 4 (the list does not refill, lib tickets.keyDebts)
     [9, 'ticketed', 'OK'],
     [7, 'ticketed', 'OK'],
     [5, 'ticketed', 'OK_UNCONFIRMED'],

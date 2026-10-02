@@ -48,6 +48,7 @@ module.exports = {
   modulePaths: ['<rootDir>/node_modules'],
 
   /* apk-signer/ is a separate project with its own `npm test`. */
-  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/apk-signer/'],
+  /* a plugin's tests/kit.test.js runs in the onlykey-testing kit (side-loaded by test 38), never under jest */
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/apk-signer/', '<rootDir>/android/okemu/plugins/[^/]+/tests/kit\\.test\\.js$'],
   modulePathIgnorePatterns: ['<rootDir>/apk-signer/'],
 };

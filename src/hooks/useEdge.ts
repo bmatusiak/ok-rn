@@ -9,7 +9,7 @@
  * session, kept outside React so switching tabs keeps it.
  */
 import {useCallback, useEffect, useState} from 'react';
-import {FakeEdgeKey, type EdgeBudget, type EdgeInbox, type EdgeRequest, type EdgeSource} from '../edgeFake';
+import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeInbox, type EdgeRequest, type EdgeSource} from '../edgeFake';
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {useBackend} from './KeyContext';
@@ -30,6 +30,8 @@ export function useEdge() {
   const [error, setError] = useState<string | null>(null);
   /* the request whose press the key is waiting for */
   const [pressFor, setPressFor] = useState<number | null>(null);
+  /* R27: whether a budget may be asked for from this phone's copy (Yes is off, with the reason, until it may) */
+  const [copyCheck, setCopyCheck] = useState<EdgeCopyCheck | null>(null);
 
   /* the key to talk to; null = this build has Edge but the soft key did not answer (locked?) */
   const source = useCallback(async (): Promise<Source | null> => {
@@ -49,7 +51,9 @@ export function useEdge() {
       }
       setView(await work(s));
       setBudgets(await s.budgets());
-      setRequests(await s.pending());
+      const pending = await s.pending();
+      setRequests(pending);
+      setCopyCheck(pending.length ? await s.check() : null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -80,6 +84,7 @@ export function useEdge() {
     if (!s) return;
     s.request(from, reason, scopes);
     setRequests(await s.pending());
+    setCopyCheck(await s.check());
   }, [source]);
   const revoke = useCallback((grantId: number) => run(async s => {
     await s.revoke(grantId);
@@ -115,7 +120,7 @@ export function useEdge() {
   }, [sync]);
 
   return {
-    view, budgets, requests, busy, error, pressFor, isFake: !wantReal,
+    view, budgets, requests, busy, error, pressFor, copyCheck, isFake: !wantReal,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
   };
 }
