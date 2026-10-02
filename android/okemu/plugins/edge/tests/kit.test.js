@@ -23,6 +23,7 @@ const HEAD = 0x01;
 const PICKUP = 0x02;
 const CHECKPOINT = 0x03;
 const PUBKEY = 0x04;
+const VOUCH = 0x05;
 const GRANT_CREATE = 0x10;
 const GRANT_REVOKE = 0x12;
 const GRANT_HOLD = 0x13;
@@ -487,16 +488,23 @@ module.exports = function register({ it }, ctx) {
     });
 
   /*
-   * The plugin backup section (DESIGN.md 6; the loader's 0xFB section) and R26.
-   * Edge keeps version, seq, head and the owed uses. A backup taken at head S,
-   * two links made after it (the host's copy has them), then the restore: the
-   * key comes back at S, owing what it owed then, and RESTORING - nothing
-   * automatic. The host replays its copy: the first newer link comes back with
-   * its debt. A human press still works, but it is a link of the key's own, so
-   * replay closes and the second newer link is refused. REPLAY_DONE (a press)
-   * links the LOSS over what could not be replayed and ends the restore.
+   * The plugin backup section (DESIGN.md 6; the loader's 0xFB section) and R26,
+   * firmware.md verification row 5b. Edge keeps version, seq, head and the owed
+   * uses. One backup at head S, two real links after it (the host's copy holds
+   * them, each with the key's vouch tag), then three restores from that backup:
+   *   1. INVENTED links - a made-up ticket paying the backup's debt and a
+   *      made-up "pressed" waive - replay only TENTATIVELY (HEAD does not move);
+   *      VOUCH, CHECKPOINT and ARM are refused while restoring; a human press
+   *      writes onto the backup's head and closes replay; a forged tag commits
+   *      nothing (EDGE:11) and the LOSS covers everything since the backup - the
+   *      debt is still owed;
+   *   2. a power cut mid-replay leaves the backup's state and restoring; an
+   *      OLDER real vouch commits only up to its own point, the LOSS covers the
+   *      rest;
+   *   3. the whole copy with the newest real vouch commits it all: the newer
+   *      links' heads and debts come back, no LOSS.
    */
-  it('edge: a backup keeps the head and debts; a restore replays the newer links, then a pressed REPLAY_DONE links the LOSS (R26)',
+  it('edge: a restore commits only replayed history the key vouched for - invented links, a power cut, an older vouch, the whole copy (R26)',
     async ({ device, assert, signal, log }) => {
       const { backup } = ctx.kit;
       const PASSPHRASE = 'okt edge backup passphrase 2026-10-02';
@@ -548,62 +556,101 @@ module.exports = function register({ it }, ctx) {
       require('fs').writeFileSync(keep, JSON.stringify({ passphrase: PASSPHRASE, slot: 2, label: 'edgebkup', data: Buffer.from(parsed.data).toString('hex') }));
       log(`kept for the older-firmware restore: ${keep}`);
 
-      /* two links the backup does not have - the host's copy holds them */
+      /* two links the backup does not have - the host's copy holds them, each with the key's vouch tag */
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const vouchOf = (r) => ({ seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), tag: Buffer.from(r.subarray(36, 52)) });
       const l1 = await pressedSign(device, 'okt edge after the backup 1', { signal });
+      const v1 = vouchOf((await edge(device, VOUCH, null, { signal }))[0]);
       const l2 = await pressedSign(device, 'okt edge after the backup 2', { signal });
+      const v2 = vouchOf((await edge(device, VOUCH, null, { signal }))[0]);
       const lost = await head(device, { signal });
-      assert.equal(JSON.stringify([l1.seq, l2.seq]), JSON.stringify([atBackup.seq + 1, atBackup.seq + 2]));
+      assert.equal(JSON.stringify([l1.seq, l2.seq, v1.seq, v2.seq]), JSON.stringify([atBackup.seq + 1, atBackup.seq + 2, atBackup.seq + 1, atBackup.seq + 2]));
       const [c1, c2] = await pickup(device, l1.seq, 2, { signal });
 
       /* the restore - OKRESTORE is taken in config mode (as 10-backup-restore sends it) */
-      await device.enterConfigMode(ctx.PINS.primary, { signal });
-      const before = device.generation;
-      for (const payload of backup.toRestorePackets(parsed.data)) {
-        device.sendVendor({ msg: ctx.okmsg.MSG.OKRESTORE, payload });
-        await device.sleep(50, { signal });
-      }
-      await device.waitForReboot({ from: before, timeoutMs: 90000, signal });
-      await device.waitReady({ signal });
-      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const restore = async (label) => {
+        await device.enterConfigMode(ctx.PINS.primary, { signal });
+        const gen = device.generation;
+        for (const payload of backup.toRestorePackets(parsed.data)) {
+          device.sendVendor({ msg: ctx.okmsg.MSG.OKRESTORE, payload });
+          await device.sleep(50, { signal });
+        }
+        await device.waitForReboot({ from: gen, timeoutMs: 90000, signal });
+        await device.waitReady({ signal });
+        await device.ensureUnlocked(ctx.PINS.primary, { signal });
+        const h = await head(device, { signal });
+        log(`${label}: head #${h.seq} owed ${h.owed} restoring ${h.restoring} (backup at #${atBackup.seq})`);
+        assert.equal(h.seq, atBackup.seq, `${label}: not back at the backup's head`);
+        assert.bytes(Buffer.from(h.head), Buffer.from(atBackup.head));
+        assert.equal(h.owed, atBackup.owed, `${label}: the restore changed what is owed`);
+        assert.equal(h.restoring, 1, `${label}: HEAD does not say the key is restoring`);
+        return h;
+      };
+      /* REPLAY: 46 link bytes + the first 8 of the head the copy stored after it */
+      const replayReq = (link, headBytes) => Buffer.concat([Buffer.from(link).subarray(0, 46), Buffer.from(headBytes).subarray(0, 8)]);
+      const replay = (link, headBytes) => edge(device, REPLAY, replayReq(link, headBytes), { signal, text: true });
+      const replayDone = (seq, tag, newest, opts = {}) =>
+        edge(device, REPLAY_DONE, Buffer.concat([u32(seq), Buffer.from(tag), u32(newest)]), { signal, press: true, ...opts });
 
-      /* back at the backup's head, owing what it owed then, and restoring: nothing automatic */
-      const after = await head(device, { signal });
-      log(`after the restore: head #${after.seq} owed ${after.owed} restoring ${after.restoring} (backup at #${atBackup.seq}, the copy reaches #${lost.seq})`);
-      assert.equal(after.seq, atBackup.seq, 'the chain did not come back to the backup\'s head');
-      assert.bytes(Buffer.from(after.head), Buffer.from(atBackup.head));
-      assert.equal(after.owed, atBackup.owed, 'the restore changed what is owed');
-      assert.equal(after.restoring, 1, 'HEAD does not say the key is restoring');
+      /* ---- 1. invented links ---- */
+      let after = await restore('restore 1');
+      assert.equal(await edge(device, VOUCH, null, { signal, text: true }), 'EDGE:0E', 'the key vouched while restoring');
+      assert.equal(await edge(device, CHECKPOINT, null, { signal, text: true }), 'EDGE:0E', 'the key signed a checkpoint while restoring');
       assert.equal(await armFor(device, after.head, agentPayload('okt restoring'), { signal }), 'EDGE:0E', 'ARM went through while restoring');
       assert.equal(await edge(device, GRANT_CREATE, grantRequest(1, sha256(Buffer.from('r')), after.head), { signal, text: true }), 'EDGE:0E', 'a budget opened while restoring');
-
-      /* REPLAY: 46 link bytes + the first 8 of the head the copy stored after it */
-      const replayReq = (c) => Buffer.concat([Buffer.from(c.link).subarray(0, 46), Buffer.from(c.head).subarray(0, 8)]);
-      assert.equal(await edge(device, REPLAY, replayReq(c2), { signal, text: true }), 'EDGE:0F', 'a link out of order was replayed');
-      assert.equal(await edge(device, REPLAY, Buffer.concat([Buffer.from(c1.link).subarray(0, 46), Buffer.alloc(8, 1)]), { signal, text: true }), 'EDGE:0F', 'a link that does not weld to the copy\'s head was replayed');
-      assert.equal(await edge(device, REPLAY, replayReq(c1), { signal, text: true }), 'EDGE:00');
+      assert.equal(await replay(c2.link, c2.head), 'EDGE:0F', 'a link out of order was replayed');
+      assert.equal(await replay(c1.link, new Uint8Array(32).fill(1)), 'EDGE:0F', 'a link that does not weld to the copy\'s head was replayed');
+      /* a made-up ticket that pays the backup's debt, and a made-up waive "pressed" by nobody - they weld, as any 64 bytes do */
+      const owedSeq = atBackup.seq;
+      const fakeTicket = chain.encodeLink({ seq: atBackup.seq + 1, op: OP_TICKET, decision: 0x00, subject: new Uint8Array(32), grantId: owedSeq });
+      const fh1 = chain.weld(atBackup.head, fakeTicket);
+      const fakeWaive = chain.encodeLink({ seq: atBackup.seq + 2, op: OP_TICKET, decision: NEEDS_REVIEW, flags: PRESS_OBSERVED, grantId: owedSeq, subject: tickets.waiveSubject([owedSeq], false) });
+      const fh2 = chain.weld(fh1, fakeWaive);
+      assert.equal(await replay(fakeTicket, fh1), 'EDGE:00');
+      assert.equal(await replay(fakeWaive, fh2), 'EDGE:00');
       let h = await head(device, { signal });
-      assert.equal(h.seq, l1.seq);
-      assert.bytes(Buffer.from(h.head), Buffer.from(c1.head), 'the replayed link did not bring back its head');
-      assert.equal(h.owed, atBackup.owed + 1, 'the replayed use did not bring its debt back');
-
-      /* a human press still works - and it is the key's own link, so replay closes for good */
+      assert.equal(JSON.stringify([h.seq, h.owed]), JSON.stringify([atBackup.seq, atBackup.owed]), 'a replay moved the real head or paid a debt before it was vouched');
+      /* a human press writes onto the backup's head, throws the tentative replay away and closes replay */
       const own = await pressedSign(device, 'okt edge while restoring', { signal });
-      assert.equal(own.seq, l2.seq, 'the key\'s own link is not at the next seq');
-      assert.equal(await edge(device, REPLAY, replayReq(c2), { signal, text: true }), 'EDGE:10', 'replay stayed open after the key wrote its own link');
-
-      /* REPLAY_DONE, with the press: the LOSS over what could not be replayed */
-      const [d] = await edge(device, REPLAY_DONE, u32(lost.seq), { signal, press: true });
-      const done = seqHead(d);
+      assert.equal(own.seq, atBackup.seq + 1, 'the key\'s own link is not on the backup\'s head');
+      assert.equal(await replay(c1.link, c1.head), 'EDGE:10', 'replay stayed open after the key wrote its own link');
+      /* and a forged tag commits nothing: EDGE:11, LOSS since the backup */
+      assert.equal(await replayDone(atBackup.seq + 2, Buffer.alloc(16, 7), lost.seq, { text: true }), 'EDGE:11', 'a forged vouch was taken');
       h = await head(device, { signal });
       assert.equal(h.restoring, 0, 'still restoring after REPLAY_DONE');
-      assert.equal(done.seq, own.seq + 1);
-      const [loss] = await pickup(device, done.seq, 1, { signal });
-      const f = chain.decodeLink(loss.link);
-      log(trail([f]));
-      assert.equal(JSON.stringify([f.op, f.grantId, f.flags & PRESS_OBSERVED, Buffer.from(f.subject).readUInt32LE(0)]),
-        JSON.stringify([11, l2.seq, PRESS_OBSERVED, lost.seq]), 'the LOSS link does not name #first-lost..#newest with the press');
-      assert.ok(!Buffer.from(h.head).equals(Buffer.from(lost.head)), 'the restored chain still carries the lost link');
+      assert.equal(h.owed, atBackup.owed + 1, 'the invented ticket or waive paid a debt');
+      const [loss1] = await pickup(device, h.seq, 1, { signal });
+      const fl1 = chain.decodeLink(loss1.link);
+      assert.equal(JSON.stringify([fl1.op, fl1.grantId, fl1.flags & PRESS_OBSERVED]), JSON.stringify([11, own.seq + 1, PRESS_OBSERVED]), 'no pressed LOSS link after the unvouched replay');
+
+      /* ---- 2. a power cut mid-replay, then an older real vouch ---- */
+      await restore('restore 2');
+      assert.equal(await replay(c1.link, c1.head), 'EDGE:00');
+      await device.restart({ signal }); /* the power cut */
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      h = await head(device, { signal });
+      assert.equal(JSON.stringify([h.seq, h.restoring]), JSON.stringify([atBackup.seq, 1]), 'a power cut mid-replay did not leave the backup\'s state and restoring');
+      assert.equal(await replay(c1.link, c1.head), 'EDGE:00');
+      const [d2] = await replayDone(v1.seq, v1.tag, lost.seq);
+      const done2 = vouchOf(d2);
+      h = await head(device, { signal });
+      log(`restore 2: committed to #${l1.seq} on its older vouch; head #${h.seq} owed ${h.owed}`);
+      assert.equal(done2.seq, l1.seq + 1, 'the older vouch did not commit up to its own point and LOSS the rest');
+      assert.equal(h.owed, atBackup.owed + 1, 'the vouched link did not bring its debt back');
+      const [k1, loss2] = await pickup(device, l1.seq, 2, { signal });
+      assert.bytes(Buffer.from(k1.head), Buffer.from(c1.head), 'the committed link is not the real one');
+      const fl2 = chain.decodeLink(loss2.link);
+      assert.equal(JSON.stringify([fl2.op, fl2.grantId, Buffer.from(fl2.subject).readUInt32LE(0)]), JSON.stringify([11, l2.seq, lost.seq]), 'the LOSS does not name #first-lost..#newest');
+
+      /* ---- 3. the whole copy, vouched by the newest tag ---- */
+      await restore('restore 3');
+      assert.equal(await replay(c1.link, c1.head), 'EDGE:00');
+      assert.equal(await replay(c2.link, c2.head), 'EDGE:00');
+      const [d3] = await replayDone(v2.seq, v2.tag, lost.seq);
+      const done3 = vouchOf(d3);
+      h = await head(device, { signal });
+      assert.equal(JSON.stringify([done3.seq, h.seq, h.restoring, h.owed]), JSON.stringify([l2.seq, l2.seq, 0, lost.owed]), 'the vouched replay did not commit the whole copy');
+      assert.bytes(Buffer.from(h.head), Buffer.from(lost.head), 'the restored head is not the real one');
     });
 
   /*

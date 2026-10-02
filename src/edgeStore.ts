@@ -26,6 +26,7 @@ type StoredMirror = {
   messages: Record<string, string>;
   lastSeen: {seq: number; head: string} | null;
   lastSync: number | null;
+  vouch?: {seq: number; head: string; tag: string} | null;
 };
 
 export type Mirror = {
@@ -34,6 +35,12 @@ export type Mirror = {
   messages: Record<number, string>;
   lastSeen: {seq: number; head: Uint8Array} | null;
   lastSync: number | null;
+  /*
+   * R26: the newest head the key vouched for (its HMAC tag over (seq, head)),
+   * read at each sync. After a restore, only a replay up to a vouched head can
+   * be committed; anything newer falls under the LOSS.
+   */
+  vouch: {seq: number; head: Uint8Array; tag: Uint8Array} | null;
 };
 
 export type Verdict =
@@ -64,7 +71,7 @@ const storageKey = (deviceId: Uint8Array) => KEY_PREFIX + toHex(deviceId);
 
 export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
   const raw = await AsyncStorage.getItem(storageKey(deviceId));
-  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null};
+  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null};
   const s = JSON.parse(raw) as StoredMirror;
   return {
     deviceId: fromHex(s.deviceId),
@@ -72,6 +79,7 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
     messages: Object.fromEntries(Object.entries(s.messages).map(([k, v]) => [Number(k), v])),
     lastSeen: s.lastSeen ? {seq: s.lastSeen.seq, head: fromHex(s.lastSeen.head)} : null,
     lastSync: s.lastSync,
+    vouch: s.vouch ? {seq: s.vouch.seq, head: fromHex(s.vouch.head), tag: fromHex(s.vouch.tag)} : null,
   };
 }
 
@@ -82,6 +90,7 @@ export async function saveMirror(m: Mirror): Promise<void> {
     messages: Object.fromEntries(Object.entries(m.messages).map(([k, v]) => [String(k), v])),
     lastSeen: m.lastSeen ? {seq: m.lastSeen.seq, head: toHex(m.lastSeen.head)} : null,
     lastSync: m.lastSync,
+    vouch: m.vouch ? {seq: m.vouch.seq, head: toHex(m.vouch.head), tag: toHex(m.vouch.tag)} : null,
   };
   await AsyncStorage.setItem(storageKey(m.deviceId), JSON.stringify(s));
 }
@@ -107,6 +116,9 @@ export async function sync(source: EdgeSource, now = Date.now()): Promise<{mirro
     from = seqOf(got[got.length - 1]) + 1;
   }
   mirror.messages = {...mirror.messages, ...(await source.messages())};
+  /* R26: keep the key's newest vouch with the copy (a restoring key gives none) */
+  const v = source.vouch ? await source.vouch() : null;
+  if (v) mirror.vouch = v;
   mirror.lastSync = now;
   const view = evaluate(mirror, head);
   if (view.verdict.kind === 'verified' || view.verdict.kind === 'gap') {

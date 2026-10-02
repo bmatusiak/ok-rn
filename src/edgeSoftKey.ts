@@ -141,34 +141,63 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * fork (or, if the copy itself skips a seq, a gap) - stop and say so, never
    * smooth it over. The Edge Worker's copy comes next, once it exists.
    */
+  async vouch() {
+    try {
+      const v = await this.edge.vouch();
+      return {seq: v.seq, head: v.head, tag: v.tag};
+    } catch (e: any) {
+      if (e && e.status === 'restoring') return null;
+      throw e;
+    }
+  }
+
   async replayCopy(): Promise<EdgeReplay> {
     const mirror = await loadMirror(this.deviceId);
     const h = await this.edge.head();
     const keyWas = h.seq === null ? -1 : h.seq;
     const newest = mirror.links.length ? chain.decodeLink(mirror.links[mirror.links.length - 1].link).seq : -1;
+    /* R26: replay only up to the newest head the key vouched for - nothing after it can be committed */
+    const vouchedTo = mirror.vouch && mirror.vouch.seq > keyWas ? mirror.vouch.seq : -1;
     let at = keyWas;
     for (const r of mirror.links) {
       const seq = chain.decodeLink(r.link).seq;
       if (seq <= at) continue;
-      if (seq !== at + 1) return {keyWas, replayedTo: at, newest, stop: {why: 'gap', at: at + 1}};
+      if (seq > vouchedTo) break;
+      if (seq !== at + 1) return {keyWas, replayedTo: at, newest, vouchedTo, stop: {why: 'gap', at: at + 1}};
       try {
         await this.edge.replay(r.link, r.head);
       } catch (e: any) {
         if (e && e.status === 'replay-mismatch') {
           const kh = (await this.edge.head()).head;
           const mine = mirror.links.find(x => chain.decodeLink(x.link).seq === at);
-          return {keyWas, replayedTo: at, newest, stop: {why: 'fork', at, keyHead: toHex(kh), copyHead: mine ? toHex(mine.head) : ''}};
+          return {keyWas, replayedTo: at, newest, vouchedTo, stop: {why: 'fork', at, keyHead: toHex(kh), copyHead: mine ? toHex(mine.head) : ''}};
         }
         throw e;
       }
       at = seq;
     }
-    return {keyWas, replayedTo: at, newest, stop: {why: 'end'}};
+    return {keyWas, replayedTo: at, newest, vouchedTo, stop: {why: 'end'}};
   }
 
+  /*
+   * R26: the press over "restored to #N". The key commits the replay only with
+   * its own vouch tag for exactly the replayed head; without one (this phone
+   * holds no vouch past the backup) it throws the replay away and records
+   * everything since the backup as lost - said on the card before the press.
+   */
   async finishRestore(newestSeq: number, onPress?: () => void) {
-    await this.edge.replayDone({newestSeq: Math.max(0, newestSeq), onPress: this.pressing(onPress)});
-    this.pressWanted = null;
+    const mirror = await loadMirror(this.deviceId);
+    const v = mirror.vouch;
+    try {
+      await this.edge.replayDone({
+        seq: v ? v.seq : 0, tag: v ? v.tag : new Uint8Array(16),
+        newestSeq: Math.max(0, newestSeq), onPress: this.pressing(onPress),
+      });
+    } catch (e: any) {
+      if (!(e && e.status === 'not-vouched')) throw e; /* the LOSS is linked; the restore is over */
+    } finally {
+      this.pressWanted = null;
+    }
   }
 
   /*

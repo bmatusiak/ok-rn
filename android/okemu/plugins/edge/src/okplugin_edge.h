@@ -20,6 +20,7 @@
 #define OKEDGE_PICKUP 0x02
 #define OKEDGE_CHECKPOINT 0x03
 #define OKEDGE_PUBKEY 0x04
+#define OKEDGE_VOUCH 0x05        /* R26: seq . head . vouch tag for the current head; refused while restoring */
 #define OKEDGE_GRANT_CREATE 0x10
 #define OKEDGE_GRANT_REVOKE 0x12
 #define OKEDGE_GRANT_HOLD 0x13   /* R15a: no press */
@@ -28,7 +29,7 @@
 #define OKEDGE_WAIVE 0x21        /* R18: press; replies seq . head */
 #define OKEDGE_ARM 0x22          /* R13a: ARM {head} */
 #define OKEDGE_REPLAY 0x23       /* R26: a link of the newest copy, while restoring */
-#define OKEDGE_REPLAY_DONE 0x24  /* R26: press; LOSS over what was not replayed; replies seq . head */
+#define OKEDGE_REPLAY_DONE 0x24  /* R26: {seq, tag, newest}, press; commits only a vouched replay; replies seq . head . tag or EDGE:11 */
 
 /*
  * Text replies are "EDGE:xx" - two hex digits, no sentences (owner, 2026-10-02:
@@ -51,6 +52,7 @@
 #define EDGE_RESTORING 0x0E         /* R26: restored, not finished - no ARM, GRANT_CREATE or GRANT_RESUME */
 #define EDGE_REPLAY_MISMATCH 0x0F   /* REPLAY: not the next seq, or it does not weld to the head the copy stored */
 #define EDGE_REPLAY_CLOSED 0x10     /* REPLAY: not restoring, or the key already wrote a link of its own */
+#define EDGE_NOT_VOUCHED 0x11       /* REPLAY_DONE: the tag is not the key's for the replayed head - thrown away, LOSS since the backup */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */
 #define OKEDGE_DECISION_APPROVE 1

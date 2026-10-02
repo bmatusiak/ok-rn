@@ -114,6 +114,17 @@ struct edge_state {
 static struct edge_state st;
 static uint8_t loaded;
 
+/*
+ * R26 (Brad, 2026-10-02: fix the hole "without making another hole"): while
+ * restoring, REPLAY welds into this RAM copy, never into st. Only REPLAY_DONE
+ * with a vouch tag the key itself issued for exactly this (seq, head) commits
+ * it; a power cut, a human press or a bad tag throws it away. Any 64 bytes
+ * weld onto a head, so welding alone would let a host replay INVENTED links -
+ * tickets that pay its debts, a "pressed" waive nobody pressed.
+ */
+static struct edge_state tent;
+static uint8_t tent_active;
+
 /* R18: is anything owed? Then nothing automatic happens. */
 static int owes(void) { return st.owed_n || st.overflow; }
 
@@ -188,6 +199,7 @@ static struct {
   uint8_t what;
   unsigned long since;
   uint32_t id;                /* PRESS_RESUME: the budget; PRESS_REPLAY_DONE: the newest seq the copies hold */
+  uint32_t vouch_seq;         /* PRESS_REPLAY_DONE: the seq the vouch tag (in verified[0..16]) is for */
   /*
    * R27: the head the host verified its copy up to (GRANT_CREATE: its first
    * GRANT_HEAD_BYTES, all that fits; GRANT_RESUME: all 32). Checked when the
@@ -248,12 +260,20 @@ static void reply(const uint8_t *data, int len) {
   send_transport_response(r, 64, false, false);
 }
 
-/* seq . head: TICKET's and WAIVE's answer - what the agent passes to the next ARM (R13a) */
+static int vouch_tag(uint32_t seq, const uint8_t head[32], uint8_t tag[16]);
+
+/*
+ * seq . head . vouch tag (R26): TICKET's, WAIVE's and VOUCH's answer - the head
+ * the agent passes to the next ARM (R13a), and the tag a host keeps with its
+ * copy so a later restore can prove this head was the key's.
+ */
 static void reply_seq_head(void) {
-  uint8_t r[36];
+  uint8_t r[52];
+  memset(r, 0, sizeof(r));
   put32(r, st.seq);
   memcpy(r + 4, st.head, 32);
-  reply(r, 36);
+  vouch_tag(st.seq, st.head, r + 36);
+  reply(r, 52);
 }
 
 /* ------------------------------------------------------------ the record */
@@ -346,7 +366,7 @@ static void state_load(void) {
  * with a wipe - a wiped key is simply a new device to every host. The
  * firmware's ECC globals (a pending sign may be using them) are put back.
  */
-static int edge_private_key(uint8_t priv[32]) {
+static int edge_secret(const char *info, uint8_t out[32]) {
   uint8_t t = 0;
   if (profilemode == NONENCRYPTEDPROFILE) return 0;
   okeeprom_eeget_ecckey(&t, 132);
@@ -355,15 +375,55 @@ static int edge_private_key(uint8_t priv[32]) {
   memcpy(save_priv, ecc_private_key, 32);
   memcpy(save_pub, ecc_public_key, 65);
   int ok = okcore_flashget_ECC(132) != 0;
-  if (ok) {
-    static const char INFO[] = "onlykey/edge/v1";
-    okcrypto_hkdf_info(NULL, ecc_private_key, priv, 32, (const uint8_t *)INFO, sizeof(INFO) - 1);
-  }
+  if (ok) okcrypto_hkdf_info(NULL, ecc_private_key, out, 32, (const uint8_t *)info, strlen(info));
   memcpy(ecc_private_key, save_priv, 32);
   memcpy(ecc_public_key, save_pub, 65);
   type = save_type;
   memset(save_priv, 0, 32);
   return ok;
+}
+
+static int edge_private_key(uint8_t priv[32]) { return edge_secret("onlykey/edge/v1", priv); }
+
+/*
+ * R26 vouch: the key MACs a head it wrote itself,
+ *   tag = HMAC-SHA256(K_vouch, "OKEDGE-VOUCH-v1" || seq (u32 LE) || head)[0..16]
+ *   K_vouch = HKDF(K132, info "onlykey/edge/vouch/v1")
+ * A MAC, not the checkpoint signature: checking its own ECDSA signature needs
+ * uECC's verify, which a hard-key build may not carry; HMAC needs only the
+ * SHA-256 the firmware has (and is quantum-safe, unlike P-256). Its own HMAC
+ * over SHA256_CTX: the FIDO2 helpers share FIDO2's global hash state.
+ */
+#define VOUCH_BYTES 16
+static int vouch_tag(uint32_t seq, const uint8_t head[32], uint8_t tag[VOUCH_BYTES]) {
+  uint8_t k[32], pad[64], inner[32], seq4[4];
+  if (!edge_secret("onlykey/edge/vouch/v1", k)) return 0;
+  SHA256_CTX ctx;
+  put32(seq4, seq);
+  for (int i = 0; i < 64; i++) pad[i] = (i < 32 ? k[i] : 0) ^ 0x36;
+  sha256_init(&ctx);
+  sha256_update(&ctx, pad, 64);
+  sha256_update(&ctx, (const unsigned char *)"OKEDGE-VOUCH-v1", 15);
+  sha256_update(&ctx, seq4, 4);
+  sha256_update(&ctx, head, 32);
+  sha256_final(&ctx, inner);
+  for (int i = 0; i < 64; i++) pad[i] = (i < 32 ? k[i] : 0) ^ 0x5c;
+  sha256_init(&ctx);
+  sha256_update(&ctx, pad, 64);
+  sha256_update(&ctx, inner, 32);
+  sha256_final(&ctx, inner);
+  memcpy(tag, inner, VOUCH_BYTES);
+  memset(k, 0, 32);
+  memset(pad, 0, 64);
+  memset(inner, 0, 32);
+  return 1;
+}
+
+/* constant time: a tag check that leaks how many bytes matched helps a forger */
+static int same_ct(const uint8_t *a, const uint8_t *b, int n) {
+  uint8_t d = 0;
+  for (int i = 0; i < n; i++) d |= a[i] ^ b[i];
+  return d == 0;
 }
 
 static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
@@ -417,13 +477,13 @@ static void checkpoint(void) {
 /* ------------------------------------------------------------ the weld */
 
 /* SHA256("OKEDGE-WAIVE-v1" || each owed seq (u32 LE, oldest first) || overflow) (lib tickets.waiveSubject) */
-static void waive_subject(uint8_t out[32]) {
-  uint8_t seq4[4], ov = st.overflow ? 1 : 0;
+static void waive_subject(const struct edge_state *s, uint8_t out[32]) {
+  uint8_t seq4[4], ov = s->overflow ? 1 : 0;
   SHA256_CTX ctx;
   sha256_init(&ctx);
   sha256_update(&ctx, (const unsigned char *)"OKEDGE-WAIVE-v1", 15);
-  for (int i = 0; i < st.owed_n; i++) {
-    put32(seq4, st.owed[i].seq);
+  for (int i = 0; i < s->owed_n; i++) {
+    put32(seq4, s->owed[i].seq);
     sha256_update(&ctx, seq4, 4);
   }
   sha256_update(&ctx, &ov, 1);
@@ -445,47 +505,51 @@ static void waive_subject(uint8_t out[32]) {
  * and persists it before the operation's result is released (R4).
  * `expect`: REPLAY's check - the first 8 bytes of the head the copy stored
  * after this link; a weld that gives another head changes nothing (returns 0).
+ * `s`: the state it welds into - the record (st: saved, held for pickup), or
+ * the tentative replay (tent: RAM only, R26).
  */
-static int weld_in(const uint8_t link[LINK_BYTES], const uint8_t *reveal, const uint8_t *expect) {
+static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const uint8_t *reveal, const uint8_t *expect) {
   uint8_t head[32], w[32];
   uint32_t seq = get32(link);
-  H(head, "OKEDGE-LINK-v1", st.head, 32, link, LINK_BYTES, NULL, 0);
+  H(head, "OKEDGE-LINK-v1", s->head, 32, link, LINK_BYTES, NULL, 0);
   if (expect && memcmp(head, expect, 8) != 0) return 0;
 
   uint8_t op = link[4], decision = link[5];
   if (op == OP_SIGN || op == OP_DECRYPT) {
     if (decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS) {
-      if (st.owed_n == OWED_MAX) {
-        memmove(&st.owed[0], &st.owed[1], sizeof(st.owed[0]) * (OWED_MAX - 1));
-        st.owed_n--;
-        st.overflow = 1;
+      if (s->owed_n == OWED_MAX) {
+        memmove(&s->owed[0], &s->owed[1], sizeof(s->owed[0]) * (OWED_MAX - 1));
+        s->owed_n--;
+        s->overflow = 1;
       }
-      st.owed[st.owed_n].seq = seq;
-      memcpy(st.owed[st.owed_n].head, head, 32);
-      st.owed_n++;
+      s->owed[s->owed_n].seq = seq;
+      memcpy(s->owed[s->owed_n].head, head, 32);
+      s->owed_n++;
     }
   } else if (op == OP_TICKET) {
-    waive_subject(w);
+    waive_subject(s, w);
     if (decision == CODE_NEEDS_REVIEW && (link[7] & FLAG_PRESS_OBSERVED) && memcmp(link + 8, w, 32) == 0) {
-      st.owed_n = 0;
-      st.overflow = 0;
+      s->owed_n = 0;
+      s->overflow = 0;
     } else {
       uint32_t ref = get32(link + 40);
-      for (int k = 0; k < st.owed_n; k++) {
-        if (st.owed[k].seq != ref) continue;
-        memmove(&st.owed[k], &st.owed[k + 1], sizeof(st.owed[0]) * (st.owed_n - k - 1));
-        st.owed_n--;
+      for (int k = 0; k < s->owed_n; k++) {
+        if (s->owed[k].seq != ref) continue;
+        memmove(&s->owed[k], &s->owed[k + 1], sizeof(s->owed[0]) * (s->owed_n - k - 1));
+        s->owed_n--;
         break;
       }
     }
-    memset(&st.owed[st.owed_n], 0, sizeof(st.owed[0]) * (OWED_MAX - st.owed_n));
+    memset(&s->owed[s->owed_n], 0, sizeof(s->owed[0]) * (OWED_MAX - s->owed_n));
   }
-  st.seq = seq;
-  memcpy(st.head, head, 32);
-  memcpy(st.last_link, link, LINK_BYTES);
+  s->seq = seq;
+  memcpy(s->head, head, 32);
+  memcpy(s->last_link, link, LINK_BYTES);
   armed = 0; /* R13a: any link spends or clears the arm */
-  state_save();
-  hold(seq, link, head, reveal);
+  if (s == &st) {
+    state_save();
+    hold(seq, link, head, reveal);
+  }
   return 1;
 }
 
@@ -507,8 +571,11 @@ static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, co
    * the newer links - from here a replayed link could only be spliced onto a
    * history it never followed. Replay is closed for good.
    */
-  if (st.restored) st.replay_closed = 1;
-  weld_in(link, reveal, NULL);
+  if (st.restored) {
+    st.replay_closed = 1;
+    tent_active = 0; /* R26: a link of its own discards the tentative replay - it writes onto the backup's head */
+  }
+  weld_in(&st, link, reveal, NULL);
 }
 
 /* ------------------------------------------------------------ budgets */
@@ -705,32 +772,49 @@ static void waive_pressed(void) {
   if (!owes()) { status(EDGE_NO_TICKET_WAITING); return; } /* paid while it waited */
   uint8_t subject[32];
   uint32_t oldest = st.owed_n ? st.owed[0].seq : (st.seq == SEQ_NONE ? 0 : st.seq + 1);
-  waive_subject(subject);
+  waive_subject(&st, subject);
   append(OP_TICKET, CODE_NEEDS_REVIEW, 0, FLAG_PRESS_OBSERVED, subject, oldest, 0, NULL); /* the weld clears the debts */
   reply_seq_head();
 }
 
 /*
- * R26: the person accepts "restored to #N, the newest your copies hold" with a
- * press. If the copies held more than the key took back (the replay stopped at
- * a fork, or the key wrote its own link first), the key links a LOSS over that
- * range - grant_id = the first seq not replayed, the subject's first 4 bytes =
- * the newest the copies hold (CHOSEN, pending the spec) - and leaves restoring.
- * reply: seq . head.
+ * R26: the person accepts "restored to #N" with a press. The tentative replay
+ * becomes the record ONLY if the host presents the key's own vouch tag for
+ * exactly the tentative (seq, head); otherwise it is thrown away and the LOSS
+ * covers everything since the backup's head (EDGE:11, not vouched). Then, if
+ * the copies held more than what is committed, a pressed LOSS link over that
+ * range - grant_id = the first seq lost, the subject's first 4 bytes = the
+ * newest the copies hold (0xFFFFFFFF: not said) - and the key leaves restoring.
+ * reply: seq . head . tag after it, or EDGE:11.
  */
 static void replay_done_pressed(void) {
   if (!st.restored) { status(EDGE_REPLAY_CLOSED); return; }
-  uint32_t newest = press.id;
+  uint8_t want[VOUCH_BYTES];
+  int ok = tent_active && tent.seq == press.vouch_seq && vouch_tag(tent.seq, tent.head, want) &&
+           same_ct(want, press.verified, VOUCH_BYTES);
+  if (ok) {
+    uint32_t gen = st.gen;
+    tent.gen = gen;
+    tent.restored = 0;
+    tent.replay_closed = 0;
+    st = tent;
+    hold(st.seq, st.last_link, st.head, NULL);
+  }
+  memset(&tent, 0, sizeof(tent));
+  tent_active = 0;
   st.restored = 0;
   st.replay_closed = 0;
-  if (newest != SEQ_NONE && newest > st.replayed_to) {
+  st.replayed_to = st.seq;
+  uint32_t newest = press.id;
+  uint32_t from = st.seq == SEQ_NONE ? 0 : st.seq + 1;
+  if (!ok || (newest != SEQ_NONE && newest >= from)) {
     uint8_t subject[32] = {0};
     put32(subject, newest);
-    append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, st.replayed_to + 1, 0, NULL);
+    append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, from, 0, NULL);
   } else {
     state_save();
   }
-  reply_seq_head();
+  if (ok) reply_seq_head(); else status(EDGE_NOT_VOUCHED);
 }
 
 /*
@@ -748,13 +832,12 @@ static void replay_done_pressed(void) {
 static void replay(const uint8_t *buffer) {
   uint8_t link[LINK_BYTES];
   if (!st.restored || st.replay_closed) { status(EDGE_REPLAY_CLOSED); return; }
+  if (!tent_active) { tent = st; tent_active = 1; } /* tentative: the record keeps the backup's state */
   memset(link, 0, sizeof(link));
   memcpy(link, buffer + 6, REPLAY_BYTES);
   uint32_t seq = get32(link);
-  if (seq != (st.seq == SEQ_NONE ? 0 : st.seq + 1)) { status(EDGE_REPLAY_MISMATCH); return; }
-  uint32_t was = st.replayed_to;
-  st.replayed_to = seq; /* saved by the weld */
-  if (!weld_in(link, NULL, buffer + 6 + REPLAY_BYTES)) { st.replayed_to = was; status(EDGE_REPLAY_MISMATCH); return; }
+  if (seq != (tent.seq == SEQ_NONE ? 0 : tent.seq + 1)) { status(EDGE_REPLAY_MISMATCH); return; }
+  if (!weld_in(&tent, link, NULL, buffer + 6 + REPLAY_BYTES)) { status(EDGE_REPLAY_MISMATCH); return; }
   status(EDGE_OK);
 }
 
@@ -837,6 +920,7 @@ void okplugin_edge_wipe(void) {
   st.seq = SEQ_NONE;
   loaded = 1;
   armed = 0;
+  tent_active = 0;
   pend.active = 0;
   press_drop();
 }
@@ -897,6 +981,7 @@ void okplugin_edge_restore(const uint8_t *in, int len) {
     }
   }
   st.restored = 1;       /* R26: restoring - replay, then REPLAY_DONE with a press */
+  tent_active = 0;
   st.replay_closed = 0;
   st.replayed_to = st.seq;
   memset(held, 0, sizeof(held));
@@ -958,7 +1043,14 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     }
     case OKEDGE_CHECKPOINT:
+      /* R26: nothing is signed while restoring - or a host replays invented links and gets their head signed */
+      if (st.restored) { status(EDGE_RESTORING); return; }
       checkpoint();
+      return;
+    case OKEDGE_VOUCH:
+      /* R26: seq . head . tag for the current head; never while restoring, for the same reason */
+      if (st.restored) { status(EDGE_RESTORING); return; }
+      reply_seq_head();
       return;
     case OKEDGE_PUBKEY:
       reply(ident.pub, 64);
@@ -1063,11 +1155,17 @@ void okplugin_edge_recv(uint8_t *buffer) {
       replay(buffer);
       return;
     case OKEDGE_REPLAY_DONE: {
-      /* the newest seq the host's copies hold (u32) - the "#N" the person accepts with the press */
+      /*
+       * [6..9] the seq the host replayed to, [10..25] the key's vouch tag for
+       * it, [26..29] the newest seq its copies hold (CHOSEN, pending the spec:
+       * so a LOSS can name what was not vouched; 0xFFFFFFFF = not said)
+       */
       uint8_t what[32];
       press_drop();
       if (!st.restored) { status(EDGE_REPLAY_CLOSED); return; }
-      press.id = get32(buffer + 6);
+      press.vouch_seq = get32(buffer + 6);
+      memcpy(press.verified, buffer + 10, VOUCH_BYTES);
+      press.id = get32(buffer + 26);
       H(what, "OKEDGE-REPLAY-DONE", buffer + 6, 4, st.head, 32, NULL, 0);
       press_wait(PRESS_REPLAY_DONE, what);
       return;
