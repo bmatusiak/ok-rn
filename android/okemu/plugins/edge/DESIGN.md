@@ -6,6 +6,68 @@ The firmware half of OnlyKey Edge, as a plugin: soft key (ok-rn) and the desktop
 - The **device chain** records every decision the key makes.
 - Each **budget** is its own `bmatusiak/provable` series. Its genesis is started by a **physical press** and **signed by the key**, and the signature commits to the device chain's head before it, so budgets sit in the chain like blocks.
 
+## 0. Minimal firmware: the key is a notary (owner, 2026-10-02) - this section wins
+"The idea is for the smallest minimal firmware addition, because a device can only hold so much logic." So **edge JS (`node-onlykey-lib/edge`) does the work, and the key adds only what a host cannot be trusted with**, the way openpgp.js builds a packet and the key signs it.
+
+**Why the key cannot just sign what edge JS hands it.** The host asking is the agent's own machine, the thing being watched. If the key signed host-built links, a compromised agent could leave a use out, describe it as something else, or keep two histories. So the key **notarises from facts it saw itself**, and holds the one thing that pins history down: the head.
+
+**The firmware keeps (the whole addition):**
+
+| What | Where | Bytes |
+|---|---|---|
+| `seq`, `head` | flash, double-buffered | 36 |
+| the latest use's `seq` + `head`, and whether it has its ticket (R16) | flash | 37 |
+| the latest link (so a crash never loses it) | flash | 64 |
+| live budget ids (a reboot links their end) | flash | 16 |
+| live budgets: seed, counters, scopes | **RAM only** (a lock or reboot ends them, R15) | ~70 each, ≤ 4 |
+| the last 8 links (+ a self-press's reveal) for pickup | **RAM only** | ~1 KB |
+
+**The firmware does:**
+1. **The weld at each sign/decrypt decision**, built from what it did: SHA-256 of the message it was asked to approve, op, slot, the decision (approve, deny, timeout, self-press), and the budget step. One hash, one link.
+2. **The budget decision.** Self-press only inside a live budget's scope with room, while unlocked and out of config mode. It reveals `v_i` and `HMAC(v_i, subject)`.
+3. **Two signatures with the Edge key (K132 → HKDF), never reachable by a generic sign:**
+   - the **budget genesis**, over fields it computes itself, made only at a **physical press**;
+   - **checkpoints** over `(seq, head)`.
+4. **The ticket link** for the latest use, if it hasn't one yet (R16). It also refuses the next self-press until then, under a `ticket_required` budget (R18).
+
+**Edge JS does everything else:**
+- builds budget requests;
+- stores the chain (phone, Worker, MCP);
+- verifies, and detects gaps and rollback;
+- pairs tickets;
+- tracks budget spend from the links themselves;
+- holds the copies and assembles the backup entry;
+- runs every screen.
+
+If a host never picks a link up, the head still counts it, so the omission shows as a gap: detected, never hidden.
+
+**Wire (replaces §5 from step 3 on):**
+
+| Sub-op | Request | Reply |
+|---|---|---|
+| `01 HEAD` | – | `seq` u32 · `head` 32 · `oldest` u32 (oldest pickable seq) · device_id 16 |
+| `02 PICKUP` | `from` u32 · `count` u8 ≤ 8 | per link: the link; then its head, and `v_i` + `mac` when it is a self-press |
+| `03 CHECKPOINT` | – | `seq` u32 · `head` 32; then the signature |
+| `04 PUBKEY` | – | the Edge public key X‖Y |
+| `10 GRANT_CREATE` | scopes · reason_hash · flags | after the press: id u32 · uses u16 · `G` 32 · chain_seq u32; then the signature |
+| `12 GRANT_REVOKE` | id u32 | text |
+| `20 TICKET` | ref_seq u32 · code u8 · msg_hash 32 | text |
+
+**Leaves the firmware** (steps 1–2 built them; step 3 removes them):
+- the 3 KB flash ring and `READ`: replaced by `PICKUP` from RAM, plus the latest link in flash;
+- `GRANT_LIST`: edge JS reads live budgets and spend from the chain;
+- `LAST_REVEAL`: folded into `PICKUP`.
+
+**Build order from here:**
+- **Step 3:** slim to this section, and add `TICKET` (R16/R18) and `CHECKPOINT`.
+- **Step 4:**
+  - the lib's device calls (`edge.head/pickup/checkpoint/pubkey/grant/revoke/ticket`, L4) and `capabilities().edge` (L5);
+  - the Edge tab off the fake key;
+  - the plugin's e2e test on the Pixel soft key;
+  - the kit test on Windows, the VM and the Pi.
+
+Sections 1–7 below record the survey and steps 1–2 as built; where they differ from this section, this section wins.
+
 Facts below were surveyed on the staged 3.1.0 tree (`.stage/libraries/onlykey/okcore.cpp` = "core", `okcrypto.cpp` = "crypto", `sketch/OnlyKey.ino` = "ino"); line numbers are from that survey.
 
 ## 1. Identity and the Edge key
