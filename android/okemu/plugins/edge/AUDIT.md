@@ -86,3 +86,24 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - a checkpoint verifies, but only over its own head.
 
 Not built yet: R19 (a composite pair under one ARM and one ticket - the spec asks the plan to confirm the call pattern first). Until then a composite sign under a budget takes a press for its second half.
+
+## Byte costs (firmware.md §3.1: the running total for a hard-key port)
+
+**Measured 2026-10-02** by compiling this plugin alone for the hard key's CPU: the Teensy 1.6.5-r5 toolchain (`arm-none-eabi-g++`, `-Os -mcpu=cortex-m4 -mthumb`, the firmware's flags), on the Pi, against the 3.1.0 libraries. This counts the plugin's own code. The 7 hooks add a few call sites in the core, and the SHA-256, uECC, HKDF, RNG, flash and press code it calls is already in the firmware.
+
+| Kind | Bytes | What |
+|---|---|---|
+| **Code** (`.text`) | **5,906** | the whole plugin. Largest: the request handlers (`okplugin_edge_recv`, 1,660, with most handlers inlined), the press dispatcher (`okplugin_edge_decision`, 856, with the four press handlers inlined), the weld (`weld_in`, 396), the record (`state_decode` 300, `state_save` 260, `state_load` 152), restore 272, backup 168 |
+| **Constants** (`.rodata`) | 213 | tags, magics, the status hex digits |
+| **RAM** (`.bss`) | **2,064** | the 8 held links for PICKUP 1,088 (8 × 136), 4 live budgets 400 (4 × 100), the record's copy 256, the press-gated request 200, the Edge public key and device id 81, the pending decision 37, the arm 1 |
+| **Flash** (the record) | 268, written double-buffered | see below |
+
+**The record, by rule** (268 bytes):
+- the chain (R2-R5): magic 8, generation 4, seq 4, head 32, the latest link 64, check 4 = **116**;
+- the debts (R16-R18): count 1, overflow 1, 4 owed × (seq 4 + head 32) = **146**;
+- restore and replay (R26): restoring 1, replay closed 1, the last replayed seq 4 = **6**.
+
+**What a port could trim, if room is short** (not done; each is a trade):
+- held links 8 → 4 halves the largest RAM item (-544), at the cost of a host picking up more often;
+- the record's last link (64) is only there so PICKUP still works after a reboot;
+- the soft key gives each of the record's two copies its own 2 KB sector; a hard key needs only 2 × 268 bytes of power-safe storage, which phase 0 must find (no free sector today).

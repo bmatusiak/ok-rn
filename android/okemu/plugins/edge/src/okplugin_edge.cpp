@@ -405,37 +405,6 @@ static void checkpoint(void) {
 
 /* ------------------------------------------------------------ the weld */
 
-/*
- * R16: every approved sign/decrypt - pressed or self-pressed - owes a ticket.
- * The key keeps the latest 4; a 5th pushes the oldest off, and from then on
- * only a WAIVE can clear it (overflow). The use runs anyway: only a human
- * press can make a 5th (no self-press while anything is owed, R18). The same
- * rule for a link the key writes and one it is handed back by REPLAY (R26).
- */
-static void owe_if_use(uint8_t op, uint8_t decision, uint32_t seq, const uint8_t head[32]) {
-  if (!((op == OP_SIGN || op == OP_DECRYPT) && (decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS))) return;
-  if (st.owed_n == OWED_MAX) {
-    memmove(&st.owed[0], &st.owed[1], sizeof(st.owed[0]) * (OWED_MAX - 1));
-    st.owed_n--;
-    st.overflow = 1;
-  }
-  st.owed[st.owed_n].seq = seq;
-  memcpy(st.owed[st.owed_n].head, head, 32);
-  st.owed_n++;
-}
-
-/* drop one owed use (a ticket paid it); 0 if it was not on the list */
-static int owed_pay(uint32_t ref) {
-  for (int k = 0; k < st.owed_n; k++) {
-    if (st.owed[k].seq != ref) continue;
-    memmove(&st.owed[k], &st.owed[k + 1], sizeof(st.owed[0]) * (st.owed_n - k - 1));
-    st.owed_n--;
-    memset(&st.owed[st.owed_n], 0, sizeof(st.owed[0]));
-    return 1;
-  }
-  return 0;
-}
-
 /* SHA256("OKEDGE-WAIVE-v1" || each owed seq (u32 LE, oldest first) || overflow) (lib tickets.waiveSubject) */
 static void waive_subject(uint8_t out[32]) {
   uint8_t seq4[4], ov = st.overflow ? 1 : 0;
@@ -451,16 +420,70 @@ static void waive_subject(uint8_t out[32]) {
 }
 
 /*
- * One link (lib chain.encodeLink), welded
+ * THE weld - the one function every link goes through, whether the key writes
+ * it or REPLAY hands it back (firmware.md §3.1: "replay is a loop over the
+ * same rule, not a second copy of it"):
  *   head[n] = SHA256("OKEDGE-LINK-v1" || head[n-1] || link[n])   (lib chain.weld)
- * and persisted before the operation's result is released (R4).
+ * then the debt rule (R16-R18; lib tickets.keyDebts replays the same rule):
+ *   - an approved sign/decrypt, pressed or self-pressed, owes a ticket. The key
+ *     keeps the latest 4; a 5th pushes the oldest off for good (overflow: only
+ *     a WAIVE clears it). Only a human press can make a 5th (R18);
+ *   - a WAIVE - a ticket with code 0x8F, the press flag and the subject over
+ *     exactly this list and overflow - clears the list and the overflow;
+ *   - any other ticket pays its ref_seq, if that use is still on the list;
+ * and persists it before the operation's result is released (R4).
+ * `expect`: REPLAY's check - the first 8 bytes of the head the copy stored
+ * after this link; a weld that gives another head changes nothing (returns 0).
  */
+static int weld_in(const uint8_t link[LINK_BYTES], const uint8_t *reveal, const uint8_t *expect) {
+  uint8_t head[32], w[32];
+  uint32_t seq = get32(link);
+  H(head, "OKEDGE-LINK-v1", st.head, 32, link, LINK_BYTES, NULL, 0);
+  if (expect && memcmp(head, expect, 8) != 0) return 0;
+
+  uint8_t op = link[4], decision = link[5];
+  if (op == OP_SIGN || op == OP_DECRYPT) {
+    if (decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS) {
+      if (st.owed_n == OWED_MAX) {
+        memmove(&st.owed[0], &st.owed[1], sizeof(st.owed[0]) * (OWED_MAX - 1));
+        st.owed_n--;
+        st.overflow = 1;
+      }
+      st.owed[st.owed_n].seq = seq;
+      memcpy(st.owed[st.owed_n].head, head, 32);
+      st.owed_n++;
+    }
+  } else if (op == OP_TICKET) {
+    waive_subject(w);
+    if (decision == CODE_NEEDS_REVIEW && (link[7] & FLAG_PRESS_OBSERVED) && memcmp(link + 8, w, 32) == 0) {
+      st.owed_n = 0;
+      st.overflow = 0;
+    } else {
+      uint32_t ref = get32(link + 40);
+      for (int k = 0; k < st.owed_n; k++) {
+        if (st.owed[k].seq != ref) continue;
+        memmove(&st.owed[k], &st.owed[k + 1], sizeof(st.owed[0]) * (st.owed_n - k - 1));
+        st.owed_n--;
+        break;
+      }
+    }
+    memset(&st.owed[st.owed_n], 0, sizeof(st.owed[0]) * (OWED_MAX - st.owed_n));
+  }
+  st.seq = seq;
+  memcpy(st.head, head, 32);
+  memcpy(st.last_link, link, LINK_BYTES);
+  armed = 0; /* R13a: any link spends or clears the arm */
+  state_save();
+  hold(seq, link, head, reveal);
+  return 1;
+}
+
+/* A link the key writes itself (lib chain.encodeLink), as its next seq. */
 static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
     uint32_t grant_id, uint16_t grant_step, const uint8_t *reveal) {
-  uint8_t link[LINK_BYTES], head[32];
+  uint8_t link[LINK_BYTES];
   memset(link, 0, sizeof(link));
-  uint32_t seq = st.seq == SEQ_NONE ? 0 : st.seq + 1;
-  put32(link, seq);
+  put32(link, st.seq == SEQ_NONE ? 0 : st.seq + 1);
   link[4] = op;
   link[5] = decision;
   link[6] = slot;
@@ -468,20 +491,13 @@ static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, co
   memcpy(link + 8, subject, 32);
   put32(link + 40, grant_id);
   put16(link + 44, grant_step);
-  H(head, "OKEDGE-LINK-v1", st.head, 32, link, LINK_BYTES, NULL, 0);
-  st.seq = seq;
-  memcpy(st.head, head, 32);
-  memcpy(st.last_link, link, LINK_BYTES);
-  armed = 0; /* R13a: any link spends or clears the arm */
   /*
    * R26: a link of the key's own while restoring forks from any copy holding
    * the newer links - from here a replayed link could only be spliced onto a
    * history it never followed. Replay is closed for good.
    */
   if (st.restored) st.replay_closed = 1;
-  owe_if_use(op, decision, seq, head);
-  state_save();
-  hold(seq, link, head, reveal);
+  weld_in(link, reveal, NULL);
 }
 
 /* ------------------------------------------------------------ budgets */
@@ -659,10 +675,7 @@ static void waive_pressed(void) {
   uint8_t subject[32];
   uint32_t oldest = st.owed_n ? st.owed[0].seq : (st.seq == SEQ_NONE ? 0 : st.seq + 1);
   waive_subject(subject);
-  st.owed_n = 0;
-  st.overflow = 0;
-  memset(st.owed, 0, sizeof(st.owed));
-  append(OP_TICKET, CODE_NEEDS_REVIEW, 0, FLAG_PRESS_OBSERVED, subject, oldest, 0, NULL);
+  append(OP_TICKET, CODE_NEEDS_REVIEW, 0, FLAG_PRESS_OBSERVED, subject, oldest, 0, NULL); /* the weld clears the debts */
   reply_seq_head();
 }
 
@@ -702,35 +715,15 @@ static void replay_done_pressed(void) {
 #define REPLAY_BYTES 46
 #define REPLAY_HEAD_BYTES 8
 static void replay(const uint8_t *buffer) {
-  uint8_t link[LINK_BYTES], head[32];
+  uint8_t link[LINK_BYTES];
   if (!st.restored || st.replay_closed) { status(EDGE_REPLAY_CLOSED); return; }
   memset(link, 0, sizeof(link));
   memcpy(link, buffer + 6, REPLAY_BYTES);
   uint32_t seq = get32(link);
   if (seq != (st.seq == SEQ_NONE ? 0 : st.seq + 1)) { status(EDGE_REPLAY_MISMATCH); return; }
-  H(head, "OKEDGE-LINK-v1", st.head, 32, link, LINK_BYTES, NULL, 0);
-  if (memcmp(head, buffer + 6 + REPLAY_BYTES, REPLAY_HEAD_BYTES) != 0) { status(EDGE_REPLAY_MISMATCH); return; }
-
-  uint8_t op = link[4], decision = link[5], flags = link[7];
-  uint32_t ref = get32(link + 40);
-  if (op == OP_TICKET) {
-    uint8_t w[32];
-    waive_subject(w);
-    if (decision == CODE_NEEDS_REVIEW && (flags & FLAG_PRESS_OBSERVED) && memcmp(link + 8, w, 32) == 0) {
-      st.owed_n = 0;
-      st.overflow = 0;
-      memset(st.owed, 0, sizeof(st.owed));
-    } else {
-      owed_pay(ref);
-    }
-  }
-  st.seq = seq;
-  memcpy(st.head, head, 32);
-  memcpy(st.last_link, link, LINK_BYTES);
-  st.replayed_to = seq;
-  owe_if_use(op, decision, seq, head);
-  state_save();
-  hold(seq, link, head, NULL);
+  uint32_t was = st.replayed_to;
+  st.replayed_to = seq; /* saved by the weld */
+  if (!weld_in(link, NULL, buffer + 6 + REPLAY_BYTES)) { st.replayed_to = was; status(EDGE_REPLAY_MISMATCH); return; }
   status(EDGE_OK);
 }
 
@@ -999,8 +992,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       sha256_update(&ctx, &code, 1);
       sha256_update(&ctx, buffer + 11, 32);
       sha256_final(&ctx, subject);
-      owed_pay(ref);
-      append(OP_TICKET, code, 0, 0, subject, ref, 0, NULL);
+      append(OP_TICKET, code, 0, 0, subject, ref, 0, NULL); /* the weld pays ref */
       reply_seq_head();
       return;
     }
