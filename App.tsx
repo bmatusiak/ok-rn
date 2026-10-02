@@ -874,7 +874,7 @@ function Shell() {
               checking={checking}
             />
           ) : tab === 'This Key' ? (
-            <KeyScreen emu={emu} keys={keys} />
+            <KeyScreen emu={emu} keys={keys} configMode={configMode === PRE} onCheckConfig={() => void checkConfig()} checking={checking} />
           ) : tab === 'Slots' ? (
             openSlot ? (
               <SlotEditorScreen

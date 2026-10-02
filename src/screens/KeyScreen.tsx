@@ -96,7 +96,19 @@ function describeBuild(caps: EmuSession['capabilities']): string {
   return caps.debugConsole ? 'debug (console)' : 'production (no console)';
 }
 
-export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
+/*
+ * configMode / onCheckConfig / checking: the same "Check config mode" the login
+ * door shows. In testing mode the door is skipped, so after config mode locks
+ * the key its PIN goes in HERE - and without the button the app never learned
+ * the key was in config mode (Restore and "Set a backup key" stayed greyed).
+ */
+export function KeyScreen({emu, keys, configMode = false, onCheckConfig, checking = false}: {
+  emu: EmuSession;
+  keys: KeyControl;
+  configMode?: boolean;
+  onCheckConfig?: () => void;
+  checking?: boolean;
+}) {
 
   if (emu.state === 'halted') {
     return (
@@ -157,15 +169,20 @@ export function KeyScreen({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
    * entirely, so a locked device landed here with nothing to press. The same
    * pad the door uses works just as well inside, and it means there is exactly
    * one place a PIN is ever typed.
+   *
+   * While config mode waits for its check the pad STAYS, like the door's: the
+   * key answers UNLOCKED from inside config mode the moment the PIN lands, and
+   * switching to the unlocked view then took "Check config mode" away before
+   * it could be pressed (Pixel, 2026-10-02).
    */
-  if (emu.device !== 'unlocked') {
+  if (emu.device !== 'unlocked' || configMode) {
     return (
       <ScrollView
         style={styles.root}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
         <View style={styles.locked}>
-          <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} led={keys.backend === 'embedded' ? emu.led : undefined} />
+          <PinScreen onPress={emu.press} onPressRun={emu.pressRun} canPress={emu.canPress} model={emu.model} settling={emu.settling} led={keys.backend === 'embedded' ? emu.led : undefined} configMode={configMode} onCheckConfig={onCheckConfig} checking={checking} />
         </View>
       </ScrollView>
     );
