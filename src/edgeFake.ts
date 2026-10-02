@@ -110,6 +110,7 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
     if (this.live.length >= MAX_LIVE_BUDGETS) throw new Error(`edge (fake): ${MAX_LIVE_BUDGETS} budgets are already live`);
     if (!scopes.length || scopes.length > 4) throw new Error('edge (fake): a budget has 1 to 4 scopes');
     const uses = scopes.reduce((n, sc) => n + sc.cap, 0);
+    if (uses > grants.MAX_USES) throw new Error(`edge (fake): a budget has at most ${grants.MAX_USES} uses`); // owner: 255
     const seed = new Uint8Array(32).map((_, i) => (i * 37 + this.links.length) & 0xff);
     const grantId = this.links.length + 1;
     const subject = sha(`grant ${grantId}: ${reason}`);

@@ -50,7 +50,7 @@ Region layout (sectors from 0x1000):
 
 ## 4. Budgets: provable series, signed at the press
 - **GRANT_CREATE** `{scopes (1–4 × op, slot, cap), reason_hash, ticket_required}`:
-  1. Validate: unlocked, not config mode, ≤ 4 live, Σcap ≤ 1024.
+  1. Validate: unlocked, not config mode, ≤ 4 live, Σcap ≤ 255 (owner, 2026-10-02: "1 budget max chain is 255").
   2. Draw a 32-byte seed (`RNG2`, core:7051) and compute `G = H^n(seed)`.
   3. Wait for a **physical press** via `okcore_prime_user_confirmation(OKEDGE, …)`, with an `OKEDGE` branch in `okcore_run_pending_op`, anchored on the unique `    } else if (packet_buffer_details[0] == OKHMAC) {`. No press means no budget.
   4. On the press:
