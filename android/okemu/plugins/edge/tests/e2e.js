@@ -7,9 +7,11 @@
  * library stack (app.edge = node-onlykey-lib/plugins/edge): every link, the
  * budget's opening, the reveals and the chain are checked by the library.
  *
- * Every approved use owes a ticket and nothing automatic happens while one is
- * owed (onlykey-edge firmware.md R16, R18): a test that opens a budget first
- * clears what earlier ones left owed, with a pressed WAIVE.
+ * A use owes a ticket when it was ARMed, or when a live budget covers its op
+ * and slot (onlykey-edge firmware.md R16; the key sets bits 4/5 of the link at
+ * decision time). Nothing automatic happens while one is owed (R18): a test
+ * that opens a budget first clears what earlier ones left owed, with a pressed
+ * WAIVE.
  *
  * Everything from the app comes in through `ctx` (no relative imports into
  * ok-rn): getOnlyKey, OkEmu, IFACE, protocol, PIN, pressDigits, lib (edge, hmacSha256).
@@ -21,6 +23,8 @@ const OP_SIGN = 1;
 const APPROVE = 1;
 const SELF_PRESS = 4;
 const PRESS_OBSERVED = 0x01;
+const OWES_TICKET = 0x10; /* R16: the key decided this use owes a ticket */
+const ARMED = 0x20;       /* R16: an arm was waiting when the request was primed */
 const OP_GRANT_CREATE = 6;
 
 module.exports = function register({it}, ctx) {
@@ -104,31 +108,46 @@ module.exports = function register({it}, ctx) {
     }
   });
 
-  it('edge: a pressed sign becomes a link the library verifies, and owes its ticket', async ({log, assert}) => {
-    const app = await ready(log);
+  /* one pressed agent sign, linked and picked up: {signed, after, f, l} */
+  async function pressedUse(app, text, log) {
     const before = await app.edge.head();
-    const signed = await agentSign(app, 'pressed', {press: true});
+    const signed = await agentSign(app, text, {press: true});
     const after = await headPast(app, before.seq);
-    log(`after the press: head #${after.seq}, oldest held #${after.oldest}, live ${JSON.stringify(after.live)}`);
     const [l] = await app.edge.pickup(after.seq, 1);
     const f = chain.decodeLink(l.link);
     log(`#${f.seq} op ${f.op} decision ${f.decision} flags ${f.flags} slot ${f.slot}`);
-    assert.equal(f.op, OP_SIGN);
-    assert.equal(f.decision, APPROVE);
-    assert.ok(f.flags & PRESS_OBSERVED, 'a pressed approve carries the press flag');
-    log(`subject ${hex(f.subject).slice(0, 16)}; sha256(payload) ${hex(sha256(signed.payload)).slice(0, 16)}; sha256(message) ${hex(sha256(signed.message)).slice(0, 16)}; message ${hex(signed.message).slice(0, 16)}`);
-    assert.equal(hex(f.subject), hex(sha256(signed.payload)), 'the subject is not SHA-256 of what was submitted');
-    if (before.seq !== null) {
-      const [prev] = await app.edge.pickup(before.seq, 1);
-      const r = chain.verify([l], {fromSeq: after.seq, fromHead: prev.head, expectHead: {seq: after.seq, head: after.head}});
+    return {before, signed, after, f, l};
+  }
+
+  it('edge: a pressed sign becomes a link the library verifies; it owes its ticket only on a covered slot (R16)', async ({log, assert}) => {
+    const app = await ready(log);
+    await clearDebts(app, log);
+
+    /* no budget covers agent sign 222: the person pressed, the person saw it - nothing owed */
+    const free = await pressedUse(app, 'uncovered', log);
+    assert.equal(free.f.op, OP_SIGN);
+    assert.equal(free.f.decision, APPROVE);
+    assert.equal(free.f.flags & (PRESS_OBSERVED | OWES_TICKET | ARMED), PRESS_OBSERVED, 'the uncovered pressed use is not "pressed, owes nothing, not armed"');
+    assert.equal(hex(free.f.subject), hex(sha256(free.signed.payload)), 'the subject is not SHA-256 of what was submitted');
+    if (free.before.seq !== null) {
+      const [prev] = await app.edge.pickup(free.before.seq, 1);
+      const r = chain.verify([free.l], {fromSeq: free.after.seq, fromHead: prev.head, expectHead: {seq: free.after.seq, head: free.after.head}});
       assert.ok(r.ok, `the library rejects the link: ${JSON.stringify(r.failure)}`);
     }
-    /* a human press owes too (R16); its ticket answers with the head after it */
-    assert.ok(after.owed >= 1, 'the pressed use owes nothing');
-    const t = await app.edge.ticket(after.seq, 0x00, sha256('okrn e2e: pressed'));
+    assert.equal(free.after.owed, 0, 'a direct press on a slot no budget covers owes a ticket');
+
+    /* a held budget covers the slot (hold stops paying, not owing): the pressed use owes, bit 4 set, bit 5 clear */
+    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1}], reasonHash: sha256('okrn e2e: cover'), verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
+    assert.equal(await app.edge.hold(g.grantId), true);
+    const owing = await pressedUse(app, 'covered', log);
+    assert.equal(owing.f.flags & (PRESS_OBSERVED | OWES_TICKET | ARMED), PRESS_OBSERVED | OWES_TICKET, 'the covered pressed use is not "pressed, owes, not armed"');
+    assert.equal(owing.after.owed, 1, 'the pressed use on a covered slot owes nothing');
+    /* its ticket answers with the head after it */
+    const t = await app.edge.ticket(owing.after.seq, 0x00, sha256('okrn e2e: pressed'));
     const now = await app.edge.head();
     assert.equal(t.seq, now.seq, 'the ticket reply is not the seq HEAD reports');
-    assert.equal(now.owed, after.owed - 1);
+    assert.equal(now.owed, 0);
+    assert.equal(await app.edge.revoke(g.grantId), true);
   });
 
   it('edge: a budget opened by a press pays ARMed uses, each ticketed, and is revoked', async ({log, assert}) => {

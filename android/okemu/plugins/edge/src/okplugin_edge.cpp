@@ -58,6 +58,8 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define FLAG_PRESS_OBSERVED 0x01
 #define FLAG_BUDGET_SPENT 0x02
 #define FLAG_PREV_NO_TICKET 0x04
+#define FLAG_OWES_TICKET 0x10 /* R16: this use owes a ticket (decided at the sign) */
+#define FLAG_ARMED 0x20       /* R16: an arm was waiting when it was primed */
 
 #define SEQ_NONE 0xFFFFFFFFUL
 #define LINK_BYTES 64
@@ -185,6 +187,7 @@ static struct held_link {
 /* what the confirmation that is waiting for its decision is about */
 static struct {
   uint8_t active, opcode, slot, press;
+  uint8_t armed; /* R16: an arm was waiting when this was primed (matched or not) */
   int8_t budget;
   uint8_t subject[32];
 } pend;
@@ -496,7 +499,8 @@ static void waive_subject(const struct edge_state *s, uint8_t out[32]) {
  * same rule, not a second copy of it"):
  *   head[n] = SHA256("OKEDGE-LINK-v1" || head[n-1] || link[n])   (lib chain.weld)
  * then the debt rule (R16-R18; lib tickets.keyDebts replays the same rule):
- *   - an approved sign/decrypt, pressed or self-pressed, owes a ticket. The key
+ *   - an approved sign/decrypt whose link carries owes_ticket (bit 4, set at the
+ *     sign by the R16 rule - see okplugin_edge_decision) owes a ticket. The key
  *     keeps the latest 4; a 5th pushes the oldest off for good (overflow: only
  *     a WAIVE clears it). Only a human press can make a 5th (R18);
  *   - a WAIVE - a ticket with code 0x8F, the press flag and the subject over
@@ -516,7 +520,7 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
 
   uint8_t op = link[4], decision = link[5];
   if (op == OP_SIGN || op == OP_DECRYPT) {
-    if (decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS) {
+    if ((decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS) && (link[7] & FLAG_OWES_TICKET)) {
       if (s->owed_n == OWED_MAX) {
         memmove(&s->owed[0], &s->owed[1], sizeof(s->owed[0]) * (OWED_MAX - 1));
         s->owed_n--;
@@ -638,6 +642,23 @@ static int budget_for(uint8_t op, uint8_t slot, struct scope **sc_out) {
     }
   }
   return -1;
+}
+
+/*
+ * R16: is this op and slot the agent's - covered by a budget from its opening
+ * until it ends (revoke, expiry, lock/reboot), ON HOLD OR NOT, USED UP OR NOT
+ * (Brad, 2026-10-02: hold stops paying, not owing - otherwise the agent could
+ * use its key outside Edge while Brad is checking it). The same scope match as
+ * budget_for, without its "could pay now" conditions.
+ */
+static int covered(uint8_t op, uint8_t slot) {
+  for (int i = 0; i < MAX_LIVE; i++) {
+    struct budget *b = &budgets[i];
+    if (!alive(b)) continue;
+    for (int j = 0; j < b->nscopes; j++)
+      if (b->scopes[j].op == op && b->scopes[j].slot == slot) return 1;
+  }
+  return 0;
 }
 
 /* R13a: ARM needs a budget that could pay for something - live, not on hold, uses left */
@@ -896,6 +917,7 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   }
   if (opcode != OKSIGN && opcode != OKDECRYPT) return;
   pend.active = 1;
+  pend.armed = armed; /* R16: taken before the token check below can spend the arm */
   pend.opcode = opcode;
   pend.slot = slot;
   H(pend.subject, NULL, msg, msg_len, NULL, 0, NULL, 0); /* SHA-256 of exactly what was submitted */
@@ -935,6 +957,19 @@ void okplugin_edge_decision(int decision) {
   if (!ensure_identity()) return; /* no K132 yet: nothing to chain to */
   uint8_t op = pend.opcode == OKSIGN ? OP_SIGN : OP_DECRYPT;
   uint8_t flags = owes() ? FLAG_PREV_NO_TICKET : 0; /* R17's empty hook */
+  /*
+   * R16 (Brad, 2026-10-02 evening: "a ticket is not owed, because it was a
+   * direct use of the ssh agent, not the Edge agent"). Decided HERE, written
+   * into the link - the chain can't replay "ARMed" or expiry, and weld_in,
+   * REPLAY and the lib's keyDebts read only the link:
+   *   - ARMED (an arm waited at the prime, matched or not): owes, any slot;
+   *   - not ARMed, but a budget covers the op and slot (from its opening to
+   *     its end - on hold or used up, it still covers): owes - the agent's key
+   *     used outside Edge;
+   *   - neither: owes nothing (the person's own keys), still linked.
+   */
+  if (pend.armed) flags |= FLAG_ARMED;
+  if (decision == OKEDGE_DECISION_APPROVE && (pend.armed || covered(op, pend.slot))) flags |= FLAG_OWES_TICKET;
 
   if (decision == OKEDGE_DECISION_APPROVE && pend.budget >= 0) {
     struct scope *sc;

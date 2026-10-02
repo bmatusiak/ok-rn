@@ -65,6 +65,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - **It never self-presses** without an ARM whose token matches this head and this request, under a held or expired budget, or while any ticket is owed (R13a, R15a, R15b, R18). A sign that skips ARM is pressed, and so is one that another program slips in after an ARM.
 - **It never commits replayed history it cannot prove it wrote** (R26): a replay is tentative until the key's own vouch tag for that head is shown, and nothing is vouched or signed while restoring - so invented tickets or a "pressed" waive nobody pressed are thrown away.
 - **Nothing but a ticket or a pressed WAIVE pays a debt** - not a deny, timeout, revoke, lock, reboot or restore (R16).
+- **It never makes a direct press owe when no budget covers it** (R16, changed 2026-10-02). Which approved uses owe is decided by the key at decision time, from ARM and slot: an arm was waiting when the request was primed → owes, whatever slot, whether its token matched or not; no arm, but a live budget's scope covers this op and slot → owes; neither → owes nothing (the person pressed and saw it). A slot is covered from its budget's opening until the budget ends (revoke, expiry, lock/reboot), on hold or not, used up or not - hold stops paying, not owing. The key writes the answer into the link's flags, bit 4 `owes_ticket` (0x10) and bit 5 `armed` (0x20), and weld_in, REPLAY and the library's `keyDebts` read the debt from bit 4 - none of them could replay "was it ARMed" or "had the budget expired" afterwards.
 - **It never writes** the 11 data sectors (0x3A800+) or the firmware hash range (0x6060–0x3A05F).
 - **In config mode** `OKEDGE` is dropped like any message not on its allow-list. No self-press happens there either.
 
@@ -74,16 +75,16 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - a pressed sign is linked, with SHA-256 of what was submitted;
 - a budget opened by the soft key's own press verifies with `grants.verifyBudgetOpening`;
 - two ARMed self-presses, each ticketed, with their reveals checked against `G`; then nothing to arm;
-- a pressed use owes, and its ticket answers with the head;
+- a pressed use on an uncovered slot owes nothing (bits 4 and 5 clear); under a held budget for that slot it owes (bit 4 set, bit 5 clear), and its ticket answers with the head;
 - hold: nothing to arm; a pressed resume; then it arms again;
 - revoke.
 
 `tests/kit.test.js` (the emulator), 11 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
 - `HEAD` and the Edge key;
-- a pressed sign owes a ticket; a timeout does not clear it; a late ticket pays it; a second is refused; R17's empty hook;
-- a budget is signed through the chain; a sign without ARM is pressed; ARM -> use -> ticket -> ARM -> use -> ticket; ARM and GRANT_CREATE refused while owed; a stale head refused; nothing to arm when used up;
-- hold: nothing arms; resume refused while owed, then taken with a press; the hold and resume links;
-- five pressed uses: 4 owed + overflow; a restart keeps them; an unpressed WAIVE does nothing; a pressed one clears all, and the library reads "waived" / "waived, not listed";
+- a direct press on an uncovered slot owes nothing and the library says "no ticket owed" (R16); under a held budget for that slot a pressed sign owes (bit 4 set, bit 5 clear); a timeout does not clear it; a late ticket pays it; a second is refused; R17's empty hook;
+- a budget is signed through the chain; a sign without ARM is pressed; ARM -> use -> ticket -> ARM -> use -> ticket; ARM and GRANT_CREATE refused while owed; a stale head refused; nothing to arm when used up; R16's bits: a use primed while an arm waited carries bits 4 and 5 whether its token matched or not (the stale and the slipped-in request), an unarmed use on the covered slot bit 4 only, a self-press both;
+- hold: nothing arms; a pressed use on the held budget's slot owes (bit 4 set, bit 5 clear); resume refused while owed, then taken with a press; the hold and resume links;
+- five pressed uses on a covered slot: 4 owed + overflow; a restart keeps them; an unpressed WAIVE does nothing; a pressed one clears all, and the library reads "waived" / "waived, not listed";
 - a hold/resume or GRANT_CREATE on a head the host did not verify is refused (R27);
 - a standalone LOSS takes a press and links the spec layout; a backwards range or one past the head is refused (`EDGE:12`); it is refused while restoring (R24);
 - **the subject proof (R13a):** per op type - RSA sign (slot 2), ECC sign (slot 101), RSA decrypt (slot 1, five packets), a three-packet agent sign - a self-press goes through on a token the LIBRARY computed (`grants.requestSubject`), and the link's subject, which the firmware writes from `pend.subject`, equals the library's. An ARM for one request does not pay for another: that one is pressed, the arm is spent, and the agent's own request is pressed too; a stale head shows at the sign;

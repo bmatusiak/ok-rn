@@ -48,6 +48,8 @@ const SELF_PRESS = 4;
 const NEEDS_REVIEW = 0x8f;
 const PRESS_OBSERVED = 0x01;
 const PREV_NO_TICKET = 0x04;
+const OWES_TICKET = 0x10; /* R16: set by the key at decision time - this use owes a ticket */
+const ARMED = 0x20;       /* R16: an arm was waiting when the request was primed */
 /* the console line that says a confirmation is primed (14-stored-keys uses it too) */
 const PRIMED = /Encrypted Buffer/g;
 const P256_SPKI = Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex');
@@ -152,6 +154,19 @@ module.exports = function register({ it }, ctx) {
       grantId: g.readUInt32LE(0), uses: g.readUInt16LE(4), G: new Uint8Array(g.subarray(6, 38)),
       chainSeq: g.readUInt32LE(38), ckpt, sig: new Uint8Array(s.subarray(0, 64)), reasonHash,
     };
+  }
+
+  /*
+   * R16: a direct press owes a ticket only on a slot a live budget covers
+   * (or when an arm was waiting). A held budget still covers - hold stops
+   * paying, not owing - so a test that needs debts opens one on agent sign 222
+   * and holds it: its pressed uses then owe, and none is self-paid.
+   */
+  async function coverSlot(device, reason, { signal }) {
+    const b = await openBudget(device, 1, reason, { signal });
+    const held = await edge(device, GRANT_HOLD, u32(b.grantId), { signal, text: true });
+    if (held !== 'EDGE:00') throw new Error(`the covering budget would not hold: ${held}`);
+    return b;
   }
 
   /* a checkpoint (seq, head) is the Edge key's signature (lib chain checkpoint digest, R7) */
@@ -270,15 +285,21 @@ module.exports = function register({ it }, ctx) {
       if (h.seq === SEQ_NONE) assert.bytes(Buffer.from(h.head), Buffer.from(chain.genesis(deviceId)), 'an empty chain\'s head is not the genesis');
     });
 
-  it('edge: a pressed sign owes a ticket that a timeout does not clear; a late ticket pays it, a second is refused (R16, R17)',
+  it('edge: a direct press owes only on a covered slot; a pressed use owes a ticket that a timeout does not clear; a late ticket pays it, a second is refused (R16, R17)',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
       const before = await head(device, { signal });
       const first = before.seq === SEQ_NONE ? 0 : before.seq + 1;
 
+      /* R16: no budget covers agent sign 222 - the person pressed, the person saw it */
+      const uncovered = await pressedSign(device, 'okt edge uncovered', { signal });
+      assert.equal((await head(device, { signal })).owed, 0, 'a direct press on a slot no budget covers owes a ticket (R16)');
+
+      /* covered by a held budget: a direct pressed use owes (R16 - hold stops paying, not owing) */
+      const cover = await coverSlot(device, 'okt: cover sign 222', { signal });
       const signed = await pressedSign(device, 'okt edge message 1', { signal });
-      assert.equal((await head(device, { signal })).owed, 1, 'a human-pressed use owes its ticket too (R16)');
+      assert.equal((await head(device, { signal })).owed, 1, 'a pressed use on a covered slot does not owe (R16)');
       const primed = device.log.count(PRIMED);
       sendAgentSign(device, sha256(Buffer.from('okt edge message 2')));
       await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
@@ -295,18 +316,24 @@ module.exports = function register({ it }, ctx) {
 
       const { h, fields: f, links } = await verifyFrom(device, first, before.head, { signal, assert, log });
       log(trail(f));
+      const at = (seq) => f[seq - first];
       assert.bytes(Buffer.from(t.head), Buffer.from(h.head), 'the ticket reply is not the key\'s head');
       assert.equal(h.owed, 0);
-      assert.equal(f[0].op, OP_SIGN);
-      assert.equal(f[0].decision, APPROVE);
-      assert.ok(f[0].flags & PRESS_OBSERVED, 'a pressed approve carries the press flag');
-      assert.bytes(Buffer.from(f[0].subject), sha256(signed.payload), 'the subject is not SHA-256 of what was submitted');
-      assert.equal(f[1].decision, TIMEOUT);
-      assert.ok(f[1].flags & PREV_NO_TICKET, 'the use after an unticketed one carries the empty hook (R17)');
-      assert.equal(f[2].op, OP_TICKET);
-      const use = tickets.pairTickets(links, { [signed.seq]: msg }).uses.find((u) => u.seq === signed.seq);
+      assert.equal(JSON.stringify([at(uncovered.seq).decision, at(uncovered.seq).flags & (PRESS_OBSERVED | OWES_TICKET | ARMED)]), JSON.stringify([APPROVE, PRESS_OBSERVED]),
+        'the uncovered pressed use is not "approved, pressed, owes nothing, not armed"');
+      assert.equal(at(signed.seq).op, OP_SIGN);
+      assert.equal(at(signed.seq).decision, APPROVE);
+      assert.equal(at(signed.seq).flags & (PRESS_OBSERVED | OWES_TICKET | ARMED), PRESS_OBSERVED | OWES_TICKET, 'the covered pressed use is not "pressed, owes, not armed" (bit 4 set, bit 5 clear)');
+      assert.bytes(Buffer.from(at(signed.seq).subject), sha256(signed.payload), 'the subject is not SHA-256 of what was submitted');
+      assert.equal(at(signed.seq + 1).decision, TIMEOUT);
+      assert.ok(at(signed.seq + 1).flags & PREV_NO_TICKET, 'the use after an unticketed one carries the empty hook (R17)');
+      assert.equal(at(t.seq).op, OP_TICKET);
+      const paired = tickets.pairTickets(links, { [signed.seq]: msg }).uses;
+      assert.equal(paired.find((u) => u.seq === uncovered.seq).status, 'no-ticket-owed', 'the library says the uncovered use owes');
+      const use = paired.find((u) => u.seq === signed.seq);
       assert.equal(use.status, 'ticketed');
       assert.equal(use.message, msg, 'the ticket\'s message does not match its link');
+      assert.equal(await edge(device, GRANT_REVOKE, u32(cover.grantId), { signal, text: true }), 'EDGE:00');
     });
 
   it('edge: a budget signed at a press pays only ARMed uses; an ARM pays for its own request only, and nothing arms while a ticket is owed (R10, R13, R13a, R18)',
@@ -390,6 +417,15 @@ module.exports = function register({ it }, ctx) {
         assert.equal(at(p.seq).decision, APPROVE, `#${p.seq}: a request the arm was not for was not pressed`);
         assert.ok(at(p.seq).flags & PRESS_OBSERVED);
       }
+      /*
+       * R16 bits, set by the key at decision time: an arm was waiting at the
+       * prime -> ARMED and OWES, whether the token matched or not (stale, other);
+       * no arm waiting but the slot covered -> OWES only (p0, mine - other used
+       * the arm up). A self-press carries both.
+       */
+      const bits = (p) => at(p.seq).flags & (OWES_TICKET | ARMED);
+      for (const p of [stale, other, s1, s2]) assert.equal(bits(p), OWES_TICKET | ARMED, `#${p.seq}: an armed use does not carry bits 4 and 5`);
+      for (const p of [p0, mine]) assert.equal(bits(p), OWES_TICKET, `#${p.seq}: an unarmed use on a covered slot is not "owes, not armed"`);
 
       /* each reveal belongs to G and to what was signed (the MAC is the host's to compute) */
       const spends = [s1, s2].map((s, i) => {
@@ -439,6 +475,9 @@ module.exports = function register({ it }, ctx) {
       const resume = ops.find((x) => x.op === OP_GRANT_RESUME);
       assert.ok(hold && hold.grantId === b.grantId && !(hold.flags & PRESS_OBSERVED), 'no grant-hold link (or it claims a press)');
       assert.ok(resume && resume.grantId === b.grantId && (resume.flags & PRESS_OBSERVED), 'no pressed grant-resume link');
+      /* R16: the held budget's slot, used directly with a press - owes, bit 4 set, bit 5 clear */
+      const pl = ops.find((x) => x.seq === p.seq);
+      assert.equal(pl.flags & (OWES_TICKET | ARMED), OWES_TICKET, 'a pressed use on a held budget\'s slot is not "owes, not armed"');
       await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
     });
 
@@ -447,6 +486,7 @@ module.exports = function register({ it }, ctx) {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
       const before = await head(device, { signal });
+      await coverSlot(device, 'okt: cover sign 222 for the waive', { signal }); /* R16: so the pressed uses owe; the restart ends it */
       const uses = [];
       for (let i = 0; i < 5; i++) uses.push(await pressedSign(device, `okt waive ${i}`, { signal }));
       let h = await head(device, { signal });
@@ -511,11 +551,8 @@ module.exports = function register({ it }, ctx) {
       const PASSPHRASE = 'okt edge backup passphrase 2026-10-02';
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
-      await pressedSign(device, 'okt edge before the backup', { signal });
-      const atBackup = await head(device, { signal });
-      assert.equal(atBackup.owed, 1);
 
-      /* a backup key, which takes config mode */
+      /* a backup key, which takes config mode - first, as its restart would end the covering budget */
       await device.enterConfigMode(ctx.PINS.primary, { signal });
       let since = device.mark(ctx.IFACE.VENDOR);
       device.sendVendor({
@@ -531,6 +568,16 @@ module.exports = function register({ it }, ctx) {
       assert.ok(!/Error/.test(ctx.okmsg.text(labelled)), ctx.okmsg.text(labelled));
       await device.restart({ signal });
       await device.unlock(ctx.PINS.primary, { signal });
+
+      /*
+       * R16: the pressed uses here owe because a held budget covers their slot.
+       * It lives until a reboot - every restore below - so the use the key
+       * writes while restoring is uncovered and owes nothing.
+       */
+      await coverSlot(device, 'okt: cover sign 222 for the backup', { signal });
+      await pressedSign(device, 'okt edge before the backup', { signal });
+      const atBackup = await head(device, { signal });
+      assert.equal(atBackup.owed, 1);
 
       /* the backup: hold button 1, the key types it */
       let started = false;
@@ -620,7 +667,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await replayDone(atBackup.seq + 2, Buffer.alloc(16, 7), lost.seq, { text: true }), 'EDGE:11', 'a forged vouch was taken');
       h = await head(device, { signal });
       assert.equal(h.restoring, 0, 'still restoring after REPLAY_DONE');
-      assert.equal(h.owed, atBackup.owed + 1, 'the invented ticket or waive paid a debt');
+      assert.equal(h.owed, atBackup.owed, 'the invented ticket or waive paid a debt, or the uncovered use while restoring owes (R16)');
       const [loss1] = await pickup(device, h.seq, 1, { signal });
       const fl1 = chain.decodeLink(loss1.link);
       assert.equal(JSON.stringify([fl1.op, fl1.grantId, fl1.flags & PRESS_OBSERVED]), JSON.stringify([11, own.seq + 1, PRESS_OBSERVED]), 'no pressed LOSS link after the unvouched replay');
