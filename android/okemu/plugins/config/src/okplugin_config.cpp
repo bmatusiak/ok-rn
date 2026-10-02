@@ -1,5 +1,5 @@
 /*
- * config - OKGETCONFIG (DESIGN.md, AUDIT.md).
+ * config - OKGETCONFIG and OKSETCONFIG (DESIGN.md, AUDIT.md).
  *
  * WHY: the firmware lets a host WRITE every setting and read none back, so no
  * app could show the key's real values, and no CLI could say whether a sign
@@ -7,7 +7,8 @@
  * in single-press mode, 2026-10-02). This prints them as INI text, with key
  * names that are the library's own preference names - so an exported file
  * imports with no translation, through the setting writes the firmware already
- * has. Nothing here writes.
+ * has. OKGETCONFIG writes nothing; OKSETCONFIG (the import, below) writes only
+ * through set_slot, and only in config mode.
  *
  * WHO MAY ASK (owner, 2026-10-02): the vendor API only, after PIN entry.
  *   - locked (or never set up): no answer, as every vendor request then;
@@ -142,4 +143,107 @@ void okplugin_config_recv(uint8_t *buffer) {
    */
   int total = ((at + 1 + 63) / 64) * 64;
   send_transport_response((uint8_t *)out, total, false, false);
+}
+
+/* ---------------------------------------------------------------- OKSETCONFIG */
+/*
+ * THE IMPORT (owner, 2026-10-02: "OKSETCONFIG is for importing, only in CONFIG
+ * mode in firmware"). The INI arrives in chunks (byte 5 = 0xFF for more, else
+ * the last chunk's length); then every value under [preferences] and
+ * [advanced] is handed to set_slot - the firmware's own setting write, with
+ * every check it makes (ranges, first-use-only settings, one-way modes) -
+ * exactly as an OKSETSLOT for that field would be. [input] is read-only and
+ * skipped; a key this table does not know is counted, never guessed.
+ *
+ * Which one-way settings ([advanced]) go in is the HOST's to leave out (the
+ * library sends them only when told); config mode itself - a deliberate button
+ * hold and the PIN - is the gate the firmware already has for them.
+ *
+ * set_slot's own "Successfully set..." lines are discarded (outputmode
+ * DISCARD) and one summary is sent instead; the host reads the result back
+ * with OKGETCONFIG (allowed in config mode for that) and compares.
+ * Reply: "OKSETCONFIG applied <n> unknown <u>".
+ */
+static const struct { const char *name; uint8_t field; } FIELDS[] = {
+  {"lockout", 11}, {"wipeMode", 12}, {"typeSpeed", 13}, {"keyboardLayout", 14},
+  {"backupKeyMode", 20}, {"derivedChallengeMode", 21}, {"storedChallengeMode", 22},
+  {"secProfileMode", 23}, {"ledBrightness", 24}, {"lockButton", 25},
+  {"hmacChallengeMode", 26}, {"modKeyMode", 27}, {"touchSense", 28},
+  {"webAgentDeriveMode", 30}, {"webcryptPolicy", 31},
+};
+static char in[OUT_MAX];
+static int in_at;
+
+/* one line of text, as whole zero-padded reports (see the padding note above) */
+static void say(const char *a, unsigned n1, const char *b, unsigned n2) {
+  at = 0;
+  memset(out, 0, sizeof out);
+  put(a);
+  put_u8(n1);
+  if (b) { put(b); put_u8(n2); }
+  send_transport_response((uint8_t *)out, 64, false, false);
+}
+
+static int field_of(const char *key, int len) {
+  for (unsigned i = 0; i < sizeof FIELDS / sizeof FIELDS[0]; i++) {
+    if ((int)strlen(FIELDS[i].name) == len && memcmp(FIELDS[i].name, key, len) == 0) return FIELDS[i].field;
+  }
+  return -1;
+}
+
+void okplugin_config_set(uint8_t *buffer) {
+  if (!(initialized == true && unlocked == true)) return;
+  if (outputmode != RAW_USB) { hidprint("Error OKSETCONFIG is vendor API only"); return; }
+  if (configmode != true) { in_at = 0; hidprint("Error OKSETCONFIG needs config mode"); return; }
+
+  uint8_t mark = buffer[5];
+  int n = mark == 0xFF ? OKSETCONFIG_CHUNK : mark;
+  if (n < 1 || n > OKSETCONFIG_CHUNK) { in_at = 0; hidprint("Error OKSETCONFIG bad chunk"); return; }
+  if (in_at + n >= (int)sizeof in) { in_at = 0; hidprint("Error OKSETCONFIG too long"); return; }
+  memcpy(in + in_at, buffer + 6, n);
+  in_at += n;
+  if (mark == 0xFF) return; /* more to come: nothing is answered until the last chunk */
+  in[in_at] = 0;
+
+  unsigned applied = 0, unknown = 0;
+  int writable = 0; /* inside [preferences] or [advanced] */
+  for (char *line = in; *line;) {
+    char *end = line;
+    while (*end && *end != '\n') end++;
+    char *s = line, *e = end;
+    while (s < e && (*s == ' ' || *s == '\t' || *s == '\r')) s++;
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) e--;
+    if (s < e && *s == '[') {
+      writable = (e - s == 13 && memcmp(s, "[preferences]", 13) == 0) || (e - s == 10 && memcmp(s, "[advanced]", 10) == 0);
+    } else if (s < e && *s != ';' && writable) {
+      char *eq = s;
+      while (eq < e && *eq != '=') eq++;
+      char *k_end = eq;
+      while (k_end > s && (k_end[-1] == ' ' || k_end[-1] == '\t')) k_end--;
+      char *v = eq + 1;
+      while (v < e && (*v == ' ' || *v == '\t')) v++;
+      unsigned value = 0;
+      int digits = 0;
+      while (v < e && *v >= '0' && *v <= '9' && digits < 4) { value = value * 10 + (unsigned)(*v - '0'); v++; digits++; }
+      int field = eq < e ? field_of(s, (int)(k_end - s)) : -1;
+      if (field < 0 || !digits || v != e || value > 255) {
+        unknown++;
+      } else {
+        uint8_t w[64];
+        memset(w, 0, sizeof w);
+        w[0] = w[1] = w[2] = w[3] = 0xFF;
+        w[4] = OKSETSLOT;
+        w[5] = 0; /* the global slot */
+        w[6] = (uint8_t)field;
+        w[7] = (uint8_t)value;
+        outputmode = DISCARD;
+        set_slot(w);
+        outputmode = RAW_USB;
+        applied++;
+      }
+    }
+    line = *end ? end + 1 : end;
+  }
+  in_at = 0;
+  say("OKSETCONFIG applied ", applied, " unknown ", unknown);
 }

@@ -2,23 +2,33 @@
 
 Everything this plugin changes, adds or answers. Delete the folder and none of it is built.
 
-## What it changes in the firmware (2 hooks, `plugin.js`)
+## What it changes in the firmware (3 hooks, `plugin.js`)
 | File | Where | What |
 |---|---|---|
 | `okcore.cpp` | after `#include "onlykey.h"` | `#include "plugins/config/okplugin_config.h"` |
-| `okcore.cpp` | the vendor switch, before `default:` | `case OKGETCONFIG: okplugin_config_recv(recv_buffer); return;` |
+| `okcore.cpp` | the vendor switch, before `default:` | `case OKGETCONFIG: okplugin_config_recv(…)` and `case OKSETCONFIG: okplugin_config_set(…)` |
+| `okcore.cpp` | the config-mode allow-list in recvmsg (after `!= OKSETSLOT && … != OKSETPRIV`) | `&& recv_buffer[4] != OKGETCONFIG && recv_buffer[4] != OKSETCONFIG` - both may pass in config mode |
 
 Nothing else in the firmware is touched.
 
-## The one request
+## The requests
 | Request | Answer |
 |---|---|
 | `OKGETCONFIG` (`TYPE_INIT \| 0x79`, 0xF9 - CHOSEN), no payload | INI text, NUL-ended, padded with zeros to whole 64-byte reports |
 | …while locked or never set up | nothing (as every vendor request then) |
-| …in config mode | nothing: the firmware's own config-mode allow-list stops it before the plugin (`okcore.cpp` recvmsg, 3.1.0 line 338) |
+| …in config mode | answered (the allow-list hook): the import reads its result back with it |
 | …through the WebAuthn tunnel (`outputmode != RAW_USB`) | `Error OKGETCONFIG is vendor API only` |
 
-No press. **It writes nothing**: no EEPROM, no flash, no RAM state outside its own reply buffer (`out[704]`, cleared before each answer).
+| `OKSETCONFIG` (`TYPE_INIT | 0x7A`, 0xFA - CHOSEN): the INI in chunks - byte 5 `0xFF` = more, else the last chunk's length (1..58); text from byte 6 | after the last chunk: `OKSETCONFIG applied <n> unknown <u>`; nothing for the chunks before it |
+| …out of config mode | `Error OKSETCONFIG needs config mode` (and the collected text is dropped) |
+| …through the WebAuthn tunnel | `Error OKSETCONFIG is vendor API only` |
+| …too long (over 704 bytes) or a bad chunk length | `Error OKSETCONFIG too long` / `bad chunk` |
+
+No press for either. **OKGETCONFIG writes nothing.** **OKSETCONFIG writes only through `set_slot`** - the firmware's own setting write, one call per value, exactly what an `OKSETSLOT` for that field does, with every check it makes (ranges, first-use-only settings, one-way modes). Its own replies are discarded (`outputmode = DISCARD`) and one summary is sent; the host reads the result back with OKGETCONFIG. `[input]` is skipped; a key outside the table below is counted as unknown, never guessed. Which one-way `[advanced]` values go in is the host's to leave out; config mode (a deliberate hold and the PIN) is the firmware's gate for them.
+
+| INI key | Field written |
+|---|---|
+| lockout 11 · wipeMode 12 · typeSpeed 13 · keyboardLayout 14 · backupKeyMode 20 · derivedChallengeMode 21 · storedChallengeMode 22 · secProfileMode 23 · ledBrightness 24 · lockButton 25 · hmacChallengeMode 26 · modKeyMode 27 · touchSense 28 · webAgentDeriveMode 30 · webcryptPolicy 31 | the global slot (0), the value as one byte |
 
 ## Every value it prints, and where it comes from
 | INI key | Source | Printed as |
@@ -58,3 +68,5 @@ Never built into a hard-key image (owner, 2026-10-02): a hard key is not emulate
 2. Values written through the firmware's own writes are read back exactly (lockout, LED, type speed, lock button), then restored.
 3. `[input]` follows field 21: press reads `press`, challenge reads `code`.
 4. Refused through the WebAuthn tunnel.
+5. OKSETCONFIG is refused out of config mode, and nothing changes.
+6. In config mode it imports through the firmware's own writes: `applied 3 unknown 1`; `[input]` is ignored; read back with OKGETCONFIG.

@@ -12,6 +12,7 @@
  * Everything from the kit comes through ctx: IFACE, okmsg, PINS, kit.
  */
 const OKGETCONFIG = 0x80 | 0x79;
+const OKSETCONFIG = 0x80 | 0x7a;
 const OKSETSLOT_GLOBAL = 0; /* node-onlykey-lib src/device/slots.js GLOBAL_SLOT */
 
 /* every key OKGETCONFIG v1 may print - anything else is a leak or a drift */
@@ -125,5 +126,56 @@ module.exports = function register({ it }, ctx) {
       const r = await ctx.kit.tunnel.send(ctap, { cmd: OKGETCONFIG, data: Buffer.alloc(0) }, { signal }).catch((e) => ({ error: String(e.message || e) }));
       const seen = r.data ? r.data.toString('latin1') : JSON.stringify(r);
       assert.ok(!/\[input\]|OKGETCONFIG v1/.test(seen), `the INI came back over CTAP: ${seen.slice(0, 80)}`);
+    });
+
+  /* OKSETCONFIG: the INI in chunks - byte 5 = 0xFF for more, else the last chunk's length; the text from byte 6 */
+  async function importConfig(device, text, { signal }) {
+    const bytes = Buffer.from(text, 'latin1');
+    const since = device.mark(ctx.IFACE.VENDOR);
+    for (let i = 0; i < bytes.length; i += 58) {
+      const chunk = bytes.subarray(i, i + 58);
+      const last = i + 58 >= bytes.length;
+      device.sendVendor({ msg: OKSETCONFIG, slot: last ? chunk.length : 0xFF, payload: chunk });
+      await device.sleep(60, { signal });
+    }
+    const r = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /OKSETCONFIG|Error/, timeoutMs: 8000, signal });
+    return ctx.okmsg.text(r).trim();
+  }
+
+  it('config: OKSETCONFIG is refused out of config mode - nothing changes',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const before = parse((await readConfig(device, { signal })).text).preferences.lockout;
+      const said = await importConfig(device, `[preferences]\nlockout=${Number(before) === 9 ? 8 : 9}\n`, { signal });
+      assert.equal(said, 'Error OKSETCONFIG needs config mode');
+      assert.equal(parse((await readConfig(device, { signal })).text).preferences.lockout, before);
+    });
+
+  it('config: OKSETCONFIG imports an INI in config mode through the firmware\'s own writes; [input] is ignored, unknown keys counted',
+    async ({ device, assert, signal }) => {
+      const { pqc } = ctx.kit;
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const before = parse((await readConfig(device, { signal })).text);
+      const file = [
+        '; OnlyKey soft key config - OKGETCONFIG v1',
+        '[input]', 'derived_keys=none',
+        '[preferences]', 'lockout=23', 'ledBrightness=6', 'derivedChallengeMode=1', 'notASetting=4',
+        ''].join('\n');
+      try {
+        await pqc.readyForKeygen(device, { signal }); /* config mode */
+        assert.equal(await importConfig(device, file, { signal }), 'OKSETCONFIG applied 3 unknown 1');
+        /* read back in config mode - OKGETCONFIG is allowed there for exactly this */
+        const after = parse((await readConfig(device, { signal })).text);
+        assert.equal(JSON.stringify([after.preferences.lockout, after.preferences.ledBrightness, after.preferences.derivedChallengeMode]), JSON.stringify(['23', '6', '1']));
+        assert.equal(after.input.derived_keys, 'press', '[input] was imported');
+      } finally {
+        /* put it back, in config mode, the same way */
+        const back = Object.entries(before.preferences).filter(([k]) => ['lockout', 'ledBrightness', 'derivedChallengeMode'].includes(k)).map(([k, v]) => `${k}=${v}`);
+        if (back.length) {
+          await pqc.readyForKeygen(device, { signal });
+          await importConfig(device, ['[preferences]', ...back, ''].join('\n'), { signal });
+        }
+        await device.restart({ signal });
+      }
     });
 };
