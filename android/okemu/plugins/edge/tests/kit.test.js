@@ -61,9 +61,21 @@ module.exports = function register({ it }, ctx) {
     return got.slice(0, reports).map((r) => Buffer.from(r));
   }
 
+  /* the device id is edge JS's to compute: SHA256("OKEDGE-DEVICE-v1" || the Edge public key)[0..16] */
+  const deviceIdOf = (pub) => new Uint8Array(sha256(Buffer.concat([Buffer.from('OKEDGE-DEVICE-v1'), Buffer.from(pub)])).subarray(0, 16));
+
+  /* HEAD: seq . head . oldest pickable seq . the live budget ids */
   async function head(device, opts) {
     const [r] = await edge(device, HEAD, null, opts);
-    return { seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), oldest: r.readUInt32LE(36), deviceId: new Uint8Array(r.subarray(40, 56)) };
+    const live = [0, 1, 2, 3].map((i) => r.readUInt32LE(40 + 4 * i)).filter(Boolean);
+    return { seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), oldest: r.readUInt32LE(36), live };
+  }
+
+  /* a checkpoint (seq, head) is the Edge key's signature (lib chain checkpoint digest, R7) */
+  function checkpointVerifies(pub, seq, headBytes, sig) {
+    const message = Buffer.concat([Buffer.from('OKEDGE-CKPT-v1'), Buffer.from(deviceIdOf(pub)), u32(seq), Buffer.from(headBytes)]);
+    const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), Buffer.from(pub)]), format: 'der', type: 'spki' });
+    return crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sig).subarray(0, 64));
   }
 
   /* PICKUP: per link the link, then its head and (for a self-press) the reveal */
@@ -126,11 +138,10 @@ module.exports = function register({ it }, ctx) {
       await device.unlock(ctx.PINS.primary, { signal });
       const h = await head(device, { signal });
       const pub = await pubkey(device, { signal });
-      log(`seq ${h.seq === SEQ_NONE ? 'none' : h.seq}, device ${Buffer.from(h.deviceId).toString('hex')}`);
-      const want = sha256(Buffer.concat([Buffer.from('OKEDGE-DEVICE-v1'), pub])).subarray(0, 16);
-      assert.bytes(Buffer.from(h.deviceId), want, 'the device id is not the hash of the Edge public key');
+      const deviceId = deviceIdOf(pub);
+      log(`seq ${h.seq === SEQ_NONE ? 'none' : h.seq}, device ${Buffer.from(deviceId).toString('hex')}, live ${JSON.stringify(h.live)}`);
       assert.ok(crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), pub]), format: 'der', type: 'spki' }), 'not a P-256 point');
-      if (h.seq === SEQ_NONE) assert.bytes(Buffer.from(h.head), Buffer.from(chain.genesis(h.deviceId)), 'an empty chain\'s head is not the genesis');
+      if (h.seq === SEQ_NONE) assert.bytes(Buffer.from(h.head), Buffer.from(chain.genesis(deviceId)), 'an empty chain\'s head is not the genesis');
     });
 
   it('edge: a pressed sign and an unanswered one become links the library verifies',
@@ -175,21 +186,30 @@ module.exports = function register({ it }, ctx) {
       await device.waitHid(ctx.IFACE.VENDOR, { since, timeoutMs: 8000, signal });
       const deadline = Date.now() + 6000;
       let rs = device.reportsSince(ctx.IFACE.VENDOR, since);
-      while (rs.length < 2 && Date.now() < deadline) { await device.sleep(50, { signal }); rs = device.reportsSince(ctx.IFACE.VENDOR, since); }
+      while (rs.length < 3 && Date.now() < deadline) { await device.sleep(50, { signal }); rs = device.reportsSince(ctx.IFACE.VENDOR, since); }
       assert.ok(!/^EDGE:/.test(ctx.okmsg.text(rs[0])), `the key refused the budget: ${ctx.okmsg.text(rs[0]).trim()}`);
       const g = Buffer.from(rs[0]);
       const grantId = g.readUInt32LE(0);
       const uses = g.readUInt16LE(4);
       const G = new Uint8Array(g.subarray(6, 38));
       const chainSeq = g.readUInt32LE(38);
-      const sig = new Uint8Array(Buffer.from(rs[1]).subarray(0, 64));
+      const ckpt = Buffer.from(rs[1]);
+      const sig = new Uint8Array(Buffer.from(rs[2]).subarray(0, 64));
       log(`budget ${grantId}: ${uses} uses, opened at chain #${chainSeq}`);
-      const fields = {
-        deviceId: before.deviceId, grantId, genesis: G, uses,
-        scopes: [{ op: OP_SIGN, slot: 222, cap: 2 }], reasonHash: new Uint8Array(reasonHash),
-        chainSeq, chainHead: before.head,
-      };
-      assert.equal(JSON.stringify(grants.verifyBudgetGenesis(fields, sig, pub)), '{"ok":true}', 'the budget genesis signature does not verify');
+      assert.ok((await head(device, { signal })).live.includes(grantId), 'HEAD does not list the new budget as live');
+
+      /*
+       * The budget's genesis is signed THROUGH the chain: the press answers with a
+       * checkpoint over the grant-create link, and that link's subject commits to G
+       *   SHA256("OKEDGE-GRANT-v1" || scopes || reason_hash || G)
+       */
+      assert.equal(ckpt.readUInt32LE(0), chainSeq, 'the checkpoint is not over the grant-create link');
+      assert.ok(checkpointVerifies(pub, chainSeq, ckpt.subarray(4, 36), sig), 'the opening checkpoint does not verify');
+      const [opened] = await pickup(device, chainSeq, 1, { signal });
+      assert.bytes(Buffer.from(chain.weld(before.head, opened.link)), ckpt.subarray(4, 36), 'the signed head is not this link welded on');
+      const scopesEnc = Buffer.from([1, OP_SIGN, 222, 2, 0]);
+      const wantSubject = sha256(Buffer.concat([Buffer.from('OKEDGE-GRANT-v1'), scopesEnc, reasonHash, Buffer.from(G)]));
+      assert.bytes(Buffer.from(chain.decodeLink(opened.link).subject), wantSubject, 'the grant-create link does not commit to G');
 
       /* two signs inside it: no press; the second after the first's ticket */
       const p1 = await selfPressedSign(device, 'okt budget message 1', { signal });
@@ -229,6 +249,7 @@ module.exports = function register({ it }, ctx) {
 
       const said2 = await edge(device, GRANT_REVOKE, u32(grantId), { signal, text: true });
       log(`revoke: ${said2}`);
+      assert.ok(!(await head(device, { signal })).live.includes(grantId), 'a revoked budget is still listed as live');
     });
 
   it('edge: under a ticket-required budget, an unticketed use sends the next one back to a press (R18)',
@@ -263,11 +284,11 @@ module.exports = function register({ it }, ctx) {
       const h = await head(device, { signal });
       const pub = await pubkey(device, { signal });
       const [c, s] = await edge(device, CHECKPOINT, null, { signal, reports: 2 });
+      assert.ok(checkpointVerifies(pub, h.seq, h.head, s), 'the checkpoint signature does not verify');
       assert.equal(c.readUInt32LE(0), h.seq);
       assert.bytes(c.subarray(4, 36), Buffer.from(h.head));
-      const message = Buffer.concat([Buffer.from('OKEDGE-CKPT-v1'), Buffer.from(h.deviceId), u32(h.seq), Buffer.from(h.head)]);
-      const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), pub]), format: 'der', type: 'spki' });
-      assert.ok(crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, s.subarray(0, 64)), 'the checkpoint signature does not verify');
+      /* and over THIS head only */
+      assert.ok(!checkpointVerifies(pub, h.seq, new Uint8Array(32).fill(1), s), 'a checkpoint verified over another head');
       /* the previous test's revoke is the latest link */
       const [last] = await pickup(device, h.seq, 1, { signal });
       assert.equal(chain.decodeLink(last.link).op, OP_GRANT_END);

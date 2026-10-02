@@ -16,9 +16,8 @@ The firmware half of OnlyKey Edge, as a plugin: soft key (ok-rn) and the desktop
 | What | Where | Bytes |
 |---|---|---|
 | `seq`, `head` | flash, double-buffered | 36 |
-| the latest use's `seq` + `head`, and whether it has its ticket (R16) | flash | 37 |
+| whether the latest link is a use still owed a ticket, and whether it was a self-press | flash | 2 |
 | the latest link (so a crash never loses it) | flash | 64 |
-| live budget ids (a reboot links their end) | flash | 16 |
 | live budgets: seed, counters, scopes | **RAM only** (a lock or reboot ends them, R15) | ~70 each, ≤ 4 |
 | the last 8 links (+ a self-press's reveal) for pickup | **RAM only** | ~1 KB |
 
@@ -45,11 +44,11 @@ If a host never picks a link up, the head still counts it, so the omission shows
 
 | Sub-op | Request | Reply |
 |---|---|---|
-| `01 HEAD` | – | `seq` u32 · `head` 32 · `oldest` u32 (oldest pickable seq) · device_id 16 |
+| `01 HEAD` | – | `seq` u32 · `head` 32 · `oldest` u32 (oldest pickable seq) · live budget ids 4×u32 |
 | `02 PICKUP` | `from` u32 · `count` u8 ≤ 8 | per link: the link; then its head, and `v_i` + `mac` when it is a self-press |
 | `03 CHECKPOINT` | – | `seq` u32 · `head` 32; then the signature |
 | `04 PUBKEY` | – | the Edge public key X‖Y |
-| `10 GRANT_CREATE` | scopes · reason_hash · flags | after the press: id u32 · uses u16 · `G` 32 · chain_seq u32; then the signature |
+| `10 GRANT_CREATE` | scopes · reason_hash · flags | after the press: id u32 · uses u16 · `G` 32 · the link's seq u32; then a `CHECKPOINT` over the grant-create link |
 | `12 GRANT_REVOKE` | id u32 | text |
 | `20 TICKET` | ref_seq u32 · code u8 · msg_hash 32 | text |
 
@@ -57,6 +56,22 @@ If a host never picks a link up, the head still counts it, so the omission shows
 - the 3 KB flash ring and `READ`: replaced by `PICKUP` from RAM, plus the latest link in flash;
 - `GRANT_LIST`: edge JS reads live budgets and spend from the chain;
 - `LAST_REVEAL`: folded into `PICKUP`.
+
+**Safe cuts, applied (owner, 2026-10-02: "lets do the safe cuts"):**
+1. **One signature.** `G` is in the grant-create link's subject, `SHA256("OKEDGE-GRANT-v1" ‖ scopes ‖ reason_hash ‖ G)`. Opening a budget answers with a checkpoint over that link, so the genesis is signed through the chain. There is no separate budget-genesis digest.
+2. **Live budgets come from `HEAD`** (RAM). No stored ids, and no boot-time `grant-end` links: a lock or reboot ends them, and `HEAD` shows it.
+3. **No wipe link.** A wipe makes a new K132, so a new device id and genesis: every host sees a new key.
+4. **No device id in `HEAD`.** Edge JS computes `SHA256("OKEDGE-DEVICE-v1" ‖ pubkey)[0..16]`.
+5. **A ticket is the very next link after its use**, so its subject uses the current head. There is no stored latest-use head.
+
+The flash record is now 120 bytes.
+
+**Not cut, by choice:**
+- the 8 held links (a second host can still pick up);
+- the latest link in flash (a crash loses nothing);
+- deny/timeout links (evidence);
+- the provable series;
+- the scope checks (R14).
 
 **Build order from here:**
 - **Step 3:** slim to this section, and add `TICKET` (R16/R18) and `CHECKPOINT`.
