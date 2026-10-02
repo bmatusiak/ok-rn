@@ -106,7 +106,19 @@ const seqOf = (r: EdgeLinkRecord) => chain.decodeLink(r.link).seq;
  * B1: HEAD, then READ from the last mirrored seq; store what came; verify the
  * whole mirror against the live head; keep `lastSeen` only when it verified.
  */
-export async function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mirror; view: EdgeView}> {
+/*
+ * ONE SYNC AT A TIME. The Edge tab and the background copy (useEdgeBackgroundSync)
+ * both sync; two at once would each load the mirror, append and save, and the
+ * second save would drop the first one's links.
+ */
+let syncing: Promise<unknown> = Promise.resolve();
+export function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mirror; view: EdgeView}> {
+  const run = syncing.then(() => syncNow(source, now), () => syncNow(source, now));
+  syncing = run.catch(() => undefined);
+  return run;
+}
+
+async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror; view: EdgeView}> {
   const mirror = await loadMirror(source.deviceId);
   const head = await source.head();
   const have = mirror.links.length ? seqOf(mirror.links[mirror.links.length - 1]) : -1;

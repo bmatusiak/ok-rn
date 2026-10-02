@@ -113,6 +113,18 @@ function isEchoOf(sent: Uint8Array, echoed: Uint8Array): boolean {
   return true;
 }
 
+/*
+ * WHEN A COMPUTER LAST USED THE BRIDGE - a write in, or a report out to it.
+ * The app's own requests to the soft key (the Edge copy's background sync)
+ * must not land in the middle of a computer's conversation: an app write sets
+ * owner = null below, and the computer's answer would then go to the app.
+ * Callers wait until this has been quiet for a while (useEdgeBackgroundSync).
+ */
+let lastHostActivity = 0;
+export function vendorQuietForMs(): number {
+  return Date.now() - lastHostActivity;
+}
+
 export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () => void {
   /* Which transport the report subscription is attached to, so a key change
    * moves it rather than leaving it listening to the previous device. */
@@ -184,6 +196,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () 
   }
 
   function push(data: Uint8Array) {
+    lastHostActivity = Date.now();
     sending = sending
       .then(() => NativeFidoGatt.sendVendorReport(okbytes.toHex(data)))
       .catch((err: unknown) => {
@@ -272,6 +285,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () 
       log('rx', `[vendor] ${data.length} bytes -> the key`);
       /* Before the write: a fast key answers before write() resolves. */
       owner = event.address;
+      lastHostActivity = Date.now();
       ours.push(data);
       if (ours.length > 8) ours.shift();
       await transport.write(IFACE_VENDOR, data);
