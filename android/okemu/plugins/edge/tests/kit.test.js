@@ -301,6 +301,88 @@ module.exports = function register({ it }, ctx) {
       await edge(device, GRANT_REVOKE, u32(grantId), { signal, text: true });
     });
 
+  /*
+   * The plugin backup section (DESIGN.md 6; the loader's 0xFB section): Edge
+   * keeps version, seq, head. A backup taken at head S, a link made after it,
+   * then the restore: the key comes back at S and links a LOSS first - the
+   * history after the backup is gone, and the chain says so.
+   */
+  it('edge: a backup keeps the chain\'s head; a restore brings it back and links a LOSS',
+    async ({ device, assert, signal, log }) => {
+      const { backup } = ctx.kit;
+      const PASSPHRASE = 'okt edge backup passphrase 2026-10-02';
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await pressedSign(device, 'okt edge before the backup', { signal });
+      const atBackup = await head(device, { signal });
+
+      /* a backup key, which takes config mode */
+      await device.enterConfigMode(ctx.PINS.primary, { signal });
+      let since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({
+        msg: ctx.okmsg.MSG.OKSETPRIV, slot: 131,
+        payload: Buffer.concat([Buffer.from([161]), sha256(Buffer.from(PASSPHRASE, 'utf8'))]),
+      });
+      const set = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Successfully|Error/, timeoutMs: 10000, signal });
+      assert.match(ctx.okmsg.text(set), /Successfully set Backup Passphrase/);
+      /* a slot label too: the proof on older firmware (kit 39) checks it comes back */
+      since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({ msg: ctx.okmsg.MSG.OKSETSLOT, slot: 2, field: 1, payload: 'edgebkup' });
+      const labelled = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Successfully|Error/, timeoutMs: 10000, signal });
+      assert.ok(!/Error/.test(ctx.okmsg.text(labelled)), ctx.okmsg.text(labelled));
+      await device.restart({ signal });
+      await device.unlock(ctx.PINS.primary, { signal });
+
+      /* the backup: hold button 1, the key types it */
+      let started = false;
+      for (let attempt = 1; attempt <= 6 && !started; attempt++) {
+        device.log.clear();
+        device.keys.clear();
+        device.pressLine([{ button: 1, hold: 'hold' }]);
+        started = await Promise.any([
+          device.log.waitFor(/Backing up Label Number/, { timeoutMs: 5000, signal }),
+          device.waitKeystrokes(/-----BEGIN ONLYKEY BACKUP-----/, { timeoutMs: 5000, signal }),
+        ]).then(() => true, () => device.keystrokes.length > 0);
+      }
+      assert.ok(started, 'the device never started a backup');
+      await device.waitKeystrokes(/-----END ONLYKEY BACKUP-----/, { timeoutMs: 180000, signal });
+      const parsed = backup.parse(device.keystrokes);
+      assert.ok(parsed && parsed.data.length, 'no backup data');
+      log(`backup: ${parsed.data.length} bytes, taken at chain #${atBackup.seq}`);
+      /*
+       * Kept for kit 39 (01-protocol/39-plugin-backup-on-older-firmware): the same
+       * backup restored onto a v3.0.4 emulator, which has no plugin code at all.
+       */
+      const keep = require('path').join(require('os').tmpdir(), 'okt-plugin-backup.json');
+      require('fs').writeFileSync(keep, JSON.stringify({ passphrase: PASSPHRASE, slot: 2, label: 'edgebkup', data: Buffer.from(parsed.data).toString('hex') }));
+      log(`kept for the older-firmware restore: ${keep}`);
+
+      /* a link the backup does not have */
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await pressedSign(device, 'okt edge after the backup', { signal });
+      const lost = await head(device, { signal });
+      assert.equal(lost.seq, atBackup.seq + 1);
+
+      /* the restore - OKRESTORE is taken in config mode (as 10-backup-restore sends it) */
+      await device.enterConfigMode(ctx.PINS.primary, { signal });
+      const before = device.generation;
+      for (const payload of backup.toRestorePackets(parsed.data)) {
+        device.sendVendor({ msg: ctx.okmsg.MSG.OKRESTORE, payload });
+        await device.sleep(50, { signal });
+      }
+      await device.waitForReboot({ from: before, timeoutMs: 90000, signal });
+      await device.waitReady({ signal });
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+
+      /* back at the backup's head, plus one LOSS link welded onto it */
+      const after = await head(device, { signal });
+      log(`after the restore: head #${after.seq} (backup at #${atBackup.seq}, the lost link was #${lost.seq})`);
+      assert.equal(after.seq, atBackup.seq + 1, 'the chain did not come back to the backup\'s head plus the LOSS link');
+      const [l] = await pickup(device, after.seq, 1, { signal });
+      assert.equal(chain.decodeLink(l.link).op, 11, 'the first link after a restore is a LOSS');
+      assert.bytes(Buffer.from(chain.weld(atBackup.head, l.link)), Buffer.from(after.head), 'the LOSS link does not weld onto the backup\'s head');
+      assert.ok(!Buffer.from(after.head).equals(Buffer.from(lost.head)), 'the restored chain still carries the lost link');
+    });
+
   it('edge: a checkpoint is the Edge key\'s signature over the head, and a revoke ends the budget in the chain',
     async ({ device, assert, signal }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
@@ -312,8 +394,8 @@ module.exports = function register({ it }, ctx) {
       assert.bytes(c.subarray(4, 36), Buffer.from(h.head));
       /* and over THIS head only */
       assert.ok(!checkpointVerifies(pub, h.seq, new Uint8Array(32).fill(1), s), 'a checkpoint verified over another head');
-      /* the previous test's revoke is the latest link */
+      /* the latest link is still held for pickup, and its weld is the signed head */
       const [last] = await pickup(device, h.seq, 1, { signal });
-      assert.equal(chain.decodeLink(last.link).op, OP_GRANT_END);
+      assert.bytes(Buffer.from(last.head), Buffer.from(h.head));
     });
 };

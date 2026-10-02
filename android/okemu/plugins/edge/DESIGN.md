@@ -181,7 +181,7 @@ Peers, receipts and LOSS (R20–R24) come after E3b.
 - A backup is capped at 18,000 bytes (the backup array and the restore buffer, both versions); a full key is about 16.7 KB.
 - So all plugins together get a **fixed budget of 512 bytes**, and the hook refuses to write past 18,000 bytes. Past that cap v3.0.4 would reject the whole restore.
 
-**Edge's entry, about 60 bytes:**
+**Edge's entry, 37 bytes (built, 2026-10-02: version, `seq`, `head` - with the minimal firmware, live budget ids are RAM-only and end at a restore anyway):**
 - what it carries: `seq` · `head` · device_id · live budget ids;
 - what stays out:
   - **the ring:** 3 KB is too big, and hosts hold copies and refill it;
@@ -191,7 +191,7 @@ Peers, receipts and LOSS (R20–R24) come after E3b.
 - **The identity carries over:** the Edge key and device_id come from K132, which is in the backup, so the restored key is the same Edge identity.
 - **It links `restore` first**, recording the backup's `(seq, head)`. History after the backup is gone, so hosts see the head go back; the `restore` link states that gap for the person to accept (like LOSS, R24) instead of hiding it.
 
-**Proven, not assumed:** the plugin's kit tests make a backup with a plugin section on a plugin build, restore it onto the **v3.0.4 emulator build**, and check every slot, key and label came back, plus the success message.
+**Proven:** the edge kit test takes a backup on the plugin build and restores it (the key comes back at the backup's head and links a LOSS). That backup is node-onlykey-emulator's fixture `test/fixtures/plugin-backup-3.1.0-edge.json`, and `test/restore-plugin-backup.js` restores it on **v3.0.4** and **base 3.1.0**: each set its label, settings and backup key, stopped at `0xFB`, and said "Successfully loaded backup" - no error, no restart. A 3.1.0 backup holding post-quantum keys is a different matter (held finding: v3.0.4 stops at the first PQ key with "format incorrect").
 
 **Held, candidate finding (nothing sent):** both 3.1.0 and v3.0.4 write the end-of-records `0xFC` at `offset+1` (core:6632), leaving `large_temp[offset]` = the first IV byte. If that byte is FF/FE/FD, the walk runs on into the encryption trailer. The trailing `0xFB` section ends the walk before that point.
 

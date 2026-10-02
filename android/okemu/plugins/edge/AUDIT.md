@@ -42,6 +42,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 | Where | What |
 |---|---|
 | flash `base+0x1000`, `+0x1800` | one record, double-buffered (120 bytes): magic, generation, `seq`, `head`, two flags (the latest use owes a ticket / was a self-press), the latest link, a 4-byte SHA-256 check |
+| the device backup | 37 bytes in the plugin section (`0xFB`, written last by the loader): version, `seq`, `head`. A restore takes them back and the next link is a LOSS (R24). Older firmware stops at `0xFB` with everything else restored - measured: v3.0.4 and base 3.1.0 (node-onlykey-emulator `test/restore-plugin-backup.js`) |
 | RAM | the Edge public key and device_id; live budgets (seed, counters, scopes; ≤ 4, each ≤ 255 uses); the last 8 links with heads and reveals |
 
 **The Edge key and K132:**

@@ -16,6 +16,8 @@ module.exports = {
   name: 'edge',
   minBase: '3.1.0',
   notes: 'OKEDGE 0xF8: the key chains every sign/decrypt decision (soft key only)',
+  /* 37 bytes in the backup's plugin section (version, seq, head) - see okplugin_edge_backup */
+  backup: true,
   hooks: [
     {
       file: 'okcore.cpp',

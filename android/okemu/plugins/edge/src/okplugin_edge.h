@@ -53,5 +53,8 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
 void okplugin_edge_decision(int decision);
 /* wipeflashdata(): the key is being wiped */
 void okplugin_edge_wipe(void);
+/* the plugin backup section (the loader calls these): 37 bytes - version, seq, head */
+int okplugin_edge_backup(uint8_t *out, int max);
+void okplugin_edge_restore(const uint8_t *in, int len);
 
 #endif

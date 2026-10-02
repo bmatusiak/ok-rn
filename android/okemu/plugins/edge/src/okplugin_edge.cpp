@@ -48,6 +48,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_GRANT_CREATE 6
 #define OP_GRANT_END 7
 #define OP_TICKET 8
+#define OP_LOSS 11
 #define DECISION_SELF_PRESS 4
 #define FLAG_PRESS_OBSERVED 0x01
 #define FLAG_BUDGET_SPENT 0x02
@@ -73,7 +74,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 
 #define STATE_BYTES 120
 #define STATE_CHECKED 116
-static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '4'};
+static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '5'};
 
 /* everything that survives a restart: ~110 bytes */
 struct edge_state {
@@ -82,6 +83,7 @@ struct edge_state {
   uint8_t head[32];           /* head[seq]; the genesis while seq == SEQ_NONE */
   uint8_t use_owes;           /* the latest link is an approved use with no ticket (R16) */
   uint8_t use_self;           /* ... and it was a self-press (R18 gates only on those) */
+  uint8_t restored;           /* restored from a backup: the next link is a LOSS (DESIGN.md 6) */
   uint8_t last_link[LINK_BYTES]; /* the latest link, so a crash never loses it */
 };
 static struct edge_state st;
@@ -189,6 +191,7 @@ static void state_encode(uint8_t rec[STATE_BYTES]) {
   memcpy(rec + 16, st.head, 32);
   rec[48] = st.use_owes;
   rec[49] = st.use_self;
+  rec[50] = st.restored;
   memcpy(rec + 52, st.last_link, LINK_BYTES);
   H(check, NULL, rec, STATE_CHECKED, NULL, 0, NULL, 0);
   memcpy(rec + STATE_CHECKED, check, 4);
@@ -204,6 +207,7 @@ static int state_decode(const uint8_t rec[STATE_BYTES], struct edge_state *s) {
   memcpy(s->head, rec + 16, 32);
   s->use_owes = rec[48];
   s->use_self = rec[49];
+  s->restored = rec[50];
   memcpy(s->last_link, rec + 52, LINK_BYTES);
   return 1;
 }
@@ -240,7 +244,7 @@ static void state_load(void) {
     st.seq = SEQ_NONE;
   }
   /* the latest link survives a restart, so it can still be picked up */
-  if (st.seq != SEQ_NONE) hold(st.seq, st.last_link, st.head, NULL);
+  if (st.seq != SEQ_NONE && !st.restored) hold(st.seq, st.last_link, st.head, NULL);
   loaded = 1;
 }
 
@@ -272,6 +276,9 @@ static int edge_private_key(uint8_t priv[32]) {
   return ok;
 }
 
+static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
+    uint32_t grant_id, uint16_t grant_step, const uint8_t *reveal);
+
 /* the public key and device id (RAM), and the genesis on a new chain; 0 without K132 */
 static int ensure_identity(void) {
   state_load();
@@ -285,6 +292,16 @@ static int ensure_identity(void) {
   H(h, "OKEDGE-DEVICE-v1", ident.pub, 64, NULL, 0, NULL, 0);
   memcpy(ident.device_id, h, ID_BYTES);
   ident.ok = 1;
+  if (st.restored) {
+    /*
+     * Restored from a backup: everything the key decided after that backup is
+     * gone. Say so in the chain - a LOSS link (R24) - rather than let a host
+     * find the head gone back and guess.
+     */
+    uint8_t zero[32] = {0};
+    st.restored = 0;
+    append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, 0, zero, 0, 0, NULL);
+  }
   if (st.seq == SEQ_NONE) {
     /* head[-1] = SHA256("OKEDGE-GENESIS-v1" || device_id)  (lib chain.genesis) */
     H(st.head, "OKEDGE-GENESIS-v1", ident.device_id, ID_BYTES, NULL, 0, NULL, 0);
@@ -524,6 +541,44 @@ void okplugin_edge_wipe(void) {
   loaded = 1;
   pend.active = 0;
   grant_drop();
+}
+
+/* ------------------------------------------------------------ backup (DESIGN.md 6) */
+
+/*
+ * The plugin backup section (node-onlykey-lib/cli/firmware-plugins.js): Edge
+ * keeps 37 bytes - version, seq, head. The device id and the Edge key come
+ * back with K132, which the backup already carries; budgets end at a restore
+ * anyway (their seeds were never stored); the links themselves are the hosts'.
+ */
+int okplugin_edge_backup(uint8_t *out, int max) {
+  state_load();
+  if (max < 37 || st.seq == SEQ_NONE) return 0; /* no chain yet: nothing to keep */
+  out[0] = 1;
+  put32(out + 1, st.seq);
+  memcpy(out + 5, st.head, 32);
+  return 37;
+}
+
+void okplugin_edge_restore(const uint8_t *in, int len) {
+  if (len < 37 || in[0] != 1) return; /* a version this build does not know: keep what it has */
+  /*
+   * Keep the record generation counting UP: the newer of the two sectors wins at
+   * boot, so a restore that started again at 1 lost to the older record left in
+   * the other sector (found by the kit test: the key came back at the right seq
+   * but without the LOSS link).
+   */
+  state_load();
+  uint32_t gen = st.gen;
+  memset(&st, 0, sizeof(st));
+  st.gen = gen;
+  st.seq = get32(in + 1);
+  memcpy(st.head, in + 5, 32);
+  st.restored = 1;
+  memset(held, 0, sizeof(held));
+  memset(budgets, 0, sizeof(budgets));
+  loaded = 1;
+  state_save();
 }
 
 /* ------------------------------------------------------------ OKEDGE */
