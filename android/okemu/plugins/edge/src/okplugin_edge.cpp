@@ -78,16 +78,23 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define EDGE_STATE_B (EDGE_REGION + 0x0800)
 
 /*
- * magic . gen . seq . head . owed_n . overflow . restored . pad . owed x4 (seq, head)
- * . last_link . check. "06": the owed list replaced 05's one-use flag (the spec
- * change, onlykey-edge c7c30dd). A 05 record is not read: Edge never shipped,
- * and a soft key's chain simply starts again.
+ * magic . gen . seq . head . owed_n . overflow . restoring . replay_closed .
+ * owed x4 (seq, head) . last_link . replayed_to . check.
+ * "06": the owed list replaced 05's one-use flag (the spec change, onlykey-edge
+ * c7c30dd). "07" adds R26's replay state (replay_closed, replayed_to); a 06
+ * record is still read (its replay state is "nothing replayed past seq"), so a
+ * soft key keeps its chain across this change. A 05 record is not read: Edge
+ * never shipped.
  */
-#define STATE_BYTES 264
-#define STATE_CHECKED 260
+#define STATE_BYTES 268
+#define STATE_CHECKED 264
+#define STATE06_BYTES 264
+#define STATE06_CHECKED 260
 #define OWED_AT 52
 #define LAST_AT (OWED_AT + OWED_MAX * 36)
-static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '6'};
+#define REPLAYED_AT (LAST_AT + LINK_BYTES)
+static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '7'};
+static const uint8_t MAGIC06[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '6'};
 
 struct owed_use { uint32_t seq; uint8_t head[32]; }; /* head[seq]: what its ticket subject names */
 
@@ -98,7 +105,9 @@ struct edge_state {
   uint8_t head[32];           /* head[seq]; the genesis while seq == SEQ_NONE */
   uint8_t owed_n;             /* R16: uses owing a ticket, oldest first in owed[] */
   uint8_t overflow;           /* R16: an older owed use fell off the list - only a WAIVE clears it */
-  uint8_t restored;           /* restored from a backup: the next link is a LOSS (DESIGN.md 6) */
+  uint8_t restored;           /* R26 "restoring": restored from a backup, REPLAY_DONE not pressed yet */
+  uint8_t replay_closed;      /* R26: the key wrote a link of its own while restoring - no more REPLAY */
+  uint32_t replayed_to;       /* R26: the newest seq replayed (or restored); a LOSS starts after it */
   struct owed_use owed[OWED_MAX];
   uint8_t last_link[LINK_BYTES]; /* the latest link, so a crash never loses it */
 };
@@ -107,6 +116,14 @@ static uint8_t loaded;
 
 /* R18: is anything owed? Then nothing automatic happens. */
 static int owes(void) { return st.owed_n || st.overflow; }
+
+/*
+ * R26: restored from a backup, the key lost its newest head - every link after
+ * the backup, and the debts they made. Until a person finishes the restore
+ * (REPLAY_DONE, with a press) nothing automatic happens, as if overflow were
+ * set: a restore must never be a way to forgive debts. Human presses still work.
+ */
+static int automatic_blocked(void) { return owes() || st.restored; }
 
 /* ------------------------------------------------------------ RAM only */
 
@@ -156,11 +173,19 @@ static struct {
  * resuming one (R15a) or waiving the debts (R18). One at a time; a new one
  * replaces it.
  */
-enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE };
+enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE };
 static struct {
   uint8_t what;
   unsigned long since;
-  uint32_t id;                /* PRESS_RESUME: the budget */
+  uint32_t id;                /* PRESS_RESUME: the budget; PRESS_REPLAY_DONE: the newest seq the copies hold */
+  /*
+   * R27: the head the host verified its copy up to (GRANT_CREATE: its first
+   * GRANT_HEAD_BYTES, all that fits; GRANT_RESUME: all 32). Checked when the
+   * request arrives AND again at the press: a link written while the key waits
+   * would otherwise open the budget on a history the host never checked.
+   */
+  uint8_t verified[32];
+  uint8_t verified_len;
   struct budget b;            /* PRESS_GRANT: the budget to open */
   uint8_t reason[32];
   uint8_t scopes_enc[1 + 4 * MAX_SCOPES];
@@ -232,31 +257,37 @@ static void state_encode(uint8_t rec[STATE_BYTES]) {
   rec[48] = st.owed_n;
   rec[49] = st.overflow;
   rec[50] = st.restored;
+  rec[51] = st.replay_closed;
   for (int i = 0; i < OWED_MAX; i++) {
     put32(rec + OWED_AT + 36 * i, st.owed[i].seq);
     memcpy(rec + OWED_AT + 36 * i + 4, st.owed[i].head, 32);
   }
   memcpy(rec + LAST_AT, st.last_link, LINK_BYTES);
+  put32(rec + REPLAYED_AT, st.replayed_to);
   H(check, NULL, rec, STATE_CHECKED, NULL, 0, NULL, 0);
   memcpy(rec + STATE_CHECKED, check, 4);
 }
 
 static int state_decode(const uint8_t rec[STATE_BYTES], struct edge_state *s) {
   uint8_t check[32];
-  if (memcmp(rec, MAGIC, 8) != 0) return 0;
-  H(check, NULL, rec, STATE_CHECKED, NULL, 0, NULL, 0);
-  if (memcmp(rec + STATE_CHECKED, check, 4) != 0) return 0; /* torn write: the other copy wins */
+  int v06 = memcmp(rec, MAGIC06, 8) == 0;
+  if (!v06 && memcmp(rec, MAGIC, 8) != 0) return 0;
+  int checked = v06 ? STATE06_CHECKED : STATE_CHECKED;
+  H(check, NULL, rec, checked, NULL, 0, NULL, 0);
+  if (memcmp(rec + checked, check, 4) != 0) return 0; /* torn write: the other copy wins */
   s->gen = get32(rec + 8);
   s->seq = get32(rec + 12);
   memcpy(s->head, rec + 16, 32);
   s->owed_n = rec[48] > OWED_MAX ? OWED_MAX : rec[48];
   s->overflow = rec[49];
   s->restored = rec[50];
+  s->replay_closed = v06 ? 0 : rec[51];
   for (int i = 0; i < OWED_MAX; i++) {
     s->owed[i].seq = get32(rec + OWED_AT + 36 * i);
     memcpy(s->owed[i].head, rec + OWED_AT + 36 * i + 4, 32);
   }
   memcpy(s->last_link, rec + LAST_AT, LINK_BYTES);
+  s->replayed_to = v06 ? s->seq : get32(rec + REPLAYED_AT);
   return 1;
 }
 
@@ -340,16 +371,12 @@ static int ensure_identity(void) {
   H(h, "OKEDGE-DEVICE-v1", ident.pub, 64, NULL, 0, NULL, 0);
   memcpy(ident.device_id, h, ID_BYTES);
   ident.ok = 1;
-  if (st.restored) {
-    /*
-     * Restored from a backup: everything the key decided after that backup is
-     * gone. Say so in the chain - a LOSS link (R24) - rather than let a host
-     * find the head gone back and guess.
-     */
-    uint8_t zero[32] = {0};
-    st.restored = 0;
-    append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, 0, zero, 0, 0, NULL);
-  }
+  /*
+   * Restored from a backup (st.restored): the LOSS link is NOT written here any
+   * more (R26). The host first replays the newest copy it has, and the person
+   * then accepts where it ended with a press (REPLAY_DONE), which writes the
+   * LOSS over only what could not be replayed.
+   */
   if (st.seq == SEQ_NONE) {
     /* head[-1] = SHA256("OKEDGE-GENESIS-v1" || device_id)  (lib chain.genesis) */
     H(st.head, "OKEDGE-GENESIS-v1", ident.device_id, ID_BYTES, NULL, 0, NULL, 0);
@@ -379,6 +406,51 @@ static void checkpoint(void) {
 /* ------------------------------------------------------------ the weld */
 
 /*
+ * R16: every approved sign/decrypt - pressed or self-pressed - owes a ticket.
+ * The key keeps the latest 4; a 5th pushes the oldest off, and from then on
+ * only a WAIVE can clear it (overflow). The use runs anyway: only a human
+ * press can make a 5th (no self-press while anything is owed, R18). The same
+ * rule for a link the key writes and one it is handed back by REPLAY (R26).
+ */
+static void owe_if_use(uint8_t op, uint8_t decision, uint32_t seq, const uint8_t head[32]) {
+  if (!((op == OP_SIGN || op == OP_DECRYPT) && (decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS))) return;
+  if (st.owed_n == OWED_MAX) {
+    memmove(&st.owed[0], &st.owed[1], sizeof(st.owed[0]) * (OWED_MAX - 1));
+    st.owed_n--;
+    st.overflow = 1;
+  }
+  st.owed[st.owed_n].seq = seq;
+  memcpy(st.owed[st.owed_n].head, head, 32);
+  st.owed_n++;
+}
+
+/* drop one owed use (a ticket paid it); 0 if it was not on the list */
+static int owed_pay(uint32_t ref) {
+  for (int k = 0; k < st.owed_n; k++) {
+    if (st.owed[k].seq != ref) continue;
+    memmove(&st.owed[k], &st.owed[k + 1], sizeof(st.owed[0]) * (st.owed_n - k - 1));
+    st.owed_n--;
+    memset(&st.owed[st.owed_n], 0, sizeof(st.owed[0]));
+    return 1;
+  }
+  return 0;
+}
+
+/* SHA256("OKEDGE-WAIVE-v1" || each owed seq (u32 LE, oldest first) || overflow) (lib tickets.waiveSubject) */
+static void waive_subject(uint8_t out[32]) {
+  uint8_t seq4[4], ov = st.overflow ? 1 : 0;
+  SHA256_CTX ctx;
+  sha256_init(&ctx);
+  sha256_update(&ctx, (const unsigned char *)"OKEDGE-WAIVE-v1", 15);
+  for (int i = 0; i < st.owed_n; i++) {
+    put32(seq4, st.owed[i].seq);
+    sha256_update(&ctx, seq4, 4);
+  }
+  sha256_update(&ctx, &ov, 1);
+  sha256_final(&ctx, out);
+}
+
+/*
  * One link (lib chain.encodeLink), welded
  *   head[n] = SHA256("OKEDGE-LINK-v1" || head[n-1] || link[n])   (lib chain.weld)
  * and persisted before the operation's result is released (R4).
@@ -402,21 +474,12 @@ static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, co
   memcpy(st.last_link, link, LINK_BYTES);
   armed = 0; /* R13a: any link spends or clears the arm */
   /*
-   * R16: every approved sign/decrypt - pressed or self-pressed - owes a ticket.
-   * The key keeps the latest 4; a 5th pushes the oldest off, and from then on
-   * only a WAIVE can clear it (overflow). The use runs anyway: only a human
-   * press can make a 5th (no self-press while anything is owed, R18).
+   * R26: a link of the key's own while restoring forks from any copy holding
+   * the newer links - from here a replayed link could only be spliced onto a
+   * history it never followed. Replay is closed for good.
    */
-  if ((op == OP_SIGN || op == OP_DECRYPT) && (decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS)) {
-    if (st.owed_n == OWED_MAX) {
-      memmove(&st.owed[0], &st.owed[1], sizeof(st.owed[0]) * (OWED_MAX - 1));
-      st.owed_n--;
-      st.overflow = 1;
-    }
-    st.owed[st.owed_n].seq = seq;
-    memcpy(st.owed[st.owed_n].head, head, 32);
-    st.owed_n++;
-  }
+  if (st.restored) st.replay_closed = 1;
+  owe_if_use(op, decision, seq, head);
   state_save();
   hold(seq, link, head, reveal);
 }
@@ -437,10 +500,16 @@ static int scope_allowed(uint8_t op, uint8_t slot) {
   return 0;
 }
 
-/* unlocked, out of config mode, and nothing owed (R18): the only state a budget can pay in */
+/* unlocked, out of config mode, nothing owed (R18), not restoring (R26): the only state a budget can pay in */
 static int budgets_may_pay(void) {
-  return unlocked == true && configmode == false && !owes();
+  return unlocked == true && configmode == false && !automatic_blocked();
 }
+
+/* why nothing automatic may happen now: restoring first (the person finishes it), else a debt */
+static uint8_t blocked_status(void) { return st.restored ? EDGE_RESTORING : EDGE_TICKET_OWED; }
+
+/* R27: does the head the host verified (its first n bytes) still match the key's? */
+static int head_is(const uint8_t *verified, uint8_t n) { return memcmp(verified, st.head, n) == 0; }
 
 /*
  * The live budget that pays for this use: armed (R13a), not on hold (R15a), a
@@ -488,14 +557,21 @@ static void press_wait(uint8_t what, const uint8_t subject[32]) {
 
 /*
  * GRANT_CREATE: [6] scope count, [7..22] scopes (op, slot, cap u16 LE) x4,
- * [23..54] reason_hash. The seed and G = H^n(seed) are made here; the budget
- * opens only on a PHYSICAL press, and never while a ticket is owed (R10, R18).
+ * [23..54] reason_hash, [55..62] the first GRANT_HEAD_BYTES of the head the
+ * host verified its copy up to (R27; CHOSEN - a report has no room for all 32).
+ * The seed and G = H^n(seed) are made here; the budget opens only on a
+ * PHYSICAL press, never while a ticket is owed or a restore is unfinished
+ * (R10, R18, R26), and never on a head the host did not verify.
  */
+#define GRANT_HEAD_BYTES 8
 static void grant_create(const uint8_t *buffer) {
   uint8_t n = buffer[6];
   unsigned uses = 0;
   press_drop();
-  if (owes()) { status(EDGE_TICKET_OWED); return; }
+  if (automatic_blocked()) { status(blocked_status()); return; }
+  if (!head_is(buffer + 55, GRANT_HEAD_BYTES)) { status(EDGE_STALE_HEAD); return; }
+  memcpy(press.verified, buffer + 55, GRANT_HEAD_BYTES);
+  press.verified_len = GRANT_HEAD_BYTES;
   if (n < 1 || n > MAX_SCOPES) { status(EDGE_BAD_SCOPES); return; }
   press.scopes_enc[0] = n;
   for (int j = 0; j < n; j++) {
@@ -528,7 +604,8 @@ static void grant_create(const uint8_t *buffer) {
  */
 static void grant_pressed(void) {
   int slot = -1;
-  if (owes()) { status(EDGE_TICKET_OWED); return; } /* a use slipped in while it waited */
+  if (automatic_blocked()) { status(blocked_status()); return; } /* a use slipped in while it waited */
+  if (!head_is(press.verified, press.verified_len)) { status(EDGE_STALE_HEAD); return; }
   for (int i = 0; i < MAX_LIVE; i++) if (!budgets[i].id) { slot = i; break; }
   if (slot < 0) { status(EDGE_LIVE_FULL); return; }
 
@@ -558,7 +635,8 @@ static void grant_pressed(void) {
 static void resume_pressed(void) {
   struct budget *b = live_budget(press.id);
   if (!b) { status(EDGE_NO_SUCH_BUDGET); return; }
-  if (owes()) { status(EDGE_TICKET_OWED); return; }
+  if (automatic_blocked()) { status(blocked_status()); return; }
+  if (!head_is(press.verified, press.verified_len)) { status(EDGE_STALE_HEAD); return; }
   if (b->on_hold) {
     uint8_t zero[32] = {0};
     b->on_hold = 0;
@@ -578,22 +656,82 @@ static void resume_pressed(void) {
  */
 static void waive_pressed(void) {
   if (!owes()) { status(EDGE_NO_TICKET_WAITING); return; } /* paid while it waited */
-  uint8_t subject[32], seq4[4], ov = st.overflow ? 1 : 0;
+  uint8_t subject[32];
   uint32_t oldest = st.owed_n ? st.owed[0].seq : (st.seq == SEQ_NONE ? 0 : st.seq + 1);
-  SHA256_CTX ctx;
-  sha256_init(&ctx);
-  sha256_update(&ctx, (const unsigned char *)"OKEDGE-WAIVE-v1", 15);
-  for (int i = 0; i < st.owed_n; i++) {
-    put32(seq4, st.owed[i].seq);
-    sha256_update(&ctx, seq4, 4);
-  }
-  sha256_update(&ctx, &ov, 1);
-  sha256_final(&ctx, subject);
+  waive_subject(subject);
   st.owed_n = 0;
   st.overflow = 0;
   memset(st.owed, 0, sizeof(st.owed));
   append(OP_TICKET, CODE_NEEDS_REVIEW, 0, FLAG_PRESS_OBSERVED, subject, oldest, 0, NULL);
   reply_seq_head();
+}
+
+/*
+ * R26: the person accepts "restored to #N, the newest your copies hold" with a
+ * press. If the copies held more than the key took back (the replay stopped at
+ * a fork, or the key wrote its own link first), the key links a LOSS over that
+ * range - grant_id = the first seq not replayed, the subject's first 4 bytes =
+ * the newest the copies hold (CHOSEN, pending the spec) - and leaves restoring.
+ * reply: seq . head.
+ */
+static void replay_done_pressed(void) {
+  if (!st.restored) { status(EDGE_REPLAY_CLOSED); return; }
+  uint32_t newest = press.id;
+  st.restored = 0;
+  st.replay_closed = 0;
+  if (newest != SEQ_NONE && newest > st.replayed_to) {
+    uint8_t subject[32] = {0};
+    put32(subject, newest);
+    append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, st.replayed_to + 1, 0, NULL);
+  } else {
+    state_save();
+  }
+  reply_seq_head();
+}
+
+/*
+ * R26 REPLAY: [6..51] the link's first REPLAY_BYTES (bytes 46-63 of every link
+ * are reserved zeros), [52..59] the first 8 bytes of the head the copy stored
+ * after it (CHOSEN, pending the spec). The key takes it only as its NEXT seq,
+ * and only if welding it onto its own head gives the head the copy stored -
+ * the seq alone would let any link through, and the copy's own head is the one
+ * thing that says where it forked. Then the debt rules, as if the key had
+ * written it: a use owes, a ticket pays its ref_seq, a waive over exactly this
+ * list clears it.
+ */
+#define REPLAY_BYTES 46
+#define REPLAY_HEAD_BYTES 8
+static void replay(const uint8_t *buffer) {
+  uint8_t link[LINK_BYTES], head[32];
+  if (!st.restored || st.replay_closed) { status(EDGE_REPLAY_CLOSED); return; }
+  memset(link, 0, sizeof(link));
+  memcpy(link, buffer + 6, REPLAY_BYTES);
+  uint32_t seq = get32(link);
+  if (seq != (st.seq == SEQ_NONE ? 0 : st.seq + 1)) { status(EDGE_REPLAY_MISMATCH); return; }
+  H(head, "OKEDGE-LINK-v1", st.head, 32, link, LINK_BYTES, NULL, 0);
+  if (memcmp(head, buffer + 6 + REPLAY_BYTES, REPLAY_HEAD_BYTES) != 0) { status(EDGE_REPLAY_MISMATCH); return; }
+
+  uint8_t op = link[4], decision = link[5], flags = link[7];
+  uint32_t ref = get32(link + 40);
+  if (op == OP_TICKET) {
+    uint8_t w[32];
+    waive_subject(w);
+    if (decision == CODE_NEEDS_REVIEW && (flags & FLAG_PRESS_OBSERVED) && memcmp(link + 8, w, 32) == 0) {
+      st.owed_n = 0;
+      st.overflow = 0;
+      memset(st.owed, 0, sizeof(st.owed));
+    } else {
+      owed_pay(ref);
+    }
+  }
+  st.seq = seq;
+  memcpy(st.head, head, 32);
+  memcpy(st.last_link, link, LINK_BYTES);
+  st.replayed_to = seq;
+  owe_if_use(op, decision, seq, head);
+  state_save();
+  hold(seq, link, head, NULL);
+  status(EDGE_OK);
 }
 
 /* ------------------------------------------------------------ hooks */
@@ -629,6 +767,7 @@ void okplugin_edge_decision(int decision) {
     if (what == PRESS_GRANT) grant_pressed();
     else if (what == PRESS_RESUME) resume_pressed();
     else if (what == PRESS_WAIVE) waive_pressed();
+    else if (what == PRESS_REPLAY_DONE) replay_done_pressed();
     press_drop();
     return;
   }
@@ -727,7 +866,9 @@ void okplugin_edge_restore(const uint8_t *in, int len) {
       memcpy(st.owed[i].head, in + 39 + 36 * i + 4, 32);
     }
   }
-  st.restored = 1;
+  st.restored = 1;       /* R26: restoring - replay, then REPLAY_DONE with a press */
+  st.replay_closed = 0;
+  st.replayed_to = st.seq;
   memset(held, 0, sizeof(held));
   memset(budgets, 0, sizeof(budgets));
   armed = 0;
@@ -748,7 +889,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       /*
        * seq (SEQ_NONE = empty) . head (the genesis while empty) . oldest pickable
        * seq . live budget ids x4 . held mask (bit i = budget i on hold, R15a) .
-       * owed count . overflow (R16)
+       * owed count . overflow (R16) . restoring (R26; CHOSEN - the tab opens its
+       * Restore card on it)
        */
       uint32_t oldest = SEQ_NONE;
       uint8_t mask = 0;
@@ -763,7 +905,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       r[56] = mask;
       r[57] = st.owed_n;
       r[58] = st.overflow;
-      reply(r, 59);
+      r[59] = st.restored;
+      reply(r, 60);
       return;
     }
     case OKEDGE_PICKUP: {
@@ -817,12 +960,18 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     }
     case OKEDGE_GRANT_RESUME: {
-      /* R15a: a physical press; refused while a ticket is owed (R18) */
+      /*
+       * id u32 . the head the host verified (32, R27). A physical press;
+       * refused while a ticket is owed or a restore is unfinished (R18, R26).
+       */
       uint32_t id = get32(buffer + 6);
       uint8_t what[32];
       press_drop();
       if (!live_budget(id)) { status(EDGE_NO_SUCH_BUDGET); return; }
-      if (owes()) { status(EDGE_TICKET_OWED); return; }
+      if (automatic_blocked()) { status(blocked_status()); return; }
+      if (!head_is(buffer + 10, 32)) { status(EDGE_STALE_HEAD); return; }
+      memcpy(press.verified, buffer + 10, 32);
+      press.verified_len = 32;
       press.id = id;
       H(what, "OKEDGE-RESUME", buffer + 6, 4, NULL, 0, NULL, 0);
       press_wait(PRESS_RESUME, what);
@@ -850,9 +999,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       sha256_update(&ctx, &code, 1);
       sha256_update(&ctx, buffer + 11, 32);
       sha256_final(&ctx, subject);
-      memmove(&st.owed[k], &st.owed[k + 1], sizeof(st.owed[0]) * (st.owed_n - k - 1));
-      st.owed_n--;
-      memset(&st.owed[st.owed_n], 0, sizeof(st.owed[0]));
+      owed_pay(ref);
       append(OP_TICKET, code, 0, 0, subject, ref, 0, NULL);
       reply_seq_head();
       return;
@@ -872,11 +1019,25 @@ void okplugin_edge_recv(uint8_t *buffer) {
        * arms ONE self-press only when the caller has seen the latest chain (its
        * head is the current one), nothing is owed, and some budget could pay.
        */
+      if (st.restored) { status(EDGE_RESTORING); return; }
       if (memcmp(buffer + 6, st.head, 32) != 0) { status(EDGE_STALE_HEAD); return; }
       if (owes()) { status(EDGE_TICKET_OWED); return; }
       if (!any_budget_payable()) { status(EDGE_NOTHING_TO_ARM); return; }
       armed = 1;
       status(EDGE_OK);
+      return;
+    }
+    case OKEDGE_REPLAY:
+      replay(buffer);
+      return;
+    case OKEDGE_REPLAY_DONE: {
+      /* the newest seq the host's copies hold (u32) - the "#N" the person accepts with the press */
+      uint8_t what[32];
+      press_drop();
+      if (!st.restored) { status(EDGE_REPLAY_CLOSED); return; }
+      press.id = get32(buffer + 6);
+      H(what, "OKEDGE-REPLAY-DONE", buffer + 6, 4, st.head, 32, NULL, 0);
+      press_wait(PRESS_REPLAY_DONE, what);
       return;
     }
     default:

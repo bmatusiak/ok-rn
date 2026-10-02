@@ -30,6 +30,8 @@ The firmware half of OnlyKey Edge, as a plugin: soft key (ok-rn) and the desktop
 4. **The debts** (the spec change, onlykey-edge `c7c30dd`): every approved use - pressed or self-pressed - owes a ticket (R16). The key keeps the latest 4 owed uses (`seq`, `head[seq]`) and an `overflow` flag in flash, links a TICKET for any of them, and while anything is owed there is no self-press, ARM, GRANT_CREATE or GRANT_RESUME (R18). A pressed WAIVE clears them all.
 5. **The arm** (R13a): a self-press needs `ARM {head}` over the current head first, one per use; any link clears it. A sign that skips ARM is pressed.
 6. **Hold** (R15a): a held budget pays for nothing and arms nothing; resuming takes a press.
+7. **Restore, then replay** (R26, onlykey-edge `0dda6ac`): a restore leaves the key *restoring* - nothing automatic - until the host has replayed its newest copy (each link only if it is the next seq and welds to the head the copy stored) and the person presses REPLAY_DONE, which writes the LOSS over only what could not be replayed. It replaced the LOSS written straight away at the first unlock after a restore.
+8. **No budget from an unverified copy** (R27): GRANT_CREATE and GRANT_RESUME carry the head the host verified its copy up to, checked on arrival and again at the press. The full check is the library's (`copy.verifyCopy`).
 
 **Edge JS does everything else:**
 - builds budget requests;

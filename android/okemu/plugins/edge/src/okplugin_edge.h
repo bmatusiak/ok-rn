@@ -27,6 +27,8 @@
 #define OKEDGE_TICKET 0x20       /* replies seq . head */
 #define OKEDGE_WAIVE 0x21        /* R18: press; replies seq . head */
 #define OKEDGE_ARM 0x22          /* R13a: ARM {head} */
+#define OKEDGE_REPLAY 0x23       /* R26: a link of the newest copy, while restoring */
+#define OKEDGE_REPLAY_DONE 0x24  /* R26: press; LOSS over what was not replayed; replies seq . head */
 
 /*
  * Text replies are "EDGE:xx" - two hex digits, no sentences (owner, 2026-10-02:
@@ -46,6 +48,9 @@
 #define EDGE_STALE_HEAD 0x0B        /* ARM: not the current head */
 #define EDGE_TICKET_OWED 0x0C       /* R18: a ticket is owed - no ARM, GRANT_CREATE or GRANT_RESUME */
 #define EDGE_NOTHING_TO_ARM 0x0D    /* ARM: no live budget off hold with uses left */
+#define EDGE_RESTORING 0x0E         /* R26: restored, not finished - no ARM, GRANT_CREATE or GRANT_RESUME */
+#define EDGE_REPLAY_MISMATCH 0x0F   /* REPLAY: not the next seq, or it does not weld to the head the copy stored */
+#define EDGE_REPLAY_CLOSED 0x10     /* REPLAY: not restoring, or the key already wrote a link of its own */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */
 #define OKEDGE_DECISION_APPROVE 1

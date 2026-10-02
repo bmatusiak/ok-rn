@@ -30,6 +30,8 @@ const GRANT_RESUME = 0x14;
 const TICKET = 0x20;
 const WAIVE = 0x21;
 const ARM = 0x22;
+const REPLAY = 0x23;
+const REPLAY_DONE = 0x24;
 const SEQ_NONE = 0xffffffff;
 /* lib codes.js */
 const OP_SIGN = 1;
@@ -92,7 +94,7 @@ module.exports = function register({ it }, ctx) {
     const ids = [0, 1, 2, 3].map((i) => r.readUInt32LE(40 + 4 * i));
     return {
       seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), oldest: r.readUInt32LE(36),
-      live: ids.filter(Boolean), held: ids.filter((id, i) => id && (r[56] >> i) & 1), owed: r[57], overflow: r[58],
+      live: ids.filter(Boolean), held: ids.filter((id, i) => id && (r[56] >> i) & 1), owed: r[57], overflow: r[58], restoring: r[59],
     };
   }
 
@@ -114,13 +116,25 @@ module.exports = function register({ it }, ctx) {
     if (log) log(`waived ${h.owed} owed${h.overflow ? ' + overflow' : ''} left by earlier tests`);
   }
 
-  /* GRANT_CREATE (one scope: agent P-256 sign 222, `cap` uses) with its press -> {grantId, uses, G, chainSeq, ckpt, sig} */
-  async function openBudget(device, cap, reason, { signal }) {
-    const reasonHash = sha256(Buffer.from(reason));
-    const req = Buffer.alloc(50);
+  /*
+   * GRANT_CREATE: one scope (agent P-256 sign 222, `cap` uses), the reason, and
+   * the first 8 bytes of the head the host verified (R27; the key refuses any
+   * other). `verified` defaults to the key's current head - this test is the
+   * host, and checks the chain itself.
+   */
+  function grantRequest(cap, reasonHash, verified) {
+    const req = Buffer.alloc(57);
     req[0] = 1;
     req[1] = OP_SIGN; req[2] = 222; req.writeUInt16LE(cap, 3);
     reasonHash.copy(req, 17);
+    Buffer.from(verified).copy(req, 49, 0, 8);
+    return req;
+  }
+
+  /* ... with its press -> {grantId, uses, G, chainSeq, ckpt, sig} */
+  async function openBudget(device, cap, reason, { signal }) {
+    const reasonHash = sha256(Buffer.from(reason));
+    const req = grantRequest(cap, reasonHash, (await head(device, { signal })).head);
     const [g, ckpt, s] = await edge(device, GRANT_CREATE, req, { signal, press: true, reports: 3 });
     return {
       grantId: g.readUInt32LE(0), uses: g.readUInt16LE(4), G: new Uint8Array(g.subarray(6, 38)),
@@ -340,10 +354,14 @@ module.exports = function register({ it }, ctx) {
 
       /* while a use owes, resume is refused (R18) */
       const p = await pressedSign(device, 'okt held: pressed', { signal });
-      assert.equal(await edge(device, GRANT_RESUME, u32(b.grantId), { signal, text: true }), 'EDGE:0C', 'resume went through while a ticket was owed');
-      await ticket(device, p.seq, 'okt: held pressed', { signal });
+      const resumeReq = (headBytes) => Buffer.concat([u32(b.grantId), Buffer.from(headBytes)]);
+      assert.equal(await edge(device, GRANT_RESUME, resumeReq((await head(device, { signal })).head), { signal, text: true }), 'EDGE:0C', 'resume went through while a ticket was owed');
+      const t = await ticket(device, p.seq, 'okt: held pressed', { signal });
 
-      assert.equal(await edge(device, GRANT_RESUME, u32(b.grantId), { signal, text: true, press: true }), 'EDGE:00');
+      /* R27: only on the head the host verified */
+      assert.equal(await edge(device, GRANT_RESUME, resumeReq(new Uint8Array(32).fill(1)), { signal, text: true }), 'EDGE:0B', 'resume went through on a head the host never verified');
+      assert.equal(await edge(device, GRANT_CREATE, grantRequest(1, sha256(Buffer.from('stale')), new Uint8Array(32).fill(1)), { signal, text: true }), 'EDGE:0B', 'a budget opened on a head the host never verified');
+      assert.equal(await edge(device, GRANT_RESUME, resumeReq(t.head), { signal, text: true, press: true }), 'EDGE:00');
       h = await head(device, { signal });
       assert.equal(JSON.stringify(h.held), JSON.stringify([]), 'still on hold after the resume');
       assert.equal(await arm(device, h.head, { signal }), 'EDGE:00');
@@ -407,13 +425,16 @@ module.exports = function register({ it }, ctx) {
     });
 
   /*
-   * The plugin backup section (DESIGN.md 6; the loader's 0xFB section): Edge
-   * keeps version, seq, head and the owed uses. A backup taken at head S, a link
-   * made after it, then the restore: the key comes back at S, owing what it owed
-   * then, and links a LOSS first - the history after the backup is gone, and the
-   * chain says so.
+   * The plugin backup section (DESIGN.md 6; the loader's 0xFB section) and R26.
+   * Edge keeps version, seq, head and the owed uses. A backup taken at head S,
+   * two links made after it (the host's copy has them), then the restore: the
+   * key comes back at S, owing what it owed then, and RESTORING - nothing
+   * automatic. The host replays its copy: the first newer link comes back with
+   * its debt. A human press still works, but it is a link of the key's own, so
+   * replay closes and the second newer link is refused. REPLAY_DONE (a press)
+   * links the LOSS over what could not be replayed and ends the restore.
    */
-  it('edge: a backup keeps the chain\'s head and its debts; a restore brings them back and links a LOSS',
+  it('edge: a backup keeps the head and debts; a restore replays the newer links, then a pressed REPLAY_DONE links the LOSS (R26)',
     async ({ device, assert, signal, log }) => {
       const { backup } = ctx.kit;
       const PASSPHRASE = 'okt edge backup passphrase 2026-10-02';
@@ -465,11 +486,13 @@ module.exports = function register({ it }, ctx) {
       require('fs').writeFileSync(keep, JSON.stringify({ passphrase: PASSPHRASE, slot: 2, label: 'edgebkup', data: Buffer.from(parsed.data).toString('hex') }));
       log(`kept for the older-firmware restore: ${keep}`);
 
-      /* a link the backup does not have */
+      /* two links the backup does not have - the host's copy holds them */
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      await pressedSign(device, 'okt edge after the backup', { signal });
+      const l1 = await pressedSign(device, 'okt edge after the backup 1', { signal });
+      const l2 = await pressedSign(device, 'okt edge after the backup 2', { signal });
       const lost = await head(device, { signal });
-      assert.equal(lost.seq, atBackup.seq + 1);
+      assert.equal(JSON.stringify([l1.seq, l2.seq]), JSON.stringify([atBackup.seq + 1, atBackup.seq + 2]));
+      const [c1, c2] = await pickup(device, l1.seq, 2, { signal });
 
       /* the restore - OKRESTORE is taken in config mode (as 10-backup-restore sends it) */
       await device.enterConfigMode(ctx.PINS.primary, { signal });
@@ -482,15 +505,43 @@ module.exports = function register({ it }, ctx) {
       await device.waitReady({ signal });
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
 
-      /* back at the backup's head, plus one LOSS link welded onto it, owing what it owed then */
+      /* back at the backup's head, owing what it owed then, and restoring: nothing automatic */
       const after = await head(device, { signal });
-      log(`after the restore: head #${after.seq} owed ${after.owed} (backup at #${atBackup.seq}, the lost link was #${lost.seq})`);
-      assert.equal(after.seq, atBackup.seq + 1, 'the chain did not come back to the backup\'s head plus the LOSS link');
+      log(`after the restore: head #${after.seq} owed ${after.owed} restoring ${after.restoring} (backup at #${atBackup.seq}, the copy reaches #${lost.seq})`);
+      assert.equal(after.seq, atBackup.seq, 'the chain did not come back to the backup\'s head');
+      assert.bytes(Buffer.from(after.head), Buffer.from(atBackup.head));
       assert.equal(after.owed, atBackup.owed, 'the restore changed what is owed');
-      const [l] = await pickup(device, after.seq, 1, { signal });
-      assert.equal(chain.decodeLink(l.link).op, 11, 'the first link after a restore is a LOSS');
-      assert.bytes(Buffer.from(chain.weld(atBackup.head, l.link)), Buffer.from(after.head), 'the LOSS link does not weld onto the backup\'s head');
-      assert.ok(!Buffer.from(after.head).equals(Buffer.from(lost.head)), 'the restored chain still carries the lost link');
+      assert.equal(after.restoring, 1, 'HEAD does not say the key is restoring');
+      assert.equal(await arm(device, after.head, { signal }), 'EDGE:0E', 'ARM went through while restoring');
+      assert.equal(await edge(device, GRANT_CREATE, grantRequest(1, sha256(Buffer.from('r')), after.head), { signal, text: true }), 'EDGE:0E', 'a budget opened while restoring');
+
+      /* REPLAY: 46 link bytes + the first 8 of the head the copy stored after it */
+      const replayReq = (c) => Buffer.concat([Buffer.from(c.link).subarray(0, 46), Buffer.from(c.head).subarray(0, 8)]);
+      assert.equal(await edge(device, REPLAY, replayReq(c2), { signal, text: true }), 'EDGE:0F', 'a link out of order was replayed');
+      assert.equal(await edge(device, REPLAY, Buffer.concat([Buffer.from(c1.link).subarray(0, 46), Buffer.alloc(8, 1)]), { signal, text: true }), 'EDGE:0F', 'a link that does not weld to the copy\'s head was replayed');
+      assert.equal(await edge(device, REPLAY, replayReq(c1), { signal, text: true }), 'EDGE:00');
+      let h = await head(device, { signal });
+      assert.equal(h.seq, l1.seq);
+      assert.bytes(Buffer.from(h.head), Buffer.from(c1.head), 'the replayed link did not bring back its head');
+      assert.equal(h.owed, atBackup.owed + 1, 'the replayed use did not bring its debt back');
+
+      /* a human press still works - and it is the key's own link, so replay closes for good */
+      const own = await pressedSign(device, 'okt edge while restoring', { signal });
+      assert.equal(own.seq, l2.seq, 'the key\'s own link is not at the next seq');
+      assert.equal(await edge(device, REPLAY, replayReq(c2), { signal, text: true }), 'EDGE:10', 'replay stayed open after the key wrote its own link');
+
+      /* REPLAY_DONE, with the press: the LOSS over what could not be replayed */
+      const [d] = await edge(device, REPLAY_DONE, u32(lost.seq), { signal, press: true });
+      const done = seqHead(d);
+      h = await head(device, { signal });
+      assert.equal(h.restoring, 0, 'still restoring after REPLAY_DONE');
+      assert.equal(done.seq, own.seq + 1);
+      const [loss] = await pickup(device, done.seq, 1, { signal });
+      const f = chain.decodeLink(loss.link);
+      log(trail([f]));
+      assert.equal(JSON.stringify([f.op, f.grantId, f.flags & PRESS_OBSERVED, Buffer.from(f.subject).readUInt32LE(0)]),
+        JSON.stringify([11, l2.seq, PRESS_OBSERVED, lost.seq]), 'the LOSS link does not name #first-lost..#newest with the press');
+      assert.ok(!Buffer.from(h.head).equals(Buffer.from(lost.head)), 'the restored chain still carries the lost link');
     });
 
   it('edge: a checkpoint is the Edge key\'s signature over the head',
