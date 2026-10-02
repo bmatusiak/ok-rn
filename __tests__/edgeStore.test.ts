@@ -72,7 +72,8 @@ test('links already gone from the key\'s ring are an amber gap, not tampering', 
   k.ring = 4; // the key keeps only its last four links
   const {view} = await sync(k);
   const head = await k.head();
-  expect(view.verdict).toMatchObject({kind: 'gap', from: 0, to: head.seq - 4 + 1});
+  /* the key still holds its last four: the first of them is its own word, not part of the gap (spec 4.3) */
+  expect(view.verdict).toMatchObject({kind: 'gap', from: 0, to: head.seq - 4});
 });
 
 test('a key whose head went back since the last verified sync is a rollback', async () => {

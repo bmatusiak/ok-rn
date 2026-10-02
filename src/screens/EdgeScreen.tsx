@@ -17,14 +17,17 @@ import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useEdge} from '../hooks/useEdge';
 import type {EdgeRow, Verdict} from '../edgeStore';
-import type {EdgeBudget, EdgeRequest} from '../edgeFake';
+import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
 
 const {OP, DECISION, FLAG} = codes;
 
 function verdictLine(v: Verdict): {text: string; color: string} {
   switch (v.kind) {
     case 'verified':
-      return {text: v.through < 0 ? 'Verified: nothing recorded yet' : `Verified through #${v.through}`, color: theme.ok};
+      return {
+        text: v.through < 0 ? 'Verified: nothing recorded yet' : `Verified through #${v.through}${v.lost?.length ? ` (${v.lost.map(l => (l.from === l.to ? `#${l.from}` : `#${l.from}–#${l.to}`)).join(', ')} accepted as lost)` : ''}`,
+        color: theme.ok,
+      };
     case 'gap':
       return {text: v.from === v.to ? `Gap #${v.from} unverifiable` : `Gap #${v.from}–#${v.to} unverifiable`, color: theme.warn};
     case 'tampered':
@@ -39,6 +42,24 @@ function verdictLine(v: Verdict): {text: string; color: string} {
 }
 
 const opName = (op: number) => codes.nameOf(OP, op) ?? `op ${op}`;
+
+/** R27: why Yes is off - the library's reason (src/edge/copy.js), in words. */
+function copyProblem(c: EdgeCopyCheck | null): string | null {
+  if (!c || c.ok) return null;
+  const at = c.seq !== undefined ? ` (#${c.seq})` : '';
+  switch (c.reason) {
+    case 'restoring': return 'The key was restored from a backup. Finish the restore first.';
+    case 'chain': return `This phone's copy does not weld to the key${at}.`;
+    case 'gap': return c.seq === undefined ? "Links are missing from this phone's copy." : `This phone's copy is missing #${c.seq}${c.to !== undefined && c.to !== c.seq ? `–#${c.to}` : ''}.`;
+    case 'checkpoint': return "The key's checkpoint does not verify against this phone's copy.";
+    case 'budget-opening-missing': return `A budget in the chain was opened on another device; this phone cannot check it${at}.`;
+    case 'budget-opening': return `A budget's opening does not verify${at}.`;
+    case 'reveal-missing': return `A self-press has no reveal on this phone${at}.`;
+    case 'reveal': return `A self-press reveal does not belong to its budget${at}.`;
+    case 'debts': return "The tickets in this phone's copy do not match what the key says is owed.";
+    default: return `This phone's copy does not verify: ${c.reason}${at}.`;
+  }
+}
 
 function approval(row: EdgeRow): string {
   const f = row.fields;
@@ -156,11 +177,23 @@ function ChainList({rows, budgetUses}: {rows: EdgeRow[]; budgetUses?: Map<number
   );
 }
 
-function BudgetCard({b, busy, onOpen, onRevoke}: {b: EdgeBudget; busy: boolean; onOpen?: () => void; onRevoke?: () => void}) {
+function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress}: {
+  b: EdgeBudget;
+  busy: boolean;
+  onOpen?: () => void;
+  onRevoke?: () => void;
+  /* R15a: on hold, it pays for nothing; Hold needs no press, Resume needs one */
+  held?: boolean;
+  onHold?: () => void;
+  onResume?: () => void;
+  waitingResume?: boolean;
+  onPress?: () => void;
+}) {
   const body = (
     <>
       <Text style={styles.op}>{b.reason}</Text>
-      <Text style={styles.dim}>{`${b.used} of ${b.uses} uses spent${b.used >= b.uses ? ' - used up' : ''}`}</Text>
+      {held ? <Text style={[styles.ticketTitle, {color: theme.warn}]}>On hold – it pays for nothing until you resume it</Text> : null}
+      <Text style={styles.dim}>{`${b.used} of ${b.uses} uses spent${b.used >= b.uses ? ' – used up' : ''}`}</Text>
       <Progress used={b.used} total={b.uses} thick />
       {b.scopes.map((s, i) => (
         <View key={i} style={styles.scope}>
@@ -170,7 +203,11 @@ function BudgetCard({b, busy, onOpen, onRevoke}: {b: EdgeBudget; busy: boolean; 
           <Progress used={s.used} total={s.cap} />
         </View>
       ))}
-      <Text style={styles.dim}>{`Budget ${b.grantId} · ends when you lock the key.`}</Text>
+      <Text style={styles.dim}>
+        {b.endsAt
+          ? `Budget ${b.grantId} · ends at ${new Date(b.endsAt).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}, or when you lock the key.`
+          : `Budget ${b.grantId} · ends when you lock the key.`}
+      </Text>
     </>
   );
   return (
@@ -183,8 +220,17 @@ function BudgetCard({b, busy, onOpen, onRevoke}: {b: EdgeBudget; busy: boolean; 
       ) : (
         body
       )}
-      {onRevoke ? (
+      {waitingResume ? (
+        <>
+          <Text style={[styles.op, {color: theme.warn}]}>Press the key to resume</Text>
+          <View style={styles.row}>
+            <Btn title="Press the soft key" tone="primary" onPress={() => onPress?.()} />
+          </View>
+        </>
+      ) : onRevoke ? (
         <View style={styles.row}>
+          {held && onResume ? <Btn title="Resume" tone="primary" onPress={onResume} disabled={busy} /> : null}
+          {!held && onHold ? <Btn title="Hold" onPress={onHold} disabled={busy} /> : null}
           <Btn title="Revoke" tone="danger" onPress={onRevoke} disabled={busy} />
         </View>
       ) : null}
@@ -207,11 +253,13 @@ function budgetRows(rows: EdgeRow[], grantId: number): EdgeRow[] {
  * clasp (spec 4.3): Yes here, then a press on the key - no press, no budget.
  * Declining sends nothing to the key.
  */
-function PendingCard({r, busy, waiting, fake, onApprove, onPress, onDecline}: {
+function PendingCard({r, busy, waiting, fake, blocked, onApprove, onPress, onDecline}: {
   r: EdgeRequest;
   busy: boolean;
   waiting: boolean;
   fake: boolean;
+  /** R27: why Approve is off - this phone's copy does not verify */
+  blocked: string | null;
   onApprove: () => void;
   onPress: () => void;
   onDecline: () => void;
@@ -241,10 +289,13 @@ function PendingCard({r, busy, waiting, fake, onApprove, onPress, onDecline}: {
           </View>
         </>
       ) : (
-        <View style={styles.row}>
-          <Btn title="Approve" tone="primary" onPress={onApprove} disabled={busy} />
-          <Btn title="Decline" onPress={onDecline} disabled={busy} />
-        </View>
+        <>
+          {blocked ? <Text style={[styles.dim, {color: theme.error}]}>{`Approve is off: ${blocked} Nothing is sent to the key.`}</Text> : null}
+          <View style={styles.row}>
+            <Btn title="Approve" tone="primary" onPress={onApprove} disabled={busy || !!blocked} />
+            <Btn title="Decline" onPress={onDecline} disabled={busy} />
+          </View>
+        </>
       )}
     </View>
   );
@@ -314,19 +365,177 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
 }
 
 /**
+ * Tickets owed (firmware R16-R18): every approved use, pressed or self-pressed,
+ * owes a ticket, and until each is filed or waived nothing automatic happens -
+ * no budget, no resume, no self-press. Waive is the way out for uses nobody
+ * will ticket: the person's Yes here first, then a press on the key.
+ */
+function OwedBanner({owed, overflow, edge, confirming, setConfirming}: {
+  owed: number;
+  overflow: boolean;
+  edge: ReturnType<typeof useEdge>;
+  confirming: boolean;
+  setConfirming: (on: boolean) => void;
+}) {
+  const what = `${owed} use${owed === 1 ? '' : 's'} owe${owed === 1 ? 's' : ''} a ticket${overflow ? ', and older ones fell off the key\'s list' : ''}`;
+  return (
+    <View style={[styles.budget, styles.pending]}>
+      <Text style={[styles.ticketTitle, {color: theme.warn}]}>Tickets owed</Text>
+      <Text style={styles.op}>{what}</Text>
+      <Text style={styles.dim}>No budget, resume or self-press until each is ticketed by its agent, or you waive them here.</Text>
+      {edge.pressFor === 'waive' ? (
+        <>
+          <Text style={[styles.op, {color: theme.warn}]}>Press the key to waive</Text>
+          <View style={styles.row}>
+            <Btn title="Press the soft key" tone="primary" onPress={edge.press} />
+          </View>
+        </>
+      ) : confirming ? (
+        <>
+          <Text style={styles.dim}>Waive records, in the chain, that you accept these uses without their tickets. It needs a press on the key.</Text>
+          <View style={styles.row}>
+            <Btn title="Yes, waive" tone="danger" onPress={() => { setConfirming(false); void edge.waive(); }} disabled={edge.busy} />
+            <Btn title="Cancel" onPress={() => setConfirming(false)} disabled={edge.busy} />
+          </View>
+        </>
+      ) : (
+        <View style={styles.row}>
+          <Btn title="Waive…" onPress={() => setConfirming(true)} disabled={edge.busy} />
+        </View>
+      )}
+    </View>
+  );
+}
+
+/**
+ * B6, after a restore (firmware R26): the key forgot every link after its
+ * backup, and the debts they made. Nothing automatic until the person finishes
+ * the restore: replay the newest copy this phone has (the Edge Worker's comes
+ * later), see where it stopped and why - the end of the copy, or a fork kept as
+ * evidence, never smoothed over - then accept "restored to #N" with a press.
+ */
+function RestoreCard({edge}: {edge: ReturnType<typeof useEdge>}) {
+  const r = edge.replay;
+  const head = edge.view?.headSeq ?? null;
+  return (
+    <View style={styles.mismatch}>
+      <Text style={[styles.ticketTitle, {color: theme.error}]}>Restore: finish it here</Text>
+      <Text style={styles.op}>{`The key was restored from a backup. It forgot everything after #${head ?? '?'}.`}</Text>
+      <Text style={styles.dim}>Until you finish, the key opens no budget, resumes none and self-presses nothing. Pressed uses still work.</Text>
+      {r ? (
+        <>
+          <Text style={styles.op}>
+            {r.replayedTo > r.keyWas ? `Replayed #${r.keyWas + 1}–#${r.replayedTo} from this phone.` : 'Nothing replayed from this phone.'}
+          </Text>
+          <Text style={[styles.dim, r.stop.why !== 'end' && {color: theme.error}]}>
+            {r.stop.why === 'end'
+              ? `This phone's copy ends at #${r.newest}.`
+              : r.stop.why === 'fork'
+                ? `This phone's copy forks from the key after #${r.stop.at}: the key's head …${r.stop.keyHead.slice(-8)}, this phone's …${r.stop.copyHead.slice(-8)}. Both are kept.`
+                : `This phone's copy is missing #${r.stop.at}.`}
+          </Text>
+          {edge.pressFor === 'restore' ? (
+            <>
+              <Text style={[styles.op, {color: theme.warn}]}>Press the key to finish</Text>
+              <View style={styles.row}>
+                <Btn title="Press the soft key" tone="primary" onPress={edge.press} />
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={styles.op}>
+                {r.vouchedTo < 0 || r.replayedTo < r.vouchedTo
+                  ? `Nothing here is vouched for by the key past the backup. Finishing records everything after #${r.keyWas} as lost.`
+                  : `Restored to #${r.replayedTo}, vouched by the key; the newest your copies hold is #${r.newest}.${r.newest > r.replayedTo ? ` #${r.replayedTo + 1}–#${r.newest} will be recorded as lost.` : ''}`}
+              </Text>
+              <View style={styles.row}>
+                <Btn title="Finish the restore" tone="primary" onPress={() => edge.finishRestore(Math.max(r.newest, r.replayedTo))} disabled={edge.busy} />
+              </View>
+            </>
+          )}
+        </>
+      ) : (
+        <View style={styles.row}>
+          <Btn title="Replay this phone's copy" tone="primary" onPress={edge.replayCopy} disabled={edge.busy} />
+        </View>
+      )}
+    </View>
+  );
+}
+
+/**
  * The Edge tab: budgets - waiting for you, then approved. A chain (and its
  * verdict) is shown only once you pick a budget (owner, 2026-10-02).
  */
-export function EdgeScreen() {
+/**
+ * testingMode: App's testing mode. The whole tab is testing-mode only today
+ * (App.tsx shows it only then), and the key's testing controls below check it
+ * themselves too, so they stay hidden when the tab ships to everyone.
+ */
+export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
   const edge = useEdge();
   const [open, setOpen] = useState<EdgeBudget | null>(null);
+  const [confirmWaive, setConfirmWaive] = useState(false);
+  const [confirmLoss, setConfirmLoss] = useState(false);
   if (open) {
     /* the live numbers if the budget is still live; the snapshot taken when it was opened if it ended */
     const b = edge.budgets.find(x => x.grantId === open.grantId) ?? open;
     return <BudgetView b={b} edge={edge} onBack={() => setOpen(null)} />;
   }
+  /*
+   * The mismatch banner (spec okrn-edge-tab.md 4.3): the verdict lives in a
+   * budget's chain view, so with no budget open a copy that does not verify
+   * would show nowhere. Only when something is wrong; a good copy stays quiet.
+   */
+  const v = edge.view?.verdict;
+  const ks = edge.keyState;
+  /* while the key is restoring, the Restore card replaces the banner (spec 4.3) */
+  const broken = !ks?.restoring && v && (v.kind === 'tampered' || v.kind === 'gap') ? verdictLine(v) : null;
+  const gap = v && v.kind === 'gap' ? {from: v.from, to: v.to} : null;
+  const range = gap ? (gap.from === gap.to ? `#${gap.from}` : `#${gap.from}–#${gap.to}`) : '';
   return (
     <ScrollView contentContainerStyle={styles.page}>
+      {ks?.restoring ? <RestoreCard edge={edge} /> : null}
+      {broken ? (
+        <View style={styles.mismatch}>
+          <Text style={[styles.ticketTitle, {color: theme.error}]}>This phone's copy of the chain does not match the key</Text>
+          <Text style={[styles.op, {color: broken.color}]}>{broken.text}</Text>
+          <Text style={styles.dim}>
+            {`Key's head: #${edge.view?.headSeq ?? '?'}. Until the copy verifies, no budget can be approved here.`}
+          </Text>
+          {/*
+            * The ways out, in the spec's order: Rebuild from a copy (only when a
+            * peer holds the range - none yet, so not offered), then Accept loss.
+            * Never "verify from a checkpoint" alone.
+            */}
+          {gap && edge.pressFor === 'loss' ? (
+            <>
+              <Text style={[styles.op, {color: theme.warn}]}>Press the key to accept the loss</Text>
+              <View style={styles.row}>
+                <Btn title="Press the soft key" tone="primary" onPress={edge.press} />
+              </View>
+            </>
+          ) : gap && confirmLoss ? (
+            <>
+              <Text style={styles.dim}>
+                {`No copy holds ${range}. Accepting records in the chain, with a press, that ${range} ${gap.from === gap.to ? 'is' : 'are'} gone for good. Budgets can be approved again after it; anything those links owed must still be ticketed or waived.`}
+              </Text>
+              <View style={styles.row}>
+                <Btn title={`Yes, accept loss of ${range}`} tone="danger" onPress={() => { setConfirmLoss(false); void edge.acceptLoss(gap.from, gap.to); }} disabled={edge.busy} />
+                <Btn title="Cancel" onPress={() => setConfirmLoss(false)} disabled={edge.busy} />
+              </View>
+            </>
+          ) : (
+            <View style={styles.row}>
+              <Btn title="Sync" tone="primary" onPress={edge.sync} disabled={edge.busy} />
+              {gap ? <Btn title={`Accept loss of ${range}…`} onPress={() => setConfirmLoss(true)} disabled={edge.busy} /> : null}
+            </View>
+          )}
+        </View>
+      ) : null}
+      {ks && !ks.restoring && (ks.owed > 0 || ks.overflow) ? (
+        <OwedBanner owed={ks.owed} overflow={ks.overflow} edge={edge} confirming={confirmWaive} setConfirming={setConfirmWaive} />
+      ) : null}
       <Section title="Budgets">
         {edge.error ? <Text style={[styles.dim, {color: theme.error}]}>{edge.error}</Text> : null}
         {edge.requests.map(r => (
@@ -334,28 +543,52 @@ export function EdgeScreen() {
             key={`r${r.id}`}
             r={r}
             busy={edge.busy}
-            waiting={edge.pressFor === r.id}
+            waiting={edge.pressFor === `r${r.id}`}
             fake={edge.isFake}
+            blocked={copyProblem(edge.copyCheck)}
             onApprove={() => edge.approve(r.id)}
             onPress={edge.press}
             onDecline={() => edge.decline(r.id)}
           />
         ))}
         {edge.budgets.map(b => (
-          <BudgetCard key={b.grantId} b={b} busy={edge.busy} onOpen={() => setOpen(b)} onRevoke={() => edge.revoke(b.grantId)} />
+          <BudgetCard
+            key={b.grantId}
+            b={b}
+            busy={edge.busy}
+            onOpen={() => setOpen(b)}
+            onRevoke={() => edge.revoke(b.grantId)}
+            held={edge.keyState?.held.includes(b.grantId)}
+            onHold={edge.keyState ? () => edge.hold(b.grantId) : undefined}
+            onResume={edge.keyState ? () => edge.resume(b.grantId) : undefined}
+            waitingResume={edge.pressFor === `resume:${b.grantId}`}
+            onPress={edge.press}
+          />
+        ))}
+        {edge.ended.map(e => (
+          <View key={`e${e.grantId}`} style={[styles.budget, styles.ended]}>
+            <Text style={[styles.ticketTitle, {color: theme.textDim}]}>Ended when the key locked or restarted</Text>
+            <Text style={styles.op}>{e.reason}</Text>
+            <Text style={styles.dim}>
+              {`Budget ${e.grantId} · ${e.usesLeft} use${e.usesLeft === 1 ? '' : 's'} and ${Math.floor(e.minutesLeft / 60)} h ${e.minutesLeft % 60} min left. Continue asks for exactly that – never more – with your Yes and a press.`}
+            </Text>
+            <View style={styles.row}>
+              <Btn title="Continue" tone="primary" onPress={() => edge.continueBudget(e.grantId)} disabled={edge.busy} />
+            </View>
+          </View>
         ))}
         {/* B3: a locked key says nothing - so say that, not "no budget" */}
         {edge.view?.verdict.kind === 'locked' ? (
           <Text style={[styles.dim, {color: theme.warn}]}>Unlock the key to sync. A locked key answers nothing, so its budgets cannot be read.</Text>
         ) : null}
-        {edge.view?.verdict.kind !== 'locked' && edge.budgets.length === 0 && edge.requests.length === 0 ? (
+        {edge.view?.verdict.kind !== 'locked' && edge.budgets.length === 0 && edge.requests.length === 0 && edge.ended.length === 0 ? (
           <Text style={styles.dim}>
             No budget. A budget lets an agent use the key a set number of times without a press; you approve it once.
           </Text>
         ) : null}
       </Section>
 
-      {edge.isFake ? (
+      {!testingMode ? null : edge.isFake ? (
         <Section title="Fake key (testing)">
           <Text style={styles.dim}>
             A fake key - this build's soft key has no Edge. These do what an agent or the CLI would; the budgets update after each.
@@ -385,6 +618,7 @@ export function EdgeScreen() {
               onPress={() => edge.request('testing on this phone', 'Sign three agent messages (P-256)', [{op: OP.SIGN, slot: 222, cap: 3}])}
               disabled={edge.busy}
             />
+            <Btn title="Agent: one pressed sign" onPress={edge.agentSign} disabled={edge.busy} />
           </View>
         </Section>
       )}
@@ -401,6 +635,8 @@ const styles = StyleSheet.create({
   budget: {borderWidth: 1, borderColor: theme.border, borderRadius: theme.radius, padding: 10, gap: 6, marginBottom: 8},
   budgetBody: {gap: 6},
   pending: {borderColor: theme.warn, borderStyle: 'dashed'},
+  ended: {borderStyle: 'dashed', opacity: 0.85},
+  mismatch: {borderWidth: 2, borderColor: theme.error, borderRadius: theme.radius, padding: 12, gap: 6},
   scope: {gap: 4},
   bar: {height: 6, borderRadius: 3, backgroundColor: theme.inputBg, overflow: 'hidden'},
   barFill: {height: 6, backgroundColor: theme.accentHover},

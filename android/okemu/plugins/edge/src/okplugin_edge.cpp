@@ -22,7 +22,7 @@
  *
  * Budgets are bmatusiak/provable series (owner: "each budget has its own
  * genesis, each genesis gets started with the firmware button press by getting
- * signed"): G = H^n(seed), n <= 255; use i reveals v_i = H^(n-i)(seed).
+ * signed"): G = H^n(seed), n <= 1024; use i reveals v_i = H^(n-i)(seed).
  *
  * Soft key and desktop emulator only: the flash it uses (base+0x1000) is the
  * bootloader's on a real Teensy, and file-backed and unused on the emulators.
@@ -65,7 +65,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 
 #define MAX_LIVE 4      /* R15 */
 #define MAX_SCOPES 4    /* R11 */
-#define MAX_USES 255    /* owner, 2026-10-02 */
+#define MAX_USES 1024   /* R11 (Brad, 2026-10-02: back from 255 - too few once the VM and the Pi are in the loop); up to 1,024 SHA-256 at the press and per reveal */
 #define OWED_MAX 4      /* R16: owed uses kept in flash (lib tickets.OWED_MAX) */
 #define HELD 8          /* links held in RAM for pickup */
 #define PRESS_MS 25000UL

@@ -110,7 +110,14 @@ export async function sync(source: EdgeSource, now = Date.now()): Promise<{mirro
   const mirror = await loadMirror(source.deviceId);
   const head = await source.head();
   const have = mirror.links.length ? seqOf(mirror.links[mirror.links.length - 1]) : -1;
-  for (let from = have + 1; from <= head.seq; ) {
+  /*
+   * From the next link this copy lacks - but never before the oldest link the
+   * key still holds: anything older is gone from the key, and asking for it
+   * returned an empty batch that stopped the sync short of the ring (seen on the
+   * Pixel: a forgotten copy read nothing and the ring links it lacked looked
+   * like tampering).
+   */
+  for (let from = Math.max(have + 1, head.ringFrom); from <= head.seq; ) {
     const got = await source.read(from, READ_BATCH);
     if (!got.length) break;
     for (const r of got) if (seqOf(r) > (mirror.links.length ? seqOf(mirror.links[mirror.links.length - 1]) : -1)) mirror.links.push(r);
@@ -121,7 +128,9 @@ export async function sync(source: EdgeSource, now = Date.now()): Promise<{mirro
   const v = source.vouch ? await source.vouch() : null;
   if (v) mirror.vouch = v;
   mirror.lastSync = now;
-  const view = evaluate(mirror, head);
+  /* the key's own ring, read fresh: what it still holds is not missing, whatever the copy can weld */
+  const held = head.seq >= 0 ? await source.read(head.ringFrom, head.seq - head.ringFrom + 1) : [];
+  const view = evaluate(mirror, head, held);
   if (view.verdict.kind === 'verified' || view.verdict.kind === 'gap') {
     mirror.lastSeen = {seq: head.seq, head: head.head};
   }
@@ -130,7 +139,7 @@ export async function sync(source: EdgeSource, now = Date.now()): Promise<{mirro
 }
 
 /** Verify a mirror against a live head (no I/O): the verdict and the rows to draw. */
-export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null): EdgeView {
+export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[] = []): EdgeView {
   const decoded = mirror.links.map(r => ({r, f: chain.decodeLink(r.link)}));
   if (!head) {
     return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror)};
@@ -145,10 +154,12 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
   for (const g of result.gaps) for (let s = g.from; s <= g.to; s++) unverified.add(s);
   let verdict: Verdict;
   /* a gap a LOSS link covers is not a gap any more (R24, R27): the person accepted it - the lib's own rule */
-  const open: {from: number; to: number}[] = copy.uncoveredGaps(mirror.links, result.gaps);
+  /* links the key handed over this sync are its own word, not a loss (spec 4.3) - the lib's same rule */
+  const open: {from: number; to: number}[] = copy.uncoveredGaps(mirror.links, result.gaps, held);
+  const lost: {from: number; to: number}[] = copy.missingGaps(mirror.links, result.gaps, held);
   if (result.failure) verdict = {kind: 'tampered', seq: result.failure.seq, reason: result.failure.reason};
   else if (open.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: open[0].from, to: open[0].to};
-  else if (result.gaps.length) verdict = {kind: 'verified', through: head.seq, lost: result.gaps};
+  else if (lost.length) verdict = {kind: 'verified', through: head.seq, lost};
   else verdict = {kind: 'verified', through: result.verifiedThrough};
   return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror)};
 }

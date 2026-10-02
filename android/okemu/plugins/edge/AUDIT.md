@@ -51,7 +51,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 |---|---|
 | flash `base+0x1000`, `+0x1800` | one record, double-buffered (268 bytes, magic `OKEDGE07`; an `OKEDGE06` record is still read): magic, generation, `seq`, `head`, the owed count, `overflow`, restoring, replay closed, up to 4 owed uses (`seq`, `head[seq]`), the latest link, the last replayed seq, a 4-byte SHA-256 check |
 | the device backup | the plugin section (`0xFB`, written last by the loader), version 2: `seq`, `head`, the owed count, `overflow` and the owed uses - 39 to 183 bytes. Debts travel with the backup: only a ticket or a waive pays them (R16). Version 1 (37 bytes, no debts) still restores. A restore takes them back and leaves the key **restoring** (R26): nothing automatic until the host has replayed its copy and the person pressed REPLAY_DONE, which writes the LOSS over what could not be replayed. Older firmware stops at `0xFB` with everything else restored - measured: v3.0.4 and base 3.1.0 (node-onlykey-emulator `test/restore-plugin-backup.js`) |
-| RAM | the Edge public key and device_id; live budgets (seed, counters, scopes, on hold; ≤ 4, each ≤ 255 uses); the arm (one self-press); the last 8 links with heads and reveals |
+| RAM | the Edge public key and device_id; live budgets (seed, counters, scopes, on hold; ≤ 4, each ≤ 1024 uses - up to 1,024 SHA-256 runs at the press and per reveal); the arm (one self-press); the last 8 links with heads and reveals |
 
 **The Edge key and K132:**
 - The Edge key is derived from **K132** (the key's own derivation secret): HKDF, info `"onlykey/edge/v1"`.
@@ -78,7 +78,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - hold: nothing to arm; a pressed resume; then it arms again;
 - revoke.
 
-`tests/kit.test.js` (the emulator), 10 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
+`tests/kit.test.js` (the emulator), 11 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
 - `HEAD` and the Edge key;
 - a pressed sign owes a ticket; a timeout does not clear it; a late ticket pays it; a second is refused; R17's empty hook;
 - a budget is signed through the chain; a sign without ARM is pressed; ARM -> use -> ticket -> ARM -> use -> ticket; ARM and GRANT_CREATE refused while owed; a stale head refused; nothing to arm when used up;

@@ -778,6 +778,40 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await armFor(device, h.head, agentPayload('okt after expiry'), { signal }), 'EDGE:0D', 'ARM went through under an expired budget');
     });
 
+  /* R11 (Brad, 2026-10-02: back to 1024): a budget of 1024 uses opens - G is 1,024 hashes - and 1025 is refused */
+  it('edge: a budget of 1024 uses opens at a press; 1025 is refused (R11)',
+    async ({ device, assert, signal, log }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+      let h = await head(device, { signal });
+      /* encoded by hand: the library already refuses 1025 on the host - this is the firmware's own check */
+      const raw = (caps) => {
+        const req = Buffer.alloc(58);
+        req[0] = caps.length;
+        caps.forEach(([slot, cap], i) => { req[1 + 4 * i] = OP_SIGN; req[2 + 4 * i] = slot; req.writeUInt16LE(cap, 3 + 4 * i); });
+        sha256(Buffer.from('okt: too many')).copy(req, 17);
+        Buffer.from(h.head).copy(req, 52, 0, 6);
+        return req;
+      };
+      assert.equal(await edge(device, GRANT_CREATE, raw([[222, 1025]]), { signal, text: true }), 'EDGE:04', 'a 1025-use budget was taken');
+      assert.equal(await edge(device, GRANT_CREATE, raw([[222, 1000], [2, 25]]), { signal, text: true }), 'EDGE:04', 'two scopes summing to 1025 were taken');
+      const b = await openBudget(device, 1024, 'okt: 1024 uses', { signal });
+      log(`budget ${b.grantId}: ${b.uses} uses`);
+      assert.equal(b.uses, 1024);
+      /* G really is H^1024 of the seed: the first reveal hashes back to it in 1024 steps - checked on the first self-press */
+      h = await head(device, { signal });
+      const pl = agentPayload('okt: the first of 1024');
+      assert.equal(await armFor(device, h.head, pl, { signal }), 'EDGE:00');
+      const s1 = await selfPressedSign(device, pl, { signal });
+      const [l] = await pickup(device, s1.seq, 1, { signal });
+      const f = chain.decodeLink(l.link);
+      assert.equal(JSON.stringify([f.decision, f.grantStep]), JSON.stringify([SELF_PRESS, 1]));
+      const spend = { step: 1, value: l.reveal, subject: new Uint8Array(sha256(pl)), mac: new Uint8Array(crypto.createHmac('sha256', l.reveal).update(sha256(pl)).digest()) };
+      assert.equal(JSON.stringify(grants.checkSpends(b.G, 1024, [spend])), '{"ok":true,"spent":1}', 'the first reveal of a 1024-use budget does not hash back to G');
+      await ticket(device, s1.seq, 'okt: 1 of 1024', { signal });
+      await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
+    });
+
   /* R24: the person accepts a range as lost - a pressed link with the spec layout (the tab's red banner) */
   it('edge: LOSS {from, to} takes a press and links the accepted range; a range past the head is refused (R24)',
     async ({ device, assert, signal }) => {

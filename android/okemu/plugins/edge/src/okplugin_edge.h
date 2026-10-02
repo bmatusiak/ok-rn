@@ -40,7 +40,7 @@
 #define EDGE_NEED_PIN 0x01          /* no K132 yet: set a PIN first */
 #define EDGE_BAD_SCOPES 0x02        /* a budget has 1 to 4 scopes */
 #define EDGE_SCOPE_NOT_ALLOWED 0x03 /* op/slot a budget may not pay for (R14) */
-#define EDGE_TOO_MANY_USES 0x04     /* more than 255 uses */
+#define EDGE_TOO_MANY_USES 0x04     /* more than 1024 uses */
 #define EDGE_LIVE_FULL 0x05         /* 4 budgets already live */
 #define EDGE_SIGN_FAILED 0x06       /* the Edge key could not sign */
 #define EDGE_NO_SUCH_BUDGET 0x07    /* revoke: no live budget with that id */

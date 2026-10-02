@@ -918,7 +918,7 @@ function Shell() {
             /* The PIN changes are on PIN Setup. */
             <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['prefs']} />
           ) : tab === EDGE_TAB ? (
-            <EdgeScreen />
+            <EdgeScreen testingMode={testing.enabled} />
           ) : tab === IN_DEV_TAB ? (
             <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} testing={testing.enabled} show={['derive', 'vault', 'stored']} />
           ) : tab === 'Passkeys' ? (

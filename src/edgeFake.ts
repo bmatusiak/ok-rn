@@ -21,7 +21,7 @@ const MAX_LIVE_BUDGETS = 4; // firmware.md R15 target
 export type EdgeLinkRecord = {link: Uint8Array; head: Uint8Array; reveal?: Uint8Array | null};
 
 /** R27: may a budget be asked for from this copy? The first thing that fails, in words. */
-export type EdgeCopyCheck = {ok: true} | {ok: false; reason: string; seq?: number};
+export type EdgeCopyCheck = {ok: true} | {ok: false; reason: string; seq?: number; to?: number};
 export type EdgeBudget = {
   grantId: number;
   reason: string;
@@ -29,6 +29,8 @@ export type EdgeBudget = {
   used: number;
   scopes: {op: number; slot: number; cap: number; used: number}[];
   genesis: Uint8Array;
+  /** R15b: when its lifetime ends (the phone's clock), if this phone approved it */
+  endsAt?: number;
 };
 /** What a key (fake now, the soft key after E3) gives the Edge tab. */
 export interface EdgeSource {
@@ -179,7 +181,7 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
     if (this.live.length >= MAX_LIVE_BUDGETS) throw new Error(`edge (fake): ${MAX_LIVE_BUDGETS} budgets are already live`);
     if (!scopes.length || scopes.length > 4) throw new Error('edge (fake): a budget has 1 to 4 scopes');
     const uses = scopes.reduce((n, sc) => n + sc.cap, 0);
-    if (uses > grants.MAX_USES) throw new Error(`edge (fake): a budget has at most ${grants.MAX_USES} uses`); // owner: 255
+    if (uses > grants.MAX_USES) throw new Error(`edge (fake): a budget has at most ${grants.MAX_USES} uses`); // R11: 1024
     const seed = new Uint8Array(32).map((_, i) => (i * 37 + this.links.length) & 0xff);
     const grantId = this.links.length + 1;
     const subject = sha(`grant ${grantId}: ${reason}`);

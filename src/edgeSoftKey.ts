@@ -101,6 +101,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
         used: spent.length,
         scopes,
         genesis: new Uint8Array(0),
+        endsAt: kept?.opened ? kept.opened + (kept.lifetime || DEFAULT_LIFETIME_MINUTES) * 60000 : undefined,
       });
     }
     return out;
@@ -313,7 +314,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   /** R27: the library's verdict on this phone's copy, against the key's live head. */
   async check(): Promise<EdgeCopyCheck> {
     const v = await this.edge.grants.check(await this.copy());
-    return v.ok ? {ok: true} : {ok: false, reason: v.reason, seq: v.seq ?? undefined};
+    return v.ok ? {ok: true} : {ok: false, reason: v.reason, seq: v.seq ?? undefined, to: v.detail?.gaps?.[0]?.to};
   }
 
   /**
