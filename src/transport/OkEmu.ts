@@ -285,6 +285,11 @@ class OkEmuClient {
     return NativeOkEmu.pressPending();
   }
 
+  /** What the soft key's firmware is waiting for you to confirm, or null (decodeConfirmState). */
+  async waiting(): Promise<KeyWaiting | null> {
+    return decodeConfirmState(await NativeOkEmu.confirmState());
+  }
+
   /*
    * Wait until the firmware has TAKEN every queued press.
    *
@@ -470,6 +475,42 @@ class OkEmuClient {
     this.listeners.clear();
     this.started = false;
   }
+}
+
+/*
+ * WHAT THE SOFT KEY IS WAITING FOR YOU TO CONFIRM (owner, 2026-10-02: a panel
+ * for API requests like the one CTAP gets). The firmware's own state, read by
+ * the JNI bridge (okemu_jni.cpp nativeConfirmState): okcore_prime_user_
+ * confirmation sets CRYPTO_AUTH 1..3 while a request waits, the opcode and slot
+ * it waits for, and the input mode. WebAuthn's own wait is left out - CTAP has
+ * its prompt already (fido.presenceNeeded).
+ */
+export type KeyWaiting = {
+  /** what for: a sign, a decrypt, an HMAC challenge, or an Edge approval */
+  what: 'sign' | 'decrypt' | 'hmac' | 'edge' | 'other';
+  opcode: number;
+  slot: number;
+  /** press: any one button; code: the 3 digits the COMPUTER shows; unknown: older firmware */
+  mode: 'press' | 'code' | 'unknown';
+  /** code mode: digits already entered (0..2) */
+  entered: number;
+};
+
+const OP = {SIGN: 0xed, DECRYPT: 0xf0, HMAC: 0xf5, WEBAUTHN: 0xf6, EDGE: 0xf8};
+
+export function decodeConfirmState(packed: number): KeyWaiting | null {
+  if (!(packed >= 0)) return null;
+  const auth = packed & 0xff;
+  const opcode = (packed >>> 8) & 0xff;
+  const slot = (packed >>> 16) & 0xff;
+  const inputMode = (packed >>> 24) & 0x7;
+  const open = ((packed >>> 27) & 1) === 1;
+  /* 1..3 = waiting (4 = approved and running, 0 = nothing); the window must be open */
+  if (auth < 1 || auth > 3 || !open || !opcode || opcode === OP.WEBAUTHN) return null;
+  const what = opcode === OP.SIGN ? 'sign' : opcode === OP.DECRYPT ? 'decrypt' : opcode === OP.HMAC ? 'hmac' : opcode === OP.EDGE ? 'edge' : 'other';
+  /* HMAC and Edge always take a single press (okcore.cpp; okplugin_edge_primed) */
+  const mode = what === 'hmac' || what === 'edge' || inputMode === 1 ? 'press' : inputMode === 0 ? 'code' : 'unknown';
+  return {what, opcode, slot, mode, entered: mode === 'code' ? auth - 1 : 0};
 }
 
 export const OkEmu = new OkEmuClient();

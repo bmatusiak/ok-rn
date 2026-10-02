@@ -5,6 +5,8 @@ import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import {Btn, StatusPill} from './src/ui/components';
 import {WANTED, OFF, PRE, ON, type ConfigState} from './src/ui/configModeNotes';
 import OkEmu from './src/transport/OkEmu';
+import {describeWaiting, useKeyWaiting} from './src/hooks/useKeyWaiting';
+import {useEdgeBackgroundSync} from './src/hooks/useEdgeBackgroundSync';
 import {rememberTab, takeResumeTab} from './src/resumeTab';
 import {Drawer} from './src/ui/Drawer';
 import {Logo} from './src/ui/Logo';
@@ -331,6 +333,13 @@ function Shell() {
   backendRef.current = keys.backend;
   unlockedRef.current = keys.key.device === 'unlocked';
   const emu = keys.key;
+  /* the soft key waiting on an API request (a sign, decrypt, HMAC, Edge) - its prompt below */
+  const keyWaiting = useKeyWaiting(keys.backend === 'embedded' && keys.soft.state === 'running');
+  /* the Edge copy kept current while the soft key runs - a restart keeps only its latest link */
+  useEdgeBackgroundSync({
+    enabled: keys.backend === 'embedded' && keys.soft.state === 'running' && emu.device === 'unlocked',
+    waiting: keyWaiting,
+  });
 
   /*
    * THE BLUETOOTH MASTER SWITCH, here rather than on its tab.
@@ -795,6 +804,40 @@ function Shell() {
             */}
             {emu.canPress === true ? (
               <Btn title="Confirm" tone="primary" onPress={fido.confirm} />
+            ) : null}
+          </View>
+        ) : null}
+
+        {/*
+          THE SAME PROMPT FOR A REQUEST THAT CAME OVER THE API (owner,
+          2026-10-02): an ssh login or a gpg sign through onlykey-js --ble waits
+          on the soft key exactly as a site does, and the phone said nothing -
+          the key just timed out. The wait is the firmware's own
+          (useKeyWaiting); CTAP keeps its prompt above, so a WebAuthn wait is
+          never shown twice.
+
+          A CODE IS NEVER SHOWN HERE. The 3 digits come from the computer that
+          asked; a phone that displayed them would let a bad request supply its
+          own code and the person just copy it in - the check would prove
+          nothing. So code mode says where the code is and opens the keypad.
+        */}
+        {keyWaiting && !fido.presenceNeeded ? (
+          <View style={styles.prompt}>
+            <View style={styles.promptText}>
+              <Text style={styles.promptTitle}>Confirm on your key</Text>
+              <Text style={styles.promptBody}>
+                {describeWaiting(keyWaiting) + ' '}
+                {keyWaiting.mode === 'press'
+                  ? 'This is the press it wants.'
+                  : keyWaiting.mode === 'code'
+                    ? `Enter the code the computer shows on This Key's keypad (${keyWaiting.entered} of 3 in).`
+                    : 'Press a button, or enter the code the computer shows on This Key.'}
+              </Text>
+            </View>
+            {keyWaiting.mode === 'press' ? (
+              <Btn title="Confirm" tone="primary" onPress={() => void OkEmu.pressQueue('1')} />
+            ) : tab !== 'This Key' ? (
+              <Btn title="Keypad" tone="primary" onPress={() => setTab('This Key')} />
             ) : null}
           </View>
         ) : null}

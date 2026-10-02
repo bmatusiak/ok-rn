@@ -25,6 +25,7 @@
 #include <pthread.h>
 #include <android/log.h>
 
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <string>
@@ -38,6 +39,23 @@ extern "C" {
 #define LOG_TAG "okemu"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+/*
+ * THE FIRMWARE'S OWN "WAITING FOR YOU" STATE, read for the app's prompt
+ * (owner, 2026-10-02: a confirmation panel for API requests, like CTAP's).
+ * okcore_prime_user_confirmation() sets these when a sign/decrypt/HMAC/Edge
+ * request waits: CRYPTO_AUTH 1..3 while it waits (1, 2 = code digits so far,
+ * 3 = the last digit or a single press), packet_buffer_details[0..1] = the
+ * opcode and slot, user_input_mode = code / press / none, isfade = the wait
+ * window is open. Read-only, and nothing in the firmware changes for it.
+ *
+ * WEAK: user_input_mode only exists from 3.1.0; an older staged firmware
+ * links with it absent and the getter reports the mode as unknown (7).
+ */
+extern uint8_t CRYPTO_AUTH __attribute__((weak));
+extern uint8_t isfade __attribute__((weak));
+extern uint8_t packet_buffer_details[5] __attribute__((weak));
+extern uint8_t user_input_mode __attribute__((weak));
 
 namespace {
 
@@ -352,6 +370,25 @@ JNIEXPORT jint JNICALL
 Java_com_okrn_okemu_OkEmuNative_nativePressPending(JNIEnv *, jclass) {
   if (!g_running) return 0;
   return (jint)okemu_press_pending();
+}
+
+/*
+ * What the firmware is waiting for, packed for one cheap poll (the app reads it
+ * a few times a second while the soft key runs):
+ *   bits 0-7   CRYPTO_AUTH (0 = nothing waits)
+ *   bits 8-15  the opcode waiting (packet_buffer_details[0])
+ *   bits 16-23 its slot (packet_buffer_details[1])
+ *   bits 24-26 user_input_mode (0 code, 1 press, 2 none; 7 = this firmware has none)
+ *   bit  27    isfade (the wait window is open)
+ * -1 when the firmware is not running, or was staged without these.
+ */
+JNIEXPORT jint JNICALL
+Java_com_okrn_okemu_OkEmuNative_nativeConfirmState(JNIEnv *, jclass) {
+  if (!g_running || !&CRYPTO_AUTH || !&isfade || !packet_buffer_details) return -1;
+  const uint32_t mode = &user_input_mode ? (user_input_mode & 0x7u) : 7u;
+  return (jint)((uint32_t)CRYPTO_AUTH | ((uint32_t)packet_buffer_details[0] << 8) |
+                ((uint32_t)packet_buffer_details[1] << 16) | (mode << 24) |
+                ((uint32_t)(isfade ? 1 : 0) << 27));
 }
 
 /* Samples still owed on a counted hold - the press timer the UI shows. */

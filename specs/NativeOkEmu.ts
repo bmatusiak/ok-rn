@@ -125,6 +125,12 @@ export interface Spec extends TurboModule {
   /** Queued but not yet taken by the loop. 0 means the firmware has them. */
   pressPending(): Promise<number>;
 
+  /**
+   * What the firmware waits for, packed (okemu_jni.cpp nativeConfirmState):
+   * CRYPTO_AUTH, opcode, slot, input mode, isfade. -1 when not running.
+   */
+  confirmState(): Promise<number>;
+
   /** Iterations still owed on a counted hold; 0 when idle or stopped. */
   buttonTicksLeft(button: number): Promise<number>;
 

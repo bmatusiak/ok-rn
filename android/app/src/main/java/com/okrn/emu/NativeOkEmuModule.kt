@@ -295,6 +295,20 @@ class NativeOkEmuModule(
    * queue, and queueing it behind the work it is asking about would answer
    * only once that work had finished.
    */
+  /**
+   * What the firmware is waiting for (a sign, decrypt, HMAC or Edge request
+   * wanting a press or a code), packed - see okemu_jni.cpp nativeConfirmState.
+   * Not on the executor, for pressPending's reason: it is asked while the
+   * firmware thread is the one waiting.
+   */
+  override fun confirmState(promise: Promise) {
+    try {
+      promise.resolve(if (isRunning()) OkEmuNative.nativeConfirmState().toDouble() else -1.0)
+    } catch (e: Exception) {
+      promise.reject(ERR_WRITE, e.message ?: "confirmState failed", e)
+    }
+  }
+
   override fun pressPending(promise: Promise) {
     try {
       promise.resolve(if (isRunning()) OkEmuNative.nativePressPending().toDouble() else 0.0)

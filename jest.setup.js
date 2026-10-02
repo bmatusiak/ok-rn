@@ -104,6 +104,8 @@ jest.mock('./specs/NativeOkEmu', () => ({
   default: {
     isAvailable: jest.fn(() => true),
     isRunning: jest.fn(() => true),
+    /* nothing waits: the firmware's confirmation state reads 0 (okemu_jni.cpp nativeConfirmState) */
+    confirmState: jest.fn(() => Promise.resolve(0)),
     start: jest.fn(() =>
       Promise.resolve({started: true, message: '', storageDir: '/mock/okemu'}),
     ),

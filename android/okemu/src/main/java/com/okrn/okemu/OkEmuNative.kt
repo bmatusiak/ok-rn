@@ -107,6 +107,9 @@ object OkEmuNative {
     /** Queued but not yet taken by the loop; 0 means the firmware has them. */
     external fun nativePressPending(): Int
 
+    /** What the firmware waits for, packed (okemu_jni.cpp nativeConfirmState); -1 when not running. */
+    external fun nativeConfirmState(): Int
+
     /** Iterations still owed on a counted hold; 0 when not counting. */
     external fun nativeButtonTicksLeft(button: Int): Int
 
