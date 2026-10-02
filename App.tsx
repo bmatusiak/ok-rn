@@ -42,6 +42,7 @@ import {PasskeysScreen} from './src/screens/PasskeysScreen';
 import {LogScreen} from './src/screens/LogScreen';
 import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
+import {EdgeScreen} from './src/screens/EdgeScreen';
 
 /*
  * 'This Key', not 'Key' and no longer 'Soft Key'.
@@ -117,7 +118,13 @@ const TESTING_TAB = 'Testing' as const;
  * this tab.
  */
 const IN_DEV_TAB = 'In-Development' as const;
-type Tab = (typeof TABS)[number] | typeof IN_DEV_TAB | typeof TESTING_TAB;
+/*
+ * Edge (onlykey-edge): driven by a FAKE key until the soft key's Edge firmware
+ * plugin exists, so testing mode only, like In-Development. It moves into TABS
+ * when a real key can answer it.
+ */
+const EDGE_TAB = 'Edge' as const;
+type Tab = (typeof TABS)[number] | typeof IN_DEV_TAB | typeof EDGE_TAB | typeof TESTING_TAB;
 
 /** Splash until the device can answer, then a door, then the app. */
 type Phase = 'splash' | 'login' | 'pin' | 'setup' | 'main';
@@ -532,7 +539,7 @@ function Shell() {
      * must not come back through here - the render's last branch IS the
      * Testing screen, and this would walk round its gate.
      */
-    const valid: readonly string[] = __DEV__ && testing.enabled ? [...TABS, IN_DEV_TAB, TESTING_TAB] : [...TABS];
+    const valid: readonly string[] = __DEV__ && testing.enabled ? [...TABS, IN_DEV_TAB, EDGE_TAB, TESTING_TAB] : [...TABS];
     void takeResumeTab(valid).then(remembered => {
       if (remembered) setTab(remembered as Tab);
     });
@@ -905,6 +912,8 @@ function Shell() {
           ) : tab === 'Preferences' ? (
             /* The PIN changes are on PIN Setup. */
             <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['prefs']} />
+          ) : tab === EDGE_TAB ? (
+            <EdgeScreen />
           ) : tab === IN_DEV_TAB ? (
             <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} testing={testing.enabled} show={['derive', 'vault', 'stored']} />
           ) : tab === 'Passkeys' ? (
@@ -961,7 +970,7 @@ function Shell() {
 
         <Drawer
           open={drawer && ready}
-          tabs={__DEV__ && testing.enabled ? [...TABS, IN_DEV_TAB, TESTING_TAB] : TABS}
+          tabs={__DEV__ && testing.enabled ? [...TABS, IN_DEV_TAB, EDGE_TAB, TESTING_TAB] : TABS}
           value={tab}
           onChange={setTab}
           onClose={() => setDrawer(false)}
