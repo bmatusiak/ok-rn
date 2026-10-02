@@ -491,7 +491,8 @@ export function KeyChainWizard({
     if (a.use === 'pgp') {
       const tag = short ? keychain.tag.formatTag('pgp', short) : null;
       const userId = a.email ? `${a.person || ''} <${a.email}>`.trim() : (a.person || '').trim();
-      addJobs([{slot: 101, type: 'x25519', tag}, {slot: 102, type: 'ed25519', tag, pgp: userId ? {userId} : undefined}]);
+      /* the signing job says where its decryption key goes, so the finish step never assumes ECC1 */
+      addJobs([{slot: 101, type: 'x25519', tag}, {slot: 102, type: 'ed25519', tag, pgp: userId ? {userId, ecdhSlot: 101} : undefined}]);
     } else {
       const [t, kind] = insideType(a);
       addJobs([{slot: a.slot as number, type: t, tag: short ? keychain.tag.formatTag(kind, short) : null}]);

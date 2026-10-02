@@ -283,9 +283,22 @@ export function KeyChainScreen({
       const missing = pending.filter(j => (out.find(p => p.slot === j.slot) || {kind: 'empty'}).kind === 'empty');
       const pgpJob = pending.find(j => j.pgp);
       if (pgpJob && !missing.length) {
-        const todo: PgpTodo = {userId: pgpJob.pgp!.userId, signSlot: pgpJob.slot, ecdhSlot: 101, tag: pgpJob.tag};
-        await AsyncStorage.setItem(PGP_TODO_KEY, JSON.stringify(todo)).catch(() => {});
-        setPgpTodo(todo);
+        /*
+         * THE DECRYPTION KEY'S SLOT COMES FROM THE JOB (audit, 2026-10-01): it
+         * was a hard-coded ECC1, right only because the Wizard always writes
+         * the pair to ECC1/ECC2. A job recorded before the job carried it falls
+         * back to the X25519 key written with the same tag in the same visit;
+         * with neither, it says so rather than build on a guessed slot.
+         */
+        const ecdhSlot = pgpJob.pgp!.ecdhSlot
+          ?? pending.find(j => j !== pgpJob && j.type === 'x25519' && j.tag === pgpJob.tag)?.slot;
+        if (ecdhSlot === undefined) {
+          setError(`The PGP key in ${slotName(pgpJob.slot)} has no decryption key recorded with it, so its certificate cannot be made here.`);
+        } else {
+          const todo: PgpTodo = {userId: pgpJob.pgp!.userId, signSlot: pgpJob.slot, ecdhSlot, tag: pgpJob.tag};
+          await AsyncStorage.setItem(PGP_TODO_KEY, JSON.stringify(todo)).catch(() => {});
+          setPgpTodo(todo);
+        }
       }
       await AsyncStorage.removeItem(PENDING_KEY).catch(() => {});
       setPending(null);

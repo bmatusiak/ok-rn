@@ -41,7 +41,8 @@ export type Job = {
   slot: number;
   type: DeviceType | 'rsa';
   tag: string | null;
-  pgp?: {userId: string};
+  /* on the signing key of a PGP pair: who it is for, and which slot holds its decryption key */
+  pgp?: {userId: string; ecdhSlot?: number};
   op?: 'wipe';
   removeEntry?: string | null;
   removeCopies?: string[];
