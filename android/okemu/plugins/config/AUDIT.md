@@ -18,8 +18,7 @@ Nothing else in the firmware is touched.
 | …while locked or never set up | nothing (as every vendor request then) |
 | …in config mode | answered (the allow-list hook): the import reads its result back with it |
 | …through the WebAuthn tunnel (`outputmode != RAW_USB`) | `Error OKGETCONFIG is vendor API only` |
-
-| `OKSETCONFIG` (`TYPE_INIT | 0x7A`, 0xFA - CHOSEN): the INI in chunks - byte 5 `0xFF` = more, else the last chunk's length (1..58); text from byte 6 | after the last chunk: `OKSETCONFIG applied <n> unknown <u>`; nothing for the chunks before it |
+| `OKSETCONFIG` (`TYPE_INIT \| 0x7A`, 0xFA - CHOSEN): the INI in chunks - byte 5 `0xFF` = more, else the last chunk's length (1..58); text from byte 6 | after the last chunk: `OKSETCONFIG applied <n> unknown <u>`; nothing for the chunks before it |
 | …out of config mode | `Error OKSETCONFIG needs config mode` (and the collected text is dropped) |
 | …through the WebAuthn tunnel | `Error OKSETCONFIG is vendor API only` |
 | …too long (over 704 bytes) or a bad chunk length | `Error OKSETCONFIG too long` / `bad chunk` |
