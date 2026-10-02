@@ -27,7 +27,11 @@ Region layout (sectors from 0x1000):
 - **0x2000–0x37FF: the ring.** 32 slots × 96 bytes (link + head), with slot = `seq % 32`, written read-modify-write per sector (`okcore_flashsector`, core:2931).
 - **Unused (reserve):** 0x3800–0x57FF.
 
-**The desktop emulator on Linux** can map flash from offset 0x10000, which leaves this range unmapped (`DE ok_hal.cpp:294-340`). The plugin checks the region at boot; if it is absent, Edge answers `unsupported` and never touches memory it can't own. (Android and Windows map the whole range.)
+**The desktop emulator on Linux** maps flash from 0, else from 0x1000, else from 0x10000 (`DE ok_hal.cpp:294-340`).
+- From 0x1000 (what `scripts/setup-permissions.sh` sets up), this range is mapped.
+- From 0x10000 it is not. But the key's own key material at 0x5BB0 isn't mapped then either, so crypto already crashes: the emulator is only good for HID work in that state (its own warning says so).
+- So Edge needs exactly what crypto needs. The plugin still refuses (`unsupported`) rather than touching memory it can't own.
+- Android and Windows map the whole range.
 
 **Wipe:** a hook at `void wipeflashdata() {` (unique; every firmware wipe path calls it) erases the region. The chain then restarts with a `wipe` link (R9).
 
@@ -81,7 +85,41 @@ Region layout (sectors from 0x1000):
 
 Peers, receipts and LOSS (R20–R24) come after E3b.
 
-## 6. Build order (each step: the plugin's own kit + e2e tests, then commit)
+## 6. Backup and restore (owner, 2026-10-02)
+**The owner's rule, for every plugin:** a plugin backs up its important bits, and production hard keys on older firmware are never affected. Hard keys have no plugins, so a backup made **by** a hard key never changes. The case to protect is a soft-key backup restored **onto** an older hard key (v3.0.4, the compatibility target).
+
+**How restore walks a backup** (format survey on the staged 3.1.0 tree and on `.stage-src/v3.0.4`; the two match line for line):
+- The firmware decrypts the backup, then walks its records: `0xFF` slot fields, `0xFE` keys / authenticator state / resident keys, `0xFD` legacy U2F.
+- **Any other first byte ends the walk** (`} else { break; }`, 3.1.0 core:6846, v3.0.4 core:6976-6978). Everything before it is already applied, and the firmware still reports "Successfully loaded backup" (core:6850 / :6981).
+- A precedent already exists: 3.1.0 backups carry field 30, which v3.0.4 does not know and ignores.
+
+**So: one plugin section, last in the backup (option A2).**
+- It starts with `0xFB` (no firmware uses that byte), after the last `0xFE` record. Older firmware stops there with everything else restored.
+- Then one entry per plugin: name length (u8) · name · data length (u16 LE) · data.
+- A plugin-aware restore hands each entry to its plugin, and skips, by length, a plugin it doesn't have.
+- **It is inside the backup's encryption and its digest**, so the same backup key protects it and the host's integrity check covers it.
+- It is written by a generic plugin-backup hook (the loader's, not Edge's), placed right after the resident-key loop in `backup()` (core:6262). It is read in a new `else if (*ptr == 0xFB)` branch before that `break`, with explicit length checks against the received size.
+
+**Size:**
+- A backup is capped at 18,000 bytes (the backup array and the restore buffer, both versions); a full key is about 16.7 KB.
+- So all plugins together get a **fixed budget of 512 bytes**, and the hook refuses to write past 18,000 bytes. Past that cap v3.0.4 would reject the whole restore.
+
+**Edge's entry, about 60 bytes:**
+- what it carries: `seq` · `head` · device_id · live budget ids;
+- what stays out:
+  - **the ring:** 3 KB is too big, and hosts hold copies and refill it;
+  - **seeds:** a budget ends with the key's session.
+
+**On restore, Edge firmware:**
+- **The identity carries over:** the Edge key and device_id come from K132, which is in the backup, so the restored key is the same Edge identity.
+- **It links `restore` first**, recording the backup's `(seq, head)`. History after the backup is gone, so hosts see the head go back; the `restore` link states that gap for the person to accept (like LOSS, R24) instead of hiding it.
+
+**Proven, not assumed:** the plugin's kit tests make a backup with a plugin section on a plugin build, restore it onto the **v3.0.4 emulator build**, and check every slot, key and label came back, plus the success message.
+
+**Held, candidate finding (nothing sent):** both 3.1.0 and v3.0.4 write the end-of-records `0xFC` at `offset+1` (core:6632), leaving `large_temp[offset]` = the first IV byte. If that byte is FF/FE/FD, the walk runs on into the encryption trailer. The trailing `0xFB` section ends the walk before that point.
+
+
+## 7. Build order (each step: the plugin's own kit + e2e tests, then commit)
 1. **Storage + identity + `HEAD`/`READ`/`CKPT_PUBKEY`.** Links for OKSIGN/OKDECRYPT approve/deny/timeout. The lib verifies the chain it reads.
 2. **Budgets:** `GRANT_CREATE` with the press and the signed genesis, self-press, `LAST_REVEAL`, `GRANT_LIST`/`GRANT_REVOKE`, `grant-end` at boot.
 3. **`TICKET`** and the R17/R18 rules. Then E3b: apk-signer under a budget, over Bluetooth (Part D).
