@@ -18,7 +18,7 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
 import {loadMirror} from './edgeStore';
-import type {EdgeBudget, EdgeCopyCheck, EdgeInbox, EdgeLinkRecord, EdgeRequest, EdgeSource} from './edgeFake';
+import type {EdgeBudget, EdgeCopyCheck, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeReplay, EdgeRequest, EdgeSource} from './edgeFake';
 
 const {DECISION} = codes;
 const PICKUP_MAX = 8;
@@ -105,6 +105,89 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   async revoke(grantId: number) {
     await this.edge.revoke(grantId);
+  }
+
+  async state(): Promise<EdgeKeyState> {
+    const h = await this.edge.head();
+    return {owed: h.owed, overflow: h.overflow, held: h.held, restoring: h.restoring};
+  }
+
+  async hold(grantId: number) {
+    await this.edge.hold(grantId);
+  }
+
+  /* R15a + R27: like Approve, only from a copy that verifies, then the press */
+  async resume(grantId: number, onPress?: () => void) {
+    await this.edge.grants.resume(grantId, {copy: await this.copy(), onPress: this.pressing(onPress)});
+    this.pressWanted = null;
+  }
+
+  async waive(onPress?: () => void) {
+    await this.edge.waive({onPress: this.pressing(onPress)});
+    this.pressWanted = null;
+  }
+
+  /*
+   * R26: hand the restoring key this phone's copy, from the link after its
+   * restored head, in order, each with the head the copy stored after it. The
+   * key takes a link only if it welds there; the first one it refuses is the
+   * fork (or, if the copy itself skips a seq, a gap) - stop and say so, never
+   * smooth it over. The Edge Worker's copy comes next, once it exists.
+   */
+  async replayCopy(): Promise<EdgeReplay> {
+    const mirror = await loadMirror(this.deviceId);
+    const h = await this.edge.head();
+    const keyWas = h.seq === null ? -1 : h.seq;
+    const newest = mirror.links.length ? chain.decodeLink(mirror.links[mirror.links.length - 1].link).seq : -1;
+    let at = keyWas;
+    for (const r of mirror.links) {
+      const seq = chain.decodeLink(r.link).seq;
+      if (seq <= at) continue;
+      if (seq !== at + 1) return {keyWas, replayedTo: at, newest, stop: {why: 'gap', at: at + 1}};
+      try {
+        await this.edge.replay(r.link, r.head);
+      } catch (e: any) {
+        if (e && e.status === 'replay-mismatch') {
+          const kh = (await this.edge.head()).head;
+          const mine = mirror.links.find(x => chain.decodeLink(x.link).seq === at);
+          return {keyWas, replayedTo: at, newest, stop: {why: 'fork', at, keyHead: toHex(kh), copyHead: mine ? toHex(mine.head) : ''}};
+        }
+        throw e;
+      }
+      at = seq;
+    }
+    return {keyWas, replayedTo: at, newest, stop: {why: 'end'}};
+  }
+
+  async finishRestore(newestSeq: number, onPress?: () => void) {
+    await this.edge.replayDone({newestSeq: Math.max(0, newestSeq), onPress: this.pressing(onPress)});
+    this.pressWanted = null;
+  }
+
+  /*
+   * TESTING MODE: what an agent does through ssh/gpg - an agent-derived P-256
+   * sign (OKSIGN 222), pressed on the soft key's own button the way the e2e
+   * does it, and no ticket after it. It leaves a debt on the key (R16), so the
+   * tab's owed banner and Waive can be seen without a CLI or an MCP server.
+   */
+  async agentSign(text: string) {
+    const app = await getOnlyKey('embedded');
+    const message = tickets.messageHash(`okrn testing ${text} ${Date.now()}`);
+    const identity = tickets.messageHash('okrn testing identity');
+    const timer = setTimeout(() => { void OkEmu.pressQueue('1'); }, 1500);
+    try {
+      await app.okcrypto.agent.sign(identity, message, {keyType: 2, version: 2});
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /* the soft key's own buttons press for every request that waits on one */
+  private pressing(onPress?: () => void) {
+    return () => {
+      this.pressWanted = () => undefined;
+      onPress?.();
+    };
   }
 
   /* ---- the inbox: requests waiting for the person ---- */

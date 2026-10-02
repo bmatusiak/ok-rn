@@ -41,7 +41,37 @@ export interface EdgeSource {
   messages(): Promise<Record<number, string>>;
   /** End a live budget now (a grant-end link). */
   revoke(grantId: number): void | Promise<void>;
+
+  /*
+   * The spec change and R26 (firmware.md R15a-R18, R26). Optional: the fake key
+   * predates them, and the tab shows each control only when the key has it.
+   */
+  /** What the key says about debts, holds and a restore, from HEAD. */
+  state?(): Promise<EdgeKeyState>;
+  /** R15a: pause a budget - no press. */
+  hold?(grantId: number): Promise<void>;
+  /** R15a: resume it - the copy check (R27), then a physical press. */
+  resume?(grantId: number, onPress?: () => void): Promise<void>;
+  /** R18: clear every owed ticket - a physical press. */
+  waive?(onPress?: () => void): Promise<void>;
+  /** R26: replay this phone's copy into a restoring key; where it stopped and why. */
+  replayCopy?(): Promise<EdgeReplay>;
+  /** R26: "restored to #N" - a physical press; the key links a LOSS over anything not replayed. */
+  finishRestore?(newestSeq: number, onPress?: () => void): Promise<void>;
 }
+
+export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; restoring: boolean};
+
+/**
+ * A replay's outcome (spec B6): the key took #from..#to; it stopped because
+ * the copy ended, or at a fork - the key's head at #at is not the copy's.
+ */
+export type EdgeReplay = {
+  keyWas: number;
+  replayedTo: number;
+  newest: number;
+  stop: {why: 'end'} | {why: 'fork'; at: number; keyHead: string; copyHead: string} | {why: 'gap'; at: number};
+};
 
 /** A budget someone asked for and the person has not answered yet (spec 4.3 clasp sheet). */
 export type EdgeRequest = {
