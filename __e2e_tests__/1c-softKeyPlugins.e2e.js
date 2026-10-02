@@ -29,7 +29,16 @@ try {
   pluginTests = [];
 }
 
-const ctx = {getOnlyKey, OkEmu, IFACE, protocol, pressDigits, PIN: '1234561', buildInfo, hasSoftKeyPlugin};
+/*
+ * lib: the app's own node-onlykey-lib, by STATIC require (Metro bundles statically,
+ * so a plugin test cannot name a subpath itself) - only what plugin tests use.
+ */
+const edgeLib = require('node-onlykey-lib/edge');
+const {hmac} = require('node-onlykey-lib/vendor/@noble/hashes/hmac.js');
+const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
+const lib = {edge: edgeLib, sha256: (bytes) => sha256(bytes), hmacSha256: (key, msg) => hmac(sha256, key, msg)};
+
+const ctx = {getOnlyKey, OkEmu, IFACE, protocol, pressDigits, PIN: '1234561', buildInfo, hasSoftKeyPlugin, lib};
 
 module.exports = function softKeyPlugins({describe, it}) {
   describe(softKeyPlugins.name, () => {

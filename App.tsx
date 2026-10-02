@@ -43,6 +43,7 @@ import {LogScreen} from './src/screens/LogScreen';
 import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
 import {EdgeScreen} from './src/screens/EdgeScreen';
+import {setFirmwareConsoleToLogcat} from './src/hooks/useOkEmu';
 
 /*
  * 'This Key', not 'Key' and no longer 'Soft Key'.
@@ -347,6 +348,10 @@ function Shell() {
 
   const hid = useUsbHid({log: usbLog.log});
   const testing = useTestingMode();
+  /* testing mode: the soft key's firmware console also goes to logcat (useOkEmu) */
+  useEffect(() => {
+    setFirmwareConsoleToLogcat(testing.enabled);
+  }, [testing.enabled]);
 
   /*
    * A HARD KEY TURNS TESTING MODE ON, in a debug build.

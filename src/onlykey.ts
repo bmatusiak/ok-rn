@@ -19,6 +19,7 @@ import usbTransport from 'node-onlykey-lib/plugins/transport/usb';
 import sessionPlugin from 'node-onlykey-lib/plugins/session';
 import devicePlugin from 'node-onlykey-lib/plugins/device';
 import okcryptoPlugin from 'node-onlykey-lib/plugins/okcrypto';
+import edgePlugin from 'node-onlykey-lib/plugins/edge';
 
 import OkEmu, {type Iface} from './transport/OkEmu';
 import UsbPipe from './transport/UsbPipe';
@@ -51,6 +52,12 @@ export type Backend = 'embedded' | 'usb';
 export type OnlyKeyApp = {
   device: any;
   okcrypto: any;
+  /*
+   * OnlyKey Edge's device calls. Composed always, used only when the soft key
+   * was built with the edge firmware plugin (buildInfo.hasSoftKeyPlugin) -
+   * it sends nothing until called.
+   */
+  edge: any;
   transport: any;
   destroy: () => Promise<void>;
 };
@@ -122,6 +129,7 @@ export function getOnlyKey(backend: Backend = 'embedded'): Promise<OnlyKeyApp> {
       sessionPlugin,
       devicePlugin,
       okcryptoPlugin,
+      edgePlugin,
     ];
 
     /*
@@ -153,6 +161,7 @@ export function getOnlyKey(backend: Backend = 'embedded'): Promise<OnlyKeyApp> {
       resolve({
         device: started.services.device,
         okcrypto: started.services.okcrypto,
+        edge: started.services.edge,
         transport: started.services.transport,
         destroy: () => started.destroy(),
       });

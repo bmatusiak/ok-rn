@@ -207,8 +207,15 @@ function budgetRows(rows: EdgeRow[], grantId: number): EdgeRow[] {
  * clasp (spec 4.3): Yes here, then a press on the key - no press, no budget.
  * Declining sends nothing to the key.
  */
-function PendingCard({r, busy, onApprove, onDecline}: {r: EdgeRequest; busy: boolean; onApprove: () => void; onDecline: () => void}) {
-  const [pressing, setPressing] = useState(false);
+function PendingCard({r, busy, waiting, fake, onApprove, onPress, onDecline}: {
+  r: EdgeRequest;
+  busy: boolean;
+  waiting: boolean;
+  fake: boolean;
+  onApprove: () => void;
+  onPress: () => void;
+  onDecline: () => void;
+}) {
   const uses = r.scopes.reduce((n, sc) => n + sc.cap, 0);
   return (
     <View style={[styles.budget, styles.pending]}>
@@ -220,18 +227,22 @@ function PendingCard({r, busy, onApprove, onDecline}: {r: EdgeRequest; busy: boo
           {opName(sc.op)} · slot {sc.slot} · up to {sc.cap}
         </Text>
       ))}
-      {pressing ? (
+      {waiting ? (
         <>
           <Text style={[styles.op, {color: theme.warn}]}>Press the key to confirm</Text>
-          <Text style={styles.dim}>The fake key stands in for the keypad until the soft key has Edge.</Text>
+          <Text style={styles.dim}>
+            {fake
+              ? 'The fake key stands in for the keypad.'
+              : 'This phone is also the key, so its press proves less than a hard key\'s. The key stops waiting after 25 s.'}
+          </Text>
           <View style={styles.row}>
-            <Btn title="Press (fake key)" tone="primary" onPress={onApprove} disabled={busy} />
-            <Btn title="Cancel" onPress={() => setPressing(false)} disabled={busy} />
+            {/* not disabled while busy: the request IS what is in flight, waiting for this */}
+            <Btn title={fake ? 'Press (fake key)' : 'Press the soft key'} tone="primary" onPress={onPress} />
           </View>
         </>
       ) : (
         <View style={styles.row}>
-          <Btn title="Approve" tone="primary" onPress={() => setPressing(true)} disabled={busy} />
+          <Btn title="Approve" tone="primary" onPress={onApprove} disabled={busy} />
           <Btn title="Decline" onPress={onDecline} disabled={busy} />
         </View>
       )}
@@ -319,36 +330,64 @@ export function EdgeScreen() {
       <Section title="Budgets">
         {edge.error ? <Text style={[styles.dim, {color: theme.error}]}>{edge.error}</Text> : null}
         {edge.requests.map(r => (
-          <PendingCard key={`r${r.id}`} r={r} busy={edge.busy} onApprove={() => edge.approve(r.id)} onDecline={() => edge.decline(r.id)} />
+          <PendingCard
+            key={`r${r.id}`}
+            r={r}
+            busy={edge.busy}
+            waiting={edge.pressFor === r.id}
+            fake={edge.isFake}
+            onApprove={() => edge.approve(r.id)}
+            onPress={edge.press}
+            onDecline={() => edge.decline(r.id)}
+          />
         ))}
         {edge.budgets.map(b => (
-          <BudgetCard key={b.grantId} b={b} busy={edge.busy} onOpen={() => setOpen(b)} onRevoke={() => edge.act(k => k.revoke(b.grantId))} />
+          <BudgetCard key={b.grantId} b={b} busy={edge.busy} onOpen={() => setOpen(b)} onRevoke={() => edge.revoke(b.grantId)} />
         ))}
-        {edge.budgets.length === 0 && edge.requests.length === 0 ? (
+        {/* B3: a locked key says nothing - so say that, not "no budget" */}
+        {edge.view?.verdict.kind === 'locked' ? (
+          <Text style={[styles.dim, {color: theme.warn}]}>Unlock the key to sync. A locked key answers nothing, so its budgets cannot be read.</Text>
+        ) : null}
+        {edge.view?.verdict.kind !== 'locked' && edge.budgets.length === 0 && edge.requests.length === 0 ? (
           <Text style={styles.dim}>
             No budget. A budget lets an agent use the key a set number of times without a press; you approve it once.
           </Text>
         ) : null}
       </Section>
 
-      <Section title="Fake key (testing)">
-        <Text style={styles.dim}>
-          A fake key until the soft key has Edge. These do what an agent or the CLI would; the budgets update after each.
-        </Text>
-        <View style={styles.row}>
-          <Btn
-            title="Agent: request a budget"
-            onPress={() => edge.act(k => { k.request('onlykey-js on NITRO16', 'Sign three commits on feature/edge', [{op: OP.SIGN, slot: 101, cap: 3}]); })}
-            disabled={edge.busy}
-          />
-          <Btn title="Agent: use + OK ticket" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); k.ticket(0x00, 'Used as stated; the target accepted it.'); })} disabled={edge.busy} />
-          <Btn title="Agent: use, no ticket" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); })} disabled={edge.busy} />
-          <Btn title="Alarm ticket" onPress={() => edge.act(k => { k.use('tag'); k.ticket(0x82, 'Decrypted output may have been written to a shared folder.'); })} disabled={edge.busy} />
-          <Btn title="Denied request" onPress={() => edge.act(k => k.deny('decrypt notes.age'))} disabled={edge.busy} />
-          <Btn title="Lock (ends budgets)" onPress={() => edge.act(k => k.lock())} disabled={edge.busy} />
-          <Btn title="New fake key" onPress={edge.resetFake} disabled={edge.busy} />
-        </View>
-      </Section>
+      {edge.isFake ? (
+        <Section title="Fake key (testing)">
+          <Text style={styles.dim}>
+            A fake key - this build's soft key has no Edge. These do what an agent or the CLI would; the budgets update after each.
+          </Text>
+          <View style={styles.row}>
+            <Btn
+              title="Agent: request a budget"
+              onPress={() => edge.request('onlykey-js on NITRO16', 'Sign three commits on feature/edge', [{op: OP.SIGN, slot: 101, cap: 3}])}
+              disabled={edge.busy}
+            />
+            <Btn title="Agent: use + OK ticket" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); k.ticket(0x00, 'Used as stated; the target accepted it.'); })} disabled={edge.busy} />
+            <Btn title="Agent: use, no ticket" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); })} disabled={edge.busy} />
+            <Btn title="Alarm ticket" onPress={() => edge.act(k => { k.use('tag'); k.ticket(0x82, 'Decrypted output may have been written to a shared folder.'); })} disabled={edge.busy} />
+            <Btn title="Denied request" onPress={() => edge.act(k => k.deny('decrypt notes.age'))} disabled={edge.busy} />
+            <Btn title="Lock (ends budgets)" onPress={() => edge.act(k => k.lock())} disabled={edge.busy} />
+            <Btn title="New fake key" onPress={edge.resetFake} disabled={edge.busy} />
+          </View>
+        </Section>
+      ) : (
+        <Section title="Soft key (testing)">
+          <Text style={styles.dim}>
+            The soft key has Edge. Until an agent's MCP server can send requests, this makes one; agent signs come from the CLI or the e2e test.
+          </Text>
+          <View style={styles.row}>
+            <Btn
+              title="Agent: request a budget"
+              onPress={() => edge.request('testing on this phone', 'Sign three agent messages (P-256)', [{op: OP.SIGN, slot: 222, cap: 3}])}
+              disabled={edge.busy}
+            />
+          </View>
+        </Section>
+      )}
     </ScrollView>
   );
 }

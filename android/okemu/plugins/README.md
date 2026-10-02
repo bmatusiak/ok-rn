@@ -37,6 +37,10 @@ OKEMU_PLUGINS=hello OKEMU_PLUGINS_DIR=<node-onlykey-emulator>/emulator/plugins .
 - **ok-rn:** the stager copies each staged plugin's `tests/e2e.js` into `src/generated/plugins/` and lists them in `src/generated/pluginTests.js` (empty for a base build). The `softKeyPlugins` suite registers them.
 - **Kit:** node-onlykey-emulator records `plugins` and `pluginsDir` in its `.stage/build.json`. The kit's `01-protocol/38-softkey-plugins.test.js` registers each `<pluginsDir>/<name>/tests/kit.test.js`.
 
+**After editing a plugin's `tests/e2e.js`, restage (or copy it to `src/generated/plugins/<name>.e2e.js`) and restart Metro with `--reset-cache`:** Metro does not pick up changes in the generated copy, and the phone keeps running the old test. That cost a round of debugging Edge against code the phone was not running.
+
+**In testing mode the soft key's firmware console goes to logcat** as `[okemu-fw] …` (`useOkEmu`, owner 2026-10-02), so `adb logcat` and `tools/logwatch.js` can read what a plugin does while a test drives it.
+
 Neither the emulator nor the kit depends on ok-rn. A test gets the app or the kit through `ctx` (device access, `IFACE`, `okmsg` or `protocol`, the PIN), never by a relative path.
 
 **Hooks:** `{file, anchor, insert: 'before' | 'after', text}`.

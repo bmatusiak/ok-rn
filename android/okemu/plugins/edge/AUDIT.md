@@ -57,6 +57,14 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - **In config mode** `OKEDGE` is dropped like any message not on its allow-list. No self-press happens there either.
 
 ## Tests (side-loaded, they leave with the folder)
+`tests/e2e.js` (ok-rn e2e, the Pixel soft key), through the app's own library stack (`app.edge`):
+- `probe` and the genesis;
+- a pressed sign is linked, with SHA-256 of what was submitted;
+- a budget opened by the soft key's own press verifies with `grants.verifyBudgetOpening`;
+- two self-presses, with their reveals checked against `G`;
+- a ticket;
+- revoke.
+
 `tests/kit.test.js` (the emulator), 5 tests, each checked with the library or `node:crypto`:
 - `HEAD` and the Edge key;
 - a pressed sign and a timed-out sign become links;

@@ -146,6 +146,19 @@ function describeStart(message: string): string {
     : `start: ${message}`;
 }
 
+/*
+ * TESTING MODE ONLY (owner, 2026-10-02): the soft key's firmware console also goes
+ * to logcat as `[okemu-fw] ...`, so tools/logwatch.js and adb can read what the key
+ * says while a test drives it - the app's Log tab cannot be read from the PC. Off
+ * outside testing mode, and never in a release (the decode is __DEV__ only, and
+ * production firmware has no console). The firmware echoes PIN digits during a
+ * PIN bracket; in testing mode that is the test PIN.
+ */
+let firmwareConsoleToLogcat = false;
+export function setFirmwareConsoleToLogcat(on: boolean) {
+  firmwareConsoleToLogcat = __DEV__ && on;
+}
+
 export function useOkEmu({log, autoStart = false}: Options) {
   const [state, setState] = useState<EmuState>('stopped');
   const [storageDir, setStorageDir] = useState('');
@@ -202,6 +215,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
         const text = okbytes.toPrintable(event.bytes).trim();
         if (text) {
           log('info', `[fw] ${text}`);
+          if (firmwareConsoleToLogcat) console.log(`[okemu-fw] ${text}`);
         }
         return;
       }

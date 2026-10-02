@@ -1,0 +1,147 @@
+/**
+ * edge's on-device tests (ok-rn e2e, the Pixel soft key), SIDE-LOADED: ok-rn's
+ * stager copies this file into src/generated/plugins/ when the build staged
+ * OKEMU_PLUGINS=edge, and the softKeyPlugins suite registers it.
+ *
+ * The same story as tests/kit.test.js, on the phone, through the app's own
+ * library stack (app.edge = node-onlykey-lib/plugins/edge): every link, the
+ * budget's opening, the reveals and the chain are checked by the library.
+ *
+ * Everything from the app comes in through `ctx` (no relative imports into
+ * ok-rn): getOnlyKey, OkEmu, IFACE, protocol, PIN, pressDigits, lib (edge, hmacSha256).
+ */
+'use strict';
+
+const OKSIGN = 0x80 | 0x6d;
+const OP_SIGN = 1;
+const APPROVE = 1;
+const SELF_PRESS = 4;
+const PRESS_OBSERVED = 0x01;
+const OP_GRANT_CREATE = 6;
+
+module.exports = function register({it}, ctx) {
+  const {chain, grants, tickets} = ctx.lib.edge;
+  /* SHA-256 of bytes, or of text as UTF-8 (tickets.messageHash hashes TEXT only) */
+  const sha256 = (x) => (typeof x === 'string' ? tickets.messageHash(x) : ctx.lib.sha256(x));
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  async function ready(log) {
+    if (!ctx.OkEmu.isRunning()) await ctx.OkEmu.start();
+    const app = await ctx.getOnlyKey();
+    const state = await app.device.connect();
+    if (!/UNLOCKED/i.test(String(state.status))) {
+      await app.device.unlock(ctx.PIN, {timeoutMs: 20000, enterDigits: ctx.pressDigits({log})});
+      await app.device.connect();
+    }
+    return app;
+  }
+
+  /*
+   * An agent-derived P-256 sign (OKSIGN code 222), through the library's own
+   * okcrypto.agent.sign - which reads the key's whole reply. A hand-rolled
+   * write left reports on the bus that the next request took as its answer
+   * (a HEAD once named link 0xB1790C02). `press`: the soft key's own button,
+   * once the confirmation is primed.
+   */
+  async function agentSign(app, text, {press = false} = {}) {
+    const message = sha256(`okrn edge ${text} ${Date.now()}`);
+    const identity = sha256('okrn edge identity');
+    const timer = press ? setTimeout(() => { ctx.OkEmu.pressQueue('1'); }, 1500) : null;
+    try {
+      await app.okcrypto.agent.sign(identity, message, {keyType: 2, version: 2});
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    return {payload: new Uint8Array([...message, ...identity]), message, identity};
+  }
+
+  /* the decision is linked: the head moves past `seq` (polled, not slept) */
+  async function headPast(app, seq, timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const h = await app.edge.head();
+      if (h.seq !== null && (seq === null || h.seq > seq)) return h;
+      if (Date.now() > deadline) throw new Error(`the key did not link the decision (head still #${h.seq})`);
+      await sleep(300);
+    }
+  }
+
+  it('edge: the soft key answers Edge; its chain starts at the library\'s genesis', async ({log, assert}) => {
+    const app = await ready(log);
+    assert.equal(await app.edge.probe(), 'edge');
+    const {deviceId} = await app.edge.publicKey();
+    const h = await app.edge.head();
+    log(`device ${Array.from(deviceId, b => b.toString(16).padStart(2, '0')).join('')}, head #${h.seq}, live ${JSON.stringify(h.live)}`);
+    if (h.seq === null) {
+      assert.equal(chain.verify([], {deviceId, expectHead: {seq: -1, head: h.head}}).ok, true, 'an empty chain\'s head is not the genesis');
+    }
+  });
+
+  it('edge: a pressed sign becomes a link the library verifies', async ({log, assert}) => {
+    const app = await ready(log);
+    const before = await app.edge.head();
+    const signed = await agentSign(app, 'pressed', {press: true});
+    const after = await headPast(app, before.seq);
+    log(`after the press: head #${after.seq}, oldest held #${after.oldest}, live ${JSON.stringify(after.live)}`);
+    const [l] = await app.edge.pickup(after.seq, 1);
+    const f = chain.decodeLink(l.link);
+    log(`#${f.seq} op ${f.op} decision ${f.decision} flags ${f.flags} slot ${f.slot}`);
+    assert.equal(f.op, OP_SIGN);
+    assert.equal(f.decision, APPROVE);
+    assert.ok(f.flags & PRESS_OBSERVED, 'a pressed approve carries the press flag');
+    const hex = (b) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    log(`subject ${hex(f.subject).slice(0, 16)}; sha256(payload) ${hex(sha256(signed.payload)).slice(0, 16)}; sha256(message) ${hex(sha256(signed.message)).slice(0, 16)}; message ${hex(signed.message).slice(0, 16)}`);
+    assert.equal(hex(f.subject), hex(sha256(signed.payload)), 'the subject is not SHA-256 of what was submitted');
+    if (before.seq !== null) {
+      const [prev] = await app.edge.pickup(before.seq, 1);
+      const r = chain.verify([l], {fromSeq: after.seq, fromHead: prev.head, expectHead: {seq: after.seq, head: after.head}});
+      assert.ok(r.ok, `the library rejects the link: ${JSON.stringify(r.failure)}`);
+    }
+  });
+
+  it('edge: a budget opened by a press spends without one, takes a ticket, and is revoked', async ({log, assert}) => {
+    const app = await ready(log);
+    const {publicKey, deviceId} = await app.edge.publicKey();
+    const before = await app.edge.head();
+    const scopes = [{op: OP_SIGN, slot: 222, cap: 2}];
+    const reasonHash = sha256('okrn e2e: sign two agent messages');
+
+    /* GRANT_CREATE waits for the PHYSICAL press - on the soft key, its own button */
+    const g = await app.edge.grant({scopes, reasonHash, onPress: () => { setTimeout(() => { ctx.OkEmu.pressQueue('1'); }, 1200); }});
+    log(`budget ${g.grantId}: ${g.uses} uses, opened at #${g.seq}`);
+    const [opened] = await app.edge.pickup(g.seq, 1);
+    const prevHead = before.seq === null ? chain.genesis(deviceId) : (await app.edge.pickup(before.seq, 1))[0].head;
+    const opening = grants.verifyBudgetOpening({
+      deviceId, publicKey, link: opened.link, prevHead, head: g.checkpoint.head, signature: g.checkpoint.signature,
+      scopes, reasonHash, genesis: g.genesis, uses: g.uses,
+    });
+    assert.ok(opening.ok, `the budget's opening does not verify: ${opening.reason}`);
+    assert.equal(chain.decodeLink(opened.link).op, OP_GRANT_CREATE);
+    assert.ok((await app.edge.head()).live.includes(g.grantId), 'HEAD does not list the budget as live');
+
+    /* two signs inside it: no press - self-press links with their reveals; a ticket after the first */
+    const spends = [];
+    for (let i = 1; i <= 2; i++) {
+      const seq0 = (await app.edge.head()).seq;
+      const sent = await agentSign(app, `budget ${i}`); /* no press: the budget pays */
+      const payload = sent.payload;
+      const h = await headPast(app, seq0);
+      const [l] = await app.edge.pickup(h.seq, 1);
+      const f = chain.decodeLink(l.link);
+      assert.equal(f.decision, SELF_PRESS, `use ${i} should be a self-press`);
+      assert.equal(f.grantStep, i);
+      const subject = sha256(payload);
+      spends.push({step: i, value: l.reveal, subject, mac: null});
+      if (i === 1) assert.equal(await app.edge.ticket(h.seq, 0x00, sha256('okrn e2e: did as asked')), true);
+    }
+    assert.ok(spends.every(s => s.value), 'a self-press came back without its reveal');
+    for (const s of spends) {
+      const r = grants.checkSelfPress({genesis: g.genesis, uses: g.uses, step: s.step, value: s.value, subject: s.subject,
+        mac: ctx.lib.hmacSha256(s.value, s.subject)});
+      assert.ok(r.ok, `step ${s.step}: ${r.reason}`);
+    }
+
+    assert.equal(await app.edge.revoke(g.grantId), true);
+    assert.ok(!(await app.edge.head()).live.includes(g.grantId), 'a revoked budget is still live');
+  });
+};

@@ -35,6 +35,8 @@ export interface EdgeSource {
   budgets(): Promise<EdgeBudget[]>;
   /** Ticket messages by the seq they answer - they come by sync, never from the key. */
   messages(): Promise<Record<number, string>>;
+  /** End a live budget now (a grant-end link). */
+  revoke(grantId: number): void | Promise<void>;
 }
 
 /** A budget someone asked for and the person has not answered yet (spec 4.3 clasp sheet). */
@@ -51,9 +53,15 @@ export type EdgeRequest = {
  * sees the GRANT_CREATE that follows the person's Yes and press.
  */
 export interface EdgeInbox {
+  /** A budget request arriving (testing mode makes them until the MCP server / Worker send them). */
+  request(from: string, reason: string, scopes: EdgeRequest['scopes']): number;
   pending(): Promise<EdgeRequest[]>;
-  /** Yes, then the press on the key: the budget goes live. */
-  approve(id: number): Promise<void>;
+  /**
+   * Yes: the request goes to the key, which waits for a PHYSICAL press;
+   * `onPress` says it is waiting, press() presses. Resolves once the budget is live.
+   */
+  approve(id: number, onPress?: () => void): Promise<void>;
+  press(): Promise<void>;
   decline(id: number): Promise<void>;
 }
 
@@ -68,6 +76,7 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
   private msgs: Record<number, string> = {};
   private live: (EdgeBudget & {seed: Uint8Array})[] = [];
   private requests: EdgeRequest[] = [];
+  private pressGate: (() => void) | null = null;
   private nextRequest = 1;
   /** links older than this are gone from the fake key's ring */
   ring = 32;
@@ -173,11 +182,22 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
     return this.requests.map(r => ({...r, scopes: r.scopes.map(sc => ({...sc}))}));
   }
 
-  async approve(id: number) {
+  async approve(id: number, onPress?: () => void) {
     const r = this.requests.find(x => x.id === id);
     if (!r) throw new Error(`edge (fake): no request ${id}`);
-    this.clasp(r.reason, r.scopes); // the fake key "sees" the press
+    /* like the real key: nothing opens until the press */
+    await new Promise<void>(resolve => {
+      this.pressGate = resolve;
+      onPress?.();
+    });
+    this.clasp(r.reason, r.scopes);
     this.requests = this.requests.filter(x => x.id !== id);
+  }
+
+  async press() {
+    const go = this.pressGate;
+    this.pressGate = null;
+    go?.();
   }
 
   async decline(id: number) {
