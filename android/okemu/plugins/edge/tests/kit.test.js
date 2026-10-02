@@ -2,11 +2,12 @@
 /*
  * edge's emulator tests (the onlykey-testing kit), SIDE-LOADED from this folder
  * by 01-protocol/38-softkey-plugins.test.js when the emulator was built with
- * OKEMU_PLUGINS=edge. Step 1: the device chain.
+ * OKEMU_PLUGINS=edge.
  *
- * The truth is the LIBRARY's reading of the bytes (node-onlykey-lib/edge, via
- * ctx.requireLib - the kit's pinned lib): a chain the firmware writes must
- * verify there, link for link, up to the head the key reports.
+ * The firmware is a notary (DESIGN.md section 0); the truth is the LIBRARY's
+ * reading of what it writes (node-onlykey-lib/edge, through ctx.requireLib -
+ * the kit's own pinned lib): every link, weld, budget signature, reveal,
+ * ticket and checkpoint must check out there.
  *
  * Everything from the kit comes through ctx: IFACE, okmsg, PINS, requireLib.
  */
@@ -14,40 +15,47 @@ const crypto = require('crypto');
 
 const OKEDGE = 0x80 | 0x78;
 const HEAD = 0x01;
-const READ = 0x02;
-const CKPT_PUBKEY = 0x04;
-const LAST_REVEAL = 0x05;
+const PICKUP = 0x02;
+const CHECKPOINT = 0x03;
+const PUBKEY = 0x04;
 const GRANT_CREATE = 0x10;
+const GRANT_REVOKE = 0x12;
+const TICKET = 0x20;
 const SEQ_NONE = 0xffffffff;
 /* lib codes.js */
 const OP_SIGN = 1;
+const OP_GRANT_CREATE = 6;
+const OP_GRANT_END = 7;
+const OP_TICKET = 8;
 const APPROVE = 1;
 const TIMEOUT = 3;
+const SELF_PRESS = 4;
 const PRESS_OBSERVED = 0x01;
+const PREV_NO_TICKET = 0x04;
 /* the console line that says a confirmation is primed (14-stored-keys uses it too) */
 const PRIMED = /Encrypted Buffer/g;
+const P256_SPKI = Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex');
 
 module.exports = function register({ it }, ctx) {
-  const { chain } = ctx.requireLib('node-onlykey-lib/edge');
+  const { chain, grants, tickets } = ctx.requireLib('node-onlykey-lib/edge');
   const sha256 = (b) => crypto.createHash('sha256').update(b).digest();
+  const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
 
-  async function edge(device, sub, args, { signal, reports = 1 }) {
+  /* send an OKEDGE sub-op and collect EVERY report since (several come back to back) */
+  async function edge(device, sub, args, { signal, reports = 1, text = false }) {
     const since = device.mark(ctx.IFACE.VENDOR);
     device.sendVendor({ msg: OKEDGE, slot: sub, payload: args || Buffer.alloc(0) });
-    /*
-     * Collect EVERY report since the request: READ answers with several back
-     * to back, and a mark taken after the first would lose the rest.
-     */
-    await device.waitHid(ctx.IFACE.VENDOR, { since, timeoutMs: 6000, signal });
+    await device.waitHid(ctx.IFACE.VENDOR, { since, timeoutMs: 8000, signal });
     const deadline = Date.now() + 6000;
     let got = device.reportsSince(ctx.IFACE.VENDOR, since);
     while (got.length < reports && Date.now() < deadline) {
       await device.sleep(50, { signal });
       got = device.reportsSince(ctx.IFACE.VENDOR, since);
     }
+    if (text) return ctx.okmsg.text(got[0]).trim();
     for (const r of got) {
-      const text = ctx.okmsg.text(r);
-      if (/^Error/.test(text)) throw new Error(`the key refused OKEDGE ${sub}: ${text.trim()}`);
+      const t = ctx.okmsg.text(r);
+      if (/^EDGE:(?!00)/.test(t)) throw new Error(`the key refused OKEDGE ${sub}: ${t.trim()}`);
     }
     if (got.length < reports) throw new Error(`OKEDGE ${sub}: ${got.length} of ${reports} reports`);
     return got.slice(0, reports).map((r) => Buffer.from(r));
@@ -55,22 +63,27 @@ module.exports = function register({ it }, ctx) {
 
   async function head(device, opts) {
     const [r] = await edge(device, HEAD, null, opts);
-    return { seq: r.readUInt32LE(0), head: r.subarray(4, 36), ringFrom: r.readUInt32LE(36), deviceId: r.subarray(40, 56) };
+    return { seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), oldest: r.readUInt32LE(36), deviceId: new Uint8Array(r.subarray(40, 56)) };
   }
 
-  async function read(device, from, count, opts) {
-    const args = Buffer.alloc(5);
-    args.writeUInt32LE(from, 0);
-    args[4] = count;
-    const rs = await edge(device, READ, args, { ...opts, reports: count * 2 });
+  /* PICKUP: per link the link, then its head and (for a self-press) the reveal */
+  async function pickup(device, from, count, opts) {
+    const rs = await edge(device, PICKUP, Buffer.concat([u32(from), Buffer.from([count])]), { ...opts, reports: count * 2 });
     const out = [];
-    for (let i = 0; i < rs.length; i += 2) out.push({ link: new Uint8Array(rs[i]), head: new Uint8Array(rs[i + 1].subarray(0, 32)) });
+    for (let i = 0; i < rs.length; i += 2) {
+      out.push({ link: new Uint8Array(rs[i]), head: new Uint8Array(rs[i + 1].subarray(0, 32)), reveal: new Uint8Array(rs[i + 1].subarray(32, 64)) });
+    }
     return out;
   }
 
-  /* an agent-derived P-256 sign (OKSIGN slot code 222): message || identity hash, in 57-byte chunks */
-  function sendAgentSign(device, message, identity) {
-    const payload = Buffer.concat([message, identity]);
+  async function pubkey(device, opts) {
+    const [r] = await edge(device, PUBKEY, null, opts);
+    return new Uint8Array(r.subarray(0, 64));
+  }
+
+  /* an agent-derived P-256 sign (OKSIGN code 222): message || identity hash, in 57-byte chunks */
+  function sendAgentSign(device, message) {
+    const payload = Buffer.concat([message, sha256(Buffer.from('okt edge identity'))]);
     for (let i = 0; i < payload.length; i += 57) {
       const chunk = payload.subarray(i, i + 57);
       device.sendVendor({ msg: ctx.okmsg.MSG.OKSIGN, slot: 222, field: chunk.length < 57 ? chunk.length : 0xff, payload: chunk });
@@ -78,150 +91,185 @@ module.exports = function register({ it }, ctx) {
     return payload;
   }
 
-  it('edge: HEAD, the Edge key and an empty chain on a fresh key',
+  /* a sign that will wait for a press: press it */
+  async function pressedSign(device, text, { signal }) {
+    const primed = device.log.count(PRIMED);
+    const payload = sendAgentSign(device, sha256(Buffer.from(text)));
+    await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
+    device.press(1);
+    await device.sleep(1500, { signal });
+    return payload;
+  }
+
+  /* a sign a live budget pays for: no press, the signature comes straight back */
+  async function selfPressedSign(device, text, { signal }) {
+    const since = device.mark(ctx.IFACE.VENDOR);
+    const payload = sendAgentSign(device, sha256(Buffer.from(text)));
+    await device.waitHid(ctx.IFACE.VENDOR, { since, timeoutMs: 8000, signal });
+    await device.sleep(300, { signal });
+    return payload;
+  }
+
+  /* everything from `from` to the key's head, verified by the library */
+  async function verifyFrom(device, from, fromHead, { signal, assert, log }) {
+    const h = await head(device, { signal });
+    const links = await pickup(device, from, h.seq - from + 1, { signal });
+    const result = chain.verify(links, { fromSeq: from, fromHead, expectHead: { seq: h.seq, head: h.head } });
+    if (log) log(`library verdict: ${JSON.stringify({ ok: result.ok, through: result.verifiedThrough, failure: result.failure })}`);
+    assert.ok(result.ok, `the library rejects the key's chain: ${JSON.stringify(result.failure)}`);
+    return { h, links, fields: links.map((l) => chain.decodeLink(l.link)) };
+  }
+
+  it('edge: HEAD and the Edge key on a fresh key; the chain starts at the lib\'s genesis',
     async ({ device, assert, signal, log }) => {
       await device.restart({ signal });
       await device.unlock(ctx.PINS.primary, { signal });
       const h = await head(device, { signal });
-      const [pubReport] = await edge(device, CKPT_PUBKEY, null, { signal });
-      const pub = pubReport.subarray(0, 64);
-      log(`seq ${h.seq === SEQ_NONE ? 'none' : h.seq}, device ${h.deviceId.toString('hex')}`);
-      /* device_id = SHA256("OKEDGE-DEVICE-v1" || pubkey)[0..16] (DESIGN.md 1) */
+      const pub = await pubkey(device, { signal });
+      log(`seq ${h.seq === SEQ_NONE ? 'none' : h.seq}, device ${Buffer.from(h.deviceId).toString('hex')}`);
       const want = sha256(Buffer.concat([Buffer.from('OKEDGE-DEVICE-v1'), pub])).subarray(0, 16);
-      assert.bytes(h.deviceId, want, 'the device id is not the hash of the Edge public key');
-      assert.ok(crypto.createPublicKey({ key: Buffer.concat([Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex'), Buffer.from([4]), pub]), format: 'der', type: 'spki' }),
-        'the Edge public key is not a P-256 point');
-      if (h.seq === SEQ_NONE) {
-        /* empty: the head is the genesis the lib computes */
-        assert.bytes(h.head, Buffer.from(chain.genesis(new Uint8Array(h.deviceId))), 'an empty chain\'s head is not the genesis');
-      }
+      assert.bytes(Buffer.from(h.deviceId), want, 'the device id is not the hash of the Edge public key');
+      assert.ok(crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), pub]), format: 'der', type: 'spki' }), 'not a P-256 point');
+      if (h.seq === SEQ_NONE) assert.bytes(Buffer.from(h.head), Buffer.from(chain.genesis(h.deviceId)), 'an empty chain\'s head is not the genesis');
     });
 
-  it('edge: a pressed sign and an unanswered one become links the library verifies up to the key\'s head',
+  it('edge: a pressed sign and an unanswered one become links the library verifies',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       const before = await head(device, { signal });
-      const identity = sha256(Buffer.from('okt edge identity'));
-
-      /* 1 - pressed: an APPROVE link with the press flag, whose subject is what was submitted */
-      let primed = device.log.count(PRIMED);
-      const signed = sendAgentSign(device, sha256(Buffer.from('okt edge message 1')), identity);
-      await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
-      device.press(1);
-      await device.sleep(1500, { signal });
-
-      /* 2 - never answered: a TIMEOUT link after the 20 s fade */
-      primed = device.log.count(PRIMED);
-      sendAgentSign(device, sha256(Buffer.from('okt edge message 2')), identity);
-      await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
-      await device.sleep(23000, { signal });
-
-      const after = await head(device, { signal });
+      const startHead = before.head;
       const first = before.seq === SEQ_NONE ? 0 : before.seq + 1;
-      assert.equal(after.seq, first + 1, `two decisions should add two links (head went ${before.seq} -> ${after.seq})`);
 
-      const links = await read(device, first, 2, { signal });
-      const f1 = chain.decodeLink(links[0].link);
-      const f2 = chain.decodeLink(links[1].link);
-      log(`#${f1.seq} op ${f1.op} decision ${f1.decision} flags ${f1.flags} slot ${f1.slot}; #${f2.seq} op ${f2.op} decision ${f2.decision}`);
-      assert.equal(f1.op, OP_SIGN);
-      assert.equal(f1.decision, APPROVE);
-      assert.ok(f1.flags & PRESS_OBSERVED, 'a pressed approve must carry the press flag');
-      assert.equal(f1.slot, 222);
-      assert.bytes(Buffer.from(f1.subject), sha256(signed), 'the subject is not SHA-256 of what was submitted');
-      assert.equal(f2.decision, TIMEOUT, 'an unanswered sign must be linked as a timeout');
+      const signed = await pressedSign(device, 'okt edge message 1', { signal });
+      const primed = device.log.count(PRIMED);
+      sendAgentSign(device, sha256(Buffer.from('okt edge message 2')));
+      await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
+      await device.sleep(23000, { signal }); /* never pressed: the 20 s fade */
 
-      /*
-       * The last links up to the key's head, verified by the library. From
-       * genesis when the chain is that short; otherwise from the head stored
-       * with the link before them - not trusted on its own, but if it were
-       * wrong the recomputed welds could not reach the head the key reports.
-       */
-      const start = Math.max(after.ringFrom, after.seq - 7);
-      const all = await read(device, start, after.seq - start + 1, { signal });
-      const startFrom = start === 0
-        ? { deviceId: new Uint8Array(after.deviceId) }
-        : { fromSeq: start, fromHead: (await read(device, start - 1, 1, { signal }))[0].head };
-      const result = chain.verify(all, { ...startFrom, expectHead: { seq: after.seq, head: new Uint8Array(after.head) } });
-      log(`library verdict: ${JSON.stringify({ ok: result.ok, through: result.verifiedThrough, gaps: result.gaps, failure: result.failure })}`);
-      assert.ok(result.ok, `the library rejects the key's chain: ${JSON.stringify(result.failure)}`);
+      const { fields: f } = await verifyFrom(device, first, startHead, { signal, assert, log });
+      log(f.map((x) => `#${x.seq} op ${x.op} dec ${x.decision} flags ${x.flags}`).join('; '));
+      assert.equal(f[0].op, OP_SIGN);
+      assert.equal(f[0].decision, APPROVE);
+      assert.ok(f[0].flags & PRESS_OBSERVED, 'a pressed approve carries the press flag');
+      assert.bytes(Buffer.from(f[0].subject), sha256(signed), 'the subject is not SHA-256 of what was submitted');
+      assert.equal(f[1].decision, TIMEOUT);
+      assert.ok(f[1].flags & PREV_NO_TICKET, 'the use after an unticketed one carries the empty hook (R17)');
     });
 
-  it('edge: a budget opened by a press is signed by the key, spends without a press, then needs one again',
+  it('edge: a budget opened by a press is signed by the key, spends without a press, is ticketed, then needs a press again',
     async ({ device, assert, signal, log }) => {
-      const { grants } = ctx.requireLib('node-onlykey-lib/edge');
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       const before = await head(device, { signal });
-      const [pubReport] = await edge(device, CKPT_PUBKEY, null, { signal });
-      const pub = new Uint8Array(pubReport.subarray(0, 64));
+      const pub = await pubkey(device, { signal });
 
-      /* GRANT_CREATE: one scope - agent P-256 sign (code 222), cap 2 - and a reason */
+      /* GRANT_CREATE: agent P-256 sign (222), cap 2, a reason */
       const reasonHash = sha256(Buffer.from('okt: sign two test messages'));
       const req = Buffer.alloc(50);
       req[0] = 1;
       req[1] = OP_SIGN; req[2] = 222; req.writeUInt16LE(2, 3);
       reasonHash.copy(req, 17);
-      req[49] = 0;
       const since = device.mark(ctx.IFACE.VENDOR);
       device.sendVendor({ msg: OKEDGE, slot: GRANT_CREATE, payload: req });
       await device.sleep(800, { signal });
-      device.press(1); /* the physical press that opens the budget */
+      device.press(1); /* the physical press that opens it */
       await device.waitHid(ctx.IFACE.VENDOR, { since, timeoutMs: 8000, signal });
       const deadline = Date.now() + 6000;
       let rs = device.reportsSince(ctx.IFACE.VENDOR, since);
       while (rs.length < 2 && Date.now() < deadline) { await device.sleep(50, { signal }); rs = device.reportsSince(ctx.IFACE.VENDOR, since); }
-      assert.ok(!/^Error/.test(ctx.okmsg.text(rs[0])), `the key refused the budget: ${ctx.okmsg.text(rs[0]).trim()}`);
+      assert.ok(!/^EDGE:/.test(ctx.okmsg.text(rs[0])), `the key refused the budget: ${ctx.okmsg.text(rs[0]).trim()}`);
       const g = Buffer.from(rs[0]);
       const grantId = g.readUInt32LE(0);
       const uses = g.readUInt16LE(4);
       const G = new Uint8Array(g.subarray(6, 38));
       const chainSeq = g.readUInt32LE(38);
       const sig = new Uint8Array(Buffer.from(rs[1]).subarray(0, 64));
-      log(`budget ${grantId}: ${uses} uses, G ${Buffer.from(G).toString('hex').slice(0, 16)}..., opened at chain #${chainSeq}`);
-
-      /* the genesis is signed by the key, over exactly these fields (lib grants.verifyBudgetGenesis) */
+      log(`budget ${grantId}: ${uses} uses, opened at chain #${chainSeq}`);
       const fields = {
-        deviceId: new Uint8Array(before.deviceId), grantId, genesis: G, uses,
+        deviceId: before.deviceId, grantId, genesis: G, uses,
         scopes: [{ op: OP_SIGN, slot: 222, cap: 2 }], reasonHash: new Uint8Array(reasonHash),
-        chainSeq, chainHead: new Uint8Array(before.head),
+        chainSeq, chainHead: before.head,
       };
       assert.equal(JSON.stringify(grants.verifyBudgetGenesis(fields, sig, pub)), '{"ok":true}', 'the budget genesis signature does not verify');
 
-      /* two signs inside it: no press - each a self-press link with its reveal */
-      const identity = sha256(Buffer.from('okt edge identity'));
-      const spends = [];
-      for (let i = 1; i <= 2; i++) {
-        const s0 = device.mark(ctx.IFACE.VENDOR);
-        const payload = sendAgentSign(device, sha256(Buffer.from(`okt budget message ${i}`)), identity);
-        await device.waitHid(ctx.IFACE.VENDOR, { since: s0, timeoutMs: 8000, signal }); /* the signature, unpressed */
-        await device.sleep(300, { signal });
-        const rv = await edge(device, LAST_REVEAL, null, { signal, reports: 2 });
-        const step = rv[0].readUInt16LE(4);
-        const spend = { step, value: new Uint8Array(rv[0].subarray(6, 38)), mac: new Uint8Array(rv[1].subarray(0, 32)), subject: new Uint8Array(sha256(payload)) };
-        assert.equal(rv[0].readUInt32LE(0), grantId);
-        assert.equal(JSON.stringify(grants.checkSelfPress({ genesis: G, uses, ...spend })), '{"ok":true}', `self-press ${i} does not check out`);
-        spends.push(spend);
-      }
-      assert.equal(JSON.stringify(grants.checkSpends(G, uses, spends)), '{"ok":true,"spent":2}');
+      /* two signs inside it: no press; the second after the first's ticket */
+      const p1 = await selfPressedSign(device, 'okt budget message 1', { signal });
+      const [l1] = await pickup(device, chainSeq + 1, 1, { signal });
+      const msg = 'okt: signed budget message 1 as asked';
+      const said = await edge(device, TICKET, Buffer.concat([u32(chainSeq + 1), Buffer.from([0x00]), sha256(Buffer.from(msg))]), { signal, text: true });
+      assert.equal(said, 'EDGE:00');
+      const p2 = await selfPressedSign(device, 'okt budget message 2', { signal });
 
       /* the budget is used up: the next sign waits for a press again */
-      const primed = device.log.count(PRIMED);
-      sendAgentSign(device, sha256(Buffer.from('okt budget message 3')), identity);
-      await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
-      device.press(1);
-      await device.sleep(1500, { signal });
+      await pressedSign(device, 'okt budget message 3', { signal });
 
-      /* the chain: grant-create, two self-presses, one pressed approve - verified by the library */
-      const after = await head(device, { signal });
-      const links = await read(device, chainSeq, after.seq - chainSeq + 1, { signal });
-      const f = links.map((l) => chain.decodeLink(l.link));
+      const { links, fields: f } = await verifyFrom(device, chainSeq, before.head, { signal, assert, log });
       log(f.map((x) => `#${x.seq} op ${x.op} dec ${x.decision} grant ${x.grantId} step ${x.grantStep}`).join('; '));
-      assert.equal(f[0].op, 6, 'the first link is the grant-create');
+      assert.equal(f[0].op, OP_GRANT_CREATE);
       assert.equal(f[0].grantId, grantId);
-      assert.equal(JSON.stringify(f.slice(1, 3).map((x) => [x.decision, x.grantId, x.grantStep])), JSON.stringify([[4, grantId, 1], [4, grantId, 2]]));
-      assert.equal(f[3].decision, APPROVE, 'past the cap the sign must be pressed');
-      assert.ok(f[3].flags & PRESS_OBSERVED);
-      const result = chain.verify(links, { fromSeq: chainSeq, fromHead: new Uint8Array(before.head), expectHead: { seq: after.seq, head: new Uint8Array(after.head) } });
-      assert.ok(result.ok, `the library rejects the chain: ${JSON.stringify(result.failure)}`);
+      assert.equal(JSON.stringify([f[1].decision, f[1].grantId, f[1].grantStep]), JSON.stringify([SELF_PRESS, grantId, 1]));
+      assert.equal(f[2].op, OP_TICKET);
+      assert.equal(JSON.stringify([f[3].decision, f[3].grantStep]), JSON.stringify([SELF_PRESS, 2]));
+      assert.equal(f[4].decision, APPROVE, 'past the cap the sign is pressed');
+
+      /* each reveal belongs to G and to what was signed (the MAC is the host's to compute) */
+      const spends = [[links[1], p1], [links[3], p2]].map(([l, payload], i) => {
+        const value = l.reveal;
+        const subject = new Uint8Array(sha256(payload));
+        const mac = new Uint8Array(crypto.createHmac('sha256', value).update(subject).digest());
+        return { step: i + 1, value, mac, subject };
+      });
+      assert.bytes(Buffer.from(l1.reveal), Buffer.from(spends[0].value), 'PICKUP gave two different reveals for one link');
+      assert.equal(JSON.stringify(grants.checkSpends(G, uses, spends)), '{"ok":true,"spent":2}');
+
+      /* the ticket: its subject recomputes from the message, and pairTickets shows it */
+      const paired = tickets.pairTickets(links, { [chainSeq + 1]: msg });
+      const use1 = paired.uses.find((u) => u.seq === chainSeq + 1);
+      assert.equal(use1.status, 'ticketed');
+      assert.equal(use1.message, msg, 'the ticket\'s message does not match its link');
+
+      const said2 = await edge(device, GRANT_REVOKE, u32(grantId), { signal, text: true });
+      log(`revoke: ${said2}`);
+    });
+
+  it('edge: under a ticket-required budget, an unticketed use sends the next one back to a press (R18)',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const req = Buffer.alloc(50);
+      req[0] = 1;
+      req[1] = OP_SIGN; req[2] = 222; req.writeUInt16LE(3, 3);
+      sha256(Buffer.from('okt: ticket required')).copy(req, 17);
+      req[49] = 0x01; /* ticket_required */
+      const since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({ msg: OKEDGE, slot: GRANT_CREATE, payload: req });
+      await device.sleep(800, { signal });
+      device.press(1);
+      await device.waitHid(ctx.IFACE.VENDOR, { since, timeoutMs: 8000, signal });
+      await device.sleep(500, { signal });
+      const grantId = Buffer.from(device.reportsSince(ctx.IFACE.VENDOR, since)[0]).readUInt32LE(0);
+
+      const before = await head(device, { signal });
+      await selfPressedSign(device, 'okt tr 1', { signal });     /* self-press, owes its ticket */
+      await pressedSign(device, 'okt tr 2', { signal });         /* no ticket: back to a press */
+      const { fields: f } = await verifyFrom(device, before.seq + 1, before.head, { signal, assert });
+      assert.equal(f[0].decision, SELF_PRESS);
+      assert.equal(f[1].decision, APPROVE, 'without the ticket the next use must be pressed');
+      assert.ok(f[1].flags & PRESS_OBSERVED);
+      await edge(device, GRANT_REVOKE, u32(grantId), { signal, text: true });
+    });
+
+  it('edge: a checkpoint is the Edge key\'s signature over the head, and a revoke ends the budget in the chain',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const h = await head(device, { signal });
+      const pub = await pubkey(device, { signal });
+      const [c, s] = await edge(device, CHECKPOINT, null, { signal, reports: 2 });
+      assert.equal(c.readUInt32LE(0), h.seq);
+      assert.bytes(c.subarray(4, 36), Buffer.from(h.head));
+      const message = Buffer.concat([Buffer.from('OKEDGE-CKPT-v1'), Buffer.from(h.deviceId), u32(h.seq), Buffer.from(h.head)]);
+      const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), pub]), format: 'der', type: 'spki' });
+      assert.ok(crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, s.subarray(0, 64)), 'the checkpoint signature does not verify');
+      /* the previous test's revoke is the latest link */
+      const [last] = await pickup(device, h.seq, 1, { signal });
+      assert.equal(chain.decodeLink(last.link).op, OP_GRANT_END);
     });
 };

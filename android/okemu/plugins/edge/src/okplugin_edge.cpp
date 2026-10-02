@@ -1,23 +1,27 @@
 /*
- * edge - the device chain (step 1) and budgets (step 2). DESIGN.md 1-5.
+ * edge - the minimal firmware half of OnlyKey Edge: the key is a NOTARY
+ * (DESIGN.md section 0; owner, 2026-10-02: "the smallest minimal firmware
+ * addition, because a device can only hold so much logic").
  *
- * Every sign/decrypt decision (approve, deny, timeout, self-press) becomes a
- * 64-byte link welded into a SHA-256 chain whose head this key keeps. The
- * BYTES are the contract with node-onlykey-lib/edge (codes.js, chain.js,
- * grants.js) and its Python vectors: what is written here must verify there,
- * so every format choice below names the lib function it must match.
+ * Edge JS (node-onlykey-lib/edge) does the work - builds requests, stores the
+ * chain, verifies it, pairs tickets, tracks budgets. The key adds only what the
+ * host (the agent's own machine, the thing being watched) cannot be trusted
+ * with, and only from facts it saw itself:
+ *   1 the weld at each sign/decrypt decision, and the head that pins history;
+ *   2 the budget decision (self-press) and its reveal;
+ *   3 signatures with a key no generic sign request reaches: a budget's genesis
+ *     (at a physical press) and checkpoints;
+ *   4 the ticket link for the latest use.
  *
- * Budgets (owner, 2026-10-02: "like a provable blockchain - each budget has
- * its own genesis, each genesis gets started with the firmware button press by
- * getting signed"): each budget is its own bmatusiak/provable series
- * G = H^n(seed); a PHYSICAL press opens it and the key signs its genesis; each
- * use inside it is approved without a press ("self-press") and reveals the next
- * value of the series, bound to what was approved by an HMAC.
+ * Every byte is node-onlykey-lib/edge's format (codes.js, chain.js, grants.js,
+ * tickets.js); the comments name the lib function each must match.
  *
- * Soft key and desktop emulator only. The storage lives in flash the real
- * device uses for something else (0x1000-0x57FF is the bootloader's area on a
- * Teensy); on the emulators that range is file-backed, unused and outside the
- * firmware hash - so this plugin must never be built for a hard key.
+ * Budgets are bmatusiak/provable series (owner: "each budget has its own
+ * genesis, each genesis gets started with the firmware button press by getting
+ * signed"): G = H^n(seed), n <= 255; use i reveals v_i = H^(n-i)(seed).
+ *
+ * Soft key and desktop emulator only: the flash it uses (base+0x1000) is the
+ * bootloader's on a real Teensy, and file-backed and unused on the emulators.
  */
 #include "core_pins.h" /* millis() */
 #include "onlykey.h"
@@ -41,88 +45,88 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_DECRYPT 2
 #define OP_GRANT_CREATE 6
 #define OP_GRANT_END 7
+#define OP_TICKET 8
 #define OP_WIPE 12
 #define DECISION_SELF_PRESS 4
 #define FLAG_PRESS_OBSERVED 0x01
 #define FLAG_BUDGET_SPENT 0x02
 #define FLAG_PREV_NO_TICKET 0x04
+#define GRANT_TICKET_REQUIRED 0x01 /* GRANT_CREATE flags */
 
 #define SEQ_NONE 0xFFFFFFFFUL
 #define LINK_BYTES 64
-#define HEAD_BYTES 32
 #define ID_BYTES 16
 
-/* budgets: at most 4 live (R15), each at most 255 uses (owner, 2026-10-02) */
-#define MAX_LIVE 4
-#define MAX_SCOPES 4
-#define MAX_USES 255
-/* a person has this long to press for a budget, like any confirmation */
+#define MAX_LIVE 4      /* R15 */
+#define MAX_SCOPES 4    /* R11 */
+#define MAX_USES 255    /* owner, 2026-10-02 */
+#define HELD 8          /* links held in RAM for pickup */
 #define GRANT_PRESS_MS 25000UL
 
-/* ------------------------------------------------------------ storage (DESIGN.md 2) */
+/* ------------------------------------------------------------ flash: one small record */
 
-/* base + 0x1000: derived from the firmware's own constant so it follows OKEMU_FLASH_BASE */
+/* base + 0x1000, from the firmware's own constant so it follows OKEMU_FLASH_BASE */
 #define EDGE_REGION ((uintptr_t)factorysectoradr - 0x4800)
 #define EDGE_STATE_A (EDGE_REGION + 0x0000)
 #define EDGE_STATE_B (EDGE_REGION + 0x0800)
-#define EDGE_RING (EDGE_REGION + 0x1000)
-#define RING_N 32
-#define RING_PER_SECTOR 16
-#define ENTRY_BYTES (LINK_BYTES + HEAD_BYTES)
 #define SECTOR_BYTES 0x800
 
-#define STATE_BYTES 192
-#define STATE_CHECKED 180 /* bytes covered by the 4-byte check stored after them */
-static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '2'};
-
+#define STATE_BYTES 176
+#define STATE_CHECKED 172
+static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '3'};
 #define SF_WIPED 0x01 /* the next link records a wipe (R9) */
 
+/* everything that survives a restart: ~150 bytes */
 struct edge_state {
   uint32_t gen;
-  uint32_t seq;              /* SEQ_NONE = no link yet */
-  uint8_t head[HEAD_BYTES];  /* head[seq]; the genesis while seq == SEQ_NONE */
-  uint8_t device_id[ID_BYTES];
-  uint8_t pub[64];           /* the Edge public key, X||Y */
+  uint32_t seq;               /* SEQ_NONE = no link yet */
+  uint8_t head[32];           /* head[seq]; the genesis while seq == SEQ_NONE */
+  uint32_t use_seq;           /* the latest sign/decrypt link, SEQ_NONE if none */
+  uint8_t use_head[32];       /* head[use_seq] - a ticket's subject needs it (R16) */
+  uint8_t use_owes;           /* that use was approved and has no ticket yet */
+  uint8_t use_self;           /* that use was a self-press (R18 gates only on those) */
+  uint8_t last_link[LINK_BYTES]; /* the latest link, so a crash never loses it */
+  uint32_t live[MAX_LIVE];    /* budgets live when written; a restart links their end */
   uint32_t flags;
-  uint8_t has_id;
-  uint32_t live[MAX_LIVE];   /* ids of budgets live when this was written (0 = none) */
 };
-
 static struct edge_state st;
-static uint8_t loaded = 0;
-static uint8_t booted = 0;
+static uint8_t loaded, booted;
 
-/* what the confirmation that is waiting for its decision is about */
+/* ------------------------------------------------------------ RAM only */
+
 static struct {
-  uint8_t active;
-  uint8_t opcode;
-  uint8_t slot;
-  uint8_t press;
-  int8_t budget;             /* index into budgets[] when a budget pays for it, else -1 */
-  uint8_t subject[32];
-} pend;
+  uint8_t ok;
+  uint8_t pub[64];            /* the Edge public key, X||Y */
+  uint8_t device_id[ID_BYTES];
+} ident;
 
-/* ------------------------------------------------------------ budgets, in RAM only */
-
-struct scope {
-  uint8_t op, slot;
-  uint16_t cap, used;
-};
-
-/*
- * A live budget. The seed is in RAM ONLY: a lock or reboot is a new process on
- * both emulators, so the budget ends with the key's session (R15) by losing it.
- */
+struct scope { uint8_t op, slot; uint16_t cap, used; };
 struct budget {
   uint32_t id;
-  uint8_t nscopes;
+  uint8_t nscopes, flags;
   struct scope scopes[MAX_SCOPES];
   uint16_t uses, used;
-  uint8_t flags;
-  uint8_t seed[32];
+  uint8_t seed[32];           /* RAM only: a lock or reboot ends the budget (R15) */
   uint8_t genesis[32];
 };
 static struct budget budgets[MAX_LIVE];
+
+/* the last links, with a self-press's reveal, for edge JS to pick up */
+static struct held_link {
+  uint8_t used;
+  uint32_t seq;
+  uint8_t link[LINK_BYTES];
+  uint8_t head[32];
+  uint8_t has_reveal;
+  uint8_t reveal[32];
+} held[HELD];
+
+/* what the confirmation that is waiting for its decision is about */
+static struct {
+  uint8_t active, opcode, slot, press;
+  int8_t budget;
+  uint8_t subject[32];
+} pend;
 
 /* a GRANT_CREATE waiting for its press */
 static struct {
@@ -134,13 +138,7 @@ static struct {
   uint8_t scopes_len;
 } grant;
 
-/* the last self-press's reveal, for LAST_REVEAL */
-static struct {
-  uint32_t id;
-  uint16_t step;
-  uint8_t value[32];
-  uint8_t mac[32];
-} last_reveal;
+/* ------------------------------------------------------------ bytes and hashes */
 
 static void put32(uint8_t *p, uint32_t v) {
   p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; p[2] = (v >> 16) & 0xff; p[3] = (v >> 24) & 0xff;
@@ -148,12 +146,8 @@ static void put32(uint8_t *p, uint32_t v) {
 static uint32_t get32(const uint8_t *p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
-static void put16(uint8_t *p, uint16_t v) {
-  p[0] = v & 0xff; p[1] = (v >> 8) & 0xff;
-}
-static uint16_t get16(const uint8_t *p) {
-  return (uint16_t)(p[0] | (p[1] << 8));
-}
+static void put16(uint8_t *p, uint16_t v) { p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; }
+static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 
 /* SHA-256 over an ASCII tag and up to three byte strings (lib hash.js H) */
 static void H(uint8_t out[32], const char *tag, const uint8_t *a, size_t al,
@@ -167,26 +161,13 @@ static void H(uint8_t out[32], const char *tag, const uint8_t *a, size_t al,
   sha256_final(&ctx, out);
 }
 
-/* HMAC-SHA256 with a 32-byte key (RFC 2104; lib grants: HMAC(v_i, subject)) */
-static void hmac_sha256(uint8_t out[32], const uint8_t key[32], const uint8_t *msg, size_t len) {
-  uint8_t pad[64], inner[32];
-  SHA256_CTX ctx;
-  memset(pad, 0x36, 64);
-  for (int i = 0; i < 32; i++) pad[i] ^= key[i];
-  sha256_init(&ctx);
-  sha256_update(&ctx, pad, 64);
-  sha256_update(&ctx, msg, len);
-  sha256_final(&ctx, inner);
-  memset(pad, 0x5c, 64);
-  for (int i = 0; i < 32; i++) pad[i] ^= key[i];
-  sha256_init(&ctx);
-  sha256_update(&ctx, pad, 64);
-  sha256_update(&ctx, inner, 32);
-  sha256_final(&ctx, out);
-  memset(pad, 0, 64);
+/* "EDGE:xx" - the only text the plugin sends (okplugin_edge.h lists the codes) */
+static void status(uint8_t code) {
+  static const char HEX[] = "0123456789ABCDEF";
+  char s[8] = {'E', 'D', 'G', 'E', ':', HEX[code >> 4], HEX[code & 0x0f], 0};
+  hidprint(s);
 }
 
-/* H^times(v) (lib grants hashTimes) */
 static void hash_times(uint8_t out[32], const uint8_t v[32], unsigned times) {
   uint8_t x[32];
   memcpy(x, v, 32);
@@ -195,84 +176,89 @@ static void hash_times(uint8_t out[32], const uint8_t v[32], unsigned times) {
   memset(x, 0, 32);
 }
 
-static void flash_read(uint8_t *buf, uintptr_t adr, int len) {
-  okcore_flashget_common(buf, (unsigned long *)adr, len);
-}
-/* erase the sector at adr and write len bytes (a multiple of 4) */
-static void flash_write(uint8_t *buf, uintptr_t adr, int len) {
-  okcore_flashsector(buf, (unsigned long *)adr, len);
-}
+/* ------------------------------------------------------------ the record */
 
-static void state_encode(uint8_t rec[STATE_BYTES], const struct edge_state *s) {
+static void state_encode(uint8_t rec[STATE_BYTES]) {
   memset(rec, 0, STATE_BYTES);
   memcpy(rec, MAGIC, 8);
-  put32(rec + 8, s->gen);
-  put32(rec + 12, s->seq);
-  memcpy(rec + 16, s->head, 32);
-  memcpy(rec + 48, s->device_id, 16);
-  memcpy(rec + 64, s->pub, 64);
-  put32(rec + 128, s->flags);
-  rec[132] = s->has_id;
-  for (int i = 0; i < MAX_LIVE; i++) put32(rec + 136 + 4 * i, s->live[i]);
+  put32(rec + 8, st.gen);
+  put32(rec + 12, st.seq);
+  memcpy(rec + 16, st.head, 32);
+  put32(rec + 48, st.use_seq);
+  memcpy(rec + 52, st.use_head, 32);
+  rec[84] = st.use_owes;
+  rec[85] = st.use_self;
+  memcpy(rec + 88, st.last_link, LINK_BYTES);
+  for (int i = 0; i < MAX_LIVE; i++) put32(rec + 152 + 4 * i, st.live[i]);
+  put32(rec + 168, st.flags);
   uint8_t check[32];
   H(check, NULL, rec, STATE_CHECKED, NULL, 0, NULL, 0);
   memcpy(rec + STATE_CHECKED, check, 4);
 }
 
 static int state_decode(const uint8_t rec[STATE_BYTES], struct edge_state *s) {
-  if (memcmp(rec, MAGIC, 8) != 0) return 0;
   uint8_t check[32];
+  if (memcmp(rec, MAGIC, 8) != 0) return 0;
   H(check, NULL, rec, STATE_CHECKED, NULL, 0, NULL, 0);
   if (memcmp(rec + STATE_CHECKED, check, 4) != 0) return 0; /* torn write: the other copy wins */
   s->gen = get32(rec + 8);
   s->seq = get32(rec + 12);
   memcpy(s->head, rec + 16, 32);
-  memcpy(s->device_id, rec + 48, 16);
-  memcpy(s->pub, rec + 64, 64);
-  s->flags = get32(rec + 128);
-  s->has_id = rec[132];
-  for (int i = 0; i < MAX_LIVE; i++) s->live[i] = get32(rec + 136 + 4 * i);
+  s->use_seq = get32(rec + 48);
+  memcpy(s->use_head, rec + 52, 32);
+  s->use_owes = rec[84];
+  s->use_self = rec[85];
+  memcpy(s->last_link, rec + 88, LINK_BYTES);
+  for (int i = 0; i < MAX_LIVE; i++) s->live[i] = get32(rec + 152 + 4 * i);
+  s->flags = get32(rec + 168);
   return 1;
 }
 
-/* the live budget ids, as the state record keeps them */
-static void live_ids_from_budgets(void) {
-  for (int i = 0; i < MAX_LIVE; i++) st.live[i] = budgets[i].id;
-}
-
-/* double-buffered: write the OTHER sector, so a crash mid-write keeps the old state */
+/* double-buffered: write the OTHER sector, so a crash mid-write keeps the old record */
 static void state_save(void) {
   uint8_t rec[STATE_BYTES];
   st.gen++;
-  state_encode(rec, &st);
-  flash_write(rec, (st.gen & 1) ? EDGE_STATE_B : EDGE_STATE_A, STATE_BYTES);
+  state_encode(rec);
+  okcore_flashsector(rec, (unsigned long *)((st.gen & 1) ? EDGE_STATE_B : EDGE_STATE_A), STATE_BYTES);
+}
+
+static void hold(uint32_t seq, const uint8_t link[LINK_BYTES], const uint8_t head[32], const uint8_t *reveal) {
+  struct held_link *h = &held[seq % HELD];
+  h->used = 1;
+  h->seq = seq;
+  memcpy(h->link, link, LINK_BYTES);
+  memcpy(h->head, head, 32);
+  h->has_reveal = reveal != NULL;
+  if (reveal) memcpy(h->reveal, reveal, 32); else memset(h->reveal, 0, 32);
 }
 
 static void state_load(void) {
   if (loaded) return;
   uint8_t rec[STATE_BYTES];
   struct edge_state a, b;
-  int ha, hb;
-  flash_read(rec, EDGE_STATE_A, STATE_BYTES);
-  ha = state_decode(rec, &a);
-  flash_read(rec, EDGE_STATE_B, STATE_BYTES);
-  hb = state_decode(rec, &b);
+  okcore_flashget_common(rec, (unsigned long *)EDGE_STATE_A, STATE_BYTES);
+  int ha = state_decode(rec, &a);
+  okcore_flashget_common(rec, (unsigned long *)EDGE_STATE_B, STATE_BYTES);
+  int hb = state_decode(rec, &b);
   if (ha && (!hb || a.gen > b.gen)) st = a;
   else if (hb) st = b;
   else {
     memset(&st, 0, sizeof(st));
     st.seq = SEQ_NONE;
+    st.use_seq = SEQ_NONE;
   }
+  /* the latest link survives a restart, so it can still be picked up */
+  if (st.seq != SEQ_NONE) hold(st.seq, st.last_link, st.head, NULL);
   loaded = 1;
 }
 
-/* ------------------------------------------------------------ identity (DESIGN.md 1) */
+/* ------------------------------------------------------------ the Edge key */
 
 /*
- * The Edge key: HKDF(K132, info "onlykey/edge/v1"), P-256. K132 is the key's
- * own secret (made at PIN setup, in the backup), so the identity survives a
- * restore and changes with a wipe. Loading K132 goes through the firmware's
- * ECC globals, which a pending sign may be using - they are saved and put back.
+ * HKDF(K132, info "onlykey/edge/v1"), P-256. K132 is the key's own secret (made
+ * at PIN setup, in the backup): the identity survives a restore and changes
+ * with a wipe. The firmware's ECC globals - a pending sign may be using them -
+ * are saved and put back.
  */
 static int edge_private_key(uint8_t priv[32]) {
   uint8_t t = 0;
@@ -294,98 +280,68 @@ static int edge_private_key(uint8_t priv[32]) {
   return ok;
 }
 
-static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
-    uint32_t grant_id, uint16_t grant_step);
+static int edge_sign(const uint8_t digest[32], uint8_t sig[64]) {
+  uint8_t priv[32];
+  int ok = edge_private_key(priv) && uECC_sign(priv, digest, 32, sig, uECC_secp256r1());
+  memset(priv, 0, 32);
+  return ok;
+}
 
-/*
- * Budgets live when the previous process ended (a lock or reboot is a new
- * process) ended with it: their seeds are gone. Link that, once per boot.
- */
+static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
+    uint32_t grant_id, uint16_t grant_step, const uint8_t *reveal);
+
+/* budgets live when the last process ended (a lock or reboot) ended with it - link that, once */
 static void boot_cleanup(void) {
   if (booted) return;
   booted = 1;
-  uint8_t zero[32];
-  memset(zero, 0, sizeof(zero));
-  int any = 0;
+  uint8_t zero[32] = {0};
   for (int i = 0; i < MAX_LIVE; i++) {
     if (!st.live[i]) continue;
     uint32_t id = st.live[i];
     st.live[i] = 0;
-    append(OP_GRANT_END, OKEDGE_DECISION_APPROVE, 0, 0, zero, id, 0);
-    any = 1;
+    append(OP_GRANT_END, OKEDGE_DECISION_APPROVE, 0, 0, zero, id, 0, NULL);
   }
-  if (any) state_save();
 }
 
-/* the identity and the genesis, once; 0 if the key has no K132 yet */
+/* the Edge public key and device_id (RAM), and the genesis on a new chain; 0 without K132 */
 static int ensure_identity(void) {
   state_load();
-  if (st.has_id) {
-    boot_cleanup();
-    return 1;
+  if (!ident.ok) {
+    uint8_t priv[32];
+    if (!edge_private_key(priv)) return 0;
+    int ok = uECC_compute_public_key(priv, ident.pub, uECC_secp256r1());
+    memset(priv, 0, 32);
+    if (!ok) return 0;
+    uint8_t h[32];
+    H(h, "OKEDGE-DEVICE-v1", ident.pub, 64, NULL, 0, NULL, 0);
+    memcpy(ident.device_id, h, ID_BYTES);
+    ident.ok = 1;
+    if (st.seq == SEQ_NONE) {
+      /* head[-1] = SHA256("OKEDGE-GENESIS-v1" || device_id)  (lib chain.genesis) */
+      H(st.head, "OKEDGE-GENESIS-v1", ident.device_id, ID_BYTES, NULL, 0, NULL, 0);
+      state_save();
+    }
   }
-  uint8_t priv[32];
-  if (!edge_private_key(priv)) return 0;
-  int ok = uECC_compute_public_key(priv, st.pub, uECC_secp256r1());
-  memset(priv, 0, 32);
-  if (!ok) return 0;
-  uint8_t h[32];
-  H(h, "OKEDGE-DEVICE-v1", st.pub, 64, NULL, 0, NULL, 0);
-  memcpy(st.device_id, h, ID_BYTES);
-  /* head[-1] = SHA256("OKEDGE-GENESIS-v1" || device_id)  (lib chain.genesis) */
-  H(st.head, "OKEDGE-GENESIS-v1", st.device_id, ID_BYTES, NULL, 0, NULL, 0);
-  st.seq = SEQ_NONE;
-  st.has_id = 1;
-  state_save();
-  booted = 1;
+  boot_cleanup();
+  if (st.flags & SF_WIPED) {
+    /* a wiped key's new chain starts with a wipe link (R9) */
+    uint8_t zero[32] = {0};
+    st.flags &= ~SF_WIPED;
+    append(OP_WIPE, OKEDGE_DECISION_APPROVE, 0, 0, zero, 0, 0, NULL);
+  }
   return 1;
 }
 
-/* ------------------------------------------------------------ the chain (DESIGN.md 3) */
-
-static uint32_t ring_from(void) {
-  if (st.seq == SEQ_NONE) return 0;
-  return st.seq >= RING_N - 1 ? st.seq - (RING_N - 1) : 0;
-}
-
-static void ring_put(uint32_t seq, const uint8_t link[LINK_BYTES], const uint8_t head[HEAD_BYTES]) {
-  uint32_t i = seq % RING_N;
-  uintptr_t sector = EDGE_RING + (i / RING_PER_SECTOR) * SECTOR_BYTES;
-  uint8_t buf[RING_PER_SECTOR * ENTRY_BYTES];
-  flash_read(buf, sector, sizeof(buf));
-  uint8_t *e = buf + (i % RING_PER_SECTOR) * ENTRY_BYTES;
-  memcpy(e, link, LINK_BYTES);
-  memcpy(e + LINK_BYTES, head, HEAD_BYTES);
-  flash_write(buf, sector, sizeof(buf));
-}
-
-static void ring_get(uint32_t seq, uint8_t link[LINK_BYTES], uint8_t head[HEAD_BYTES]) {
-  uint32_t i = seq % RING_N;
-  uintptr_t adr = EDGE_RING + (i / RING_PER_SECTOR) * SECTOR_BYTES + (i % RING_PER_SECTOR) * ENTRY_BYTES;
-  uint8_t e[ENTRY_BYTES];
-  flash_read(e, adr, ENTRY_BYTES);
-  memcpy(link, e, LINK_BYTES);
-  memcpy(head, e + LINK_BYTES, HEAD_BYTES);
-}
-
-/* the latest link is a use with no ticket - R17's empty hook (tickets come in step 3) */
-static int prev_owes_ticket(void) {
-  if (st.seq == SEQ_NONE) return 0;
-  uint8_t link[LINK_BYTES], head[HEAD_BYTES];
-  ring_get(st.seq, link, head);
-  return (link[4] == OP_SIGN || link[4] == OP_DECRYPT)
-      && (link[5] == OKEDGE_DECISION_APPROVE || link[5] == DECISION_SELF_PRESS);
-}
+/* ------------------------------------------------------------ the weld */
 
 /*
- * Append one link: encode it (lib chain.encodeLink), weld it
+ * One link (lib chain.encodeLink), welded
  *   head[n] = SHA256("OKEDGE-LINK-v1" || head[n-1] || link[n])   (lib chain.weld)
- * and persist ring entry, then state - R4: (seq, head) is on flash BEFORE the
- * operation's result is released (the approve hook runs before the sign).
+ * and persisted before the operation's result is released (R4).
  */
 static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
-    uint32_t grant_id, uint16_t grant_step) {
-  uint8_t link[LINK_BYTES];
+    uint32_t grant_id, uint16_t grant_step, const uint8_t *reveal) {
+  uint8_t link[LINK_BYTES], head[32];
   memset(link, 0, sizeof(link));
   uint32_t seq = st.seq == SEQ_NONE ? 0 : st.seq + 1;
   put32(link, seq);
@@ -396,31 +352,29 @@ static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, co
   memcpy(link + 8, subject, 32);
   put32(link + 40, grant_id);
   put16(link + 44, grant_step);
-  uint8_t head[HEAD_BYTES];
-  H(head, "OKEDGE-LINK-v1", st.head, HEAD_BYTES, link, LINK_BYTES, NULL, 0);
-  ring_put(seq, link, head);
+  H(head, "OKEDGE-LINK-v1", st.head, 32, link, LINK_BYTES, NULL, 0);
   st.seq = seq;
-  memcpy(st.head, head, HEAD_BYTES);
+  memcpy(st.head, head, 32);
+  memcpy(st.last_link, link, LINK_BYTES);
+  if (op == OP_SIGN || op == OP_DECRYPT) {
+    st.use_seq = seq;
+    memcpy(st.use_head, head, 32);
+    st.use_owes = decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS;
+    st.use_self = decision == DECISION_SELF_PRESS;
+  }
+  for (int i = 0; i < MAX_LIVE; i++) st.live[i] = budgets[i].id;
   state_save();
+  hold(seq, link, head, reveal);
 }
 
-/* a wiped key's chain starts with a wipe link (R9), once it has an identity again */
-static void first_link_after_wipe(void) {
-  if (!(st.flags & SF_WIPED)) return;
-  uint8_t zero[32];
-  memset(zero, 0, sizeof(zero));
-  st.flags &= ~SF_WIPED;
-  append(OP_WIPE, OKEDGE_DECISION_APPROVE, 0, 0, zero, 0, 0);
-}
-
-/* ------------------------------------------------------------ budgets (DESIGN.md 4) */
+/* ------------------------------------------------------------ budgets */
 
 /*
  * What a budget may pay for (R14: never FIDO2, config, backup, keys, PINs or
  * the hardened derive / shared secret): OKSIGN on the stored slots 1-4 and
  * 101-116 and the agent sign codes 201-203 / 221-223; OKDECRYPT on the stored
- * slots only. CHOSEN - the open question "budget scopes for agent-derived
- * SSH/GPG identities" decides whether agent signs stay in.
+ * slots only. CHOSEN - the open question on agent-derived identities decides
+ * whether agent signs stay in.
  */
 static int scope_allowed(uint8_t op, uint8_t slot) {
   int stored = (slot >= 1 && slot <= 4) || (slot >= 101 && slot <= 116);
@@ -429,27 +383,19 @@ static int scope_allowed(uint8_t op, uint8_t slot) {
   return 0;
 }
 
-static int budget_count(void) {
-  int n = 0;
-  for (int i = 0; i < MAX_LIVE; i++) if (budgets[i].id) n++;
-  return n;
-}
-
-static void budget_wipe(struct budget *b) {
-  memset(b, 0, sizeof(*b));
-}
-
-static void grant_drop(void) {
-  budget_wipe(&grant.b);
-  grant.active = 0;
-}
-
-/* a live budget with room for this use, while the key is unlocked and out of config mode */
+/*
+ * A live budget with room for this use, while unlocked and out of config mode.
+ * R18, CHOSEN: under a ticket_required budget, while the latest SELF-PRESS still
+ * owes its ticket, there is no self-press (a person pressing never files tickets,
+ * R17, so a pressed use must not block a budget) - the use falls back to a PRESS the person
+ * sees, rather than adding a refusal path to the firmware.
+ */
 static int budget_for(uint8_t op, uint8_t slot, struct scope **sc_out) {
   if (!(unlocked == true && configmode == false)) return -1;
   for (int i = 0; i < MAX_LIVE; i++) {
     struct budget *b = &budgets[i];
     if (!b->id || b->used >= b->uses) continue;
+    if ((b->flags & GRANT_TICKET_REQUIRED) && st.use_owes && st.use_self) continue;
     for (int j = 0; j < b->nscopes; j++) {
       struct scope *sc = &b->scopes[j];
       if (sc->op == op && sc->slot == slot && sc->used < sc->cap) {
@@ -461,29 +407,8 @@ static int budget_for(uint8_t op, uint8_t slot, struct scope **sc_out) {
   return -1;
 }
 
-/*
- * The digest the key signs at the press (lib grants.budgetGenesisDigest):
- *   SHA256("OKEDGE-BUDGET-v1" || device_id || grant_id (u32 LE) || G
- *          || uses (u16 LE) || scopes || reason_hash || chain_seq (u32 LE)
- *          || chain_head)
- */
-static void genesis_digest(uint8_t out[32], uint32_t grant_id, uint32_t chain_seq, const uint8_t chain_head[32]) {
-  uint8_t id4[4], uses2[2], seq4[4];
-  put32(id4, grant_id);
-  put16(uses2, grant.b.uses);
-  put32(seq4, chain_seq);
-  SHA256_CTX ctx;
-  sha256_init(&ctx);
-  sha256_update(&ctx, (const unsigned char *)"OKEDGE-BUDGET-v1", 16);
-  sha256_update(&ctx, st.device_id, ID_BYTES);
-  sha256_update(&ctx, id4, 4);
-  sha256_update(&ctx, grant.b.genesis, 32);
-  sha256_update(&ctx, uses2, 2);
-  sha256_update(&ctx, grant.scopes_enc, grant.scopes_len);
-  sha256_update(&ctx, grant.reason, 32);
-  sha256_update(&ctx, seq4, 4);
-  sha256_update(&ctx, chain_head, 32);
-  sha256_final(&ctx, out);
+static void grant_drop(void) {
+  memset(&grant, 0, sizeof(grant));
 }
 
 static void reply(const uint8_t *data, int len) {
@@ -495,16 +420,14 @@ static void reply(const uint8_t *data, int len) {
 
 /*
  * GRANT_CREATE: [6] scope count, [7..22] scopes (op, slot, cap u16 LE) x4,
- * [23..54] reason_hash, [55] flags. Draws the seed, builds G = H^n(seed), then
- * waits for a PHYSICAL press - no press, no budget.
+ * [23..54] reason_hash, [55] flags. The seed and G = H^n(seed) are made here;
+ * the budget opens only on a PHYSICAL press.
  */
 static void grant_create(const uint8_t *buffer) {
-  if (grant.active) grant_drop();
   uint8_t n = buffer[6];
-  if (n < 1 || n > MAX_SCOPES) { hidprint("Error Edge a budget has 1 to 4 scopes"); return; }
-  if (budget_count() >= MAX_LIVE) { hidprint("Error Edge 4 budgets are already live"); return; }
-  memset(&grant, 0, sizeof(grant));
   unsigned uses = 0;
+  grant_drop();
+  if (n < 1 || n > MAX_SCOPES) { status(EDGE_BAD_SCOPES); return; }
   grant.scopes_enc[0] = n;
   for (int j = 0; j < n; j++) {
     const uint8_t *p = buffer + 7 + 4 * j;
@@ -512,11 +435,11 @@ static void grant_create(const uint8_t *buffer) {
     sc->op = p[0];
     sc->slot = p[1];
     sc->cap = get16(p + 2);
-    if (!scope_allowed(sc->op, sc->slot) || sc->cap < 1) { grant_drop(); hidprint("Error Edge scope not allowed"); return; }
+    if (!scope_allowed(sc->op, sc->slot) || sc->cap < 1) { grant_drop(); status(EDGE_SCOPE_NOT_ALLOWED); return; }
     uses += sc->cap;
     memcpy(grant.scopes_enc + 1 + 4 * j, p, 4);
   }
-  if (uses > MAX_USES) { grant_drop(); hidprint("Error Edge a budget has at most 255 uses"); return; }
+  if (uses > MAX_USES) { grant_drop(); status(EDGE_TOO_MANY_USES); return; }
   grant.scopes_len = 1 + 4 * n;
   grant.b.nscopes = n;
   grant.b.uses = (uint16_t)uses;
@@ -526,46 +449,47 @@ static void grant_create(const uint8_t *buffer) {
   hash_times(grant.b.genesis, grant.b.seed, grant.b.uses);
   grant.active = 1;
   grant.since = millis();
-  /* the press: forced in okplugin_edge_primed, whatever the slot settings say */
   uint8_t what[32];
   H(what, NULL, grant.reason, 32, grant.b.genesis, 32, grant.scopes_enc, grant.scopes_len);
-  okcore_prime_user_confirmation(OKEDGE, 0, what, 32);
+  okcore_prime_user_confirmation(OKEDGE, 0, what, 32); /* the press is forced in okplugin_edge_primed */
 }
 
-/* the press arrived: link it, sign the genesis, make the budget live */
+/* the press: link grant-create, sign the genesis (lib grants.budgetGenesisDigest), go live */
 static void grant_pressed(void) {
-  if (!grant.active || millis() - grant.since > GRANT_PRESS_MS) { grant_drop(); return; }
-  if (!ensure_identity()) { grant_drop(); hidprint("Error Edge needs a key with a PIN set"); return; }
-  first_link_after_wipe();
   int slot = -1;
+  if (!grant.active || millis() - grant.since > GRANT_PRESS_MS) { grant_drop(); return; }
+  if (!ensure_identity()) { grant_drop(); status(EDGE_NEED_PIN); return; }
   for (int i = 0; i < MAX_LIVE; i++) if (!budgets[i].id) { slot = i; break; }
-  if (slot < 0) { grant_drop(); hidprint("Error Edge 4 budgets are already live"); return; }
+  if (slot < 0) { grant_drop(); status(EDGE_LIVE_FULL); return; }
 
   uint32_t chain_seq = st.seq == SEQ_NONE ? 0 : st.seq + 1;
-  uint8_t chain_head[32];
-  memcpy(chain_head, st.head, 32);
-  uint32_t id = chain_seq + 1; /* unique: the seq of its grant-create link, plus one (0 = no budget) */
-
-  uint8_t digest[32], sig[64], priv[32];
-  genesis_digest(digest, id, chain_seq, chain_head);
-  if (!edge_private_key(priv) || !uECC_sign(priv, digest, 32, sig, uECC_secp256r1())) {
-    memset(priv, 0, 32);
-    grant_drop();
-    hidprint("Error Edge could not sign the budget");
-    return;
-  }
-  memset(priv, 0, 32);
+  uint32_t id = chain_seq + 1; /* the seq of its grant-create link, plus one (0 = no budget) */
+  uint8_t id4[4], uses2[2], seq4[4], digest[32], sig[64];
+  put32(id4, id);
+  put16(uses2, grant.b.uses);
+  put32(seq4, chain_seq);
+  SHA256_CTX ctx;
+  sha256_init(&ctx);
+  sha256_update(&ctx, (const unsigned char *)"OKEDGE-BUDGET-v1", 16);
+  sha256_update(&ctx, ident.device_id, ID_BYTES);
+  sha256_update(&ctx, id4, 4);
+  sha256_update(&ctx, grant.b.genesis, 32);
+  sha256_update(&ctx, uses2, 2);
+  sha256_update(&ctx, grant.scopes_enc, grant.scopes_len);
+  sha256_update(&ctx, grant.reason, 32);
+  sha256_update(&ctx, seq4, 4);
+  sha256_update(&ctx, st.head, 32); /* the head before the grant-create link */
+  sha256_final(&ctx, digest);
+  if (!edge_sign(digest, sig)) { grant_drop(); status(EDGE_SIGN_FAILED); return; }
 
   /* grant-create's subject: SHA256("OKEDGE-GRANT-v1" || scopes || reason_hash) (R12) */
   uint8_t subject[32];
   H(subject, "OKEDGE-GRANT-v1", grant.scopes_enc, grant.scopes_len, grant.reason, 32, NULL, 0);
   grant.b.id = id;
   budgets[slot] = grant.b;
-  live_ids_from_budgets(); /* persisted by append's state_save */
-  append(OP_GRANT_CREATE, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, id, 0);
+  append(OP_GRANT_CREATE, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, id, 0, NULL);
 
-  uint8_t r[64];
-  memset(r, 0, sizeof(r));
+  uint8_t r[42];
   put32(r, id);
   put16(r + 4, grant.b.uses);
   memcpy(r + 6, grant.b.genesis, 32);
@@ -575,37 +499,26 @@ static void grant_pressed(void) {
   grant_drop();
 }
 
-static void grant_end(int i) {
-  uint8_t zero[32];
-  memset(zero, 0, sizeof(zero));
-  uint32_t id = budgets[i].id;
-  budget_wipe(&budgets[i]);
-  live_ids_from_budgets();
-  append(OP_GRANT_END, OKEDGE_DECISION_APPROVE, 0, 0, zero, id, 0);
-}
-
 /* ------------------------------------------------------------ hooks */
 
 void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len) {
   pend.active = 0;
   pend.budget = -1;
   if (opcode == OKEDGE) {
-    /* opening a budget always takes a PHYSICAL press (R10), whatever the slot says */
-    user_input_mode = USER_INPUT_PRESS;
+    user_input_mode = USER_INPUT_PRESS; /* opening a budget always takes a physical press (R10) */
     return;
   }
   if (opcode != OKSIGN && opcode != OKDECRYPT) return;
   pend.active = 1;
   pend.opcode = opcode;
   pend.slot = slot;
-  /* the link's subject: SHA-256 of exactly what was submitted for approval */
-  H(pend.subject, NULL, msg, msg_len, NULL, 0, NULL, 0);
-  /* a live budget pays for it: no press (R13) - the existing no-press path runs it */
+  H(pend.subject, NULL, msg, msg_len, NULL, 0, NULL, 0); /* SHA-256 of exactly what was submitted */
+  state_load();
   struct scope *sc;
   int i = budget_for(opcode == OKSIGN ? OP_SIGN : OP_DECRYPT, slot, &sc);
   if (i >= 0) {
     pend.budget = (int8_t)i;
-    user_input_mode = USER_INPUT_NONE;
+    user_input_mode = USER_INPUT_NONE; /* a live budget pays: the firmware's own no-press path runs it (R13) */
   }
   pend.press = user_input_mode != USER_INPUT_NONE;
 }
@@ -619,147 +532,145 @@ void okplugin_edge_decision(int decision) {
   if (decision == OKEDGE_DECISION_APPROVE && packet_buffer_details[0] != pend.opcode) return;
   pend.active = 0;
   if (!ensure_identity()) return; /* no K132 yet: nothing to chain to */
-  first_link_after_wipe();
-  uint8_t flags = 0;
-  if (prev_owes_ticket()) flags |= FLAG_PREV_NO_TICKET;
   uint8_t op = pend.opcode == OKSIGN ? OP_SIGN : OP_DECRYPT;
+  uint8_t flags = st.use_owes ? FLAG_PREV_NO_TICKET : 0; /* R17's empty hook */
 
   if (decision == OKEDGE_DECISION_APPROVE && pend.budget >= 0) {
-    /* the budget may have ended since it was primed (revoked, config mode): then it is not a self-press */
     struct scope *sc;
-    int i = budget_for(op, pend.slot, &sc);
-    if (i == pend.budget) {
-      struct budget *b = &budgets[i];
+    if (budget_for(op, pend.slot, &sc) == pend.budget) { /* still live, still room */
+      struct budget *b = &budgets[pend.budget];
+      uint8_t reveal[32];
       b->used++;
       sc->used++;
-      /* reveal v_i = H^(n-i)(seed) and bind it to what was approved (lib grants.checkSelfPress) */
-      last_reveal.id = b->id;
-      last_reveal.step = b->used;
-      hash_times(last_reveal.value, b->seed, b->uses - b->used);
-      hmac_sha256(last_reveal.mac, last_reveal.value, pend.subject, 32);
-      append(op, DECISION_SELF_PRESS, pend.slot, flags | FLAG_BUDGET_SPENT, pend.subject, b->id, b->used);
+      hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
+      append(op, DECISION_SELF_PRESS, pend.slot, flags | FLAG_BUDGET_SPENT, pend.subject, b->id, b->used, reveal);
+      memset(reveal, 0, 32);
       return;
     }
   }
   if (decision == OKEDGE_DECISION_APPROVE && pend.press) flags |= FLAG_PRESS_OBSERVED;
-  append(op, (uint8_t)decision, pend.slot, flags, pend.subject, 0, 0);
+  append(op, (uint8_t)decision, pend.slot, flags, pend.subject, 0, 0, NULL);
 }
 
-/*
- * wipeflashdata(): erase the region, then leave one state record that says
- * "wiped" - the new identity (a new K132 after the new PIN) starts its chain
- * with a wipe link. Live budgets end with the key.
- */
+/* wipeflashdata(): the record goes, live budgets end; the next identity's chain starts with a wipe link */
 void okplugin_edge_wipe(void) {
   uint8_t blank[4] = {0xff, 0xff, 0xff, 0xff};
-  for (uintptr_t s = EDGE_REGION; s < EDGE_RING + 2 * SECTOR_BYTES; s += SECTOR_BYTES) {
-    flash_write(blank, s, 4);
-  }
-  for (int i = 0; i < MAX_LIVE; i++) budget_wipe(&budgets[i]);
+  okcore_flashsector(blank, (unsigned long *)EDGE_STATE_A, 4);
+  okcore_flashsector(blank, (unsigned long *)EDGE_STATE_B, 4);
+  memset(budgets, 0, sizeof(budgets));
+  memset(held, 0, sizeof(held));
+  memset(&ident, 0, sizeof(ident));
   grant_drop();
-  memset(&last_reveal, 0, sizeof(last_reveal));
   memset(&st, 0, sizeof(st));
   st.seq = SEQ_NONE;
+  st.use_seq = SEQ_NONE;
   st.flags = SF_WIPED;
-  loaded = 1;
-  booted = 1;
+  loaded = booted = 1;
   pend.active = 0;
   state_save();
 }
 
-/* ------------------------------------------------------------ OKEDGE (DESIGN.md 5) */
+/* ------------------------------------------------------------ OKEDGE */
+
+static uint32_t oldest_held(void) {
+  uint32_t oldest = SEQ_NONE;
+  for (int i = 0; i < HELD; i++) if (held[i].used && held[i].seq < oldest) oldest = held[i].seq;
+  return oldest;
+}
 
 void okplugin_edge_recv(uint8_t *buffer) {
   if (!(initialized == true && unlocked == true && configmode == false)) return;
-  if (!ensure_identity()) {
-    hidprint("Error Edge needs a key with a PIN set");
-    return;
-  }
-  first_link_after_wipe();
+  if (!ensure_identity()) { status(EDGE_NEED_PIN); return; }
   if (grant.active && millis() - grant.since > GRANT_PRESS_MS) grant_drop(); /* never pressed */
   uint8_t r[64];
   memset(r, 0, sizeof(r));
   switch (buffer[5]) {
-    case OKEDGE_HEAD: {
-      /* seq (SEQ_NONE = empty) . head (the genesis while empty) . ringFrom . device_id */
+    case OKEDGE_HEAD:
+      /* seq (SEQ_NONE = empty) . head (the genesis while empty) . oldest pickable seq . device_id */
       put32(r, st.seq);
       memcpy(r + 4, st.head, 32);
-      put32(r + 36, ring_from());
-      memcpy(r + 40, st.device_id, ID_BYTES);
+      put32(r + 36, oldest_held());
+      memcpy(r + 40, ident.device_id, ID_BYTES);
       reply(r, 56);
       return;
-    }
-    case OKEDGE_READ: {
-      /* from u32 . count u8 (<= 8); per link two reports: the link, then its head */
+    case OKEDGE_PICKUP: {
+      /* from u32 . count u8 (<= 8); per link: the link, then its head + the reveal (zeros if none) */
       uint32_t from = get32(buffer + 6);
-      uint8_t count = buffer[10];
-      if (count > 8) count = 8;
-      if (st.seq == SEQ_NONE || from > st.seq || from < ring_from()) {
-        hidprint("Error Edge seq not in the ring");
-        return;
+      uint8_t count = buffer[10] > HELD ? HELD : buffer[10];
+      for (uint32_t s = from; s < from + count; s++) {
+        struct held_link *h = &held[s % HELD];
+        if (!h->used || h->seq != s) { status(EDGE_NOT_HELD); return; }
       }
-      for (uint32_t s = from; s <= st.seq && s < from + count; s++) {
-        uint8_t link[LINK_BYTES], head[HEAD_BYTES];
-        ring_get(s, link, head);
-        reply(link, LINK_BYTES);
-        reply(head, HEAD_BYTES);
+      for (uint32_t s = from; s < from + count; s++) {
+        struct held_link *h = &held[s % HELD];
+        reply(h->link, LINK_BYTES);
+        memcpy(r, h->head, 32);
+        memcpy(r + 32, h->reveal, 32);
+        reply(r, 64);
       }
       return;
     }
-    case OKEDGE_CKPT_PUBKEY:
-      reply(st.pub, 64);
-      return;
-    case OKEDGE_LAST_REVEAL: {
-      /* id u32 . step u16 . v_i 32; then mac 32 */
-      if (!last_reveal.id) { hidprint("Error Edge no self-press yet"); return; }
-      put32(r, last_reveal.id);
-      put16(r + 4, last_reveal.step);
-      memcpy(r + 6, last_reveal.value, 32);
-      reply(r, 38);
-      reply(last_reveal.mac, 32);
+    case OKEDGE_CHECKPOINT: {
+      /* signature over ("OKEDGE-CKPT-v1" || device_id || seq || head) (R7) */
+      uint8_t seq4[4], digest[32], sig[64];
+      put32(seq4, st.seq);
+      H(digest, "OKEDGE-CKPT-v1", ident.device_id, ID_BYTES, seq4, 4, st.head, 32);
+      if (!edge_sign(digest, sig)) { status(EDGE_SIGN_FAILED); return; }
+      put32(r, st.seq);
+      memcpy(r + 4, st.head, 32);
+      reply(r, 36);
+      reply(sig, 64);
       return;
     }
+    case OKEDGE_PUBKEY:
+      reply(ident.pub, 64);
+      return;
     case OKEDGE_GRANT_CREATE:
       grant_create(buffer);
       return;
-    case OKEDGE_GRANT_LIST: {
-      /* a count report, then per live budget: id u32 . uses u16 . used u16 . flags . n . (op, slot, cap u16, used u16) x n */
-      r[0] = (uint8_t)budget_count();
-      reply(r, 1);
-      for (int i = 0; i < MAX_LIVE; i++) {
-        struct budget *b = &budgets[i];
-        if (!b->id) continue;
-        memset(r, 0, sizeof(r));
-        put32(r, b->id);
-        put16(r + 4, b->uses);
-        put16(r + 6, b->used);
-        r[8] = b->flags;
-        r[9] = b->nscopes;
-        for (int j = 0; j < b->nscopes; j++) {
-          uint8_t *p = r + 10 + 6 * j;
-          p[0] = b->scopes[j].op;
-          p[1] = b->scopes[j].slot;
-          put16(p + 2, b->scopes[j].cap);
-          put16(p + 4, b->scopes[j].used);
-        }
-        reply(r, 10 + 6 * b->nscopes);
-      }
-      return;
-    }
     case OKEDGE_GRANT_REVOKE: {
       uint32_t id = get32(buffer + 6);
       for (int i = 0; i < MAX_LIVE; i++) {
         if (budgets[i].id && budgets[i].id == id) {
-          grant_end(i);
-          hidprint("Edge budget revoked");
+          uint8_t zero[32] = {0};
+          memset(&budgets[i], 0, sizeof(budgets[i]));
+          append(OP_GRANT_END, OKEDGE_DECISION_APPROVE, 0, 0, zero, id, 0, NULL);
+          status(EDGE_OK);
           return;
         }
       }
-      hidprint("Error Edge no such budget");
+      status(EDGE_NO_SUCH_BUDGET);
+      return;
+    }
+    case OKEDGE_TICKET: {
+      /*
+       * ref_seq u32 . code u8 . msg_hash 32 (R16): only for the latest use, once.
+       * subject = SHA256("OKEDGE-TICKET-v1" || ref_seq || head[ref_seq] || code || msg_hash)
+       * (lib tickets.ticketSubject); the message itself never reaches the key.
+       */
+      uint32_t ref = get32(buffer + 6);
+      uint8_t code = buffer[10];
+      if (st.use_seq == SEQ_NONE || ref != st.use_seq || !st.use_owes) {
+        status(EDGE_NO_TICKET_WAITING);
+        return;
+      }
+      uint8_t ref4[4], subject[32];
+      put32(ref4, ref);
+      SHA256_CTX ctx;
+      sha256_init(&ctx);
+      sha256_update(&ctx, (const unsigned char *)"OKEDGE-TICKET-v1", 16);
+      sha256_update(&ctx, ref4, 4);
+      sha256_update(&ctx, st.use_head, 32);
+      sha256_update(&ctx, &code, 1);
+      sha256_update(&ctx, buffer + 11, 32);
+      sha256_final(&ctx, subject);
+      st.use_owes = 0;
+      append(OP_TICKET, code, 0, 0, subject, ref, 0, NULL);
+      status(EDGE_OK);
       return;
     }
     default:
-      hidprint("Error Edge unknown request");
+      status(EDGE_UNKNOWN_REQUEST);
       return;
   }
 }
