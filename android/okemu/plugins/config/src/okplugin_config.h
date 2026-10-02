@@ -25,6 +25,21 @@
 #define OKGETCONFIG_VERSION 1
 
 void okplugin_config_recv(uint8_t *buffer);
+/*
+ * OKSETCONFIG exists only in DEBUG builds (owner, 2026-10-02): a release soft
+ * key reads its settings (OKGETCONFIG) but never imports.
+ *
+ * OKSETCONFIG_UNLISTED(c) is this plugin's term in the config-mode allow-list
+ * (recvmsg refuses a command when every term is true - "not on the list").
+ * DEBUG: true unless c is the import, so the import passes. Release: always
+ * true, so OKSETCONFIG is refused in config mode like any unlisted command -
+ * and with no case for it in the vendor switch, it is answered by nothing.
+ */
+#ifdef DEBUG
 void okplugin_config_set(uint8_t *buffer);
+#define OKSETCONFIG_UNLISTED(c) ((c) != OKSETCONFIG)
+#else
+#define OKSETCONFIG_UNLISTED(c) 1
+#endif
 
 #endif

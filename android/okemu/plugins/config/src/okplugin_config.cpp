@@ -145,6 +145,7 @@ void okplugin_config_recv(uint8_t *buffer) {
   send_transport_response((uint8_t *)out, total, false, false);
 }
 
+#ifdef DEBUG /* the import: DEBUG builds only (owner, 2026-10-02) - a release soft key reads, never imports */
 /* ---------------------------------------------------------------- OKSETCONFIG */
 /*
  * THE IMPORT (owner, 2026-10-02: "OKSETCONFIG is for importing, only in CONFIG
@@ -247,3 +248,4 @@ void okplugin_config_set(uint8_t *buffer) {
   in_at = 0;
   say("OKSETCONFIG applied ", applied, " unknown ", unknown);
 }
+#endif /* DEBUG */

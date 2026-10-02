@@ -142,8 +142,23 @@ module.exports = function register({ it }, ctx) {
     return ctx.okmsg.text(r).trim();
   }
 
+  /* OKSETCONFIG is built into DEBUG builds only (owner, 2026-10-02) - the kit's 38 says which this is */
+  const debugBuild = !!(ctx.build && ctx.build.debug);
+
+  it('config: a release build has no OKSETCONFIG - the import is answered by nothing',
+    async ({ device, assert, signal, skip }) => {
+      if (debugBuild) return skip('this emulator is a DEBUG build, which has the import');
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({ msg: OKSETCONFIG, slot: 14, payload: Buffer.from('[preferences]\nlockout=9\n', 'latin1') });
+      await device.sleep(2000, { signal });
+      const said = device.reportsSince(ctx.IFACE.VENDOR, since).map((r) => ctx.okmsg.text(r)).filter((t) => /OKSETCONFIG/.test(t));
+      assert.equal(JSON.stringify(said), '[]', `a release build answered OKSETCONFIG: ${said.join(' | ')}`);
+    });
+
   it('config: OKSETCONFIG is refused out of config mode - nothing changes',
-    async ({ device, assert, signal }) => {
+    async ({ device, assert, signal, skip }) => {
+      if (!debugBuild) return skip('a release build: OKSETCONFIG is built into DEBUG builds only');
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       const before = parse((await readConfig(device, { signal })).text).preferences.lockout;
       const said = await importConfig(device, `[preferences]\nlockout=${Number(before) === 9 ? 8 : 9}\n`, { signal });
@@ -152,7 +167,8 @@ module.exports = function register({ it }, ctx) {
     });
 
   it('config: OKSETCONFIG imports an INI in config mode through the firmware\'s own writes; [input] is ignored, unknown keys counted',
-    async ({ device, assert, signal }) => {
+    async ({ device, assert, signal, skip }) => {
+      if (!debugBuild) return skip('a release build: OKSETCONFIG is built into DEBUG builds only');
       const { pqc } = ctx.kit;
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       const before = parse((await readConfig(device, { signal })).text);

@@ -23,6 +23,8 @@ Nothing else in the firmware is touched.
 | …through the WebAuthn tunnel | `Error OKSETCONFIG is vendor API only` |
 | …too long (over 704 bytes) or a bad chunk length | `Error OKSETCONFIG too long` / `bad chunk` |
 
+**OKSETCONFIG exists only in DEBUG builds** (owner, 2026-10-02). Its code, its `case` and its allow-list entry are all under `#ifdef DEBUG` (`OKSETCONFIG_UNLISTED`, `okplugin_config.h`). A release soft key reads its settings but never imports. Measured on a production emulator build (`OKEMU_PRODUCTION=1`): `okplugin_config_set` is absent from the plugin's object file and from the built addon, while `okplugin_config_recv` is there.
+
 No press for either. **OKGETCONFIG writes nothing.** **OKSETCONFIG writes only through `set_slot`** - the firmware's own setting write, one call per value, exactly what an `OKSETSLOT` for that field does, with every check it makes (ranges, first-use-only settings, one-way modes). Its own replies are discarded (`outputmode = DISCARD`) and one summary is sent; the host reads the result back with OKGETCONFIG. `[input]` is skipped; a key outside the table below is counted as unknown, never guessed. Which one-way `[advanced]` values go in is the host's to leave out; config mode (a deliberate hold and the PIN) is the firmware's gate for them.
 
 | INI key | Field written |
@@ -69,3 +71,6 @@ Never built into a hard-key image (owner, 2026-10-02): a hard key is not emulate
 4. Refused through the WebAuthn tunnel.
 5. OKSETCONFIG is refused out of config mode, and nothing changes.
 6. In config mode it imports through the firmware's own writes: `applied 3 unknown 1`; `[input]` is ignored; read back with OKGETCONFIG.
+7. On a release build, OKSETCONFIG is answered by nothing. This test skips on a DEBUG build, and the kit can't drive a production emulator today (its `initialized` fixture needs the debug console). So the release side is proven by the build itself, as above.
+
+Kit 38 on the DEBUG emulator: 17 passed, 1 skipped (test 7).
