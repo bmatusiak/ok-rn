@@ -163,6 +163,21 @@ async function probeKey(device, log, slot = SLOT) {
   try {
     const key = await device.getPublicKey(slot, {bytes: 32, timeoutMs: 4000});
     if (Date.now() - started > 4000) log(`  (slot ${slot} needed the resend)`);
+    /*
+     * PROVISIONED MEANS "HOLDS THIS SUITE'S KEY", not "holds a key". A soft
+     * key is somebody's key too: on 2026-10-01 Key Chain's PGP wizard put an
+     * X25519 decryption key in ECC1, this probe called that provisioned, and
+     * six tests downstream failed signing with a key that was not theirs.
+     * Another key in the slot is replaced, the way an empty slot is filled.
+     */
+    if (slot === SLOT) {
+      const {ed25519} = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
+      const {toHex} = require('node-onlykey-lib').bytes;
+      if (toHex(key.subarray(0, 32)) !== toHex(ed25519.getPublicKey(KEY))) {
+        log(`slot ${slot}: holds ANOTHER key (${toHex(key.subarray(0, 8))}...) - it is replaced with this suite's`);
+        return false;
+      }
+    }
     log(`slot ${slot}: holds a key (${key.length} bytes back)`);
     return true;
   } catch (e) {
