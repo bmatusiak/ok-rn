@@ -1,6 +1,6 @@
 # config - OKGETCONFIG and OKSETCONFIG (design)
 
-**Why:** the firmware lets a host write every setting and read none back. ok-rn's Preferences and Advanced tabs can't show the key's real values, and the CLI can't tell whether a sign will want a code, a press or nothing. Proposal: `onlykey-RN/PROPOSAL-softkey-config-plugin.md`.
+**Why:** the firmware lets a host write every setting and read none back. ok-rn's Preferences and Advanced tabs can't show the key's real values, and the CLI can't tell whether a sign will want a code, a press or nothing. Proposal and status: `PROPOSAL.md` (this folder).
 
 **Owner's rules (2026-10-02):**
 - simple: the key prints an INI file (`OKGETCONFIG`) and imports one (`OKSETCONFIG`, config mode only);
