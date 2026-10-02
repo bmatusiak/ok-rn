@@ -18,6 +18,10 @@
 #define OKEDGE_HEAD 0x01
 #define OKEDGE_READ 0x02
 #define OKEDGE_CKPT_PUBKEY 0x04
+#define OKEDGE_LAST_REVEAL 0x05
+#define OKEDGE_GRANT_CREATE 0x10
+#define OKEDGE_GRANT_LIST 0x11
+#define OKEDGE_GRANT_REVOKE 0x12
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */
 #define OKEDGE_DECISION_APPROVE 1
