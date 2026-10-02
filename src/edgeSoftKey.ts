@@ -18,7 +18,7 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
 import {loadMirror} from './edgeStore';
-import type {EdgeBudget, EdgeCopyCheck, EdgeEnded, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeReplay, EdgeRequest, EdgeSource} from './edgeFake';
+import type {EdgeBudget, EdgeCopyCheck, EdgeCopyKey, EdgeEnded, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeReplay, EdgeRequest, EdgeSource} from './edgeFake';
 
 const {DECISION} = codes;
 const PICKUP_MAX = 8;
@@ -309,6 +309,14 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       };
     }
     return {links: mirror.links, openings};
+  }
+
+  /* R27 anchors for the banner: the KEY's public key (PUBKEY this session) and its checkpoints */
+  async copyKey(): Promise<EdgeCopyKey> {
+    const {publicKey} = await this.edge.publicKey();
+    /* the key's latest checkpoint; a restoring key refuses CHECKPOINT (R26), so then none */
+    const checkpoint = await this.edge.checkpoint().catch(() => null);
+    return {publicKey, openings: (await this.copy()).openings, checkpoint};
   }
 
   /** R27: the library's verdict on this phone's copy, against the key's live head. */

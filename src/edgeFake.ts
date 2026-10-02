@@ -68,7 +68,20 @@ export interface EdgeSource {
   ended?(): Promise<EdgeEnded[]>;
   /** Continue: a new request for what is left of an ended budget - Yes and a press, like any budget. */
   continueBudget?(grantId: number): Promise<void>;
+  /**
+   * R27 anchors: the key's own public key (read from the key, never from the
+   * copy), the budget openings this phone kept, and the key's latest
+   * checkpoint. A key that signs nothing (the fake) has none: then only the
+   * genesis and HEAD anchor the copy.
+   */
+  copyKey?(): Promise<EdgeCopyKey>;
 }
+
+export type EdgeCopyKey = {
+  publicKey: Uint8Array;
+  openings: Record<number, unknown>;
+  checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array} | null;
+};
 
 export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; restoring: boolean};
 

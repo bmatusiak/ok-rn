@@ -13,7 +13,7 @@ import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type E
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {useBackend} from './KeyContext';
-import {evaluate, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
+import {evaluate, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
 
 type Source = EdgeSource & EdgeInbox;
 
@@ -75,11 +75,11 @@ export function useEdge() {
   /** B1: HEAD, READ what is new, store, verify everything. */
   const sync = useCallback(() => run(async s => (await syncMirror(s)).view), [run]);
   /** Verify the stored copy against the live head WITHOUT reading - shows an edited copy as it is. */
-  const verify = useCallback(() => run(async s => evaluate(await loadMirror(s.deviceId), await s.head())), [run]);
+  const verify = useCallback(() => run(async s => liveView(s, await loadMirror(s.deviceId))), [run]);
   const tamper = useCallback(
     (how: Tamper) => run(async s => {
       const m = await tamperMirror(s.deviceId, how);
-      return evaluate(m, m.links.length ? await s.head() : null);
+      return m.links.length ? liveView(s, m) : evaluate(m, null);
     }),
     [run],
   );
@@ -135,7 +135,7 @@ export function useEdge() {
   /* Continue: a request for what is left; then Approve is the usual Yes and press */
   const continueBudget = useCallback((grantId: number) => run(async s => {
     await s.continueBudget?.(grantId);
-    return evaluate(await loadMirror(s.deviceId), await s.head());
+    return liveView(s, await loadMirror(s.deviceId));
   }), [run]);
   /* R24 / the red banner: Yes on screen, then the press; the key links LOSS {from, to} */
   const acceptLoss = useCallback((from: number, to: number) => run(async s => {
@@ -155,7 +155,7 @@ export function useEdge() {
   /* R26 / B6: replay this phone's copy, then the press over "restored to #N" */
   const replayCopy = useCallback(() => run(async s => {
     if (s.replayCopy) setReplay(await s.replayCopy());
-    return evaluate(await loadMirror(s.deviceId), await s.head());
+    return liveView(s, await loadMirror(s.deviceId));
   }), [run]);
   const finishRestore = useCallback((newestSeq: number) => run(async s => {
     try {
@@ -172,7 +172,7 @@ export function useEdge() {
   }, [source]);
   const decline = useCallback((id: number) => run(async s => {
     await s.decline(id);
-    return evaluate(await loadMirror(s.deviceId), await s.head());
+    return liveView(s, await loadMirror(s.deviceId));
   }), [run]);
   const resetFake = useCallback(async () => {
     if (wantReal) return;

@@ -15,7 +15,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {chain, copy, tickets} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
-import type {EdgeLinkRecord, EdgeSource} from './edgeFake';
+import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 
 const KEY_PREFIX = 'okrn.edge.mirror.';
 const READ_BATCH = 16;
@@ -128,9 +128,7 @@ export async function sync(source: EdgeSource, now = Date.now()): Promise<{mirro
   const v = source.vouch ? await source.vouch() : null;
   if (v) mirror.vouch = v;
   mirror.lastSync = now;
-  /* the key's own ring, read fresh: what it still holds is not missing, whatever the copy can weld */
-  const held = head.seq >= 0 ? await source.read(head.ringFrom, head.seq - head.ringFrom + 1) : [];
-  const view = evaluate(mirror, head, held);
+  const view = await liveView(source, mirror, head);
   if (view.verdict.kind === 'verified' || view.verdict.kind === 'gap') {
     mirror.lastSeen = {seq: head.seq, head: head.head};
   }
@@ -138,25 +136,42 @@ export async function sync(source: EdgeSource, now = Date.now()): Promise<{mirro
   return {mirror, view};
 }
 
+/**
+ * The verdict against what the key says THIS session: its live head, the links
+ * its ring still holds (read fresh - what it holds is not missing, whatever the
+ * copy can weld) and, from a key that signs, its public key and checkpoints
+ * (R27 anchors). Every verdict the tab shows comes through here.
+ */
+export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq: number; head: Uint8Array; ringFrom: number}): Promise<EdgeView> {
+  const head = known ?? (await source.head());
+  const held = head.seq >= 0 ? await source.read(head.ringFrom, head.seq - head.ringFrom + 1) : [];
+  const key = source.copyKey ? await source.copyKey() : null;
+  return evaluate(mirror, head, held, key);
+}
+
 /** Verify a mirror against a live head (no I/O): the verdict and the rows to draw. */
-export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[] = []): EdgeView {
+export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[] = [], key: EdgeCopyKey | null = null): EdgeView {
   const decoded = mirror.links.map(r => ({r, f: chain.decodeLink(r.link)}));
   if (!head) {
     return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror)};
   }
-  const result = chain.verify(mirror.links, {
-    deviceId: mirror.deviceId,
-    expectHead: {seq: head.seq, head: head.head},
-    lastSeen: mirror.lastSeen ?? undefined,
-    ringFrom: head.ringFrom,
-  });
+  /*
+   * R27 "what counts as verified": the library's one answer, the same Approve
+   * reads - anchors (genesis, HEAD, every checkpoint the key's own public key
+   * verifies), the gap only what no anchor reaches, minus the key's own links,
+   * and only a verified LOSS later than a gap covers it.
+   */
+  const a = copy.assess(
+    {links: mirror.links, openings: key?.openings ?? {}},
+    {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: key?.checkpoint ?? null},
+    {ringFrom: head.ringFrom, lastSeen: mirror.lastSeen ?? undefined},
+  );
+  const result = a.chain;
   const unverified = new Set<number>();
   for (const g of result.gaps) for (let s = g.from; s <= g.to; s++) unverified.add(s);
   let verdict: Verdict;
-  /* a gap a LOSS link covers is not a gap any more (R24, R27): the person accepted it - the lib's own rule */
-  /* links the key handed over this sync are its own word, not a loss (spec 4.3) - the lib's same rule */
-  const open: {from: number; to: number}[] = copy.uncoveredGaps(mirror.links, result.gaps, held);
-  const lost: {from: number; to: number}[] = copy.missingGaps(mirror.links, result.gaps, held);
+  const open: {from: number; to: number}[] = a.open;
+  const lost: {from: number; to: number}[] = a.missing;
   if (result.failure) verdict = {kind: 'tampered', seq: result.failure.seq, reason: result.failure.reason};
   else if (open.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: open[0].from, to: open[0].to};
   else if (lost.length) verdict = {kind: 'verified', through: head.seq, lost};
