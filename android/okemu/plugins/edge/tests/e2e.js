@@ -25,6 +25,7 @@ const OP_GRANT_CREATE = 6;
 
 module.exports = function register({it}, ctx) {
   const {chain, grants, tickets} = ctx.lib.edge;
+  const hex = (b) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
   /* SHA-256 of bytes, or of text as UTF-8 (tickets.messageHash hashes TEXT only) */
   const sha256 = (x) => (typeof x === 'string' ? tickets.messageHash(x) : ctx.lib.sha256(x));
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -47,9 +48,17 @@ module.exports = function register({it}, ctx) {
    * (a HEAD once named link 0xB1790C02). `press`: the soft key's own button,
    * once the confirmation is primed.
    */
-  async function agentSign(app, text, {press = false} = {}) {
+  /* the bytes of an agent sign (message || identity hash): what the firmware primes, so what an ARM is for (R13a) */
+  const agentRequest = (text) => {
     const message = sha256(`okrn edge ${text} ${Date.now()}`);
     const identity = sha256('okrn edge identity');
+    return {message, identity, payload: new Uint8Array([...message, ...identity])};
+  };
+  /* R13a: ARM with the token over this head and the library's requestSubject of these bytes */
+  const armFor = (app, head, req) => app.edge.arm(head, grants.requestSubject(req.payload));
+
+  async function agentSign(app, text, {press = false, req = agentRequest(text)} = {}) {
+    const {message, identity} = req;
     const timer = press ? setTimeout(() => { ctx.OkEmu.pressQueue('1'); }, 1500) : null;
     try {
       await app.okcrypto.agent.sign(identity, message, {keyType: 2, version: 2});
@@ -107,7 +116,6 @@ module.exports = function register({it}, ctx) {
     assert.equal(f.op, OP_SIGN);
     assert.equal(f.decision, APPROVE);
     assert.ok(f.flags & PRESS_OBSERVED, 'a pressed approve carries the press flag');
-    const hex = (b) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
     log(`subject ${hex(f.subject).slice(0, 16)}; sha256(payload) ${hex(sha256(signed.payload)).slice(0, 16)}; sha256(message) ${hex(sha256(signed.message)).slice(0, 16)}; message ${hex(signed.message).slice(0, 16)}`);
     assert.equal(hex(f.subject), hex(sha256(signed.payload)), 'the subject is not SHA-256 of what was submitted');
     if (before.seq !== null) {
@@ -149,8 +157,9 @@ module.exports = function register({it}, ctx) {
     let armHead = g.checkpoint.head;
     for (let i = 1; i <= 2; i++) {
       const seq0 = (await app.edge.head()).seq;
-      assert.equal(await app.edge.arm(armHead), true);
-      const sent = await agentSign(app, `budget ${i}`); /* no press: the budget pays */
+      const req = agentRequest(`budget ${i}`);
+      assert.equal(await armFor(app, armHead, req), true);
+      const sent = await agentSign(app, `budget ${i}`, {req}); /* no press: the budget pays */
       const payload = sent.payload;
       const h = await headPast(app, seq0);
       const [l] = await app.edge.pickup(h.seq, 1);
@@ -158,11 +167,12 @@ module.exports = function register({it}, ctx) {
       assert.equal(f.decision, SELF_PRESS, `use ${i} should be a self-press`);
       assert.equal(f.grantStep, i);
       const subject = sha256(payload);
+      assert.equal(hex(f.subject), hex(grants.requestSubject(payload)), `use ${i}: the firmware's subject is not the library's requestSubject`);
       spends.push({step: i, value: l.reveal, subject, mac: null});
       armHead = (await app.edge.ticket(h.seq, 0x00, sha256(`okrn e2e: did as asked ${i}`))).head;
     }
     /* used up: nothing left to arm */
-    assert.equal(await refusal(app.edge.arm(armHead)), 'nothing-to-arm');
+    assert.equal(await refusal(armFor(app, armHead, agentRequest('used up'))), 'nothing-to-arm');
     assert.ok(spends.every(s => s.value), 'a self-press came back without its reveal');
     for (const s of spends) {
       const r = grants.checkSelfPress({genesis: g.genesis, uses: g.uses, step: s.step, value: s.value, subject: s.subject,
@@ -181,11 +191,11 @@ module.exports = function register({it}, ctx) {
     assert.equal(await app.edge.hold(g.grantId), true);
     let h = await app.edge.head();
     assert.equal(JSON.stringify(h.held), JSON.stringify([g.grantId]), 'HEAD does not report the hold');
-    assert.equal(await refusal(app.edge.arm(h.head)), 'nothing-to-arm');
+    assert.equal(await refusal(armFor(app, h.head, agentRequest('held'))), 'nothing-to-arm');
     assert.equal(await app.edge.resume(g.grantId, {onPress: pressSoon}), true);
     h = await app.edge.head();
     assert.equal(JSON.stringify(h.held), JSON.stringify([]));
-    assert.equal(await app.edge.arm(h.head), true);
+    assert.equal(await armFor(app, h.head, agentRequest('resumed')), true);
     assert.equal(await app.edge.revoke(g.grantId), true);
   });
 };

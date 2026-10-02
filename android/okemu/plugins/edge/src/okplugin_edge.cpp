@@ -140,6 +140,7 @@ struct budget {
   uint8_t nscopes, on_hold;   /* on_hold: R15a - pays for nothing, nothing arms under it */
   struct scope scopes[MAX_SCOPES];
   uint16_t uses, used;
+  uint32_t opened, lifetime_ms; /* R15b: millis() at the press, and how long it may live */
   uint8_t seed[32];
   uint8_t genesis[32];
 };
@@ -151,6 +152,15 @@ static struct budget budgets[MAX_LIVE];
  * and a lock or reboot drops it.
  */
 static uint8_t armed;
+/*
+ * R13a (2026-10-02): the arm is bound to ONE request, not just the head:
+ *   token = SHA256("OKEDGE-ARM-v1" || head || subject)
+ * subject = pend.subject, SHA-256 of exactly the bytes handed to
+ * okcore_prime_user_confirmation. The key recomputes it from ITS head when the
+ * next sign/decrypt is primed; a program that slips in between the agent's ARM
+ * and its sign gets a press, never a free signature - and uses the arm up.
+ */
+static uint8_t arm_token[32];
 
 /* the last links, with a self-press's reveal, for edge JS to pick up */
 static struct held_link {
@@ -190,6 +200,7 @@ static struct {
   uint8_t reason[32];
   uint8_t scopes_enc[1 + 4 * MAX_SCOPES];
   uint8_t scopes_len;
+  uint16_t lifetime;          /* PRESS_GRANT: R15b minutes, 0 = DEFAULT_LIFETIME_MIN */
 } press;
 
 /* ------------------------------------------------------------ bytes and hashes */
@@ -516,6 +527,20 @@ static int scope_allowed(uint8_t op, uint8_t slot) {
   return 0;
 }
 
+/*
+ * R15b: a budget lives `lifetime` minutes from its press (0 = 12 hours -
+ * Brad, 2026-10-02: long enough to step away for lunch). millis() counts from boot, and a reboot ends every
+ * budget anyway (R15), so the clock never resets inside a budget's life - the
+ * same works on a hard key, which has no real-time clock. Wrap-safe like the
+ * 25 s press window. An expired budget is simply gone: it pays for nothing,
+ * HEAD stops listing it, and its slot is free; no grant-end link (like a
+ * reboot) - the host tells expiry apart from the lifetime in its opening link.
+ */
+#define DEFAULT_LIFETIME_MIN 720
+static int alive(const struct budget *b) {
+  return b->id && (uint32_t)(millis() - b->opened) <= b->lifetime_ms;
+}
+
 /* unlocked, out of config mode, nothing owed (R18), not restoring (R26): the only state a budget can pay in */
 static int budgets_may_pay(void) {
   return unlocked == true && configmode == false && !automatic_blocked();
@@ -536,7 +561,7 @@ static int budget_for(uint8_t op, uint8_t slot, struct scope **sc_out) {
   if (!armed || !budgets_may_pay()) return -1;
   for (int i = 0; i < MAX_LIVE; i++) {
     struct budget *b = &budgets[i];
-    if (!b->id || b->on_hold || b->used >= b->uses) continue;
+    if (!alive(b) || b->on_hold || b->used >= b->uses) continue;
     for (int j = 0; j < b->nscopes; j++) {
       struct scope *sc = &b->scopes[j];
       if (sc->op == op && sc->slot == slot && sc->used < sc->cap) {
@@ -551,12 +576,12 @@ static int budget_for(uint8_t op, uint8_t slot, struct scope **sc_out) {
 /* R13a: ARM needs a budget that could pay for something - live, not on hold, uses left */
 static int any_budget_payable(void) {
   for (int i = 0; i < MAX_LIVE; i++)
-    if (budgets[i].id && !budgets[i].on_hold && budgets[i].used < budgets[i].uses) return 1;
+    if (alive(&budgets[i]) && !budgets[i].on_hold && budgets[i].used < budgets[i].uses) return 1;
   return 0;
 }
 
 static struct budget *live_budget(uint32_t id) {
-  for (int i = 0; i < MAX_LIVE; i++) if (id && budgets[i].id == id) return &budgets[i];
+  for (int i = 0; i < MAX_LIVE; i++) if (id && budgets[i].id == id && alive(&budgets[i])) return &budgets[i];
   return NULL;
 }
 
@@ -579,14 +604,15 @@ static void press_wait(uint8_t what, const uint8_t subject[32]) {
  * PHYSICAL press, never while a ticket is owed or a restore is unfinished
  * (R10, R18, R26), and never on a head the host did not verify.
  */
-#define GRANT_HEAD_BYTES 8
+#define GRANT_HEAD_BYTES 6
 static void grant_create(const uint8_t *buffer) {
   uint8_t n = buffer[6];
   unsigned uses = 0;
   press_drop();
   if (automatic_blocked()) { status(blocked_status()); return; }
-  if (!head_is(buffer + 55, GRANT_HEAD_BYTES)) { status(EDGE_STALE_HEAD); return; }
-  memcpy(press.verified, buffer + 55, GRANT_HEAD_BYTES);
+  if (!head_is(buffer + 58, GRANT_HEAD_BYTES)) { status(EDGE_STALE_HEAD); return; }
+  memcpy(press.verified, buffer + 58, GRANT_HEAD_BYTES);
+  press.lifetime = get16(buffer + 56);
   press.verified_len = GRANT_HEAD_BYTES;
   if (n < 1 || n > MAX_SCOPES) { status(EDGE_BAD_SCOPES); return; }
   press.scopes_enc[0] = n;
@@ -622,7 +648,7 @@ static void grant_pressed(void) {
   int slot = -1;
   if (automatic_blocked()) { status(blocked_status()); return; } /* a use slipped in while it waited */
   if (!head_is(press.verified, press.verified_len)) { status(EDGE_STALE_HEAD); return; }
-  for (int i = 0; i < MAX_LIVE; i++) if (!budgets[i].id) { slot = i; break; }
+  for (int i = 0; i < MAX_LIVE; i++) if (!alive(&budgets[i])) { slot = i; break; } /* an expired budget's slot is free */
   if (slot < 0) { status(EDGE_LIVE_FULL); return; }
 
   uint32_t seq = st.seq == SEQ_NONE ? 0 : st.seq + 1;
@@ -634,8 +660,13 @@ static void grant_pressed(void) {
   sha256_update(&ctx, press.scopes_enc, press.scopes_len);
   sha256_update(&ctx, press.reason, 32);
   sha256_update(&ctx, press.b.genesis, 32);
+  uint8_t life[2];
+  put16(life, press.lifetime);
+  sha256_update(&ctx, life, 2); /* R12 + R15b: the subject ends with the lifetime the person approved */
   sha256_final(&ctx, subject);
   press.b.id = id;
+  press.b.opened = millis();
+  press.b.lifetime_ms = (uint32_t)(press.lifetime ? press.lifetime : DEFAULT_LIFETIME_MIN) * 60000UL;
   budgets[slot] = press.b;
   append(OP_GRANT_CREATE, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, id, 0, NULL);
 
@@ -742,6 +773,12 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   pend.slot = slot;
   H(pend.subject, NULL, msg, msg_len, NULL, 0, NULL, 0); /* SHA-256 of exactly what was submitted */
   state_load();
+  if (armed) {
+    /* R13a: this request, after THIS head, is the one the arm was for - or the arm is spent */
+    uint8_t t[32];
+    H(t, "OKEDGE-ARM-v1", st.head, 32, pend.subject, 32, NULL, 0);
+    if (memcmp(t, arm_token, 32) != 0) armed = 0;
+  }
   struct scope *sc;
   int i = budget_for(opcode == OKSIGN ? OP_SIGN : OP_DECRYPT, slot, &sc);
   if (i >= 0) {
@@ -892,8 +929,9 @@ void okplugin_edge_recv(uint8_t *buffer) {
       memcpy(r + 4, st.head, 32);
       put32(r + 36, oldest);
       for (int i = 0; i < MAX_LIVE; i++) {
-        put32(r + 40 + 4 * i, budgets[i].id);
-        if (budgets[i].id && budgets[i].on_hold) mask |= 1 << i;
+        int up = alive(&budgets[i]);
+        put32(r + 40 + 4 * i, up ? budgets[i].id : 0);
+        if (up && budgets[i].on_hold) mask |= 1 << i;
       }
       r[56] = mask;
       r[57] = st.owed_n;
@@ -1007,14 +1045,16 @@ void okplugin_edge_recv(uint8_t *buffer) {
     }
     case OKEDGE_ARM: {
       /*
-       * R13a, like ssh-agent: the agent's wire asks, the key decides. ARM {head}
-       * arms ONE self-press only when the caller has seen the latest chain (its
-       * head is the current one), nothing is owed, and some budget could pay.
+       * R13a, like ssh-agent: the agent's wire asks, the key decides. ARM {token}
+       * arms ONE self-press when nothing is owed, no restore is unfinished and
+       * some budget (alive, off hold, uses left) could pay. Whether the token
+       * fits - this head, this request - is decided when the request is primed
+       * (okplugin_edge_primed); a stale head shows there, as a press.
        */
       if (st.restored) { status(EDGE_RESTORING); return; }
-      if (memcmp(buffer + 6, st.head, 32) != 0) { status(EDGE_STALE_HEAD); return; }
       if (owes()) { status(EDGE_TICKET_OWED); return; }
       if (!any_budget_payable()) { status(EDGE_NOTHING_TO_ARM); return; }
+      memcpy(arm_token, buffer + 6, 32);
       armed = 1;
       status(EDGE_OK);
       return;

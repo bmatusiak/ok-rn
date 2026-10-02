@@ -34,13 +34,13 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 | `02 PICKUP` `from`, `count` ≤ 8 | per link: the link; then its head + the self-press reveal (zeros if none) |
 | `03 CHECKPOINT` | `seq` · `head`; then the Edge key's P-256 signature over `SHA256("OKEDGE-CKPT-v1" ‖ device_id ‖ seq ‖ head)` |
 | `04 PUBKEY` | the Edge public key X‖Y; edge JS derives device_id from it |
-| `10 GRANT_CREATE` scopes · reason_hash · the first 8 bytes of the head the host verified | `EDGE:0E` while restoring, `EDGE:0C` while a ticket is owed (R10, R18, R26), `EDGE:0B` unless the head matches - checked again at the press (R27); else after a **press**: id · uses · `G` · the link's seq; then a CHECKPOINT over the grant-create link, whose subject commits to `G` |
+| `10 GRANT_CREATE` [6] scope count · [7..22] scopes · [23..54] reason_hash · [55] flags · [56..57] lifetime (u16 LE minutes, 0 = 12 h, R15b) · [58..63] the first 6 bytes of the head the host verified | `EDGE:0E` while restoring, `EDGE:0C` while a ticket is owed (R10, R18, R26), `EDGE:0B` unless the head matches - checked again at the press (R27); else after a **press**: id · uses · `G` · the link's seq; then a CHECKPOINT over the grant-create link, whose subject commits to `G` |
 | `12 GRANT_REVOKE` id | `EDGE:00` (a `grant-end` link) or `EDGE:07` |
 | `13 GRANT_HOLD` id | `EDGE:00` (a `grant-hold` link; none if already held) or `EDGE:07`. No press: it only makes the key stricter (R15a) |
 | `14 GRANT_RESUME` id · the verified head (32) | `EDGE:0E` / `EDGE:0C` / `EDGE:0B` as for GRANT_CREATE; else after a **press**, `EDGE:00` (a pressed `grant-resume` link) |
 | `20 TICKET` ref_seq · code · msg_hash | `seq` · `head` after the ticket link, or `EDGE:08` (that use owes nothing). Any owed use, not only the latest (R16) |
 | `21 WAIVE` | `EDGE:08` when nothing is owed; else after a **press**, `seq` · `head` after the waive link: a ticket `0x8F` with the press flag, grant id = the oldest waived, subject = `SHA256("OKEDGE-WAIVE-v1" ‖ the waived seqs ‖ overflow)` (R18) |
-| `22 ARM` head | `EDGE:00` arms ONE self-press; `EDGE:0E` restoring, `EDGE:0B` not the current head, `EDGE:0C` a ticket is owed, `EDGE:0D` no live budget off hold with uses left (R13a). Any link clears it |
+| `22 ARM` token = SHA256("OKEDGE-ARM-v1" ‖ head ‖ subject) (R13a) | `EDGE:00` arms ONE self-press for the ONE request whose subject (SHA-256 of exactly the bytes primed) and head make the same token; any other request uses the arm up and is pressed. `EDGE:0E` restoring, `EDGE:0B` not the current head, `EDGE:0C` a ticket is owed, `EDGE:0D` no live budget off hold with uses left (R13a). Any link clears it |
 | `23 REPLAY` the link's first 46 bytes · the first 8 bytes of the head the copy stored after it | only while restoring (R26): `EDGE:00` when it is the next seq and welds to that head - the head moves on and the debt rules apply; `EDGE:0F` otherwise (where the copy forks); `EDGE:10` once the key wrote a link of its own, or when not restoring |
 | `24 REPLAY_DONE` the newest seq the copies hold | after a **press**: `seq` · `head`. If the copies held more than was replayed, a pressed `loss` link: grant id = the first seq not replayed, subject = the newest (u32) then zeros. Ends restoring |
 
@@ -60,7 +60,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 ## What it does not do
 - **It never lets a budget pay for** FIDO2, config mode, backup/restore, wipe, key loading, PIN changes, or the hardened derive / shared secret. Only OKSIGN on slots 1–4, 101–116 and agent codes 201–203 / 221–223, and OKDECRYPT on slots 1–4, 101–116 (R14).
 - **It never opens or resumes a budget, or waives a debt, without a physical press.**
-- **It never self-presses** without an ARM over the current head, under a held budget, or while any ticket is owed (R13a, R15a, R18). A sign that skips ARM is pressed.
+- **It never self-presses** without an ARM whose token matches this head and this request, under a held or expired budget, or while any ticket is owed (R13a, R15a, R15b, R18). A sign that skips ARM is pressed, and so is one that another program slips in after an ARM.
 - **Nothing but a ticket or a pressed WAIVE pays a debt** - not a deny, timeout, revoke, lock, reboot or restore (R16).
 - **It never writes** the 11 data sectors (0x3A800+) or the firmware hash range (0x6060–0x3A05F).
 - **In config mode** `OKEDGE` is dropped like any message not on its allow-list. No self-press happens there either.
@@ -75,13 +75,15 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - hold: nothing to arm; a pressed resume; then it arms again;
 - revoke.
 
-`tests/kit.test.js` (the emulator), 7 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
+`tests/kit.test.js` (the emulator), 9 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
 - `HEAD` and the Edge key;
 - a pressed sign owes a ticket; a timeout does not clear it; a late ticket pays it; a second is refused; R17's empty hook;
 - a budget is signed through the chain; a sign without ARM is pressed; ARM -> use -> ticket -> ARM -> use -> ticket; ARM and GRANT_CREATE refused while owed; a stale head refused; nothing to arm when used up;
 - hold: nothing arms; resume refused while owed, then taken with a press; the hold and resume links;
 - five pressed uses: 4 owed + overflow; a restart keeps them; an unpressed WAIVE does nothing; a pressed one clears all, and the library reads "waived" / "waived, not listed";
 - a hold/resume or GRANT_CREATE on a head the host did not verify is refused (R27);
+- **the subject proof (R13a):** per op type - RSA sign (slot 2), ECC sign (slot 101), RSA decrypt (slot 1, five packets), a three-packet agent sign - a self-press goes through on a token the LIBRARY computed (`grants.requestSubject`), and the link's subject, which the firmware writes from `pend.subject`, equals the library's. An ARM for one request does not pay for another: that one is pressed, the arm is spent, and the agent's own request is pressed too; a stale head shows at the sign;
+- a budget with a 1-minute lifetime: its opening link carries the lifetime; after it, HEAD drops it and nothing arms (R15b);
 - a backup keeps the head and the debts; after the restore the key is restoring (ARM and budgets refused); an out-of-order or non-welding link is refused; the newer link replays with its head and debt; a human press works and closes replay; a pressed REPLAY_DONE links the LOSS over the rest (R26);
 - a checkpoint verifies, but only over its own head.
 
@@ -93,10 +95,13 @@ Not built yet: R19 (a composite pair under one ARM and one ticket - the spec ask
 
 | Kind | Bytes | What |
 |---|---|---|
-| **Code** (`.text`) | **5,906** | the whole plugin. Largest: the request handlers (`okplugin_edge_recv`, 1,660, with most handlers inlined), the press dispatcher (`okplugin_edge_decision`, 856, with the four press handlers inlined), the weld (`weld_in`, 396), the record (`state_decode` 300, `state_save` 260, `state_load` 152), restore 272, backup 168 |
-| **Constants** (`.rodata`) | 213 | tags, magics, the status hex digits |
-| **RAM** (`.bss`) | **2,064** | the 8 held links for PICKUP 1,088 (8 × 136), 4 live budgets 400 (4 × 100), the record's copy 256, the press-gated request 200, the Edge public key and device id 81, the pending decision 37, the arm 1 |
+| **Code** (`.text`) | **6,138** | the whole plugin. Largest: the request handlers (`okplugin_edge_recv`, 1,708, with most handlers inlined), the press dispatcher (`okplugin_edge_decision`, 920, with the four press handlers inlined), the weld (`weld_in`, 396), the record (`state_decode` 300, `state_save` 260, `state_load` 152), restore 272, backup 168 |
+| **Constants** (`.rodata`) | 227 | tags, magics, the status hex digits |
+| **RAM** (`.bss`) | **2,136** | the 8 held links for PICKUP 1,088 (8 × 136), 4 live budgets 432 (4 × 108), the record's copy 256, the press-gated request 208, the arm token 32, the Edge public key and device id 81, the pending decision 37, the arm 1 |
 | **Flash** (the record) | 268, written double-buffered | see below |
+
+**By rule, as each landed** (code / RAM, measured the same way):
+- R13a ARM token + R15b expiry + the R27 GRANT_CREATE layout (2026-10-02): **+232 code, +14 constants, +72 RAM** (the token 32, an expiry clock per budget 4 × 8, the lifetime in the press request 8). No flash: expiry is RAM-only, like the budgets it belongs to.
 
 **The record, by rule** (268 bytes):
 - the chain (R2-R5): magic 8, generation 4, seq 4, head 32, the latest link 64, check 4 = **116**;

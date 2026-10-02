@@ -35,6 +35,7 @@ const REPLAY_DONE = 0x24;
 const SEQ_NONE = 0xffffffff;
 /* lib codes.js */
 const OP_SIGN = 1;
+const OP_DECRYPT = 2;
 const OP_GRANT_CREATE = 6;
 const OP_TICKET = 8;
 const OP_GRANT_HOLD = 13;
@@ -106,7 +107,14 @@ module.exports = function register({ it }, ctx) {
     return seqHead(r);
   }
 
-  const arm = (device, headBytes, opts) => edge(device, ARM, Buffer.from(headBytes), { ...opts, text: true });
+  /*
+   * R13a: ARM carries the token SHA256("OKEDGE-ARM-v1" || head || subject),
+   * subject = the LIBRARY's requestSubject of exactly the bytes the request
+   * will submit. Whether the firmware agrees - its pend.subject, hashed from
+   * what it primes - is what the per-op test below proves.
+   */
+  const armFor = (device, headBytes, payload, opts) =>
+    edge(device, ARM, Buffer.from(grants.armToken({ head: headBytes, subject: grants.requestSubject(new Uint8Array(payload)) })), { ...opts, text: true });
 
   /* clear whatever earlier tests left owed: a pressed WAIVE (R18) */
   async function clearDebts(device, { signal, log }) {
@@ -117,24 +125,26 @@ module.exports = function register({ it }, ctx) {
   }
 
   /*
-   * GRANT_CREATE: one scope (agent P-256 sign 222, `cap` uses), the reason, and
-   * the first 8 bytes of the head the host verified (R27; the key refuses any
-   * other). `verified` defaults to the key's current head - this test is the
-   * host, and checks the chain itself.
+   * GRANT_CREATE (firmware.md R27 layout): [0] scope count, [1..16] scopes,
+   * [17..48] reason hash, [49] flags, [50..51] lifetime (u16 LE minutes, R15b;
+   * 0 = the key's 12 h), [52..57] the first 6 bytes of the head the host
+   * verified. `verified` is the key's current head - this test is the host,
+   * and checks the chain itself. `scopes`: a cap (agent P-256 sign 222) or a list.
    */
-  function grantRequest(cap, reasonHash, verified) {
-    const req = Buffer.alloc(57);
-    req[0] = 1;
-    req[1] = OP_SIGN; req[2] = 222; req.writeUInt16LE(cap, 3);
+  const scopesOf = (scopes) => (typeof scopes === 'number' ? [{ op: OP_SIGN, slot: 222, cap: scopes }] : scopes);
+  function grantRequest(scopes, reasonHash, verified, lifetime = 0) {
+    const req = Buffer.alloc(58);
+    Buffer.from(grants.encodeScopes(scopesOf(scopes))).copy(req, 0);
     reasonHash.copy(req, 17);
-    Buffer.from(verified).copy(req, 49, 0, 8);
+    req.writeUInt16LE(lifetime, 50);
+    Buffer.from(verified).copy(req, 52, 0, 6);
     return req;
   }
 
   /* ... with its press -> {grantId, uses, G, chainSeq, ckpt, sig} */
-  async function openBudget(device, cap, reason, { signal }) {
+  async function openBudget(device, scopes, reason, { signal, lifetime = 0 }) {
     const reasonHash = sha256(Buffer.from(reason));
-    const req = grantRequest(cap, reasonHash, (await head(device, { signal })).head);
+    const req = grantRequest(scopes, reasonHash, (await head(device, { signal })).head, lifetime);
     const [g, ckpt, s] = await edge(device, GRANT_CREATE, req, { signal, press: true, reports: 3 });
     return {
       grantId: g.readUInt32LE(0), uses: g.readUInt16LE(4), G: new Uint8Array(g.subarray(6, 38)),
@@ -164,15 +174,19 @@ module.exports = function register({ it }, ctx) {
     return new Uint8Array(r.subarray(0, 64));
   }
 
-  /* an agent-derived P-256 sign (OKSIGN code 222): message || identity hash, in 57-byte chunks */
-  function sendAgentSign(device, message) {
-    const payload = Buffer.concat([message, sha256(Buffer.from('okt edge identity'))]);
+  /* an agent-derived P-256 sign's bytes (OKSIGN code 222): message || identity hash */
+  const agentPayload = (text) => Buffer.concat([sha256(Buffer.from(text)), sha256(Buffer.from('okt edge identity'))]);
+
+  /* any request, in 57-byte chunks: 0xFF while more follows, the last chunk's length on the last */
+  function sendChunked(device, msg, slot, payload) {
     for (let i = 0; i < payload.length; i += 57) {
       const chunk = payload.subarray(i, i + 57);
-      device.sendVendor({ msg: ctx.okmsg.MSG.OKSIGN, slot: 222, field: chunk.length < 57 ? chunk.length : 0xff, payload: chunk });
+      device.sendVendor({ msg, slot, field: chunk.length < 57 ? chunk.length : 0xff, payload: chunk });
     }
     return payload;
   }
+  const sendAgentSign = (device, message) =>
+    sendChunked(device, ctx.okmsg.MSG.OKSIGN, 222, Buffer.concat([message, sha256(Buffer.from('okt edge identity'))]));
 
   /*
    * Wait for the key's head to move past `seq` - the decision is linked. Polled
@@ -194,10 +208,10 @@ module.exports = function register({ it }, ctx) {
    * primed console line comes a moment BEFORE the key takes presses (a press
    * that lands first is discarded silently), so wait a little after it.
    */
-  async function pressedSign(device, text, { signal }) {
+  async function pressedSign(device, text, { signal, payload: given }) {
     const before = (await head(device, { signal })).seq;
     const primed = device.log.count(PRIMED);
-    const payload = sendAgentSign(device, sha256(Buffer.from(text)));
+    const payload = given ? sendChunked(device, ctx.okmsg.MSG.OKSIGN, 222, given) : sendAgentSign(device, sha256(Buffer.from(text)));
     await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
     await device.sleep(500, { signal });
     device.press(1);
@@ -206,13 +220,28 @@ module.exports = function register({ it }, ctx) {
   }
 
   /* a sign an ARMed budget pays for: no press - the signature comes back and the link is there */
-  async function selfPressedSign(device, text, { signal }) {
+  async function selfPressedSign(device, payload, { signal }) {
     const before = (await head(device, { signal })).seq;
     const since = device.mark(ctx.IFACE.VENDOR);
-    const payload = sendAgentSign(device, sha256(Buffer.from(text)));
+    sendChunked(device, ctx.okmsg.MSG.OKSIGN, 222, payload);
     await device.waitHid(ctx.IFACE.VENDOR, { since, timeoutMs: 8000, signal });
     const h = await headPast(device, before, { signal });
     return { payload, seq: h.seq };
+  }
+
+  /*
+   * Pick up every link from `kept`'s end to the key's head. The key holds only
+   * its last 8 for pickup, so a long test calls this before 8 new ones pile up.
+   */
+  async function catchUp(device, kept, from, { signal }) {
+    const h = await head(device, { signal });
+    let next = kept.length ? chain.decodeLink(kept[kept.length - 1].link).seq + 1 : from;
+    while (next <= h.seq) {
+      const n = Math.min(8, h.seq - next + 1);
+      kept.push(...await pickup(device, next, n, { signal }));
+      next += n;
+    }
+    return h;
   }
 
   /* everything from `from` to the key's head, verified by the library */
@@ -278,7 +307,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(use.message, msg, 'the ticket\'s message does not match its link');
     });
 
-  it('edge: a budget signed at a press pays only ARMed uses; ARM refuses a stale head and anything while a ticket is owed (R10, R13, R13a, R18)',
+  it('edge: a budget signed at a press pays only ARMed uses; an ARM pays for its own request only, and nothing arms while a ticket is owed (R10, R13, R13a, R18)',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
@@ -292,33 +321,62 @@ module.exports = function register({ it }, ctx) {
       /*
        * The budget's genesis is signed THROUGH the chain: the press answers with a
        * checkpoint over the grant-create link, and that link's subject commits to G
-       *   SHA256("OKEDGE-GRANT-v1" || scopes || reason_hash || G)
+       *   SHA256("OKEDGE-GRANT-v1" || scopes || reason_hash || G || lifetime)
        */
       assert.equal(b.ckpt.readUInt32LE(0), b.chainSeq, 'the checkpoint is not over the grant-create link');
       assert.ok(checkpointVerifies(pub, b.chainSeq, b.ckpt.subarray(4, 36), b.sig), 'the opening checkpoint does not verify');
       const [opened] = await pickup(device, b.chainSeq, 1, { signal });
       assert.bytes(Buffer.from(chain.weld(before.head, opened.link)), b.ckpt.subarray(4, 36), 'the signed head is not this link welded on');
       const scopesEnc = Buffer.from([1, OP_SIGN, 222, 2, 0]);
-      const wantSubject = sha256(Buffer.concat([Buffer.from('OKEDGE-GRANT-v1'), scopesEnc, b.reasonHash, Buffer.from(b.G)]));
-      assert.bytes(Buffer.from(chain.decodeLink(opened.link).subject), wantSubject, 'the grant-create link does not commit to G');
+      const wantSubject = sha256(Buffer.concat([Buffer.from('OKEDGE-GRANT-v1'), scopesEnc, b.reasonHash, Buffer.from(b.G), Buffer.from([0, 0])]));
+      assert.bytes(Buffer.from(chain.decodeLink(opened.link).subject), wantSubject, 'the grant-create link does not commit to G and the lifetime');
 
       /* a request that skips ARM is pressed, even with a live budget (R13a) - and owes */
+      const kept = [];
       const p0 = await pressedSign(device, 'okt budget message 0', { signal });
       const t0 = await ticket(device, p0.seq, 'okt: 0', { signal });
 
       /* grant -> arm -> use -> ticket -> arm -> use -> ticket */
-      assert.equal(await arm(device, t0.head, { signal }), 'EDGE:00');
-      const s1 = await selfPressedSign(device, 'okt budget message 1', { signal });
-      assert.equal(await arm(device, (await head(device, { signal })).head, { signal }), 'EDGE:0C', 'ARM went through while a ticket was owed (R18)');
-      assert.equal(await edge(device, GRANT_CREATE, Buffer.alloc(50, 0).fill(1, 0, 1), { signal, text: true }), 'EDGE:0C', 'a budget opened while a ticket was owed (R10)');
+      const pl1 = agentPayload('okt budget message 1');
+      assert.equal(await armFor(device, t0.head, pl1, { signal }), 'EDGE:00');
+      const s1 = await selfPressedSign(device, pl1, { signal });
+      assert.equal(await armFor(device, (await head(device, { signal })).head, pl1, { signal }), 'EDGE:0C', 'ARM went through while a ticket was owed (R18)');
+      assert.equal(await edge(device, GRANT_CREATE, Buffer.alloc(58, 0).fill(1, 0, 1), { signal, text: true }), 'EDGE:0C', 'a budget opened while a ticket was owed (R10)');
       const t1 = await ticket(device, s1.seq, 'okt: 1', { signal });
-      assert.equal(await arm(device, t0.head, { signal }), 'EDGE:0B', 'ARM took a stale head');
-      assert.equal(await arm(device, t1.head, { signal }), 'EDGE:00');
-      const s2 = await selfPressedSign(device, 'okt budget message 2', { signal });
-      const t2 = await ticket(device, s2.seq, 'okt: 2', { signal });
-      assert.equal(await arm(device, t2.head, { signal }), 'EDGE:0D', 'ARM went through under a used-up budget');
+      await catchUp(device, kept, b.chainSeq, { signal });
 
-      const { links, fields: f } = await verifyFrom(device, b.chainSeq, before.head, { signal, assert, log });
+      /*
+       * R13a: an ARM pays for ITS request after ITS head, nothing else. A stale
+       * head is no longer refused at ARM - the key cannot see it there - it
+       * shows at the sign, as a press. Another request after a good ARM is
+       * pressed too, and uses the arm up: the agent's own request is then
+       * pressed as well. Never a free signature.
+       */
+      const plStale = agentPayload('okt budget: armed on a stale head');
+      assert.equal(await armFor(device, t0.head, plStale, { signal }), 'EDGE:00');
+      const stale = await pressedSign(device, null, { signal, payload: plStale });
+      const ts = await ticket(device, stale.seq, 'okt: stale', { signal });
+      const plMine = agentPayload('okt budget: the request the agent armed for');
+      const plOther = agentPayload('okt budget: another program slipped in');
+      assert.equal(await armFor(device, ts.head, plMine, { signal }), 'EDGE:00');
+      const other = await pressedSign(device, null, { signal, payload: plOther });
+      const to = await ticket(device, other.seq, 'okt: other', { signal });
+      const mine = await pressedSign(device, null, { signal, payload: plMine });
+      const tm = await ticket(device, mine.seq, 'okt: mine, pressed', { signal });
+      await catchUp(device, kept, b.chainSeq, { signal });
+
+      const pl2 = agentPayload('okt budget message 2');
+      assert.equal(await armFor(device, tm.head, pl2, { signal }), 'EDGE:00');
+      const s2 = await selfPressedSign(device, pl2, { signal });
+      const t2 = await ticket(device, s2.seq, 'okt: 2', { signal });
+      assert.equal(await armFor(device, t2.head, agentPayload('okt budget message 3'), { signal }), 'EDGE:0D', 'ARM went through under a used-up budget');
+      void to;
+      const kh = await catchUp(device, kept, b.chainSeq, { signal });
+
+      const links = kept;
+      const verdict = chain.verify(links, { fromSeq: b.chainSeq, fromHead: before.head, expectHead: { seq: kh.seq, head: kh.head } });
+      assert.ok(verdict.ok, `the library rejects the key's chain: ${JSON.stringify(verdict.failure)}`);
+      const f = links.map((l) => chain.decodeLink(l.link));
       log(trail(f));
       const at = (seq) => f[seq - b.chainSeq];
       assert.equal(at(b.chainSeq).op, OP_GRANT_CREATE);
@@ -326,6 +384,10 @@ module.exports = function register({ it }, ctx) {
       assert.equal(at(p0.seq).decision, APPROVE, 'an unarmed use under a live budget was not pressed');
       assert.equal(JSON.stringify([at(s1.seq).decision, at(s1.seq).grantId, at(s1.seq).grantStep]), JSON.stringify([SELF_PRESS, b.grantId, 1]));
       assert.equal(JSON.stringify([at(s2.seq).decision, at(s2.seq).grantStep]), JSON.stringify([SELF_PRESS, 2]));
+      for (const p of [stale, other, mine]) {
+        assert.equal(at(p.seq).decision, APPROVE, `#${p.seq}: a request the arm was not for was not pressed`);
+        assert.ok(at(p.seq).flags & PRESS_OBSERVED);
+      }
 
       /* each reveal belongs to G and to what was signed (the MAC is the host's to compute) */
       const spends = [s1, s2].map((s, i) => {
@@ -336,7 +398,7 @@ module.exports = function register({ it }, ctx) {
       });
       assert.equal(JSON.stringify(grants.checkSpends(b.G, b.uses, spends)), '{"ok":true,"spent":2}');
       const paired = tickets.pairTickets(links);
-      for (const s of [p0, s1, s2]) assert.equal(paired.uses.find((u) => u.seq === s.seq).status, 'ticketed', `use #${s.seq}`);
+      for (const s of [p0, s1, stale, other, mine, s2]) assert.equal(paired.uses.find((u) => u.seq === s.seq).status, 'ticketed', `use #${s.seq}`);
 
       assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:00');
       assert.ok(!(await head(device, { signal })).live.includes(b.grantId), 'a revoked budget is still listed as live');
@@ -350,7 +412,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await edge(device, GRANT_HOLD, u32(b.grantId), { signal, text: true }), 'EDGE:00');
       let h = await head(device, { signal });
       assert.equal(JSON.stringify(h.held), JSON.stringify([b.grantId]), 'HEAD does not report the budget on hold');
-      assert.equal(await arm(device, h.head, { signal }), 'EDGE:0D', 'ARM went through under a held budget');
+      assert.equal(await armFor(device, h.head, agentPayload('okt held'), { signal }), 'EDGE:0D', 'ARM went through under a held budget');
 
       /* while a use owes, resume is refused (R18) */
       const p = await pressedSign(device, 'okt held: pressed', { signal });
@@ -364,7 +426,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await edge(device, GRANT_RESUME, resumeReq(t.head), { signal, text: true, press: true }), 'EDGE:00');
       h = await head(device, { signal });
       assert.equal(JSON.stringify(h.held), JSON.stringify([]), 'still on hold after the resume');
-      assert.equal(await arm(device, h.head, { signal }), 'EDGE:00');
+      assert.equal(await armFor(device, h.head, agentPayload('okt resumed'), { signal }), 'EDGE:00');
 
       /* from the grant-create link on, welded and checked by the library */
       const [opened] = await pickup(device, b.chainSeq, 1, { signal });
@@ -512,7 +574,7 @@ module.exports = function register({ it }, ctx) {
       assert.bytes(Buffer.from(after.head), Buffer.from(atBackup.head));
       assert.equal(after.owed, atBackup.owed, 'the restore changed what is owed');
       assert.equal(after.restoring, 1, 'HEAD does not say the key is restoring');
-      assert.equal(await arm(device, after.head, { signal }), 'EDGE:0E', 'ARM went through while restoring');
+      assert.equal(await armFor(device, after.head, agentPayload('okt restoring'), { signal }), 'EDGE:0E', 'ARM went through while restoring');
       assert.equal(await edge(device, GRANT_CREATE, grantRequest(1, sha256(Buffer.from('r')), after.head), { signal, text: true }), 'EDGE:0E', 'a budget opened while restoring');
 
       /* REPLAY: 46 link bytes + the first 8 of the head the copy stored after it */
@@ -542,6 +604,129 @@ module.exports = function register({ it }, ctx) {
       assert.equal(JSON.stringify([f.op, f.grantId, f.flags & PRESS_OBSERVED, Buffer.from(f.subject).readUInt32LE(0)]),
         JSON.stringify([11, l2.seq, PRESS_OBSERVED, lost.seq]), 'the LOSS link does not name #first-lost..#newest with the press');
       assert.ok(!Buffer.from(h.head).equals(Buffer.from(lost.head)), 'the restored chain still carries the lost link');
+    });
+
+  /*
+   * R13a, THE SUBJECT PROOF (Brad, 2026-10-02): the token only works if the
+   * library's requestSubject of the bytes a host sends equals what the
+   * firmware hashes into pend.subject - SHA-256 of what it hands
+   * okcore_prime_user_confirmation. A mismatch would not fail safe so much as
+   * fail useless: every ARM would end in a press. So, per op type, a
+   * self-press must go through on a lib-computed token, and the link's
+   * subject (written by the firmware) must equal the lib's subject.
+   */
+  it('edge: an ARM pays for exactly its request - RSA sign, ECC sign, RSA decrypt and a multi-packet sign each self-press, with the lib\'s subject in the link (R13a)',
+    async ({ device, assert, signal, log }) => {
+      const { pqc } = ctx.kit;
+      const RSA_2048 = 2;
+      const FEATURE_DECRYPT = 32;
+      const FEATURE_SIGN = 64;
+      const P256 = 2;
+      const rsa = () => {
+        const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+        const jwk = privateKey.export({ format: 'jwk' });
+        return { publicKey, pq: Buffer.concat([Buffer.from(jwk.p, 'base64url'), Buffer.from(jwk.q, 'base64url')]) };
+      };
+      const rsaSign = rsa();
+      const rsaDecrypt = rsa();
+      const ecdh = crypto.createECDH('prime256v1');
+      ecdh.generateKeys();
+      const eccScalar = ecdh.getPrivateKey();
+      const eccPub = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, ecdh.getPublicKey()]), format: 'der', type: 'spki' });
+
+      /* the keys, in one config-mode session (as 19-rsa-keys and 14-stored-keys load them) */
+      await pqc.readyForKeygen(device, { signal });
+      let since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({ msg: ctx.okmsg.MSG.OKSETSLOT, slot: 1, field: 22, payload: Buffer.from([1]) });
+      await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Success|Error/, timeoutMs: 8000, signal });
+      for (const k of [{ slot: 2, type: RSA_2048 | FEATURE_SIGN, pq: rsaSign.pq }, { slot: 1, type: RSA_2048 | FEATURE_DECRYPT, pq: rsaDecrypt.pq }]) {
+        since = device.mark(ctx.IFACE.VENDOR);
+        for (let i = 0; i < k.pq.length; i += 57) {
+          device.sendVendor({ msg: ctx.okmsg.MSG.OKSETPRIV, slot: k.slot, field: k.type, payload: k.pq.subarray(i, i + 57) });
+          await device.sleep(150, { signal });
+        }
+        const ack = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Successfully|Error/, timeoutMs: 20000, signal });
+        assert.match(ctx.okmsg.text(ack), /Successfully set RSA Key/, `RSA slot ${k.slot}: ${ctx.okmsg.text(ack)}`);
+      }
+      since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({ msg: ctx.okmsg.MSG.OKSETPRIV, slot: 101, field: P256 | FEATURE_SIGN, payload: eccScalar });
+      const eack = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Success|Error/, timeoutMs: 30000, signal });
+      assert.ok(!/Error/.test(ctx.okmsg.text(eack)), `ECC slot 101: ${ctx.okmsg.text(eack)}`);
+      await device.sleep(500, { signal });
+      await device.restart({ signal });
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+
+      const b = await openBudget(device, [
+        { op: OP_SIGN, slot: 2, cap: 1 },
+        { op: OP_SIGN, slot: 101, cap: 1 },
+        { op: OP_DECRYPT, slot: 1, cap: 1 },
+        { op: OP_SIGN, slot: 222, cap: 1 },
+      ], 'okt: one of each op type', { signal });
+
+      const rsaMessage = Buffer.from('okt edge RSA sign');
+      const eccMessage = Buffer.from('okt edge ECC sign');
+      const secret = crypto.randomBytes(32);
+      const longMessage = Buffer.alloc(100, 0x5a); /* + the identity hash: 132 bytes, three packets */
+      const cases = [
+        { name: 'RSA sign (slot 2)', msg: ctx.okmsg.MSG.OKSIGN, slot: 2, op: OP_SIGN, payload: sha256(rsaMessage), want: 256,
+          check: (out) => crypto.verify('sha256', rsaMessage, rsaSign.publicKey, out) },
+        { name: 'ECC sign (slot 101)', msg: ctx.okmsg.MSG.OKSIGN, slot: 101, op: OP_SIGN, payload: sha256(eccMessage), want: 64,
+          check: (out) => crypto.verify('sha256', eccMessage, { key: eccPub, dsaEncoding: 'ieee-p1363' }, out) },
+        { name: 'RSA decrypt (slot 1, five packets)', msg: ctx.okmsg.MSG.OKDECRYPT, slot: 1, op: OP_DECRYPT,
+          payload: crypto.publicEncrypt({ key: rsaDecrypt.publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, secret), want: 32,
+          check: (out) => out.equals(secret) },
+        { name: 'agent sign (code 222, three packets)', msg: ctx.okmsg.MSG.OKSIGN, slot: 222, op: OP_SIGN,
+          payload: Buffer.concat([longMessage, sha256(Buffer.from('okt edge identity'))]), want: 64, check: (out) => out.length === 64 },
+      ];
+      for (const c of cases) {
+        const h = await head(device, { signal });
+        const subject = grants.requestSubject(new Uint8Array(c.payload));
+        assert.equal(await armFor(device, h.head, c.payload, { signal }), 'EDGE:00', `${c.name}: ARM refused`);
+        const sent = device.mark(ctx.IFACE.VENDOR);
+        sendChunked(device, c.msg, c.slot, c.payload);
+        /* no press: an armed budget pays */
+        const deadline = Date.now() + 10000;
+        let out = Buffer.concat(device.reportsSince(ctx.IFACE.VENDOR, sent));
+        while (out.length < c.want && Date.now() < deadline) {
+          await device.sleep(100, { signal });
+          out = Buffer.concat(device.reportsSince(ctx.IFACE.VENDOR, sent));
+        }
+        out = out.subarray(0, c.want);
+        const after = await headPast(device, h.seq, { signal });
+        const [l] = await pickup(device, after.seq, 1, { signal });
+        const f = chain.decodeLink(l.link);
+        log(`${c.name}: #${f.seq} decision ${f.decision} slot ${f.slot} subject ${Buffer.from(f.subject).toString('hex').slice(0, 16)} lib ${Buffer.from(subject).toString('hex').slice(0, 16)}`);
+        assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.grantId]), JSON.stringify([c.op, SELF_PRESS, c.slot, b.grantId]), `${c.name}: not a self-press under the budget`);
+        assert.bytes(Buffer.from(f.subject), Buffer.from(subject), `${c.name}: the firmware's subject is not the library's requestSubject`);
+        assert.ok(c.check(out), `${c.name}: the result does not check out`);
+        await ticket(device, f.seq, `okt: ${c.name}`, { signal });
+      }
+      await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
+    });
+
+  /* R15b: a budget lives its lifetime from the press, and the lifetime is in its opening link */
+  it('edge: a budget expires after its lifetime - nothing arms under it, HEAD drops it, and its opening link carries the lifetime (R15b)',
+    async ({ device, assert, signal, log }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+      const b = await openBudget(device, 2, 'okt: one minute', { signal, lifetime: 1 });
+      const [opened] = await pickup(device, b.chainSeq, 1, { signal });
+      assert.bytes(Buffer.from(chain.decodeLink(opened.link).subject),
+        Buffer.from(grants.grantSubject({ scopes: scopesOf(2), reasonHash: b.reasonHash, genesis: b.G, lifetime: 1 })),
+        'the opening link does not carry the 1-minute lifetime');
+      let h = await head(device, { signal });
+      assert.ok(h.live.includes(b.grantId));
+      assert.equal(await armFor(device, h.head, agentPayload('okt before expiry'), { signal }), 'EDGE:00');
+      /* in 10 s steps, reading HEAD each time: the kit's watchdog wants progress every 30 s */
+      const until = Date.now() + 62000;
+      while (Date.now() < until) {
+        await device.sleep(Math.min(10000, Math.max(0, until - Date.now())), { signal });
+        h = await head(device, { signal });
+      }
+      log(`after 62 s: live ${JSON.stringify(h.live)}`);
+      assert.ok(!h.live.includes(b.grantId), 'HEAD still lists an expired budget');
+      assert.equal(await armFor(device, h.head, agentPayload('okt after expiry'), { signal }), 'EDGE:0D', 'ARM went through under an expired budget');
     });
 
   it('edge: a checkpoint is the Edge key\'s signature over the head',
