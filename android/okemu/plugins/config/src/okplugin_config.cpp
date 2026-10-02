@@ -55,6 +55,20 @@ static void line(const char *key, unsigned value) {
   put("\n");
 }
 
+/*
+ * 0 means NEVER SET for these - the firmware's own rule: its backup writer
+ * saves them only when non-zero (okcore.cpp, the settings part of the
+ * backup), and at boot a 0 keeps the default (touch sense 0 -> 12, LED 0 ->
+ * the brightness it already has). Printing "unset" keeps an import from
+ * writing a 0 the key treats as "default" (touch sense even refuses it).
+ */
+static void line_or_unset(const char *key, uint8_t value) {
+  if (value) { line(key, value); return; }
+  put("; ");
+  put(key);
+  put(" unset (the firmware default)\n");
+}
+
 /* the firmware's own resolution - the same function a sign asks (okcore.cpp) */
 static const char *mode_word(uint8_t mode) {
   return mode == USER_INPUT_CHALLENGE ? "code" : mode == USER_INPUT_PRESS ? "press" : "none";
@@ -97,14 +111,14 @@ void okplugin_config_recv(uint8_t *buffer) {
     if (ts >= 1 && ts <= 11) line("typeSpeed", 11 - ts);
     else put("; typeSpeed unset (the firmware default)\n");
   }
-  line("keyboardLayout", get(okeeprom_eeget_keyboardlayout));
-  line("ledBrightness", get(okeeprom_eeget_ledbrightness));
+  line_or_unset("keyboardLayout", get(okeeprom_eeget_keyboardlayout));
+  line_or_unset("ledBrightness", get(okeeprom_eeget_ledbrightness));
   line("lockout", get(okeeprom_eeget_timeout));
   {
     uint8_t lb = get(okeeprom_eeget_autolockslot);
     line("lockButton", profilemode ? (lb >> 4) : (lb & 0x0f));
   }
-  line("touchSense", get(okeeprom_eeget_touchoffset));
+  line_or_unset("touchSense", get(okeeprom_eeget_touchoffset));
   line("modKeyMode", get(okeeprom_eeget_modkey));
   line("hmacChallengeMode", get(okeeprom_eeget_hmac_challengemode));
   line("derivedChallengeMode", get(okeeprom_eeget_derived_key_challenge_mode));

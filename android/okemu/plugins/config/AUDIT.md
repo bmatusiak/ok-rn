@@ -43,6 +43,8 @@ No press. **It writes nothing**: no EEPROM, no flash, no RAM state outside its o
 | `[advanced] wipeMode` | `okeeprom_eeget_wipemode` | as stored |
 | `[advanced] backupKeyMode` | `okeeprom_eeget_backupkeymode` | as stored |
 
+**"unset"** follows the firmware's own rule: its backup writer saves these settings only when non-zero, and at boot a 0 keeps the default. So `typeSpeed`, `keyboardLayout`, `ledBrightness` (0 keeps the brightness it has) and `touchSense` (0 becomes 12; a write of 0 is refused) print as unset when 0. Elsewhere 0 is a real value: lockout 0, lock button 0, mode 0 (= code).
+
 **Never printed:** keys, PINs, passwords, nonces, the failed-login count, CTAP state, slot contents.
 
 ## Why the padding
