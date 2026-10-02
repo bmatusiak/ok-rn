@@ -57,6 +57,8 @@ export function LoginScreen({
         <Row label="built for" value={buildInfo.builtFor} />
         <Row label="library" value={buildInfo.library} />
         {openssl ? <Row label="openssl" value={openssl} /> : null}
+        {/* A plugin build is not the soft key everyone else has (android/okemu/plugins/). */}
+        {buildInfo.plugins.length ? <Row label="plugins" value={buildInfo.plugins.join(', ')} /> : null}
         <Row label="app" value={buildInfo.app} />
       </View>
 

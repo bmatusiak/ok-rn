@@ -33,6 +33,8 @@ type Staged = {
   stagedAt?: string;
   /** True when staged from an unpinned tree - see stage.js. */
   unreleased?: boolean;
+  /** Soft-key firmware plugins staged in (okemu/plugins/); absent when none. */
+  plugins?: string[];
 };
 
 /*
@@ -106,6 +108,15 @@ export type BuildInfo = {
    * metadata at all.
    */
   declaredVersion: string | null;
+  /**
+   * SOFT-KEY FIRMWARE PLUGINS in this build (owner, 2026-10-01: "new okemu
+   * plugins will need to be under compatibility for softkey only"). Staged in
+   * by OKEMU_PLUGINS from android/okemu/plugins/<name>/. A plugin's feature is
+   * the soft key's alone: no hard key and no released firmware version has it,
+   * so it is never inferred from a version - only from this list, and only for
+   * the soft key backend (see hasSoftKeyPlugin).
+   */
+  plugins: string[];
 };
 
 export const buildInfo: BuildInfo = {
@@ -130,7 +141,18 @@ export const buildInfo: BuildInfo = {
   model: staged.model === 'duo' ? 'duo' : 'classic',
   unreleased: staged.unreleased === true,
   builtFor: '',
+  plugins: Array.isArray(staged.plugins) ? staged.plugins.filter(p => typeof p === 'string') : [],
 };
+
+/**
+ * Whether the SOFT KEY in this build carries a firmware plugin. Only ever true
+ * for the soft key: a hard key runs its own firmware, which has no plugins, so
+ * a caller talking to a hard key must not ask this (it would describe the
+ * wrong device).
+ */
+export function hasSoftKeyPlugin(name: string): boolean {
+  return buildInfo.plugins.includes(name);
+}
 
 /* Assigned after the object exists, because it reads four of its own fields. */
 buildInfo.builtFor = describeBuild();
@@ -221,6 +243,14 @@ export const storageSlot: string = (() => {
    * this slot exists to prevent.
    */
   const base = buildInfo.version ?? '';
-  if (buildInfo.model !== 'duo') return base;
-  return base ? base + '-duo' : 'duo';
+  const model = buildInfo.model !== 'duo' ? base : base ? base + '-duo' : 'duo';
+  /*
+   * A PLUGIN BUILD IS ANOTHER DEVICE TOO: a plugin may keep state of its own
+   * in flash or EEPROM, and the base soft key must never boot against that, or
+   * the other way round. No plugins = the slot it always had.
+   */
+  if (!buildInfo.plugins.length) return model;
+  /* '.'-joined: NativeOkEmuModule takes [A-Za-z0-9._-] only */
+  const suffix = 'plugins-' + [...buildInfo.plugins].sort().join('.');
+  return model ? `${model}-${suffix}` : suffix;
 })();

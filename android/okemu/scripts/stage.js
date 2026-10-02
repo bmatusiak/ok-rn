@@ -1048,6 +1048,9 @@ const PATCHES = [
 const VERSION = process.env.OKEMU_VERSION || null;
 
 const versions = require('./versions');
+/* Soft-key firmware plugins (okemu/plugins/<name>/) - see scripts/plugins.js. */
+const plugins = require('./plugins');
+const PLUGINS = plugins.selected();
 
 /**
  * Unpack one commit's tree into `dest`.
@@ -1631,7 +1634,7 @@ function gitShort(dir) {
  * worse than none. Generated rather than committed: a checkout that has never
  * staged reports 'unknown' instead of somebody else's hash.
  */
-function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel,
+function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, pluginNames,
                         enforcingOrigins) {
   const out = path.join(OKEMU, '..', '..', 'src', 'generated');
   fs.mkdirSync(out, { recursive: true });
@@ -1697,6 +1700,12 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel,
      * on the device, so a host that reads this wrong gets all of that wrong.
      */
     model: duoModel ? 'duo' : 'classic',
+    /**
+     * Soft-key firmware plugins staged into this build (okemu/plugins/). Only
+     * present when there are any: ok-rn's compatibility treats each one as a
+     * soft-key-only feature (src/buildInfo.ts), never a firmware version's.
+     */
+    ...(pluginNames.length ? { plugins: pluginNames } : {}),
     /**
      * Whether webcryptcheck() actually consults the trusted-origin table and
      * the field 31 policy, rather than returning 2 for everything.
@@ -1863,6 +1872,7 @@ function cleanOnSwap(release) {
     ENV_STD === null ? 'std-as-staged' : ENV_STD ? 'standard' : 'travel',
     WANT_DUO === null ? 'model-as-staged' : WANT_DUO ? 'duo' : 'classic',
     WANT_ENFORCE ? 'enforcing' : 'trust-all',
+    ...(PLUGINS.length ? [`plugins:${PLUGINS.join('+')}`] : []),
   ].join(' ');
 
   let previous = null;
@@ -1945,6 +1955,7 @@ function main() {
    * See cleanOnSwap().
    */
   cleanOnSwap(release);
+  const pluginSet = plugins.load(PLUGINS, release);
 
   /*
    * A release may DECLARE the build options it has to be staged with - see
@@ -2118,10 +2129,11 @@ function main() {
     ...release.absentPatterns,
     ...(debugOn === false ? release.debugOffAbsentPatterns : []),
   ]);
+  const pluginStats = plugins.apply(pluginSet, STAGE);
   const registerCounts = rewriteRegisterBlocks();
 
   const stats = digestStage();
-  const info = writeBuildInfo(stats, release, debugOn, stdEdition, duoModel,
+  const info = writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, PLUGINS,
                               enforcingOrigins);
 
   console.log(
@@ -2153,7 +2165,11 @@ function main() {
   storage slot:                              ${release.slot || '(the default)'}`
   );
 
-  checkExpectation(release, stats, debugOn);
+  if (PLUGINS.length) {
+    console.log(`  plugins staged:                            ${pluginStats.map((p) => `${p.name} (${p.hooks} hooks, ${p.files} files)`).join(', ')}\n  digest expectation skipped: a plugin build is not the base build`);
+  } else {
+    checkExpectation(release, stats, debugOn);
+  }
 }
 
 /*

@@ -3,6 +3,7 @@ module.exports = [
     require('./0-provision.e2e.js'),
     require('./1-softKey.e2e.js'),
     require('./1b-openssl.e2e.js'),
+    require('./1c-softKeyPlugins.e2e.js'),
     require('./2-buttonProbe.e2e.js'),
     require('./2c-pressLine.e2e.js'),
     require('./3-deviceFlow.e2e.js'),
