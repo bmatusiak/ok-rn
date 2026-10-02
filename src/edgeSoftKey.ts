@@ -62,14 +62,20 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   async head() {
     const h = await this.edge.head();
-    /* no link yet: seq -1 against the genesis head verifies as "nothing recorded" */
-    return {seq: h.seq === null ? -1 : h.seq, head: h.head, ringFrom: h.oldest === null ? 0 : h.oldest};
+    /*
+     * no link yet: seq -1 against the genesis head verifies as "nothing recorded".
+     * No oldest with a seq: the ring is EMPTY (right after a restore the key holds
+     * none of its links), so it starts past the head - asking for #0 was refused
+     * (EDGE:09) and the tab showed only "the key no longer holds that link".
+     */
+    const seq = h.seq === null ? -1 : h.seq;
+    return {seq, head: h.head, ringFrom: h.oldest === null ? seq + 1 : h.oldest};
   }
 
   async read(fromSeq: number, count: number): Promise<EdgeLinkRecord[]> {
     const h = await this.edge.head();
-    if (h.seq === null) return [];
-    const from = Math.max(fromSeq, h.oldest ?? 0); /* older links are gone from the key: a gap, not an error */
+    if (h.seq === null || h.oldest === null) return []; /* nothing recorded, or nothing held (after a restore) */
+    const from = Math.max(fromSeq, h.oldest); /* older links are gone from the key: a gap, not an error */
     const last = Math.min(h.seq, fromSeq + count - 1);
     const out: EdgeLinkRecord[] = [];
     for (let s = from; s <= last; s += PICKUP_MAX) {
