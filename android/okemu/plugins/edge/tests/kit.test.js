@@ -104,21 +104,44 @@ module.exports = function register({ it }, ctx) {
   }
 
   /* a sign that will wait for a press: press it */
+  /*
+   * Wait for the key's head to move past `seq` - the decision is linked. Polled
+   * on HEAD rather than slept: a slower host (the Linux VM) takes longer, and a
+   * fixed sleep that suits Windows was too short there.
+   */
+  async function headPast(device, seq, { signal, timeoutMs = 10000 }) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const h = await head(device, { signal });
+      if (h.seq !== SEQ_NONE && (seq === SEQ_NONE || h.seq > seq)) return h;
+      if (Date.now() > deadline) throw new Error(`the key did not link the decision (head still #${h.seq})`);
+      await device.sleep(250, { signal });
+    }
+  }
+
+  /*
+   * A sign that waits for a press: press it, once the key is ready for it. The
+   * primed console line comes a moment BEFORE the key takes presses (a press
+   * that lands first is discarded silently), so wait a little after it.
+   */
   async function pressedSign(device, text, { signal }) {
+    const before = (await head(device, { signal })).seq;
     const primed = device.log.count(PRIMED);
     const payload = sendAgentSign(device, sha256(Buffer.from(text)));
     await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal });
+    await device.sleep(500, { signal });
     device.press(1);
-    await device.sleep(1500, { signal });
+    await headPast(device, before, { signal });
     return payload;
   }
 
-  /* a sign a live budget pays for: no press, the signature comes straight back */
+  /* a sign a live budget pays for: no press - the signature comes back and the link is there */
   async function selfPressedSign(device, text, { signal }) {
+    const before = (await head(device, { signal })).seq;
     const since = device.mark(ctx.IFACE.VENDOR);
     const payload = sendAgentSign(device, sha256(Buffer.from(text)));
     await device.waitHid(ctx.IFACE.VENDOR, { since, timeoutMs: 8000, signal });
-    await device.sleep(300, { signal });
+    await headPast(device, before, { signal });
     return payload;
   }
 
