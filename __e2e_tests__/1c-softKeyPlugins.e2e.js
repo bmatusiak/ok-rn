@@ -1,13 +1,14 @@
 /**
- * SOFT-KEY FIRMWARE PLUGINS (android/okemu/plugins/<name>/, scripts/plugins.js).
+ * SOFT-KEY FIRMWARE PLUGINS (android/okemu/plugins/<name>/, or OKEMU_PLUGINS_DIR).
  *
  * A plugin is staged into the soft key only when the build asks for it
- * (OKEMU_PLUGINS=hello). This suite ARMS ITSELF on that: on a normal build
- * every test skips and says why, so the base run measures the soft key
- * everyone else has - which is the point of a removable feature.
+ * (OKEMU_PLUGINS=<name>). Its tests live IN ITS FOLDER (tests/e2e.js) and are
+ * SIDE-LOADED here (owner, 2026-10-01): the stager copies the staged plugins'
+ * tests into src/generated/ and lists them in pluginTests.js; this suite
+ * registers them. A plugin and its tests leave together; a base build lists
+ * none, so the base run measures the soft key everyone else has.
  *
- * hello is the smallest plugin: one vendor message, OKHELLO (0x7E, 0xFE on the
- * wire), answered with a fixed sentence while the key is unlocked.
+ * Plugin tests get the app through `ctx` rather than reaching into src/.
  */
 'use strict';
 
@@ -20,38 +21,34 @@ const OkEmuModule = require('../src/transport/OkEmu');
 const OkEmu = OkEmuModule.default || OkEmuModule.OkEmu;
 const {IFACE} = OkEmuModule;
 
-const PIN = '1234561';
-const OKHELLO = 0x80 | 0x7e;
+/* try/catch, not a static import: a checkout that was never staged has no generated list */
+let pluginTests = [];
+try {
+  pluginTests = require('../src/generated/pluginTests.js');
+} catch {
+  pluginTests = [];
+}
+
+const ctx = {getOnlyKey, OkEmu, IFACE, protocol, pressDigits, PIN: '1234561', buildInfo, hasSoftKeyPlugin};
 
 module.exports = function softKeyPlugins({describe, it}) {
   describe(softKeyPlugins.name, () => {
     it('the build says which plugins its soft key carries', async ({log, assert}) => {
-      log(`plugins: ${JSON.stringify(buildInfo.plugins)}; storage slot: "${storageSlot}"`);
+      log(`plugins: ${JSON.stringify(buildInfo.plugins)}; storage slot: "${storageSlot}"; side-loaded tests: ${JSON.stringify(pluginTests.map(t => t.name))}`);
       if (buildInfo.plugins.length) {
         assert.ok(storageSlot.includes('plugins-'), 'a plugin build must not share the base soft key\'s storage');
       } else {
         assert.ok(!storageSlot.includes('plugins-'), 'a build without plugins kept its usual storage slot');
+        assert.equal(pluginTests.length, 0, 'a base build side-loads no plugin tests');
       }
     });
 
-    it('hello: OKHELLO is answered by the plugin, while unlocked', async ({log, assert, skip}) => {
-      if (!hasSoftKeyPlugin('hello')) skip('this build has no hello plugin (stage with OKEMU_PLUGINS=hello)');
-      if (!OkEmu.isRunning()) await OkEmu.start();
-      const {device, transport} = await getOnlyKey();
-      let state = await device.connect();
-      if (!/UNLOCKED/i.test(String(state.status))) {
-        await device.unlock(PIN, {timeoutMs: 20000, enterDigits: pressDigits({log})});
-        state = await device.connect();
-      }
-      const reply = await transport.request({
-        iface: IFACE.VENDOR,
-        data: protocol.okmsg.build({msg: OKHELLO, slot: 0}),
-        timeoutMs: 6000,
-        match: r => /HELLO|Error/.test(protocol.okmsg.text(r)),
+    /* each staged plugin's own tests, from its own folder */
+    for (const t of pluginTests) t.register({it}, ctx);
+    if (!pluginTests.length) {
+      it('side-loaded plugin tests', async ({skip}) => {
+        skip('this build stages no plugin (build with OKEMU_PLUGINS=<name> to run a plugin\'s own tests)');
       });
-      const said = protocol.okmsg.text(reply).trim();
-      log(`the soft key said: ${JSON.stringify(said)}`);
-      assert.equal(said, 'HELLO from plugin hello');
-    });
+    }
   });
 };

@@ -1051,9 +1051,14 @@ const versions = require('./versions');
 /*
  * Soft-key firmware plugins (okemu/plugins/<name>/, OKEMU_PLUGINS). The loader
  * is the library's, shared with node-onlykey-emulator's stager - one copy.
+ * okemu/plugins/ holds only the plugins ok-rn ships; OKEMU_PLUGINS_DIR stages
+ * from another folder instead (the emulator's emulator/plugins/ has the
+ * `hello` demo), without making ok-rn depend on it.
  */
 const plugins = require('node-onlykey-lib/cli/firmware-plugins');
-const PLUGINS_DIR = path.join(OKEMU, 'plugins');
+const PLUGINS_DIR = process.env.OKEMU_PLUGINS_DIR
+  ? path.resolve(process.env.OKEMU_PLUGINS_DIR)
+  : path.join(OKEMU, 'plugins');
 const PLUGINS = plugins.selected();
 
 /**
@@ -1638,6 +1643,30 @@ function gitShort(dir) {
  * worse than none. Generated rather than committed: a checkout that has never
  * staged reports 'unknown' instead of somebody else's hash.
  */
+/*
+ * SIDE-LOADED PLUGIN TESTS (owner, 2026-10-01): a plugin's on-device tests live
+ * in its own folder (plugins/<name>/tests/e2e.js) and leave with it. Metro
+ * bundles statically and only inside the app, so each staged plugin's test is
+ * COPIED to src/generated/plugins/ (the folder may be outside ok-rn) and listed
+ * beside firmware.json - an empty list for the base build. The softKeyPlugins
+ * e2e suite runs whatever it names.
+ */
+function writePluginTests(names) {
+  const out = path.join(OKEMU, '..', '..', 'src', 'generated');
+  const copies = path.join(out, 'plugins');
+  fs.rmSync(copies, { recursive: true, force: true });
+  fs.mkdirSync(copies, { recursive: true });
+  const rows = names
+    .filter((n) => fs.existsSync(path.join(PLUGINS_DIR, n, 'tests', 'e2e.js')))
+    .map((n) => {
+      fs.copyFileSync(path.join(PLUGINS_DIR, n, 'tests', 'e2e.js'), path.join(copies, `${n}.e2e.js`));
+      return `  { name: '${n}', register: require('./plugins/${n}.e2e.js') },\n`;
+    });
+  fs.writeFileSync(path.join(out, 'pluginTests.js'),
+    "/* Written by android/okemu/scripts/stage.js - the staged plugins' e2e tests. */\n"
+    + 'module.exports = [\n' + rows.join('') + '];\n');
+}
+
 function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, pluginNames,
                         enforcingOrigins) {
   const out = path.join(OKEMU, '..', '..', 'src', 'generated');
@@ -2134,6 +2163,7 @@ function main() {
     ...(debugOn === false ? release.debugOffAbsentPatterns : []),
   ]);
   const pluginStats = plugins.apply(pluginSet, STAGE);
+  writePluginTests(PLUGINS);
   const registerCounts = rewriteRegisterBlocks();
 
   const stats = digestStage();
