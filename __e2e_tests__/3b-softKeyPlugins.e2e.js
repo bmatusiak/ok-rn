@@ -9,6 +9,12 @@
  * none, so the base run measures the soft key everyone else has.
  *
  * Plugin tests get the app through `ctx` rather than reaching into src/.
+ *
+ * WHY 3b, AFTER deviceFlow: plugin tests unlock the soft key, and nothing in
+ * this process can lock it again. As 1c it ran before buttonProbe, which MUST
+ * run locked (a press only echoes as a PIN digit while locked), so every
+ * button read as null in a full run (Pixel, 2026-10-02). deviceFlow is the
+ * first suite that leaves the key unlocked anyway.
  */
 'use strict';
 
