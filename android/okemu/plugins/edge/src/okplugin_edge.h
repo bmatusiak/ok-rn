@@ -1,8 +1,8 @@
 /*
  * edge - the minimal firmware half of OnlyKey Edge: the key is a notary
  * (DESIGN.md section 0). It welds each sign/decrypt decision into the key's
- * chain, decides budget self-presses, signs budget geneses and checkpoints,
- * and links tickets; node-onlykey-lib/edge does everything else.
+ * chain, decides budget self-presses (each ARMed), signs budget geneses and
+ * checkpoints, keeps the owed tickets, and links tickets and waives; node-onlykey-lib/edge does everything else.
  */
 #ifndef OKPLUGIN_EDGE_H
 #define OKPLUGIN_EDGE_H
@@ -22,7 +22,11 @@
 #define OKEDGE_PUBKEY 0x04
 #define OKEDGE_GRANT_CREATE 0x10
 #define OKEDGE_GRANT_REVOKE 0x12
-#define OKEDGE_TICKET 0x20
+#define OKEDGE_GRANT_HOLD 0x13   /* R15a: no press */
+#define OKEDGE_GRANT_RESUME 0x14 /* R15a: press */
+#define OKEDGE_TICKET 0x20       /* replies seq . head */
+#define OKEDGE_WAIVE 0x21        /* R18: press; replies seq . head */
+#define OKEDGE_ARM 0x22          /* R13a: ARM {head} */
 
 /*
  * Text replies are "EDGE:xx" - two hex digits, no sentences (owner, 2026-10-02:
@@ -36,9 +40,12 @@
 #define EDGE_LIVE_FULL 0x05         /* 4 budgets already live */
 #define EDGE_SIGN_FAILED 0x06       /* the Edge key could not sign */
 #define EDGE_NO_SUCH_BUDGET 0x07    /* revoke: no live budget with that id */
-#define EDGE_NO_TICKET_WAITING 0x08 /* ticket: not the latest use, or it has one */
+#define EDGE_NO_TICKET_WAITING 0x08 /* ticket: that use owes nothing; waive: nothing owed */
 #define EDGE_NOT_HELD 0x09          /* pickup: that link is no longer held */
 #define EDGE_UNKNOWN_REQUEST 0x0A
+#define EDGE_STALE_HEAD 0x0B        /* ARM: not the current head */
+#define EDGE_TICKET_OWED 0x0C       /* R18: a ticket is owed - no ARM, GRANT_CREATE or GRANT_RESUME */
+#define EDGE_NOTHING_TO_ARM 0x0D    /* ARM: no live budget off hold with uses left */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */
 #define OKEDGE_DECISION_APPROVE 1
@@ -53,7 +60,7 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
 void okplugin_edge_decision(int decision);
 /* wipeflashdata(): the key is being wiped */
 void okplugin_edge_wipe(void);
-/* the plugin backup section (the loader calls these): 37 bytes - version, seq, head */
+/* the plugin backup section (the loader calls these): version 2, seq, head and the owed uses */
 int okplugin_edge_backup(uint8_t *out, int max);
 void okplugin_edge_restore(const uint8_t *in, int len);
 

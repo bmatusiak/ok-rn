@@ -7,6 +7,10 @@
  * library stack (app.edge = node-onlykey-lib/plugins/edge): every link, the
  * budget's opening, the reveals and the chain are checked by the library.
  *
+ * Every approved use owes a ticket and nothing automatic happens while one is
+ * owed (onlykey-edge firmware.md R16, R18): a test that opens a budget first
+ * clears what earlier ones left owed, with a pressed WAIVE.
+ *
  * Everything from the app comes in through `ctx` (no relative imports into
  * ok-rn): getOnlyKey, OkEmu, IFACE, protocol, PIN, pressDigits, lib (edge, hmacSha256).
  */
@@ -55,6 +59,20 @@ module.exports = function register({it}, ctx) {
     return {payload: new Uint8Array([...message, ...identity]), message, identity};
   }
 
+  /* the soft key's own button, a moment after the key starts waiting for it */
+  const pressSoon = () => { setTimeout(() => { ctx.OkEmu.pressQueue('1'); }, 1200); };
+
+  /* the name of the EdgeError a call ends in (null when it succeeds) - the harness has no assert.rejects */
+  const refusal = (p) => p.then(() => null, (e) => e.status || String(e.message || e));
+
+  /* clear whatever is owed: a pressed WAIVE (R18) */
+  async function clearDebts(app, log) {
+    const h = await app.edge.head();
+    if (!h.owed && !h.overflow) return;
+    await app.edge.waive({onPress: pressSoon});
+    log(`waived ${h.owed} owed${h.overflow ? ' + overflow' : ''}`);
+  }
+
   /* the decision is linked: the head moves past `seq` (polled, not slept) */
   async function headPast(app, seq, timeoutMs = 15000) {
     const deadline = Date.now() + timeoutMs;
@@ -77,7 +95,7 @@ module.exports = function register({it}, ctx) {
     }
   });
 
-  it('edge: a pressed sign becomes a link the library verifies', async ({log, assert}) => {
+  it('edge: a pressed sign becomes a link the library verifies, and owes its ticket', async ({log, assert}) => {
     const app = await ready(log);
     const before = await app.edge.head();
     const signed = await agentSign(app, 'pressed', {press: true});
@@ -97,17 +115,24 @@ module.exports = function register({it}, ctx) {
       const r = chain.verify([l], {fromSeq: after.seq, fromHead: prev.head, expectHead: {seq: after.seq, head: after.head}});
       assert.ok(r.ok, `the library rejects the link: ${JSON.stringify(r.failure)}`);
     }
+    /* a human press owes too (R16); its ticket answers with the head after it */
+    assert.ok(after.owed >= 1, 'the pressed use owes nothing');
+    const t = await app.edge.ticket(after.seq, 0x00, sha256('okrn e2e: pressed'));
+    const now = await app.edge.head();
+    assert.equal(t.seq, now.seq, 'the ticket reply is not the seq HEAD reports');
+    assert.equal(now.owed, after.owed - 1);
   });
 
-  it('edge: a budget opened by a press spends without one, takes a ticket, and is revoked', async ({log, assert}) => {
+  it('edge: a budget opened by a press pays ARMed uses, each ticketed, and is revoked', async ({log, assert}) => {
     const app = await ready(log);
+    await clearDebts(app, log);
     const {publicKey, deviceId} = await app.edge.publicKey();
     const before = await app.edge.head();
     const scopes = [{op: OP_SIGN, slot: 222, cap: 2}];
     const reasonHash = sha256('okrn e2e: sign two agent messages');
 
     /* GRANT_CREATE waits for the PHYSICAL press - on the soft key, its own button */
-    const g = await app.edge.grant({scopes, reasonHash, onPress: () => { setTimeout(() => { ctx.OkEmu.pressQueue('1'); }, 1200); }});
+    const g = await app.edge.grant({scopes, reasonHash, onPress: pressSoon});
     log(`budget ${g.grantId}: ${g.uses} uses, opened at #${g.seq}`);
     const [opened] = await app.edge.pickup(g.seq, 1);
     const prevHead = before.seq === null ? chain.genesis(deviceId) : (await app.edge.pickup(before.seq, 1))[0].head;
@@ -119,10 +144,12 @@ module.exports = function register({it}, ctx) {
     assert.equal(chain.decodeLink(opened.link).op, OP_GRANT_CREATE);
     assert.ok((await app.edge.head()).live.includes(g.grantId), 'HEAD does not list the budget as live');
 
-    /* two signs inside it: no press - self-press links with their reveals; a ticket after the first */
+    /* grant -> arm -> use -> ticket -> arm -> use -> ticket: no press, self-press links with their reveals */
     const spends = [];
+    let armHead = g.checkpoint.head;
     for (let i = 1; i <= 2; i++) {
       const seq0 = (await app.edge.head()).seq;
+      assert.equal(await app.edge.arm(armHead), true);
       const sent = await agentSign(app, `budget ${i}`); /* no press: the budget pays */
       const payload = sent.payload;
       const h = await headPast(app, seq0);
@@ -132,8 +159,10 @@ module.exports = function register({it}, ctx) {
       assert.equal(f.grantStep, i);
       const subject = sha256(payload);
       spends.push({step: i, value: l.reveal, subject, mac: null});
-      if (i === 1) assert.equal(await app.edge.ticket(h.seq, 0x00, sha256('okrn e2e: did as asked')), true);
+      armHead = (await app.edge.ticket(h.seq, 0x00, sha256(`okrn e2e: did as asked ${i}`))).head;
     }
+    /* used up: nothing left to arm */
+    assert.equal(await refusal(app.edge.arm(armHead)), 'nothing-to-arm');
     assert.ok(spends.every(s => s.value), 'a self-press came back without its reveal');
     for (const s of spends) {
       const r = grants.checkSelfPress({genesis: g.genesis, uses: g.uses, step: s.step, value: s.value, subject: s.subject,
@@ -143,5 +172,20 @@ module.exports = function register({it}, ctx) {
 
     assert.equal(await app.edge.revoke(g.grantId), true);
     assert.ok(!(await app.edge.head()).live.includes(g.grantId), 'a revoked budget is still live');
+  });
+
+  it('edge: a held budget arms nothing until a pressed resume', async ({log, assert}) => {
+    const app = await ready(log);
+    await clearDebts(app, log);
+    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1}], reasonHash: sha256('okrn e2e: hold'), onPress: pressSoon});
+    assert.equal(await app.edge.hold(g.grantId), true);
+    let h = await app.edge.head();
+    assert.equal(JSON.stringify(h.held), JSON.stringify([g.grantId]), 'HEAD does not report the hold');
+    assert.equal(await refusal(app.edge.arm(h.head)), 'nothing-to-arm');
+    assert.equal(await app.edge.resume(g.grantId, {onPress: pressSoon}), true);
+    h = await app.edge.head();
+    assert.equal(JSON.stringify(h.held), JSON.stringify([]));
+    assert.equal(await app.edge.arm(h.head), true);
+    assert.equal(await app.edge.revoke(g.grantId), true);
   });
 };

@@ -30,20 +30,24 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 
 | Sub-op | Reply |
 |---|---|
-| `01 HEAD` | `seq` u32 (0xFFFFFFFF = none) · `head` 32 · oldest pickable seq u32 · live budget ids 4×u32 |
+| `01 HEAD` | `seq` u32 (0xFFFFFFFF = none) · `head` 32 · oldest pickable seq u32 · live budget ids 4×u32 · held mask (bit i = budget i on hold) · owed count · overflow |
 | `02 PICKUP` `from`, `count` ≤ 8 | per link: the link; then its head + the self-press reveal (zeros if none) |
 | `03 CHECKPOINT` | `seq` · `head`; then the Edge key's P-256 signature over `SHA256("OKEDGE-CKPT-v1" ‖ device_id ‖ seq ‖ head)` |
 | `04 PUBKEY` | the Edge public key X‖Y; edge JS derives device_id from it |
-| `10 GRANT_CREATE` scopes · reason_hash · flags | after a **press**: id · uses · `G` · the link's seq; then a CHECKPOINT over the grant-create link, whose subject commits to `G` |
+| `10 GRANT_CREATE` scopes · reason_hash | `EDGE:0C` while a ticket is owed (R10, R18); else after a **press**: id · uses · `G` · the link's seq; then a CHECKPOINT over the grant-create link, whose subject commits to `G` |
 | `12 GRANT_REVOKE` id | `EDGE:00` (a `grant-end` link) or `EDGE:07` |
-| `20 TICKET` ref_seq · code · msg_hash | `EDGE:00` (a ticket link) or `EDGE:08`. Only as the very next link after its use |
+| `13 GRANT_HOLD` id | `EDGE:00` (a `grant-hold` link; none if already held) or `EDGE:07`. No press: it only makes the key stricter (R15a) |
+| `14 GRANT_RESUME` id | `EDGE:0C` while a ticket is owed; else after a **press**, `EDGE:00` (a pressed `grant-resume` link) |
+| `20 TICKET` ref_seq · code · msg_hash | `seq` · `head` after the ticket link, or `EDGE:08` (that use owes nothing). Any owed use, not only the latest (R16) |
+| `21 WAIVE` | `EDGE:08` when nothing is owed; else after a **press**, `seq` · `head` after the waive link: a ticket `0x8F` with the press flag, grant id = the oldest waived, subject = `SHA256("OKEDGE-WAIVE-v1" ‖ the waived seqs ‖ overflow)` (R18) |
+| `22 ARM` head | `EDGE:00` arms ONE self-press; `EDGE:0B` not the current head, `EDGE:0C` a ticket is owed, `EDGE:0D` no live budget off hold with uses left (R13a). Any link clears it |
 
 ## What it stores
 | Where | What |
 |---|---|
-| flash `base+0x1000`, `+0x1800` | one record, double-buffered (120 bytes): magic, generation, `seq`, `head`, two flags (the latest use owes a ticket / was a self-press), the latest link, a 4-byte SHA-256 check |
-| the device backup | 37 bytes in the plugin section (`0xFB`, written last by the loader): version, `seq`, `head`. A restore takes them back and the next link is a LOSS (R24). Older firmware stops at `0xFB` with everything else restored - measured: v3.0.4 and base 3.1.0 (node-onlykey-emulator `test/restore-plugin-backup.js`) |
-| RAM | the Edge public key and device_id; live budgets (seed, counters, scopes; ≤ 4, each ≤ 255 uses); the last 8 links with heads and reveals |
+| flash `base+0x1000`, `+0x1800` | one record, double-buffered (264 bytes, magic `OKEDGE06`): magic, generation, `seq`, `head`, the owed count, `overflow`, the restored flag, up to 4 owed uses (`seq`, `head[seq]`), the latest link, a 4-byte SHA-256 check |
+| the device backup | the plugin section (`0xFB`, written last by the loader), version 2: `seq`, `head`, the owed count, `overflow` and the owed uses - 39 to 183 bytes. Debts travel with the backup: only a ticket or a waive pays them (R16). Version 1 (37 bytes, no debts) still restores. A restore takes them back and the next link is a LOSS (R24). Older firmware stops at `0xFB` with everything else restored - measured: v3.0.4 and base 3.1.0 (node-onlykey-emulator `test/restore-plugin-backup.js`) |
+| RAM | the Edge public key and device_id; live budgets (seed, counters, scopes, on hold; ≤ 4, each ≤ 255 uses); the arm (one self-press); the last 8 links with heads and reveals |
 
 **The Edge key and K132:**
 - The Edge key is derived from **K132** (the key's own derivation secret): HKDF, info `"onlykey/edge/v1"`.
@@ -53,7 +57,9 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 
 ## What it does not do
 - **It never lets a budget pay for** FIDO2, config mode, backup/restore, wipe, key loading, PIN changes, or the hardened derive / shared secret. Only OKSIGN on slots 1–4, 101–116 and agent codes 201–203 / 221–223, and OKDECRYPT on slots 1–4, 101–116 (R14).
-- **It never opens a budget without a physical press.**
+- **It never opens or resumes a budget, or waives a debt, without a physical press.**
+- **It never self-presses** without an ARM over the current head, under a held budget, or while any ticket is owed (R13a, R15a, R18). A sign that skips ARM is pressed.
+- **Nothing but a ticket or a pressed WAIVE pays a debt** - not a deny, timeout, revoke, lock, reboot or restore (R16).
 - **It never writes** the 11 data sectors (0x3A800+) or the firmware hash range (0x6060–0x3A05F).
 - **In config mode** `OKEDGE` is dropped like any message not on its allow-list. No self-press happens there either.
 
@@ -62,13 +68,18 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - `probe` and the genesis;
 - a pressed sign is linked, with SHA-256 of what was submitted;
 - a budget opened by the soft key's own press verifies with `grants.verifyBudgetOpening`;
-- two self-presses, with their reveals checked against `G`;
-- a ticket;
+- two ARMed self-presses, each ticketed, with their reveals checked against `G`; then nothing to arm;
+- a pressed use owes, and its ticket answers with the head;
+- hold: nothing to arm; a pressed resume; then it arms again;
 - revoke.
 
-`tests/kit.test.js` (the emulator), 5 tests, each checked with the library or `node:crypto`:
+`tests/kit.test.js` (the emulator), 7 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
 - `HEAD` and the Edge key;
-- a pressed sign and a timed-out sign become links;
-- a budget opened by a press is signed through the chain; its spends need no press, a ticket is paired with its message, and past the cap a press is needed again;
-- R18 falls back to a press;
+- a pressed sign owes a ticket; a timeout does not clear it; a late ticket pays it; a second is refused; R17's empty hook;
+- a budget is signed through the chain; a sign without ARM is pressed; ARM -> use -> ticket -> ARM -> use -> ticket; ARM and GRANT_CREATE refused while owed; a stale head refused; nothing to arm when used up;
+- hold: nothing arms; resume refused while owed, then taken with a press; the hold and resume links;
+- five pressed uses: 4 owed + overflow; a restart keeps them; an unpressed WAIVE does nothing; a pressed one clears all, and the library reads "waived" / "waived, not listed";
+- a backup keeps the head and the debts; a restore brings them back and links a LOSS;
 - a checkpoint verifies, but only over its own head.
+
+Not built yet: R19 (a composite pair under one ARM and one ticket - the spec asks the plan to confirm the call pattern first). Until then a composite sign under a budget takes a press for its second half.

@@ -27,7 +27,9 @@ The firmware half of OnlyKey Edge, as a plugin: soft key (ok-rn) and the desktop
 3. **Two signatures with the Edge key (K132 → HKDF), never reachable by a generic sign:**
    - the **budget genesis**, over fields it computes itself, made only at a **physical press**;
    - **checkpoints** over `(seq, head)`.
-4. **The ticket link** for the latest use, if it hasn't one yet (R16). It also refuses the next self-press until then, under a `ticket_required` budget (R18).
+4. **The debts** (the spec change, onlykey-edge `c7c30dd`): every approved use - pressed or self-pressed - owes a ticket (R16). The key keeps the latest 4 owed uses (`seq`, `head[seq]`) and an `overflow` flag in flash, links a TICKET for any of them, and while anything is owed there is no self-press, ARM, GRANT_CREATE or GRANT_RESUME (R18). A pressed WAIVE clears them all.
+5. **The arm** (R13a): a self-press needs `ARM {head}` over the current head first, one per use; any link clears it. A sign that skips ARM is pressed.
+6. **Hold** (R15a): a held budget pays for nothing and arms nothing; resuming takes a press.
 
 **Edge JS does everything else:**
 - builds budget requests;
@@ -62,9 +64,9 @@ If a host never picks a link up, the head still counts it, so the omission shows
 2. **Live budgets come from `HEAD`** (RAM). No stored ids, and no boot-time `grant-end` links: a lock or reboot ends them, and `HEAD` shows it.
 3. **No wipe link.** A wipe makes a new K132, so a new device id and genesis: every host sees a new key.
 4. **No device id in `HEAD`.** Edge JS computes `SHA256("OKEDGE-DEVICE-v1" ‖ pubkey)[0..16]`.
-5. **A ticket is the very next link after its use**, so its subject uses the current head. There is no stored latest-use head.
+5. ~~**A ticket is the very next link after its use**~~ - reversed by the spec change: a human press owes too, and nothing on that path files a ticket at once, so the key stores the owed heads again (R16 says so: "brings back the stored use heads that the soft-key plugin's ... cut removed").
 
-The flash record is now 120 bytes.
+The flash record is now 264 bytes (`OKEDGE06`; it was 120 with the cut).
 
 **Not cut, by choice:**
 - the 8 held links (a second host can still pick up);
@@ -136,7 +138,7 @@ Region layout (sectors from 0x1000):
      - reply `(grant_id, uses, G, signature)`.
 - **Self-press (R13):**
   - **Where:** a hook right after `user_input_mode = okcore_user_input_mode_for_slot(slot);` (core:6978, unique).
-  - **Condition:** a live budget has a scope for this op and slot with room, the key is unlocked and not in config mode, and (R18) the previous use has its ticket.
+  - **Condition:** a live budget has a scope for this op and slot with room, the key is unlocked and not in config mode, and (R18) the previous use has its ticket. *(Built, after the spec change: armed (R13a), the budget not on hold (R15a), and nothing owed at all (R18).)*
   - **Effect:** it forces `USER_INPUT_NONE`. The existing branch then runs the operation without a press (`CRYPTO_AUTH = 4`, `pending_op_no_press`). The approve hook links it as `self-press` with the budget and step.
   - **Reveal:** the key keeps the last reveal `(grant_id, step, v_i, mac = HMAC(v_i, subject))` for the host to read with `LAST_REVEAL`.
 - **End:** `GRANT_REVOKE` links `grant-end` and wipes the seed. A lock or reboot loses the seeds, and the next boot links `grant-end` for every budget the state record says was live.
@@ -181,7 +183,7 @@ Peers, receipts and LOSS (R20–R24) come after E3b.
 - A backup is capped at 18,000 bytes (the backup array and the restore buffer, both versions); a full key is about 16.7 KB.
 - So all plugins together get a **fixed budget of 512 bytes**, and the hook refuses to write past 18,000 bytes. Past that cap v3.0.4 would reject the whole restore.
 
-**Edge's entry, 37 bytes (built, 2026-10-02: version, `seq`, `head` - with the minimal firmware, live budget ids are RAM-only and end at a restore anyway):**
+**Edge's entry (built, 2026-10-02): version 2, `seq`, `head`, the owed count, `overflow` and up to 4 owed uses - 39 to 183 bytes. Debts travel with the backup, so a restore never pays them (R16). Version 1 (37 bytes: `seq`, `head`) still restores. Live budget ids are RAM-only and end at a restore anyway. The plan before it:**
 - what it carries: `seq` · `head` · device_id · live budget ids;
 - what stays out:
   - **the ring:** 3 KB is too big, and hosts hold copies and refill it;
@@ -199,5 +201,5 @@ Peers, receipts and LOSS (R20–R24) come after E3b.
 ## 7. Build order (each step: the plugin's own kit + e2e tests, then commit)
 1. **Storage + identity + `HEAD`/`READ`/`CKPT_PUBKEY`.** Links for OKSIGN/OKDECRYPT approve/deny/timeout. The lib verifies the chain it reads.
 2. **Budgets:** `GRANT_CREATE` with the press and the signed genesis, self-press, `LAST_REVEAL`, `GRANT_LIST`/`GRANT_REVOKE`, `grant-end` at boot.
-3. **`TICKET`** and the R17/R18 rules. Then E3b: apk-signer under a budget, over Bluetooth (Part D).
+3. **`TICKET`** and the R17/R18 rules; after the spec change also ARM, GRANT_HOLD/RESUME, the 4 owed uses and WAIVE (built 2026-10-02; R19 composite pairs still open). Then E3b: apk-signer under a budget, over Bluetooth (Part D).
 4. **`CHECKPOINT`.** The lib's device calls and `capabilities().edge` (L4/L5). The Edge tab moves off the fake key.
