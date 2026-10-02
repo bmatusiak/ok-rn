@@ -100,6 +100,8 @@ Not built yet: R19 (a composite pair under one ARM and one ticket - the spec ask
 | **RAM** (`.bss`) | **2,136** | the 8 held links for PICKUP 1,088 (8 × 136), 4 live budgets 432 (4 × 108), the record's copy 256, the press-gated request 208, the arm token 32, the Edge public key and device id 81, the pending decision 37, the arm 1 |
 | **Flash** (the record) | 268, written double-buffered | see below |
 
+**The board (firmware.md §3.1 check, 2026-10-02):** the same numbers with the production hard key's define, `__MK20DX256__` (Teensy 3.2, the default in `tools/measure-size.sh` now), as with `__MK66FX1M0__`: both are Cortex-M4, and the plugin calls the firmware rather than touching the board. Still to measure: the production STD sketch with and without the plugin linked in (needs a hard-key build with the plugin, which the builder does not do yet).
+
 **By rule, as each landed** (code / RAM, measured the same way):
 - R13a ARM token + R15b expiry + the R27 GRANT_CREATE layout (2026-10-02): **+232 code, +14 constants, +72 RAM** (the token 32, an expiry clock per budget 4 × 8, the lifetime in the press request 8). No flash: expiry is RAM-only, like the budgets it belongs to.
 

@@ -58,6 +58,10 @@ export interface EdgeSource {
   replayCopy?(): Promise<EdgeReplay>;
   /** R26: "restored to #N" - a physical press; the key links a LOSS over anything not replayed. */
   finishRestore?(newestSeq: number, onPress?: () => void): Promise<void>;
+  /** Budgets a lock or reboot ended, with uses and time left (Continue). */
+  ended?(): Promise<EdgeEnded[]>;
+  /** Continue: a new request for what is left of an ended budget - Yes and a press, like any budget. */
+  continueBudget?(grantId: number): Promise<void>;
 }
 
 export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; restoring: boolean};
@@ -80,6 +84,20 @@ export type EdgeRequest = {
   from: string;
   reason: string;
   scopes: {op: number; slot: number; cap: number}[];
+  /** R15b: the lifetime asked for, in minutes (absent = the key's 12 h) */
+  ttlMinutes?: number;
+};
+
+/**
+ * A budget a lock or reboot ended before it was used up or ran out of time
+ * (spec okrn-edge-tab.md, Continue): what is left of it, by the phone's clock.
+ */
+export type EdgeEnded = {
+  grantId: number;
+  reason: string;
+  scopes: {op: number; slot: number; cap: number}[];
+  usesLeft: number;
+  minutesLeft: number;
 };
 /**
  * Where budget requests arrive. NOT the key: a request comes from the CLI or an

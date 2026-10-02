@@ -18,7 +18,7 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
 import {loadMirror} from './edgeStore';
-import type {EdgeBudget, EdgeCopyCheck, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeReplay, EdgeRequest, EdgeSource} from './edgeFake';
+import type {EdgeBudget, EdgeCopyCheck, EdgeEnded, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeReplay, EdgeRequest, EdgeSource} from './edgeFake';
 
 const {DECISION} = codes;
 const PICKUP_MAX = 8;
@@ -31,7 +31,14 @@ const REGISTRY = 'okrn.edge.budgets.';
  * before this was stored) cannot be checked, so a copy holding it does not
  * verify.
  */
-type Kept = {reason: string; scopes: EdgeRequest['scopes']; uses: number; genesis: string; from: string; signature?: string};
+type Kept = {
+  reason: string; scopes: EdgeRequest['scopes']; uses: number; genesis: string; from: string; signature?: string;
+  /* R15b: the lifetime it was opened with (minutes, 0 = the key's 12 h) and when (the phone's clock) - for Continue */
+  lifetime?: number; opened?: number;
+  /* Continue asked for once already: the card goes */
+  continued?: boolean;
+};
+const DEFAULT_LIFETIME_MINUTES = 12 * 60;
 
 export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   readonly deviceId: Uint8Array;
@@ -182,6 +189,50 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     }
   }
 
+  /*
+   * Continue (spec okrn-edge-tab.md; Brad, 2026-10-02: "a continue budget when
+   * I get back"): a budget this phone approved that the key no longer lists,
+   * with no grant-end link (a revoke ends it for good), and with uses and time
+   * left. Uses left come from the chain's own self-press links; time left is
+   * the original lifetime minus what the phone's clock says has passed -
+   * stepping away never extends the day.
+   */
+  async ended(): Promise<EdgeEnded[]> {
+    const h = await this.edge.head();
+    const mirror = await loadMirror(this.deviceId);
+    const fields = mirror.links.map(r => chain.decodeLink(r.link));
+    const prefix = REGISTRY + toHex(this.deviceId) + '.';
+    const out: EdgeEnded[] = [];
+    for (const k of await AsyncStorage.getAllKeys()) {
+      if (!k.startsWith(prefix)) continue;
+      const grantId = Number(k.slice(prefix.length));
+      const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
+      if (!kept || kept.continued || !kept.opened || (h.live as number[]).includes(grantId)) continue;
+      if (fields.some(f => f.op === codes.OP.GRANT_END && f.grantId === grantId)) continue;
+      const spent = fields.filter(f => f.grantId === grantId && f.decision === DECISION.SELF_PRESS);
+      const scopes = kept.scopes
+        .map(sc => ({...sc, cap: sc.cap - spent.filter(f => f.op === sc.op && f.slot === sc.slot).length}))
+        .filter(sc => sc.cap > 0);
+      const lifetime = kept.lifetime || DEFAULT_LIFETIME_MINUTES;
+      const minutesLeft = Math.floor(lifetime - (Date.now() - kept.opened) / 60000);
+      if (!scopes.length || minutesLeft < 1) continue;
+      out.push({grantId, reason: kept.reason, scopes, usesLeft: scopes.reduce((n, sc) => n + sc.cap, 0), minutesLeft});
+    }
+    return out;
+  }
+
+  async continueBudget(grantId: number) {
+    const e = (await this.ended()).find(x => x.grantId === grantId);
+    if (!e) throw new Error(`edge: budget ${grantId} cannot be continued`);
+    this.requests.push({
+      id: this.nextRequest++, from: 'this phone (Continue)', reason: `continues #${grantId}: ${e.reason}`,
+      scopes: e.scopes, ttlMinutes: e.minutesLeft,
+    });
+    const k = REGISTRY + toHex(this.deviceId) + '.' + grantId;
+    const kept: Kept = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
+    await AsyncStorage.setItem(k, JSON.stringify({...kept, continued: true}));
+  }
+
   /* the soft key's own buttons press for every request that waits on one */
   private pressing(onPress?: () => void) {
     return () => {
@@ -219,7 +270,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       if (!kept || !kept.signature) continue;
       openings[Number(k.slice(prefix.length))] = {
         scopes: kept.scopes, reasonHash: tickets.messageHash(kept.reason), genesis: fromHex(kept.genesis),
-        uses: kept.uses, signature: fromHex(kept.signature),
+        uses: kept.uses, lifetime: kept.lifetime ?? 0, signature: fromHex(kept.signature),
       };
     }
     return {links: mirror.links, openings};
@@ -244,13 +295,17 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       copy: await this.copy(),
       scopes: r.scopes,
       reasonHash,
+      ttlMinutes: r.ttlMinutes ?? 0,
       onPress: () => {
         this.pressWanted = () => undefined;
         onPress?.();
       },
     });
     this.pressWanted = null;
-    const kept: Kept = {reason: r.reason, scopes: r.scopes, uses: g.uses, genesis: toHex(g.genesis), from: r.from, signature: toHex(g.checkpoint.signature)};
+    const kept: Kept = {
+      reason: r.reason, scopes: r.scopes, uses: g.uses, genesis: toHex(g.genesis), from: r.from, signature: toHex(g.checkpoint.signature),
+      lifetime: r.ttlMinutes ?? 0, opened: Date.now(),
+    };
     await AsyncStorage.setItem(REGISTRY + toHex(this.deviceId) + '.' + g.grantId, JSON.stringify(kept));
     this.requests = this.requests.filter(x => x.id !== id);
   }

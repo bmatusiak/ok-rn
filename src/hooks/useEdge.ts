@@ -9,7 +9,7 @@
  * session, kept outside React so switching tabs keeps it.
  */
 import {useCallback, useEffect, useState} from 'react';
-import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeInbox, type EdgeKeyState, type EdgeReplay, type EdgeRequest, type EdgeSource} from '../edgeFake';
+import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type EdgeInbox, type EdgeKeyState, type EdgeReplay, type EdgeRequest, type EdgeSource} from '../edgeFake';
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {useBackend} from './KeyContext';
@@ -37,6 +37,8 @@ export function useEdge() {
   const [keyState, setKeyState] = useState<EdgeKeyState | null>(null);
   /* the last replay's outcome, for the Restore card (B6) */
   const [replay, setReplay] = useState<EdgeReplay | null>(null);
+  /* budgets a lock or reboot ended, with what is left (Continue) */
+  const [ended, setEnded] = useState<EdgeEnded[]>([]);
   /* R27: whether a budget may be asked for from this phone's copy (Yes is off, with the reason, until it may) */
   const [copyCheck, setCopyCheck] = useState<EdgeCopyCheck | null>(null);
 
@@ -59,6 +61,7 @@ export function useEdge() {
       setView(await work(s));
       setBudgets(await s.budgets());
       setKeyState(s.state ? await s.state() : null);
+      setEnded(s.ended ? await s.ended() : []);
       const pending = await s.pending();
       setRequests(pending);
       setCopyCheck(pending.length ? await s.check() : null);
@@ -129,6 +132,11 @@ export function useEdge() {
     }
     return (await syncMirror(s)).view;
   }), [run]);
+  /* Continue: a request for what is left; then Approve is the usual Yes and press */
+  const continueBudget = useCallback((grantId: number) => run(async s => {
+    await s.continueBudget?.(grantId);
+    return evaluate(await loadMirror(s.deviceId), await s.head());
+  }), [run]);
   /* testing mode: an agent's pressed sign with no ticket (soft key only) */
   const agentSign = useCallback(() => run(async s => {
     const k = s as Source & {agentSign?: (t: string) => Promise<void>};
@@ -170,8 +178,8 @@ export function useEdge() {
   }, [sync]);
 
   return {
-    view, budgets, requests, busy, error, pressFor, copyCheck, keyState, replay, isFake: !wantReal,
+    view, budgets, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
-    hold, resume, waive, replayCopy, finishRestore, agentSign,
+    hold, resume, waive, replayCopy, finishRestore, agentSign, continueBudget,
   };
 }

@@ -140,7 +140,8 @@ module.exports = function register({it}, ctx) {
     const reasonHash = sha256('okrn e2e: sign two agent messages');
 
     /* GRANT_CREATE waits for the PHYSICAL press - on the soft key, its own button */
-    const g = await app.edge.grant({scopes, reasonHash, onPress: pressSoon});
+    /* the raw call: this test is the host, and passes the head it read (R27; the tab goes through grants.create) */
+    const g = await app.edge.grant({scopes, reasonHash, verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
     log(`budget ${g.grantId}: ${g.uses} uses, opened at #${g.seq}`);
     const [opened] = await app.edge.pickup(g.seq, 1);
     const prevHead = before.seq === null ? chain.genesis(deviceId) : (await app.edge.pickup(before.seq, 1))[0].head;
@@ -187,12 +188,12 @@ module.exports = function register({it}, ctx) {
   it('edge: a held budget arms nothing until a pressed resume', async ({log, assert}) => {
     const app = await ready(log);
     await clearDebts(app, log);
-    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1}], reasonHash: sha256('okrn e2e: hold'), onPress: pressSoon});
+    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1}], reasonHash: sha256('okrn e2e: hold'), verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
     assert.equal(await app.edge.hold(g.grantId), true);
     let h = await app.edge.head();
     assert.equal(JSON.stringify(h.held), JSON.stringify([g.grantId]), 'HEAD does not report the hold');
     assert.equal(await refusal(armFor(app, h.head, agentRequest('held'))), 'nothing-to-arm');
-    assert.equal(await app.edge.resume(g.grantId, {onPress: pressSoon}), true);
+    assert.equal(await app.edge.resume(g.grantId, {verifiedHead: (await app.edge.head()).head, onPress: pressSoon}), true);
     h = await app.edge.head();
     assert.equal(JSON.stringify(h.held), JSON.stringify([]));
     assert.equal(await armFor(app, h.head, agentRequest('resumed')), true);
