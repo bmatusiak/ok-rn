@@ -218,4 +218,16 @@ module.exports = function register({it}, ctx) {
     assert.equal(await armFor(app, h.head, agentRequest('resumed')), true);
     assert.equal(await app.edge.revoke(g.grantId), true);
   });
+
+  /*
+   * Last: the suite leaves no budget open on the real soft key (owner,
+   * 2026-10-03 - these tests open budgets on agent slot 222, and a budget
+   * there covers every derived P-256 identity while it lives).
+   */
+  it('edge: no budget is left live when the suite ends', async ({log, assert}) => {
+    const app = await ready(log);
+    const h = await app.edge.head();
+    log(`head #${h.seq}, live ${JSON.stringify(h.live)}, held ${JSON.stringify(h.held)}, owed ${h.owed}`);
+    assert.equal(JSON.stringify(h.live), '[]', 'a test budget is still live');
+  });
 };
