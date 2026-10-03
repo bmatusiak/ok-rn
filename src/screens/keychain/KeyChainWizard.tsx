@@ -32,6 +32,8 @@ type Answers = {
   sshP256?: boolean;
   pq?: boolean;
   pgpModern?: boolean;
+  /* bring back a PGP key you already have (its public key file) instead of making one */
+  pgpBack?: boolean;
   rsaOk?: 'wipe' | 'copy';
   otherType?: DeviceType | 'rsa';
   person?: string;
@@ -62,7 +64,8 @@ type Plan =
   | {act: 'jobs'; jobs: Job[]; what: string}
   | {act: 'host'; type: HostType; bits: number; slot: number | null; kind: string; copy: boolean; what: string}
   | {act: 'pgp-app'; ecc: boolean; bits: number; copy: boolean; what: string}
-  | {act: 'derive'; scheme: string; type: string; what: string};
+  | {act: 'derive'; scheme: string; type: string; what: string}
+  | {act: 'import-pgp'; what: string};
 
 function planOf(a: Answers): Plan | null {
   const inside = a.leave === 'no';
@@ -79,6 +82,7 @@ function planOf(a: Answers): Plan | null {
         ? {act: 'jobs', jobs: [], what: 'a key for receiving encrypted files (X25519), made inside the OnlyKey'}
         : {act: 'host', type: 'x25519', bits: 0, slot: null, kind: 'age', copy: true, what: 'a key for receiving encrypted files (X25519), made in the App, with an encrypted copy'};
     case 'pgp':
+      if (a.pgpBack) return {act: 'import-pgp', what: 'your PGP key back, from its public key file (.asc), checked against this OnlyKey before it is kept'};
       if (a.pgpModern && inside) return {act: 'jobs', jobs: [], what: 'a PGP key pair (Ed25519 to sign, X25519 to decrypt) made inside the OnlyKey'};
       return {
         act: 'pgp-app', ecc: Boolean(a.pgpModern), bits: a.bits || 3072,
@@ -185,6 +189,21 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [])
       {label: 'Something else', info: 'Choose the key type yourself.', set: {use: 'other'}},
     ]};
   }
+  /*
+   * BRING ONE BACK (owner, 2026-10-03): after a restore the PGP private keys
+   * are on the OnlyKey again, but their public key file lives outside it.
+   * Making a new key would publish a different PGP key; this imports the old
+   * one, proven against the slots (Key Chain's Import PGP key).
+   */
+  if (a.use === 'pgp' && a.pgpBack === undefined) {
+    return {kind: 'choice', id: 'pgpBack', ask: 'A new PGP key, or one you already have?',
+      why: 'After restoring a backup, your PGP keys are back on the OnlyKey, but their public key file is not. Bring it back so the PGP key people already know keeps working.',
+      options: [
+        {label: 'Make a new one', info: 'A new PGP key - people will need your new public key.', set: {pgpBack: false}, recommended: true},
+        {label: 'Bring back one I have', info: 'From its public key file (.asc). It is checked against the OnlyKey - a test signature - before it is kept.', set: {pgpBack: true}},
+      ]};
+  }
+  if (a.use === 'pgp' && a.pgpBack) return {kind: 'review', id: 'review'};
   if (a.use === 'pgp' && a.pgpModern === undefined) {
     return {kind: 'choice', id: 'pgpModern', ask: 'Does your email or PGP software handle modern (ECC) keys?',
       why: 'Thunderbird, GnuPG 2.2 or newer, and the OnlyKey web app all do. Some old software only understands RSA keys.',
@@ -393,6 +412,7 @@ export function KeyChainWizard({
   makeHostWith,
   makePgpInApp,
   deriveWith,
+  onImportPgp,
   onQueued,
   configPanel,
   progress,
@@ -407,6 +427,8 @@ export function KeyChainWizard({
   makeHostWith: (h: {type: HostType; bits: number; slot: number | null; kind: string; name: string; pass: string | null}) => Promise<boolean>;
   makePgpInApp: (g: {name: string; email: string; bits: number; pass: string | null; tagName: string; ecc: boolean}) => Promise<boolean>;
   deriveWith: (d: {scheme: string; type: string; label: string}) => Promise<boolean>;
+  /* close the Wizard and open Key Chain's Import PGP key */
+  onImportPgp: () => void;
   onQueued: () => void;
   /* The screen's config mode panel: the panels are hidden while the Wizard is open, so it comes along. */
   configPanel: React.ReactNode;
@@ -612,6 +634,8 @@ export function KeyChainWizard({
             <Btn title="Add it to the list to write" tone="primary" onPress={() => void finish()} />
           ) : plan.act === 'derive' ? (
             <Btn title={busy === 'derive' ? 'Making…' : 'Make it'} tone="primary" disabled={busy !== null || locked} onPress={() => void finish()} />
+          ) : plan.act === 'import-pgp' ? (
+            <Btn title="Pick the public key file" tone="primary" onPress={() => { AsyncStorage.removeItem(WIZARD_SAVE_KEY).catch(() => {}); onImportPgp(); }} />
           ) : (
             <>
               {(() => {
@@ -647,6 +671,11 @@ export function KeyChainWizard({
 
 function reviewLines(a: Answers, plan: Plan): string[] {
   const l: string[] = [];
+  if (plan.act === 'import-pgp') {
+    l.push('Pick the file (or paste the key). Key Chain checks the certificate is genuine and that its keys are the ones in ECC1 and ECC2.');
+    l.push('Then a test with the OnlyKey: one signature and one key exchange - press when it asks, twice. Only then is it kept, linked to those slots.');
+    return l;
+  }
   if (plan.act === 'jobs') {
     if (a.use === 'pgp') {
       l.push('Two keys made inside the OnlyKey: one to decrypt (ECC1) and one to sign (ECC2) - the slots the web app and desktop App use for PGP.');

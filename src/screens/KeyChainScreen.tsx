@@ -77,9 +77,11 @@ type Copy = {id: string; title: string; file: string; mime: string; text: string
 const CLIPBOARD_TTL_MS = 45000;
 
 /* Which ways of adding each panel offers. */
+type AddPath = 'In the Key' | 'In the App' | 'Derive' | 'Import PGP key';
 const PATHS = {
-  key: ['In the Key', 'In the App'] as ('In the Key' | 'In the App' | 'Derive')[],
-  app: ['Derive', 'In the App'] as ('In the Key' | 'In the App' | 'Derive')[],
+  key: ['In the Key', 'In the App'] as AddPath[],
+  /* Import PGP key (owner, 2026-10-03): a restored OnlyKey has its PGP private keys back; the certificate comes from its .asc */
+  app: ['Derive', 'In the App', 'Import PGP key'] as AddPath[],
 };
 /*
  * ADDED TO, never replaced: one config-mode visit can write a queue AND a
@@ -140,7 +142,10 @@ export function KeyChainScreen({
   const [progress, setProgress] = useState<Progress | null>(null);
 
   /* The wizard's own state. */
-  const [path, setPath] = useState<'Derive' | 'In the Key' | 'In the App'>('In the Key');
+  const [path, setPath] = useState<AddPath>('In the Key');
+  /* Import PGP key: the armored text, and what the checks found */
+  const [pgpText, setPgpText] = useState('');
+  const [pgpCheck, setPgpCheck] = useState<{info: any; match: {signSlot: number | null; ecdhSlot: number | null}} | null>(null);
   const [scheme, setScheme] = useState<'Label' | 'SSH' | 'GPG'>('Label');
   const [deriveType, setDeriveType] = useState('p256');
   const [deriveLabel, setDeriveLabel] = useState('');
@@ -652,6 +657,70 @@ export function KeyChainScreen({
   }, [makeHostWith, hostType, rsaBits, hostStore, hostCopy, pass1, pass2, slot, name, confirmText]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ---------------------------------------------------------- list file */
+  /*
+   * IMPORT A PGP PUBLIC KEY BACK (owner, 2026-10-03): the lib's
+   * keychain.pgpImport does the checks - the certificate verifies, its keys
+   * equal what the slots report (the key computes those from its private
+   * keys), then the slots prove them with a test signature and a key exchange
+   * (a press each). Nothing is kept until they pass; without a match it can
+   * only be kept as someone else's key.
+   */
+  const pickPgpFile = useCallback(async () => {
+    setError(null);
+    try {
+      const picked = await NativeShare.pickTextFile('*/*');
+      if (!picked.picked) return;
+      setPgpText(picked.content);
+      setPgpCheck(null);
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    }
+  }, []);
+  const checkPgp = useCallback(async () => {
+    setError(null);
+    setStatus(null);
+    setPgpCheck(null);
+    try {
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      const info = await keychain.pgpImport.inspect(openpgp, pgpText);
+      const out = await readSlots(); /* the public keys as the key computes them, not the cache */
+      setPgpCheck({info, match: keychain.pgpImport.matchSlots(info, out || [])});
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+    }
+  }, [pgpText, readSlots]);
+  const keepPgp = useCallback(async (prove: boolean) => {
+    if (!pgpCheck) return;
+    const {info, match} = pgpCheck;
+    setBusy('pgp-import');
+    setError(null);
+    try {
+      let proven: {sign: boolean | null; ecdh: boolean | null} = {sign: null, ecdh: null};
+      if (prove) {
+        setStatus('Testing with the OnlyKey: press when it asks - twice, a signature and a key exchange.');
+        const {okcrypto} = await getKey();
+        const confirm = ({digits}: {digits: number[]}) => setChallenge(digits);
+        proven = await keychain.pgpImport.proveSlots(info, match, {
+          sign: (slot: number, digest: Uint8Array) => okcrypto.sign(slot, digest, {expectBytes: 64, confirm}).finally(() => setChallenge(null)),
+          ecdh: (slot: number, peer: Uint8Array) => okcrypto.decrypt(slot, peer, {expectBytes: 32, confirm}).finally(() => setChallenge(null)),
+        });
+      }
+      const made = keychain.list.createEntry(keychain.pgpImport.entryFor(info, match, proven));
+      const {entries: next, added} = keychain.list.merge(entries, [made]);
+      await saveEntries(next);
+      const where = [match.signSlot, match.ecdhSlot].filter((n): n is number => n !== null).map(slotName).join(' and ');
+      setStatus(!added ? 'Already in the App.' : prove ? `Kept, linked to ${where}: the OnlyKey proved its keys.` : "Kept as someone else's key - for encrypting to them.");
+      setPgpText('');
+      setPgpCheck(null);
+      setAdding(false);
+    } catch (e) {
+      setStatus(null);
+      setError(String((e as Error)?.message ?? e));
+    } finally {
+      setBusy(null);
+    }
+  }, [pgpCheck, getKey, entries, saveEntries]);
+
   const exportList = useCallback(async () => {
     const stamp = new Date().toISOString().slice(0, 10);
     await NativeShare.shareFile(`onlykey-keychain-${stamp}.json`, keychain.list.serialize(entries), 'application/json', 'Key Chain list');
@@ -845,6 +914,66 @@ export function KeyChainScreen({
             </>
           ) : null}
 
+          {path === 'Import PGP key' ? (
+            <>
+              <Text style={styles.body}>
+                Your PGP public key, from its file (.asc) or pasted. Before it is kept, Key Chain checks the
+                certificate is genuine and that its keys are the ones in this OnlyKey - then tests them with a
+                signature and a key exchange.
+              </Text>
+              <Btn title="Pick a file" onPress={() => void pickPgpFile()} disabled={busy !== null} />
+              <TextInput
+                value={pgpText}
+                onChangeText={t => {
+                  setPgpText(t);
+                  setPgpCheck(null);
+                }}
+                multiline
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"
+                placeholderTextColor={theme.textDim}
+                style={[styles.input, styles.pgpInput]}
+              />
+              <Btn
+                title={busy === 'read' ? 'Checking…' : 'Check it'}
+                tone="primary"
+                disabled={busy !== null || locked || !pgpText.trim()}
+                onPress={() => void checkPgp()}
+              />
+              {pgpCheck ? (() => {
+                const {info, match} = pgpCheck;
+                const linked = match.signSlot !== null || match.ecdhSlot !== null;
+                const fp = String(info.fingerprint).replace(/(.{4})/g, '$1 ').trim();
+                return (
+                  <>
+                    <Text style={styles.body}>{info.userId || '(no user id)'}</Text>
+                    <Text style={styles.note}>fingerprint {fp}</Text>
+                    <Text style={styles.note}>✓ the certificate is genuine - its self-signatures verify</Text>
+                    <Text style={styles.note}>
+                      {match.signSlot !== null ? `✓ its signing key is in ${slotName(match.signSlot)}` : '✗ its signing key is not on this OnlyKey'}
+                    </Text>
+                    {info.encryption ? (
+                      <Text style={styles.note}>
+                        {match.ecdhSlot !== null ? `✓ its decrypt key is in ${slotName(match.ecdhSlot)}` : '✗ its decrypt key is not on this OnlyKey'}
+                      </Text>
+                    ) : null}
+                    {linked ? (
+                      <Btn
+                        title={busy === 'pgp-import' ? 'Testing…' : 'Test with the OnlyKey and keep it'}
+                        tone="primary"
+                        disabled={busy !== null || locked}
+                        onPress={() => void keepPgp(true)}
+                      />
+                    ) : (
+                      <Btn title="Keep it as someone else's key" disabled={busy !== null} onPress={() => void keepPgp(false)} />
+                    )}
+                  </>
+                );
+              })() : null}
+            </>
+          ) : null}
+
           {path === 'In the Key' ? (
             <>
               <Text style={styles.body}>
@@ -1027,6 +1156,12 @@ export function KeyChainScreen({
           makeHostWith={makeHostWith}
           makePgpInApp={makePgpInApp}
           deriveWith={deriveWith}
+          onImportPgp={() => {
+            setWizard(0);
+            setScope('app');
+            setPath('Import PGP key');
+            setAdding(true);
+          }}
           onQueued={() => setWizard(0)}
           configPanel={configPanel}
           progress={progress}
@@ -1290,11 +1425,32 @@ function SlotChips({
   );
 }
 
+/*
+ * A key, shortened for one line; null for words (a description is shown whole).
+ * An ssh line keeps its type and the key's last 12 characters: every Ed25519 key
+ * starts with the same "AAAAC3NzaC1lZDI1NTE5AAAAI", so the start tells nothing.
+ */
+function shortKey(v: string): string | null {
+  const ssh = /^((?:ssh|ecdsa|sk)-\S+) (\S{16,})(?: .*)?$/.exec(v);
+  if (ssh) return `${ssh[1]} …${ssh[2].slice(-12)}`;
+  if (/^\S{30,}$/.test(v)) return `${v.slice(0, 12)}…${v.slice(-12)}`;
+  return null;
+}
+
 function CopyRow({title, value, onCopy}: {title: string; value: string; onCopy: () => void}) {
+  /* tap a shortened key to see it whole (owner: "hard time viewing the pub key"), tap again to shorten */
+  const [whole, setWhole] = useState(false);
+  const short = shortKey(value);
   return (
     <View style={styles.copyRow}>
       <Text style={styles.copyTitle}>{title}</Text>
-      <Text style={styles.copyValue} numberOfLines={2} selectable>{value}</Text>
+      {/* a key is shown SHORTENED IN THE MIDDLE (owner, 2026-10-03): its ending is what tells two
+          keys apart, and two lines cut an ssh key at "…OLX/" with no sign that more followed.
+          Shortened here, not with ellipsizeMode: on Android it does nothing on selectable text
+          (the A13 drew every row as one line and a clipped half). Copy takes the whole value. */}
+      <Text style={styles.copyValue} selectable={whole || !short} onPress={short ? () => setWhole(w => !w) : undefined}>
+        {whole || !short ? value : short}
+      </Text>
       <Btn title="Copy" onPress={onCopy} />
     </View>
   );
@@ -1305,6 +1461,7 @@ const styles = StyleSheet.create({
   content: {padding: 16, gap: 16, paddingBottom: 48},
   body: {color: theme.textSecondary, fontSize: theme.fontSize, lineHeight: theme.lineHeight},
   note: {color: theme.textDim, fontSize: 12, lineHeight: 18},
+  pgpInput: {minHeight: 96, textAlignVertical: 'top'},
   status: {color: theme.ok, fontSize: 13, lineHeight: 20},
   error: {color: theme.error, fontSize: 13, lineHeight: 20},
   input: {
