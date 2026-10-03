@@ -103,6 +103,14 @@ module.exports = function register({it}, ctx) {
     const {deviceId} = await app.edge.publicKey();
     const h = await app.edge.head();
     log(`device ${Array.from(deviceId, b => b.toString(16).padStart(2, '0')).join('')}, head #${h.seq}, live ${JSON.stringify(h.live)}`);
+    /*
+     * A key restored from a backup refuses budgets and forgets the links
+     * after the backup until the restore is finished (R26). Seen 2026-10-03
+     * after restoring the A13's backup on the Pixel: three tests failed with
+     * "finish the restore in the app first" and "no longer holds that link".
+     * One clear line instead.
+     */
+    assert.ok(!h.restoring, 'the key is restoring from a backup - finish it on the phone first (Edge tab -> Restore card -> Finish the restore), then run again');
     if (h.seq === null) {
       assert.equal(chain.verify([], {deviceId, expectHead: {seq: -1, head: h.head}}).ok, true, 'an empty chain\'s head is not the genesis');
     }
