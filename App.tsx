@@ -45,6 +45,7 @@ import {LogScreen} from './src/screens/LogScreen';
 import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
 import {EdgeScreen} from './src/screens/EdgeScreen';
+import {hasSoftKeyPlugin} from './src/buildInfo';
 import {setFirmwareConsoleToLogcat} from './src/hooks/useOkEmu';
 
 /*
@@ -122,12 +123,20 @@ const TESTING_TAB = 'Testing' as const;
  */
 const IN_DEV_TAB = 'In-Development' as const;
 /*
- * Edge (onlykey-edge): driven by a FAKE key until the soft key's Edge firmware
- * plugin exists, so testing mode only, like In-Development. It moves into TABS
- * when a real key can answer it.
+ * Edge (onlykey-edge). Shown whenever this build's soft key carries the Edge
+ * firmware plugin (OKEMU_PLUGINS=edge) - the owner is trying it out on the
+ * real soft key without testing mode (2026-10-03). Without the plugin it is
+ * testing mode only, where it runs on the FAKE key. The screen hides its own
+ * testing controls when testing mode is off.
  */
 const EDGE_TAB = 'Edge' as const;
 type Tab = (typeof TABS)[number] | typeof IN_DEV_TAB | typeof EDGE_TAB | typeof TESTING_TAB;
+
+/* the drawer's tabs: testing mode adds its own; Edge also comes with a soft key that has it */
+function shownTabs(testingOn: boolean): readonly Tab[] {
+  if (__DEV__ && testingOn) return [...TABS, IN_DEV_TAB, EDGE_TAB, TESTING_TAB];
+  return hasSoftKeyPlugin('edge') ? [...TABS, EDGE_TAB] : TABS;
+}
 
 /** Splash until the device can answer, then a door, then the app. */
 type Phase = 'splash' | 'login' | 'pin' | 'setup' | 'main';
@@ -553,7 +562,7 @@ function Shell() {
      * must not come back through here - the render's last branch IS the
      * Testing screen, and this would walk round its gate.
      */
-    const valid: readonly string[] = __DEV__ && testing.enabled ? [...TABS, IN_DEV_TAB, EDGE_TAB, TESTING_TAB] : [...TABS];
+    const valid: readonly string[] = shownTabs(testing.enabled);
     void takeResumeTab(valid).then(remembered => {
       if (remembered) setTab(remembered as Tab);
     });
@@ -1018,7 +1027,7 @@ function Shell() {
 
         <Drawer
           open={drawer && ready}
-          tabs={__DEV__ && testing.enabled ? [...TABS, IN_DEV_TAB, EDGE_TAB, TESTING_TAB] : TABS}
+          tabs={shownTabs(testing.enabled)}
           value={tab}
           onChange={setTab}
           onClose={() => setDrawer(false)}
