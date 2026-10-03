@@ -357,3 +357,40 @@ test('the refusal matches the MESSAGE, not a byte that happens to be 0xf4', asyn
   expect(fake.writes[0].data[4]).toBe(0xe4);
   off();
 });
+
+/*
+ * A COMPUTER'S CONVERSATION HOLDS THE KEY'S LANE (2026-10-03): an app request
+ * (Key Chain, the background Edge copy) waits until the computer's
+ * conversation is over - the key quiet AND not waiting for a press - instead
+ * of landing in the middle of a push or a gpg signature and taking its answer.
+ */
+test('a computer conversation holds the key: an app request waits for quiet and for the press', async () => {
+  const fake = fakeTransport();
+  let tail: Promise<unknown> = Promise.resolve();
+  const lane = (fn: () => Promise<unknown>) => {
+    const run = tail.then(fn, fn);
+    tail = run.then(() => {}, () => {});
+    return run;
+  };
+  (fake.transport as unknown as {exclusive: typeof lane}).exclusive = lane;
+  let waiting = true;
+  const off = startVendorBridge({
+    log: () => {},
+    getKey: async () => ({transport: fake.transport} as never),
+    getTarget: () => TARGET,
+    isKeyWaiting: async () => waiting,
+  });
+  await mockRequestListener!({iface: 'vendor', hex: 'ffffffffe4', requestId: '', address: TARGET});
+  expect(fake.writes).toHaveLength(1);
+  let appRan = false;
+  const app = lane(async () => {
+    appRan = true;
+  });
+  await new Promise(r => setTimeout(r, 1700));
+  expect(appRan).toBe(false); /* quiet, but the key waits for a press: still the computer's */
+  waiting = false;
+  await new Promise(r => setTimeout(r, 1700));
+  await app;
+  expect(appRan).toBe(true);
+  off();
+}, 10000);

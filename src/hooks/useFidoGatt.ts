@@ -218,6 +218,8 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
       log,
       isApi: () => apiRef.current,
       getTarget,
+      /* the soft key says when it waits for a press; a hard key cannot, and ends on quiet */
+      isKeyWaiting: async () => (OkEmu.isRunning() ? (await OkEmu.waiting()) !== null : false),
     });
 
     FidoGatt.isSupported()

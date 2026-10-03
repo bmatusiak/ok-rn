@@ -95,7 +95,16 @@ type Options = {
   isApi?: () => boolean;
   /** The targeted computer's address, or null for None. See onRequest. */
   getTarget?: () => string | null;
+  /**
+   * Is the key waiting for a press (or a code) right now? The soft key can
+   * say (OkEmu.waiting); a key that cannot answers false, and a computer's
+   * conversation then ends on quiet alone. See holdForComputer.
+   */
+  isKeyWaiting?: () => Promise<boolean>;
 };
+
+/* a computer's conversation holds the key's lane until it has been quiet this long (and nothing waits for a press) */
+const COMPUTER_QUIET_MS = 1500;
 
 /*
  * A BLE write we are about to make, as the 'write' event will echo it: the
@@ -125,7 +134,7 @@ export function vendorQuietForMs(): number {
   return Date.now() - lastHostActivity;
 }
 
-export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () => void {
+export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting}: Options): () => void {
   /* Which transport the report subscription is attached to, so a key change
    * moves it rather than leaving it listening to the previous device. */
   let boundTo: unknown = null;
@@ -183,6 +192,55 @@ export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () 
   let sending: Promise<void> = Promise.resolve();
 
   /*
+   * A COMPUTER'S CONVERSATION HOLDS THE KEY'S LANE (owner, 2026-10-03: "fix
+   * both races"). The lib's lane (node-onlykey-lib src/transport/lane.js)
+   * gives the app's own conversations one at a time - Key Chain reads, the
+   * background Edge copy, a sign. A computer's writes come through here,
+   * raw, so without this an app request could still land in the middle of
+   * a computer's push or gpg signature and take its answer (the owner =
+   * null rule below would then send it to the app).
+   *
+   * The bridge cannot see where a computer's conversation ends - no request
+   * ids, multi-report answers, a press of up to 20 s - so it holds the lane
+   * from the computer's first write until the key has been quiet for
+   * COMPUTER_QUIET_MS AND is not waiting for a press. The computer's later
+   * writes (a chunked request) go straight in while it holds it.
+   */
+  let held: {release: () => void; timer: ReturnType<typeof setTimeout> | null} | null = null;
+  let holding: Promise<void> | null = null;
+  function armRelease() {
+    if (!held) return;
+    if (held.timer) clearTimeout(held.timer);
+    held.timer = setTimeout(() => {
+      void (async () => {
+        if (!held) return;
+        const waiting = isKeyWaiting ? await isKeyWaiting().catch(() => false) : false;
+        if (waiting) return armRelease(); /* a press is pending: the conversation is not over */
+        const h = held;
+        held = null;
+        holding = null;
+        h.release();
+      })();
+    }, COMPUTER_QUIET_MS);
+  }
+  function holdForComputer(transport: any): Promise<void> {
+    if (holding) return holding;
+    holding = new Promise<void>(ready => {
+      const conversation = () => new Promise<void>(release => {
+        held = {release, timer: null};
+        ready();
+        armRelease();
+      });
+      if (typeof transport.exclusive === 'function') {
+        void transport.exclusive(conversation);
+      } else {
+        void conversation();
+      }
+    });
+    return holding;
+  }
+
+  /*
    * The whole outbound gate: the API door open, and the computer that owns
    * the conversation still the target. This is the first gate and
    * sendVendorReport the last - it sends only to the target's connection,
@@ -227,6 +285,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () 
       'report',
       ({iface, data}: {iface: number; data: Uint8Array}) => {
         if (iface !== IFACE_VENDOR) return;
+        if (held) armRelease(); /* the key is still answering: the conversation goes on */
         if (!mayForward()) return;
         push(data);
       },
@@ -282,6 +341,9 @@ export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () 
       }
 
       const transport = await ensureSubscribed();
+      /* the computer's turn on the key: after any app conversation in flight, then held (holdForComputer) */
+      await holdForComputer(transport);
+      armRelease();
       log('rx', `[vendor] ${data.length} bytes -> the key`);
       /* Before the write: a fast key answers before write() resolves. */
       owner = event.address;
@@ -310,5 +372,12 @@ export function startVendorBridge({log, getKey, isApi, getTarget}: Options): () 
     offWrite = null;
     owner = null;
     boundTo = null;
+    if (held) {
+      if (held.timer) clearTimeout(held.timer);
+      const h = held;
+      held = null;
+      holding = null;
+      h.release();
+    }
   };
 }
