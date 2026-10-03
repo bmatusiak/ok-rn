@@ -1084,4 +1084,149 @@ module.exports = function register({ it }, ctx) {
       const [last] = await pickup(device, h.seq, 1, { signal });
       assert.bytes(Buffer.from(last.head), Buffer.from(h.head));
     });
+
+  /*
+   * THE AGENT SERVICE ON THE REAL EDGE FIRMWARE (Edge Phase 2, build step 1 -
+   * onlykey-edge daily-loop.md §5: "emulator first, no hardware"). The lib's
+   * own edge-agent (cli/edge-agent.js) over the kit's emulator (the kit's
+   * libstack), the phone's side in-process (approve.approveRequest), presses
+   * by the emulator. A scratch repo: `git commit -S` inside `okedge exec`, an
+   * ssh sign on the exec's endpoint bound to a pinned host - each a self-press
+   * paid by the budget, each ticketed. And the must-fail-safely checks
+   * (daily-loop §3): the shared endpoint is a press, a skipped ticket and a
+   * stale head refuse the next exec before it runs, Hold refuses it too.
+   */
+  it('edge: the agent service on the emulator - a signed commit and an ssh sign paid by the budget and ticketed; the shared endpoint is a press; skipped ticket, stale head and Hold refuse the next exec',
+    async ({ device, assert, signal, log }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const net = require('net');
+      const { execFileSync } = require('child_process');
+      const { request, approve, client, codes } = ctx.requireLib('node-onlykey-lib/edge');
+      const { startEdgeAgent } = ctx.requireLib('node-onlykey-lib/cli/edge-agent');
+      const okedge = ctx.requireLib('node-onlykey-lib/cli/okedge');
+      const wire = ctx.requireLib('node-onlykey-lib/cli/ssh-wire');
+      const bindLib = ctx.requireLib('node-onlykey-lib/cli/ssh-session-bind');
+      const hexOf = (b) => Buffer.from(b).toString('hex');
+      const pressSoon = () => { setTimeout(() => device.press(1), 900); };
+
+      const lib = await ctx.kit.libstack.composeLib(device);
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-edge-agent-'));
+      const savedHome = process.env.OKEDGE_HOME;
+      process.env.OKEDGE_HOME = home;
+      let svc = null;
+      try {
+        const { okcrypto, transport } = lib.services;
+        let edgeSvc = null;
+        ctx.requireLib('node-onlykey-lib/plugins/edge')({ transport }, (err, s) => { if (err) throw err; edgeSvc = s.edge; });
+
+        /* the phone, in-process: a registered agent key, Yes, and the press the key waits for */
+        const agentKey = request.signerFromSecret(crypto.randomBytes(32));
+        const seen = new Set();
+        const channel = {
+          async send(msg) {
+            const r = await approve.approveRequest(msg, {
+              edge: edgeSvc, registered: [hexOf(agentKey.publicKey)], seen, ask: async () => 'approve',
+              verifyCopy: async () => ({ ok: true, head: (await edgeSvc.head()).head }), onPress: pressSoon, timeoutMs: 30000,
+            });
+            return r.dropped ? null : r;
+          },
+        };
+        const c = client.createEdgeClient({ edge: edgeSvc, channel, signer: agentKey });
+
+        /* a host key standing in for github.com, pinned */
+        const hk = crypto.generateKeyPairSync('ed25519');
+        const hostBlob = Buffer.concat([wire.string(Buffer.from('ssh-ed25519')), wire.string(hk.publicKey.export({ format: 'der', type: 'spki' }).subarray(12))]);
+        const config = { ssh: 'ssh://claude@okt', gpgUid: 'Claude (okt agent) <claude@okt>', committer: { name: 'Claude (okt agent)', email: 'claude@okt' }, pins: [bindLib.fingerprint(hostBlob)] };
+        svc = await startEdgeAgent({
+          okcrypto, client: c, edge: edgeSvc, config, openpgp: ctx.requireLib('node-onlykey-lib/crypto/pgp'),
+          shimCommand: path.join(path.dirname(ctx.resolveLib('node-onlykey-lib/package.json')), 'cli', 'edge-gpg-shim.js').split(path.sep).join('/'),
+          log, confirm: pressSoon, /* the certificate's two signatures, and any plain sign: a press */
+        });
+        log(`ssh key: ${svc.sshLine}`);
+        assert.ok(svc.fingerprint, 'the agent\'s PGP certificate was made');
+        const lastLink = async () => { const h = await edgeSvc.head(); return chain.decodeLink((await edgeSvc.pickup(h.seq, 1))[0].link); };
+        const run = async (args) => { const lines = []; const code = await okedge.main(args, { out: (s) => lines.push(s), err: (s) => lines.push(`ERR ${s}`) }); log(lines.join(' | ')); return { code, lines }; };
+
+        /* A1: one Yes + press for the work budget */
+        let r = await run(['budget', '--reason', 'okt: commit and push', '--ssh', '3', '--gpg', '3', '--ttl', '30']);
+        assert.equal(r.code, 0, r.lines.join('\n'));
+        let head = r.lines.find((l) => l.startsWith('head = ')).slice(7);
+
+        /* A4: a signed commit inside okedge exec - a self-press paid by the budget, then its ticket */
+        const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-edge-repo-'));
+        execFileSync('git', ['-C', repo, 'init', '-q']);
+        execFileSync('git', ['-C', repo, 'config', 'user.name', 'Claude (okt agent)']);
+        execFileSync('git', ['-C', repo, 'config', 'user.email', 'claude@okt']);
+        r = await run(['exec', '--head', head, '--reason', 'commit: okt edge', '--', 'git', '-C', repo, 'commit', '-q', '--allow-empty', '-S', '-m', 'okt: signed by the agent']);
+        assert.equal(r.code, 0, r.lines.join('\n'));
+        let f = await lastLink();
+        assert.equal(JSON.stringify([f.decision, f.grantId !== 0]), JSON.stringify([codes.DECISION.SELF_PRESS, true]), 'the commit signature was not paid by the budget');
+        assert.match(execFileSync('git', ['-C', repo, 'cat-file', 'commit', 'HEAD']).toString(), /\ngpgsig -----BEGIN PGP SIGNATURE-----/);
+        let seq = Number(/link #(\d+)/.exec(r.lines.find((l) => l.startsWith('signed:')))[1]);
+        r = await run(['ticket', String(seq), '--msg', 'committed okt: signed by the agent']);
+        head = r.lines.find((l) => l.startsWith('head = ')).slice(7);
+
+        /* A4: an ssh sign on the exec's endpoint, bound to the pinned host */
+        const sshSign = async (sockPath, bound = true) => {
+          const sid = crypto.randomBytes(32);
+          const sig = crypto.sign(null, sid, hk.privateKey);
+          const bind = Buffer.concat([Buffer.of(wire.MSG.EXTENSION), wire.string(Buffer.from(bindLib.SESSION_BIND)), wire.string(hostBlob), wire.string(sid),
+            wire.string(Buffer.concat([wire.string(Buffer.from('ssh-ed25519')), wire.string(sig)])), Buffer.of(0)]);
+          const data = Buffer.concat([wire.string(sid), Buffer.of(50), wire.string(Buffer.from('git')), wire.string(Buffer.from('ssh-connection'))]);
+          const keyBlob = wire.publicKeyBlob('ed25519', Buffer.from(svc.sshLine.split(' ')[1], 'base64').subarray(19));
+          const msgs = [...(bound ? [bind] : []), Buffer.concat([Buffer.of(wire.MSG.SIGN_REQUEST), wire.string(keyBlob), wire.string(data), wire.uint32(0)])];
+          const sock = net.connect(sockPath);
+          await new Promise((res, rej) => { sock.once('connect', res); sock.once('error', rej); });
+          const replies = [];
+          const feed = wire.createDeframer((m) => replies.push(m));
+          sock.on('data', (d) => feed(d));
+          for (const m of msgs) {
+            const want = replies.length + 1;
+            sock.write(wire.frame(m));
+            const until = Date.now() + 30000;
+            while (replies.length < want && Date.now() < until) await device.sleep(100, { signal });
+          }
+          sock.destroy();
+          return replies[replies.length - 1];
+        };
+        const ex = await svc.agent.openExec({ head, reason: 'push okt to origin/master' });
+        assert.equal((await sshSign(ex.sshPath))[0], wire.MSG.SIGN_RESPONSE);
+        const [sshLink] = await ex.close();
+        assert.equal(sshLink && sshLink.paid, true, 'the ssh sign was not paid by the budget');
+        f = await lastLink();
+        assert.equal(f.decision, codes.DECISION.SELF_PRESS);
+
+        /* must fail safely: a skipped ticket refuses the next exec before it runs */
+        r = await run(['exec', '--head', svc.agent.budget().head(), '--reason', 'skipped ticket', '--', 'git', '--version']);
+        assert.equal(r.code, 1);
+        assert.match(r.lines.join('\n'), /ticket owed for #/);
+        r = await run(['ticket', String(sshLink.seq), '--msg', 'pushed okt']);
+        head = r.lines.find((l) => l.startsWith('head = ')).slice(7);
+
+        /* must fail safely: the shared endpoint is a press, never the budget */
+        const before = await edgeSvc.head();
+        assert.equal((await sshSign(svc.sharedPath))[0], wire.MSG.SIGN_RESPONSE);
+        f = await lastLink();
+        assert.equal(JSON.stringify([f.decision, f.flags & PRESS_OBSERVED]), JSON.stringify([codes.DECISION.APPROVE, PRESS_OBSERVED]), 'the shared endpoint was paid by the budget');
+        assert.ok(f.seq > (before.seq || 0));
+
+        /* must fail safely: a stale head; Hold from the phone */
+        r = await run(['exec', '--head', '00'.repeat(32), '--reason', 'stale', '--', 'git', '--version']);
+        assert.match(r.lines.join('\n'), /--head is not the budget's head/);
+        await edgeSvc.hold(svc.agent.budget().grantId);
+        r = await run(['exec', '--head', svc.agent.budget().head(), '--reason', 'held', '--', 'git', '--version']);
+        assert.match(r.lines.join('\n'), /on hold/);
+
+        r = await run(['end']);
+        assert.match(r.lines.join('\n'), /ended/);
+      } finally {
+        if (svc) await svc.close();
+        await lib.destroy();
+        if (savedHome === undefined) delete process.env.OKEDGE_HOME; else process.env.OKEDGE_HOME = savedHome;
+      }
+    });
 };
