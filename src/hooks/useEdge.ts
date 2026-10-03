@@ -137,6 +137,11 @@ export function useEdge() {
     await s.continueBudget?.(grantId);
     return liveView(s, await loadMirror(s.deviceId));
   }), [run]);
+  /* 4.7a: an ended AGENT budget only goes away - the agent continues it, not the tab */
+  const dismissEnded = useCallback((grantId: number) => run(async s => {
+    await s.dismissEnded?.(grantId);
+    return liveView(s, await loadMirror(s.deviceId));
+  }), [run]);
   /* R24 / the red banner: Yes on screen, then the press; the key links LOSS {from, to} */
   const acceptLoss = useCallback((from: number, to: number) => run(async s => {
     try {
@@ -189,6 +194,6 @@ export function useEdge() {
   return {
     view, budgets, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
-    hold, resume, waive, replayCopy, finishRestore, agentSign, continueBudget, acceptLoss,
+    hold, resume, waive, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss,
   };
 }

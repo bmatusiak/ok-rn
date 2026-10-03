@@ -53,6 +53,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_LOSS 11
 #define OP_GRANT_HOLD 13
 #define OP_GRANT_RESUME 14
+#define OP_AGENT_ADD 15
 #define DECISION_SELF_PRESS 4
 #define CODE_NEEDS_REVIEW 0x8F /* a WAIVE is linked as this ticket code, with the press flag (R18) */
 #define FLAG_PRESS_OBSERVED 0x01
@@ -224,7 +225,7 @@ static struct {
  * resuming one (R15a) or waiving the debts (R18). One at a time; a new one
  * replaces it.
  */
-enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE, PRESS_LOSS };
+enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE, PRESS_LOSS, PRESS_AGENT_ADD };
 static struct {
   uint8_t what;
   unsigned long since;
@@ -947,6 +948,19 @@ static void loss_pressed(void) {
 }
 
 /*
+ * AGENT_ADD (mcp-service.md 4.7a: "the agent's key is registered once, with
+ * a press", like a known peer - R20): the person's Yes in ok-rn first, then
+ * this press. One link, op = agent-add, decision approve, slot 0, the press
+ * flag, subject = SHA256("OKEDGE-AGENT-v1" || the agent's Ed25519 key). The
+ * key does not keep a list of agents - the APP does, and a copy that verifies
+ * shows when each was added with a press. reply: seq . head . tag after it.
+ */
+static void agent_add_pressed(void) {
+  append(OP_AGENT_ADD, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, press.verified, 0, 0, NULL);
+  reply_seq_head();
+}
+
+/*
  * R26 REPLAY: [6..51] the link's first REPLAY_BYTES (bytes 46-63 of every link
  * are reserved zeros), [52..59] the first 8 bytes of the head the copy stored
  * after it (CHOSEN, pending the spec). The key takes it only as its NEXT seq,
@@ -1015,6 +1029,7 @@ void okplugin_edge_decision(int decision) {
     else if (what == PRESS_WAIVE) waive_pressed();
     else if (what == PRESS_REPLAY_DONE) replay_done_pressed();
     else if (what == PRESS_LOSS) loss_pressed();
+    else if (what == PRESS_AGENT_ADD) agent_add_pressed();
     press_drop();
     return;
   }
@@ -1319,6 +1334,18 @@ void okplugin_edge_recv(uint8_t *buffer) {
       press.id = to;
       H(what, "OKEDGE-LOSS", buffer + 6, 8, st.head, 32, NULL, 0);
       press_wait(PRESS_LOSS, what);
+      return;
+    }
+    case OKEDGE_AGENT_ADD: {
+      /* {agent key 32}, a press; refused while restoring (nothing new is linked until the restore is finished, R26) */
+      uint8_t what[32];
+      press_drop();
+      if (st.restored) { status(EDGE_RESTORING); return; }
+      /* the subject waits in press.verified until the press writes it */
+      H(press.verified, "OKEDGE-AGENT-v1", buffer + 6, 32, NULL, 0, NULL, 0);
+      press.verified_len = 32;
+      H(what, "OKEDGE-AGENT-ADD", press.verified, 32, st.head, 32, NULL, 0);
+      press_wait(PRESS_AGENT_ADD, what);
       return;
     }
     case OKEDGE_REPLAY_DONE: {

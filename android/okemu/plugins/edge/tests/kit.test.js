@@ -25,6 +25,7 @@ const CHECKPOINT = 0x03;
 const PUBKEY = 0x04;
 const VOUCH = 0x05;
 const LOSS = 0x34;
+const AGENT_ADD = 0x15; /* mcp-service 4.7a: {agent key 32}, press */
 const GRANT_CREATE = 0x10;
 const GRANT_LABEL = 0x11; /* R11a: {scope index, label 32}, no press - a derived code's identity */
 const GRANT_REVOKE = 0x12;
@@ -911,6 +912,28 @@ module.exports = function register({ it }, ctx) {
       await named(h.seq - 1); /* to+1 = the latest link */
       h = await head(device, { signal });
       await named(h.seq - 3); /* to+1 = a link in the ring */
+    });
+
+  /*
+   * mcp-service.md 4.7a (2026-10-03): an agent's key is registered once, WITH A
+   * PRESS - like a known peer (R20). The key links it: op agent-add (15), the
+   * press flag, subject = SHA256("OKEDGE-AGENT-v1" || key). No press, no link.
+   */
+  it('edge: AGENT_ADD takes a press and links the agent key; no press, no link (4.7a)',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const key = crypto.randomBytes(32);
+      const before = await head(device, { signal });
+      /* nobody presses: whatever the key answers (a timeout, or nothing), past its 25 s wait nothing is linked */
+      await edge(device, AGENT_ADD, key, { signal, text: true }).catch(() => null);
+      await device.sleep(26000, { signal });
+      assert.equal((await head(device, { signal })).seq, before.seq, 'an unpressed AGENT_ADD wrote a link');
+      const [r] = await edge(device, AGENT_ADD, key, { signal, press: true });
+      const seq = r.readUInt32LE(0);
+      const [l] = await pickup(device, seq, 1, { signal });
+      const f = chain.decodeLink(l.link);
+      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([15, APPROVE, 0, PRESS_OBSERVED, 0]), 'the agent-add link is not the spec layout');
+      assert.bytes(Buffer.from(f.subject), Buffer.from(grants.agentSubject(key)));
     });
 
   /*

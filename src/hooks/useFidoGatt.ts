@@ -9,6 +9,9 @@ import {startFidoBridge} from '../fidoBridge';
 /* The vendor service, plugged in. Delete this import, the call below and
  * src/vendorBridge.ts to remove the feature; nothing else refers to it. */
 import {startVendorBridge} from '../vendorBridge';
+/* Edge (step 2): an agent's budget request is kept for the app; only on a build with the edge plugin */
+import {handleEdgeMessage} from '../edgeAgents';
+import {hasSoftKeyPlugin} from '../buildInfo';
 import type {OnlyKeyApp} from '../onlykey';
 import type {LogLevel} from './useLog';
 
@@ -220,6 +223,7 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
       getTarget,
       /* the soft key says when it waits for a press; a hard key cannot, and ends on quiet */
       isKeyWaiting: async () => (OkEmu.isRunning() ? (await OkEmu.waiting()) !== null : false),
+      onEdgeRequest: hasSoftKeyPlugin('edge') ? handleEdgeMessage : undefined,
     });
 
     FidoGatt.isSupported()

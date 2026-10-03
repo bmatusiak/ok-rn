@@ -30,6 +30,7 @@
 #define OKEDGE_WAIVE 0x21        /* R18: press; replies seq . head */
 #define OKEDGE_ARM 0x22          /* R13a: ARM {head} */
 #define OKEDGE_REPLAY 0x23       /* R26: a link of the newest copy, while restoring */
+#define OKEDGE_AGENT_ADD 0x15    /* mcp-service 4.7a: {agent key 32}, press; an agent-add link, subject = SHA256("OKEDGE-AGENT-v1" || key) */
 #define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts; refused while restoring */
 #define OKEDGE_REPLAY_DONE 0x24  /* R26: {seq, tag, newest}, press; commits only a vouched replay; replies seq . head . tag or EDGE:11 */
 

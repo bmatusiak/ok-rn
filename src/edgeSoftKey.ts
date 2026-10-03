@@ -13,7 +13,7 @@
  * chain's own self-press links.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {chain, codes, tickets} from 'node-onlykey-lib/edge';
+import {approve as approveLib, chain, codes, request as requestLib, tickets} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
@@ -37,6 +37,10 @@ type Kept = {
   lifetime?: number; opened?: number;
   /* Continue asked for once already: the card goes */
   continued?: boolean;
+  /* 4.7a: an ended agent budget's card dismissed (nothing on the key changes) */
+  dismissed?: boolean;
+  /* opened for an agent's EDGE_REQUEST: its registered key (hex) - a continue must come from the same agent */
+  agent?: string;
 };
 const DEFAULT_LIFETIME_MINUTES = 12 * 60;
 
@@ -108,6 +112,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
         scopes,
         genesis: new Uint8Array(0),
         endsAt: kept?.opened ? kept.opened + (kept.lifetime || DEFAULT_LIFETIME_MINUTES) * 60000 : undefined,
+        ...(kept?.agent ? {agent: kept.from} : {}),
       });
     }
     return out;
@@ -248,7 +253,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       if (!k.startsWith(prefix)) continue;
       const grantId = Number(k.slice(prefix.length));
       const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
-      if (!kept || kept.continued || !kept.opened || (h.live as number[]).includes(grantId)) continue;
+      if (!kept || kept.continued || kept.dismissed || !kept.opened || (h.live as number[]).includes(grantId)) continue;
       if (fields.some(f => f.op === codes.OP.GRANT_END && f.grantId === grantId)) continue;
       const spent = fields.filter(f => f.grantId === grantId && f.decision === DECISION.SELF_PRESS);
       const scopes = kept.scopes
@@ -257,7 +262,47 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       const lifetime = kept.lifetime || DEFAULT_LIFETIME_MINUTES;
       const minutesLeft = Math.floor(lifetime - (Date.now() - kept.opened) / 60000);
       if (!scopes.length || minutesLeft < 1) continue;
-      out.push({grantId, reason: kept.reason, scopes, usesLeft: scopes.reduce((n, sc) => n + sc.cap, 0), minutesLeft});
+      out.push({grantId, reason: kept.reason, scopes, usesLeft: scopes.reduce((n, sc) => n + sc.cap, 0), minutesLeft, ...(kept.agent ? {agent: kept.from} : {})});
+    }
+    return out;
+  }
+
+  async dismissEnded(grantId: number) {
+    const k = REGISTRY + toHex(this.deviceId) + '.' + grantId;
+    const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
+    if (kept) await AsyncStorage.setItem(k, JSON.stringify({...kept, dismissed: true}));
+  }
+
+  /**
+   * 4.7a: the LIVE budgets that already cover what a request names - same op,
+   * slot and identity - with uses left and when each ends ("this agent already
+   * has N uses left on <identity> until <time>"). sameAgent: opened for the
+   * agent that asks.
+   */
+  async coverOf(msg: any) {
+    const live = await this.budgets();
+    const out: {identity?: string; slot: number; usesLeft: number; endsAt?: number; grantId: number; sameAgent: boolean}[] = [];
+    for (const b of live) {
+      const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(REGISTRY + toHex(this.deviceId) + '.' + b.grantId)) || 'null');
+      for (const want of msg.scopes as any[]) {
+        const op = want.op === 'sign' ? codes.OP.SIGN : want.op === 'decrypt' ? codes.OP.DECRYPT : want.op;
+        const sc: any = b.scopes.find((x: any) => x.op === op && x.slot === want.slot && (x.identity || '') === (want.identity || ''));
+        if (!sc) continue;
+        out.push({
+          ...(want.identity ? {identity: want.identity} : {}), slot: want.slot, usesLeft: Math.max(0, sc.cap - sc.used),
+          endsAt: b.endsAt, grantId: b.grantId, sameAgent: !!kept?.agent && kept.agent === String(msg.agent).toLowerCase(),
+        });
+      }
+    }
+    return out;
+  }
+
+  /** The agent budgets live on the key, for the Agents card: by agent key. */
+  async liveAgentBudgets(): Promise<Record<string, EdgeBudget[]>> {
+    const out: Record<string, EdgeBudget[]> = {};
+    for (const b of await this.budgets()) {
+      const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(REGISTRY + toHex(this.deviceId) + '.' + b.grantId)) || 'null');
+      if (kept?.agent) (out[kept.agent] ??= []).push(b);
     }
     return out;
   }
@@ -351,12 +396,94 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       },
     });
     this.pressWanted = null;
+    await this.keepOpening(g, {reason: r.reason, scopes: r.scopes, from: r.from, lifetime: r.ttlMinutes ?? 0});
+    this.requests = this.requests.filter(x => x.id !== id);
+  }
+
+  /**
+   * Keep a budget's opening on this phone - what R27 checks the copy against
+   * (copy()). Every budget opened on this key must pass through here, or the
+   * copy stops verifying at its grant-create link: the tab's Approve, an
+   * agent's request, and the e2e suite (ctx.edgeCopy).
+   */
+  async keepOpening(g: any, o: {reason: string; scopes: any[]; from: string; lifetime: number; agent?: string}) {
     const kept: Kept = {
-      reason: r.reason, scopes: r.scopes, uses: g.uses, genesis: toHex(g.genesis), from: r.from, signature: toHex(g.checkpoint.signature),
-      lifetime: r.ttlMinutes ?? 0, opened: Date.now(),
+      reason: o.reason, scopes: o.scopes, uses: g.uses, genesis: typeof g.genesis === 'string' ? g.genesis : toHex(g.genesis), from: o.from,
+      signature: typeof g.checkpoint.signature === 'string' ? g.checkpoint.signature : toHex(g.checkpoint.signature),
+      lifetime: o.lifetime, opened: Date.now(), ...(o.agent ? {agent: o.agent} : {}),
     };
     await AsyncStorage.setItem(REGISTRY + toHex(this.deviceId) + '.' + g.grantId, JSON.stringify(kept));
-    this.requests = this.requests.filter(x => x.id !== id);
+  }
+
+  /**
+   * An agent's EDGE_REQUEST (mcp-service.md 4.7a), from the vendor bridge: the
+   * library's one implementation decides (approve.approveRequest - drop the
+   * unregistered and replayed, check caps and lifetime, ask the person, labels
+   * and the reason hash made HERE from the names and the text, R27 on this
+   * phone's copy, GRANT_LABEL + GRANT_CREATE, the press). An opened budget is
+   * kept like one approved on the tab, so the copy keeps verifying and the
+   * tab lists it.
+   */
+  async answerAgent(msg: any, o: {registered: string[]; seen: Set<string>; ownIdentities: string[]; from: string; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout' | 'copy_unverified'>; onPress?: () => void}) {
+    const r: any = await approveLib.approveRequest(msg, {
+      edge: this.edge,
+      registered: o.registered,
+      seen: o.seen,
+      ownIdentities: o.ownIdentities,
+      ask: o.ask,
+      verifyCopy: async () => this.edge.grants.check(await this.copy()),
+      budgetOf: (id: number) => this.keptSync.get(id) ?? null,
+      coverOf: (m: any) => this.coverOf(m),
+      onPress: () => {
+        this.pressWanted = () => undefined;
+        o.onPress?.();
+      },
+      timeoutMs: 30000,
+    });
+    this.pressWanted = null;
+    if (r.ok) {
+      await this.keepOpening(r.budget, {
+        reason: msg.reason, scopes: requestLib.grantScopes(msg), from: o.from, lifetime: msg.lifetime, agent: String(msg.agent).toLowerCase(),
+      });
+    }
+    return r;
+  }
+
+  /**
+   * An agent's EDGE_REGISTER: the person's Yes on the sheet, then a PHYSICAL
+   * press - the key links it (AGENT_ADD, mcp-service.md 4.7a; like a known
+   * peer, R20). The list of agents stays this phone's (edgeAgents.ts).
+   */
+  async registerAgent(msg: any, o: {registered: string[]; seen: Set<string>; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
+    const r: any = await approveLib.approveRegister(msg, {
+      edge: this.edge,
+      registered: o.registered,
+      seen: o.seen,
+      ask: o.ask,
+      onPress: () => {
+        this.pressWanted = () => undefined;
+        o.onPress?.();
+      },
+      timeoutMs: 30000,
+    });
+    this.pressWanted = null;
+    return r;
+  }
+
+  /* the agent budgets this phone opened, for a continue: {agent, scopes} by id (loaded by loadAgentBudgets) */
+  private keptSync = new Map<number, {agent: string; scopes: any[]}>();
+  async loadAgentBudgets() {
+    const prefix = REGISTRY + toHex(this.deviceId) + '.';
+    this.keptSync.clear();
+    for (const k of await AsyncStorage.getAllKeys()) {
+      if (!k.startsWith(prefix)) continue;
+      const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
+      if (kept?.agent) {
+        /* the request's own words for the ops: a continue's scopes are compared with them */
+        const scopes = kept.scopes.map((sc: any) => ({...sc, op: sc.op === codes.OP.SIGN ? 'sign' : sc.op === codes.OP.DECRYPT ? 'decrypt' : sc.op}));
+        this.keptSync.set(Number(k.slice(prefix.length)), {agent: kept.agent, scopes});
+      }
+    }
   }
 
   /** The press, on the soft key's own buttons - the phone is also the key, so it proves less than a hard key's. */

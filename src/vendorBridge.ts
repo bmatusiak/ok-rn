@@ -35,6 +35,7 @@
  * that is not its own.
  */
 import {bytes as okbytes, protocol, transport as oktransport} from 'node-onlykey-lib';
+import {wire as edgeWire} from 'node-onlykey-lib/edge';
 import NativeFidoGatt from '../specs/NativeFidoGatt';
 import FidoGatt, {isFromTarget, type CtapRequestEvent} from './transport/FidoGatt';
 import type {OnlyKeyApp} from './onlykey';
@@ -101,6 +102,11 @@ type Options = {
    * conversation then ends on quiet alone. See holdForComputer.
    */
   isKeyWaiting?: () => Promise<boolean>;
+  /**
+   * An agent's EDGE_REQUEST (or EDGE_REGISTER), whole: the answer to send
+   * back, or null to answer nothing. See "THE ONE MESSAGE THIS BRIDGE KEEPS".
+   */
+  onEdgeRequest?: (message: unknown, from: string) => Promise<unknown | null>;
 };
 
 /* a computer's conversation holds the key's lane until it has been quiet this long (and nothing waits for a press) */
@@ -134,7 +140,24 @@ export function vendorQuietForMs(): number {
   return Date.now() - lastHostActivity;
 }
 
-export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting}: Options): () => void {
+/*
+ * THE ONE MESSAGE THIS BRIDGE KEEPS FOR THE APP: OKEDGE_REQUEST (0xF7,
+ * node-onlykey-lib src/edge/wire.js; mcp-service.md 4.7a).
+ *
+ * A budget request is for the PERSON, not the key: the key only ever sees
+ * hashes, so the app must show the reason text and the identity names and make
+ * the hashes itself. So its pieces are gathered here, by computer, handed to
+ * `onEdgeRequest`, and the answer goes back the same way - nothing of it is
+ * written to the key, and no key report goes out with it. The same gates as
+ * every other write: API on, and the target only.
+ */
+function isEdgeRequest(data: Uint8Array): boolean {
+  return edgeWire.isEdgeRequestFrame(data);
+}
+
+export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, onEdgeRequest}: Options): () => void {
+  /* EDGE_REQUEST pieces, by the computer sending them */
+  const gathering = new Map<string, ReturnType<typeof edgeWire.createAssembler>>();
   /* Which transport the report subscription is attached to, so a key change
    * moves it rather than leaving it listening to the previous device. */
   let boundTo: unknown = null;
@@ -340,6 +363,11 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting}:
         return;
       }
 
+      if (isEdgeRequest(data)) {
+        keepForApp(data, event.address);
+        return;
+      }
+
       const transport = await ensureSubscribed();
       /* the computer's turn on the key: after any app conversation in flight, then held (holdForComputer) */
       await holdForComputer(transport);
@@ -360,6 +388,33 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting}:
        */
       log('error', `[vendor] write failed: ${String(err)}`);
     }
+  }
+
+  function keepForApp(data: Uint8Array, from: string) {
+    const asm = gathering.get(from) ?? edgeWire.createAssembler();
+    gathering.set(from, asm);
+    const got = asm.push(data);
+    if (!got) return;
+    if ('error' in got) {
+      log('info', `[edge] a request from ${from} came in broken (${got.error}); dropped`);
+      return;
+    }
+    if (got.kind !== edgeWire.KIND.REQUEST || !onEdgeRequest) return;
+    log('rx', `[edge] a request from ${from} - kept for the app, not sent to the key`);
+    void onEdgeRequest(got.message, from)
+      .then(answer => {
+        if (answer === null || answer === undefined) {
+          log('info', '[edge] dropped without an answer (not registered, bad signature, or replayed)');
+          return;
+        }
+        /* the gates again: the person may have turned API off, or changed target, while the sheet was up */
+        if ((isApi && !isApi()) || (getTarget && !isFromTarget(from, getTarget()))) {
+          log('info', '[edge] the answer was not sent - API off or another target now');
+          return;
+        }
+        for (const frame of edgeWire.encode(edgeWire.KIND.ANSWER, answer)) push(frame);
+      })
+      .catch((err: unknown) => log('error', `[edge] the request failed: ${String(err)}`));
   }
 
   const off = FidoGatt.on('request', onRequest);

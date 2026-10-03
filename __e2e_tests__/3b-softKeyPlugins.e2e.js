@@ -44,7 +44,32 @@ const {hmac} = require('node-onlykey-lib/vendor/@noble/hashes/hmac.js');
 const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
 const lib = {edge: edgeLib, sha256: (bytes) => sha256(bytes), hmacSha256: (key, msg) => hmac(sha256, key, msg)};
 
-const ctx = {getOnlyKey, OkEmu, IFACE, protocol, pressDigits, PIN: '1234561', buildInfo, hasSoftKeyPlugin, lib};
+/*
+ * edgeCopy: the Edge tab's copy of the chain (Brad, 2026-10-03: "e2e must not
+ * leave the tab's copy behind again"). Every link a test makes goes into it
+ * (sync), every budget it opens is kept (keep), and check() is the tab's own
+ * R27 verdict. Lazy: only a build with the edge plugin has these modules' key.
+ */
+const edgeCopy = {
+  async source() {
+    const {SoftKeyEdge} = require('../src/edgeSoftKey');
+    const s = await SoftKeyEdge.open();
+    if (!s) throw new Error('edgeCopy: the soft key does not answer Edge');
+    return s;
+  },
+  async sync() {
+    const {sync} = require('../src/edgeStore');
+    return (await sync(await edgeCopy.source())).view;
+  },
+  async keep(g, o) {
+    await (await edgeCopy.source()).keepOpening(g, {from: 'okrn e2e', ...o});
+  },
+  async check() {
+    return (await edgeCopy.source()).check();
+  },
+};
+
+const ctx = {getOnlyKey, OkEmu, IFACE, protocol, pressDigits, PIN: '1234561', buildInfo, hasSoftKeyPlugin, lib, edgeCopy};
 
 module.exports = function softKeyPlugins({describe, it}) {
   describe(softKeyPlugins.name, () => {

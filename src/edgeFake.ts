@@ -27,10 +27,12 @@ export type EdgeBudget = {
   reason: string;
   uses: number;
   used: number;
-  scopes: {op: number; slot: number; cap: number; used: number}[];
+  scopes: {op: number; slot: number; cap: number; used: number; identity?: string}[];
   genesis: Uint8Array;
   /** R15b: when its lifetime ends (the phone's clock), if this phone approved it */
   endsAt?: number;
+  /* opened for an agent (4.7a): its name, shown on the card like the ended card does */
+  agent?: string;
 };
 /** What a key (fake now, the soft key after E3) gives the Edge tab. */
 export interface EdgeSource {
@@ -68,6 +70,8 @@ export interface EdgeSource {
   ended?(): Promise<EdgeEnded[]>;
   /** Continue: a new request for what is left of an ended budget - Yes and a press, like any budget. */
   continueBudget?(grantId: number): Promise<void>;
+  /** 4.7a: hide an ended agent budget's card; the chain does not change. */
+  dismissEnded?(grantId: number): Promise<void>;
   /**
    * R27 anchors: the key's own public key (read from the key, never from the
    * copy), the budget openings this phone kept, and the key's latest
@@ -119,6 +123,8 @@ export type EdgeEnded = {
   scopes: {op: number; slot: number; cap: number}[];
   usesLeft: number;
   minutesLeft: number;
+  /* opened for an agent (4.7a): the AGENT continues it, so the tab offers only Dismiss - by this name */
+  agent?: string;
 };
 /**
  * Where budget requests arrive. NOT the key: a request comes from the CLI or an

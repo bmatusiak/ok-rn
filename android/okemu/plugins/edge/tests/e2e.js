@@ -14,7 +14,17 @@
  * WAIVE.
  *
  * Everything from the app comes in through `ctx` (no relative imports into
- * ok-rn): getOnlyKey, OkEmu, IFACE, protocol, PIN, pressDigits, lib (edge, hmacSha256).
+ * ok-rn): getOnlyKey, OkEmu, IFACE, protocol, PIN, pressDigits, lib (edge,
+ * hmacSha256), edgeCopy.
+ *
+ * THE TAB'S COPY STAYS CURRENT (Brad, 2026-10-03). This suite runs on the
+ * phone's own soft key, so the links it makes are links of THAT chain: left
+ * out of the Edge tab's copy, they pass the key's ring of 8 and the copy can
+ * never verify again (a gap #0-#87 had to be accepted as lost). So app.edge
+ * here is wrapped (tracked): every call that writes a link syncs the copy
+ * after it, every budget opened is kept like one the tab approved, the first
+ * test refuses to start on a copy that does not verify, and the last test
+ * fails if the run left it unverifiable.
  */
 'use strict';
 
@@ -49,7 +59,31 @@ module.exports = function register({it}, ctx) {
       await app.device.unlock(ctx.PIN, {timeoutMs: 20000, enterDigits: ctx.pressDigits({log})});
       await app.device.connect();
     }
-    return app;
+    return tracked(app);
+  }
+
+  /*
+   * The app, with an edge whose link-writing calls keep the tab's copy current
+   * (the header). The app's own edge service is not touched: the wrapper is a
+   * view over it. grant() takes the reason TEXT (reason), as the tab keeps it.
+   */
+  function tracked(app) {
+    const edge = Object.create(app.edge);
+    const after = (name) => async (...args) => {
+      const r = await app.edge[name](...args);
+      await ctx.edgeCopy.sync();
+      return r;
+    };
+    for (const name of ['ticket', 'revoke', 'waive', 'hold', 'resume', 'agentAdd', 'loss']) edge[name] = after(name);
+    edge.grant = async ({reason, ...o}) => {
+      const g = await app.edge.grant({...o, reasonHash: sha256(reason)});
+      await ctx.edgeCopy.keep(g, {reason, scopes: o.scopes, lifetime: o.ttlMinutes ?? 0});
+      await ctx.edgeCopy.sync();
+      return g;
+    };
+    const view = Object.create(app);
+    view.edge = edge;
+    return view;
   }
 
   /*
@@ -98,7 +132,10 @@ module.exports = function register({it}, ctx) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const h = await app.edge.head();
-      if (h.seq !== null && (seq === null || h.seq > seq)) return h;
+      if (h.seq !== null && (seq === null || h.seq > seq)) {
+        await ctx.edgeCopy.sync(); /* the sign's link, into the tab's copy */
+        return h;
+      }
       if (Date.now() > deadline) throw new Error(`the key did not link the decision (head still #${h.seq})`);
       await sleep(300);
     }
@@ -118,6 +155,9 @@ module.exports = function register({it}, ctx) {
      * One clear line instead.
      */
     assert.ok(!h.restoring, 'the key is restoring from a backup - finish it on the phone first (Edge tab -> Restore card -> Finish the restore), then run again');
+    await ctx.edgeCopy.sync();
+    const copy = await ctx.edgeCopy.check();
+    assert.ok(copy.ok, `the Edge tab's copy does not verify before the run (${copy.reason}${copy.seq !== undefined ? ` at #${copy.seq}` : ''}) - settle it on the Edge tab first; this suite would only add to it`);
     if (h.seq === null) {
       assert.equal(chain.verify([], {deviceId, expectHead: {seq: -1, head: h.head}}).ok, true, 'an empty chain\'s head is not the genesis');
     }
@@ -152,7 +192,7 @@ module.exports = function register({it}, ctx) {
     assert.equal(free.after.owed, 0, 'a direct press on a slot no budget covers owes a ticket');
 
     /* a held budget covers the slot (hold stops paying, not owing): the pressed use owes, bit 4 set, bit 5 clear */
-    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1, identity: E2E_IDENTITY}], reasonHash: sha256('okrn e2e: cover'), verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
+    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1, identity: E2E_IDENTITY}], reason: 'okrn e2e: cover', verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
     assert.equal(await app.edge.hold(g.grantId), true);
     const owing = await pressedUse(app, 'covered', log);
     assert.equal(owing.f.flags & (PRESS_OBSERVED | OWES_TICKET | ARMED), PRESS_OBSERVED | OWES_TICKET, 'the covered pressed use is not "pressed, owes, not armed"');
@@ -171,11 +211,12 @@ module.exports = function register({it}, ctx) {
     const {publicKey, deviceId} = await app.edge.publicKey();
     const before = await app.edge.head();
     const scopes = [{op: OP_SIGN, slot: 222, cap: 2, identity: E2E_IDENTITY}];
-    const reasonHash = sha256('okrn e2e: sign two agent messages');
+    const reason = 'okrn e2e: sign two agent messages';
+    const reasonHash = sha256(reason);
 
     /* GRANT_CREATE waits for the PHYSICAL press - on the soft key, its own button */
     /* the raw call: this test is the host, and passes the head it read (R27; the tab goes through grants.create) */
-    const g = await app.edge.grant({scopes, reasonHash, verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
+    const g = await app.edge.grant({scopes, reason, verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
     log(`budget ${g.grantId}: ${g.uses} uses, opened at #${g.seq}`);
     const [opened] = await app.edge.pickup(g.seq, 1);
     const prevHead = before.seq === null ? chain.genesis(deviceId) : (await app.edge.pickup(before.seq, 1))[0].head;
@@ -222,7 +263,7 @@ module.exports = function register({it}, ctx) {
   it('edge: a held budget arms nothing until a pressed resume', async ({log, assert}) => {
     const app = await ready(log);
     await clearDebts(app, log);
-    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1, identity: E2E_IDENTITY}], reasonHash: sha256('okrn e2e: hold'), verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
+    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1, identity: E2E_IDENTITY}], reason: 'okrn e2e: hold', verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
     assert.equal(await app.edge.hold(g.grantId), true);
     let h = await app.edge.head();
     assert.equal(JSON.stringify(h.held), JSON.stringify([g.grantId]), 'HEAD does not report the hold');
@@ -244,5 +285,14 @@ module.exports = function register({it}, ctx) {
     const h = await app.edge.head();
     log(`head #${h.seq}, live ${JSON.stringify(h.live)}, held ${JSON.stringify(h.held)}, owed ${h.owed}`);
     assert.equal(JSON.stringify(h.live), '[]', 'a test budget is still live');
+  });
+
+  it('edge: the Edge tab\'s copy still verifies after the run - every link the suite made is in it', async ({log, assert}) => {
+    await ready(log);
+    const view = await ctx.edgeCopy.sync();
+    const copy = await ctx.edgeCopy.check();
+    log(`copy: ${JSON.stringify(view.verdict)}`);
+    assert.ok(copy.ok, `the run left the tab's copy unverifiable (${copy.reason}${copy.seq !== undefined ? ` at #${copy.seq}` : ''})`);
+    assert.equal(view.verdict.kind, 'verified', `the tab shows ${view.verdict.kind}, not verified`);
   });
 };

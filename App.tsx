@@ -45,6 +45,7 @@ import {LogScreen} from './src/screens/LogScreen';
 import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
 import {EdgeScreen} from './src/screens/EdgeScreen';
+import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
 import {hasSoftKeyPlugin} from './src/buildInfo';
 import {setFirmwareConsoleToLogcat} from './src/hooks/useOkEmu';
 
@@ -676,6 +677,8 @@ function Shell() {
       <BtKeyboardProvider>
       <IoPolicySync setTarget={fido.setTarget} />
       <StatusBar barStyle="light-content" />
+      {/* an agent's budget request (Edge step 2): over whatever tab is open */}
+      {hasSoftKeyPlugin('edge') ? <EdgeRequestSheet /> : null}
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
         {ready ? (
           <View style={styles.bar}>

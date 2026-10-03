@@ -10,12 +10,14 @@
  * whole tab is testing-mode only. Ticket messages are written by an agent:
  * plain text, never links or markdown.
  */
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {codes} from 'node-onlykey-lib/edge';
 import {Btn, Section} from '../ui/components';
 import {theme} from '../ui/theme';
 import {useEdge} from '../hooks/useEdge';
+import {onSheet} from '../edgeAgents';
+import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
 import type {EdgeRow, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
 
@@ -192,13 +194,14 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
   const body = (
     <>
       <Text style={styles.op}>{b.reason}</Text>
+      {b.agent ? <Text style={styles.dim}>{`for ${b.agent}`}</Text> : null}
       {held ? <Text style={[styles.ticketTitle, {color: theme.warn}]}>On hold – it pays for nothing until you resume it</Text> : null}
       <Text style={styles.dim}>{`${b.used} of ${b.uses} uses spent${b.used >= b.uses ? ' – used up' : ''}`}</Text>
       <Progress used={b.used} total={b.uses} thick />
       {b.scopes.map((s, i) => (
         <View key={i} style={styles.scope}>
           <Text style={styles.dim}>
-            {opName(s.op)} · slot {s.slot} · {s.used} / {s.cap}
+            {s.identity ? `${opName(s.op)} · ${s.identity} · slot ${s.slot} · ${s.used} / ${s.cap}` : `${opName(s.op)} · slot ${s.slot} · ${s.used} / ${s.cap}`}
           </Text>
           <Progress used={s.used} total={s.cap} />
         </View>
@@ -487,6 +490,11 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
    * budget's chain view, so with no budget open a copy that does not verify
    * would show nowhere. Only when something is wrong; a good copy stays quiet.
    */
+  /* an agent's sheet ended (a budget opened, an agent registered): the budgets and the copy moved */
+  useEffect(() => onSheet(st => {
+    if (st?.phase === 'done') void edge.sync();
+  }), [edge.sync]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const v = edge.view?.verdict;
   const ks = edge.keyState;
   /* while the key is restoring, the Restore card replaces the banner (spec 4.3) */
@@ -569,12 +577,26 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
           <View key={`e${e.grantId}`} style={[styles.budget, styles.ended]}>
             <Text style={[styles.ticketTitle, {color: theme.textDim}]}>Ended when the key locked or restarted</Text>
             <Text style={styles.op}>{e.reason}</Text>
-            <Text style={styles.dim}>
-              {`Budget ${e.grantId} · ${e.usesLeft} use${e.usesLeft === 1 ? '' : 's'} and ${Math.floor(e.minutesLeft / 60)} h ${e.minutesLeft % 60} min left. Continue asks for exactly that – never more – with your Yes and a press.`}
-            </Text>
-            <View style={styles.row}>
-              <Btn title="Continue" tone="primary" onPress={() => edge.continueBudget(e.grantId)} disabled={edge.busy} />
-            </View>
+            {e.agent ? (
+              <>
+                {/* 4.7a: an agent's budget - the agent asks to continue it; the tab only hides the card */}
+                <Text style={styles.dim}>
+                  {`Budget ${e.grantId} for ${e.agent} · ${e.usesLeft} use${e.usesLeft === 1 ? '' : 's'} and ${Math.floor(e.minutesLeft / 60)} h ${e.minutesLeft % 60} min were left. The agent asks to continue it if it still needs it. Dismiss only hides this card; the chain does not change.`}
+                </Text>
+                <View style={styles.row}>
+                  <Btn title="Dismiss" onPress={() => edge.dismissEnded(e.grantId)} disabled={edge.busy} />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.dim}>
+                  {`Budget ${e.grantId} · ${e.usesLeft} use${e.usesLeft === 1 ? '' : 's'} and ${Math.floor(e.minutesLeft / 60)} h ${e.minutesLeft % 60} min left. Continue asks for exactly that – never more – with your Yes and a press.`}
+                </Text>
+                <View style={styles.row}>
+                  <Btn title="Continue" tone="primary" onPress={() => edge.continueBudget(e.grantId)} disabled={edge.busy} />
+                </View>
+              </>
+            )}
           </View>
         ))}
         {/* B3: a locked key says nothing - so say that, not "no budget" */}
@@ -587,6 +609,9 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
           </Text>
         ) : null}
       </Section>
+
+      {/* 4.7a: who may ask for budgets, what each holds, and Remove */}
+      {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} />}
 
       {!testingMode ? null : edge.isFake ? (
         <Section title="Fake key (testing)">

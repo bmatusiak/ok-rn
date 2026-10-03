@@ -394,3 +394,76 @@ test('a computer conversation holds the key: an app request waits for quiet and 
   expect(appRan).toBe(true);
   off();
 }, 10000);
+
+/*
+ * EDGE_REQUEST (OKEDGE_REQUEST 0xF7, mcp-service.md 4.7a): the bridge KEEPS it
+ * for the app - the person approves the text and the names on the phone - and
+ * answers the same way. Nothing of it is written to the key.
+ */
+describe('an agent\'s budget request', () => {
+  const {wire} = jest.requireActual('node-onlykey-lib/edge');
+  const hex = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+
+  function startEdge(answer: (msg: any, from: string) => Promise<unknown | null>, opts: {api?: () => boolean} = {}) {
+    const fake = fakeTransport();
+    const got: Array<{msg: any; from: string}> = [];
+    const off = startVendorBridge({
+      log: () => undefined,
+      getKey: async () => ({transport: fake.transport} as never),
+      isApi: opts.api,
+      getTarget: () => TARGET,
+      onEdgeRequest: async (msg, from) => {
+        got.push({msg, from});
+        return answer(msg, from);
+      },
+    });
+    return {fake, got, off};
+  }
+  const send = async (msg: unknown, address = TARGET) => {
+    for (const f of wire.encode(wire.KIND.REQUEST, msg)) {
+      await mockRequestListener!({iface: 'vendor', hex: hex(f), requestId: '', address});
+    }
+  };
+  const answered = () => {
+    const asm = wire.createAssembler();
+    let out: any = null;
+    for (const [h] of mockSendVendorReport.mock.calls) {
+      const r = asm.push(Uint8Array.from((h as string).match(/../g)!.map(x => parseInt(x, 16))));
+      if (r && !('error' in r)) out = r;
+    }
+    return out;
+  };
+  const MSG = {type: 'EDGE_REQUEST', reason: 'push bm-ok/ok-rn - a reason long enough to need several reports', scopes: [{op: 'sign', slot: 222, cap: 5, identity: 'ssh://agent@nitro16'}], lifetime: 60};
+
+  test('it is gathered for the app and never written to the key; the answer goes back as OKEDGE_REQUEST reports', async () => {
+    const {fake, got, off} = startEdge(async () => ({ok: false, refusal: 'declined'}));
+    await send(MSG);
+    await settle();
+    await settle();
+    expect(fake.writes).toHaveLength(0);
+    expect(got).toEqual([{msg: MSG, from: TARGET}]);
+    expect(answered()).toEqual({kind: wire.KIND.ANSWER, message: {ok: false, refusal: 'declined'}});
+    off();
+  });
+
+  test('dropped (null) is answered with nothing', async () => {
+    const {fake, off} = startEdge(async () => null);
+    await send(MSG);
+    await settle();
+    expect(fake.writes).toHaveLength(0);
+    expect(mockSendVendorReport).not.toHaveBeenCalled();
+    off();
+  });
+
+  test('the same gates: not the target, or API off - not even read', async () => {
+    let api = false;
+    const {fake, got, off} = startEdge(async () => ({ok: true}), {api: () => api});
+    await send(MSG);
+    api = true;
+    await send(MSG, OTHER);
+    await settle();
+    expect(got).toHaveLength(0);
+    expect(fake.writes).toHaveLength(0);
+    off();
+  });
+});
