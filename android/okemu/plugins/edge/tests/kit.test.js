@@ -818,6 +818,89 @@ module.exports = function register({ it }, ctx) {
       await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
     });
 
+  /*
+   * R19 NOT BUILT (spec session, 2026-10-03: the agent's commit key is a
+   * derived classic key - D2 - so R19 waits; prove today's behaviour). A
+   * composite PQC-PGP signature is TWO OKSIGNs to the RSA slot holding the
+   * key: [0x00 | digest] -> Ed25519 (64 B), [0x01 | digest] -> ML-DSA-65
+   * (3309 B). Under a budget covering that slot the first half is ARMed and
+   * self-pressed, and OWES its ticket (R16); so the second half cannot be
+   * ARMed (R18: nothing automatic while a ticket is owed) and goes through
+   * only with a physical press - a pressed link, not paid by the budget.
+   */
+  it('edge: a composite signature under a budget today - the first half is paid and owes its ticket, so the second half needs a press (R19 not built)',
+    async ({ device, assert, signal, log }) => {
+      const { pqc } = ctx.kit;
+      const RSA_SLOT = 1;
+      const PQC_PGP_KEYTYPE_BYTE = 0x67; /* KEYTYPE_PQC_PGP | DECRYPT | SIGN */
+      const blob = crypto.randomBytes(160);
+      await pqc.readyForKeygen(device, { signal });
+      let since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({ msg: ctx.okmsg.MSG.OKSETSLOT, slot: RSA_SLOT, field: 22, payload: Buffer.from([1]) }); /* a single press, not a code */
+      await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Success|Error/, timeoutMs: 8000, signal });
+      since = device.mark(ctx.IFACE.VENDOR);
+      for (let i = 0; i < blob.length; i += 57) {
+        device.sendVendor({ msg: ctx.okmsg.MSG.OKSETPRIV, slot: RSA_SLOT, field: PQC_PGP_KEYTYPE_BYTE, payload: blob.subarray(i, i + 57) });
+        await device.sleep(150, { signal });
+      }
+      const ack = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Successfully|Error/, timeoutMs: 15000, signal });
+      assert.ok(!/^Error/.test(ctx.okmsg.text(ack).trim()), `loading the composite key failed: ${ctx.okmsg.text(ack)}`);
+      await device.sleep(500, { signal });
+      await device.restart({ signal });
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+
+      const b = await openBudget(device, [{ op: OP_SIGN, slot: RSA_SLOT, cap: 2 }], 'okt: a composite signature', { signal });
+      const digest = sha256(Buffer.from('okt edge composite commit'));
+      const collect = async (sent, want, ms) => {
+        const deadline = Date.now() + ms;
+        let out = Buffer.concat(device.reportsSince(ctx.IFACE.VENDOR, sent));
+        while (out.length < want && Date.now() < deadline) {
+          await device.sleep(100, { signal });
+          out = Buffer.concat(device.reportsSince(ctx.IFACE.VENDOR, sent));
+        }
+        return out.subarray(0, want);
+      };
+
+      /* half 1, Ed25519: ARMed, the budget pays, and it owes its ticket */
+      const half1 = Buffer.concat([Buffer.from([0x00]), digest]);
+      let h = await head(device, { signal });
+      assert.equal(await armFor(device, h.head, half1, { signal }), 'EDGE:00', 'half 1: ARM refused');
+      let sent = device.mark(ctx.IFACE.VENDOR);
+      sendChunked(device, ctx.okmsg.MSG.OKSIGN, RSA_SLOT, half1);
+      assert.equal((await collect(sent, 64, 10000)).length, 64, 'half 1: no Ed25519 signature');
+      let after = await headPast(device, h.seq, { signal });
+      const f1 = chain.decodeLink((await pickup(device, after.seq, 1, { signal }))[0].link);
+      log(`half 1: #${f1.seq} decision ${f1.decision} flags ${f1.flags} grant ${f1.grantId}`);
+      assert.equal(JSON.stringify([f1.decision, f1.grantId, f1.flags & OWES_TICKET]), JSON.stringify([SELF_PRESS, b.grantId, OWES_TICKET]), 'half 1: not a self-press that owes its ticket');
+
+      /* half 2, ML-DSA-65: the ARM is refused while half 1's ticket is owed (R18) ... */
+      const half2 = Buffer.concat([Buffer.from([0x01]), digest]);
+      h = await head(device, { signal });
+      const arm2 = await armFor(device, h.head, half2, { signal });
+      assert.notEqual(arm2, 'EDGE:00', 'half 2 was ARMed while half 1 owed its ticket');
+      log(`half 2: ARM refused ${arm2}`);
+      /* ... so it waits for a physical press, and the press is not the budget's */
+      sent = device.mark(ctx.IFACE.VENDOR);
+      sendChunked(device, ctx.okmsg.MSG.OKSIGN, RSA_SLOT, half2);
+      await device.sleep(1500, { signal });
+      assert.equal(Buffer.concat(device.reportsSince(ctx.IFACE.VENDOR, sent)).length >= 3309, false, 'half 2 was signed without a press');
+      device.press(1);
+      assert.equal((await collect(sent, 3309, 20000)).length, 3309, 'half 2: no ML-DSA-65 signature after the press');
+      after = await headPast(device, h.seq, { signal });
+      const f2 = chain.decodeLink((await pickup(device, after.seq, 1, { signal }))[0].link);
+      log(`half 2: #${f2.seq} decision ${f2.decision} flags ${f2.flags} grant ${f2.grantId}`);
+      assert.equal(f2.decision, APPROVE, 'half 2: not a pressed approval');
+      assert.equal(f2.flags & PRESS_OBSERVED, PRESS_OBSERVED, 'half 2: no press flag');
+      assert.equal(f2.flags & PREV_NO_TICKET, PREV_NO_TICKET, 'half 2: came in while half 1 owed its ticket (R17)');
+      assert.notEqual(f2.decision, SELF_PRESS, 'half 2 was paid by the budget');
+
+      /* both halves owe: tickets, then the budget ends */
+      await ticket(device, f1.seq, 'okt: composite half 1', { signal });
+      if (f2.flags & OWES_TICKET) await ticket(device, f2.seq, 'okt: composite half 2', { signal });
+      await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
+    });
+
   /* R15b: a budget lives its lifetime from the press, and the lifetime is in its opening link */
   it('edge: a budget expires after its lifetime - nothing arms under it, HEAD drops it, and its opening link carries the lifetime (R15b)',
     async ({ device, assert, signal, log }) => {

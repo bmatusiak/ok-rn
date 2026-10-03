@@ -95,7 +95,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - a backup keeps the head and the debts; three restores from it (R26, row 5b): **invented links** - a made-up ticket paying the backup's debt and a made-up "pressed" waive - replay only tentatively (HEAD does not move), VOUCH, CHECKPOINT and ARM are refused while restoring, a human press writes onto the backup's head and closes replay, and a forged tag commits nothing (`EDGE:11`, LOSS since the backup, the debt still owed); **a power cut** mid-replay leaves the backup's state and restoring; **an older real vouch** commits only up to its own point, the LOSS names the rest; **the whole copy** with the newest vouch commits it all, heads and debts back, no LOSS;
 - a checkpoint verifies, but only over its own head.
 
-Not built yet: R19 (a composite pair under one ARM and one ticket - the spec asks the plan to confirm the call pattern first). Until then a composite sign under a budget takes a press for its second half.
+Not built yet: R19 (a composite pair under one ARM and one ticket - the spec asks the plan to confirm the call pattern first). **Waits (spec session, 2026-10-03):** the agent's commit key is its own derived key (D2), and derivation is classic only, so no composite key is in the daily loop. Today's behaviour is pinned by the kit test "a composite signature under a budget today": half 1 ARMed + paid + owes its ticket; half 2's ARM refused `EDGE:0C`, needs a physical press. Until then a composite sign under a budget takes a press for its second half.
 
 ## Byte costs (firmware.md §3.1: the running total for a hard-key port)
 
