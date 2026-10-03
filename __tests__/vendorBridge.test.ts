@@ -386,10 +386,10 @@ test('a computer conversation holds the key: an app request waits for quiet and 
   const app = lane(async () => {
     appRan = true;
   });
-  await new Promise(r => setTimeout(r, 1700));
+  await new Promise<void>(r => setTimeout(r, 1700));
   expect(appRan).toBe(false); /* quiet, but the key waits for a press: still the computer's */
   waiting = false;
-  await new Promise(r => setTimeout(r, 1700));
+  await new Promise<void>(r => setTimeout(r, 1700));
   await app;
   expect(appRan).toBe(true);
   off();
