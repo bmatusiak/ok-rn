@@ -23,5 +23,7 @@ class MainApplication : Application(), ReactApplication {
   override fun onCreate() {
     super.onCreate()
     loadReactNative(this)
+    /* a sound when the soft key waits for a press (PressAlert): native, so it works with the screen off */
+    com.okrn.emu.PressAlert.start(this)
   }
 }

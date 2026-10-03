@@ -85,3 +85,6 @@ tools/.last-e2e.json
 
 # native-sea-openssl release cache (android/okssl/build.gradle; pinned by sha256)
 android/.openssl/
+
+# the press sounds - copied from assets/ by the copyPressSounds task
+android/app/src/main/res/raw/press_*.mp3

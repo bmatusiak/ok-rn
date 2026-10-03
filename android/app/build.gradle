@@ -267,3 +267,19 @@ dependencies {
  * line covers debug and release without naming either.
  */
 preBuild.dependsOn stageSignedFirmware
+
+/*
+ * THE PRESS SOUNDS (PressAlert.kt) come from ok-rn/assets/soft.mp3 and
+ * loud.mp3 - the files Brad picks and may replace (2026-10-03: "im still
+ * looking for better audio"). Android wants them in res/raw under resource
+ * names, so every build copies them there; replace the two files in assets/
+ * and rebuild. The res/raw copies are build output (.gitignore).
+ */
+tasks.register('copyPressSounds', Copy) {
+    from("$rootDir/../assets") {
+        include 'soft.mp3', 'loud.mp3'
+        rename { name -> name == 'soft.mp3' ? 'press_soft.mp3' : 'press_loud.mp3' }
+    }
+    into "$projectDir/src/main/res/raw"
+}
+preBuild.dependsOn copyPressSounds
