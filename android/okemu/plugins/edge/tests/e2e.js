@@ -29,6 +29,13 @@ const OP_GRANT_CREATE = 6;
 
 module.exports = function register({it}, ctx) {
   const {chain, grants, tickets} = ctx.lib.edge;
+  /*
+   * R11a: agent sign 222 is a DERIVED code, shared by every P-256 identity, so
+   * a budget on it names one. These tests use their own TEST identity: its
+   * label is what every agent request here carries, and no real identity
+   * (Brad's own logins) is ever covered by a test budget.
+   */
+  const E2E_IDENTITY = 'ssh://okrn-e2e@test';
   const hex = (b) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
   /* SHA-256 of bytes, or of text as UTF-8 (tickets.messageHash hashes TEXT only) */
   const sha256 = (x) => (typeof x === 'string' ? tickets.messageHash(x) : ctx.lib.sha256(x));
@@ -55,7 +62,7 @@ module.exports = function register({it}, ctx) {
   /* the bytes of an agent sign (message || identity hash): what the firmware primes, so what an ARM is for (R13a) */
   const agentRequest = (text) => {
     const message = sha256(`okrn edge ${text} ${Date.now()}`);
-    const identity = sha256('okrn edge identity');
+    const identity = grants.identityLabel(E2E_IDENTITY); /* R11a: the test identity's label - never a real one */
     return {message, identity, payload: new Uint8Array([...message, ...identity])};
   };
   /* R13a: ARM with the token over this head and the library's requestSubject of these bytes */
@@ -145,7 +152,7 @@ module.exports = function register({it}, ctx) {
     assert.equal(free.after.owed, 0, 'a direct press on a slot no budget covers owes a ticket');
 
     /* a held budget covers the slot (hold stops paying, not owing): the pressed use owes, bit 4 set, bit 5 clear */
-    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1}], reasonHash: sha256('okrn e2e: cover'), verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
+    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1, identity: E2E_IDENTITY}], reasonHash: sha256('okrn e2e: cover'), verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
     assert.equal(await app.edge.hold(g.grantId), true);
     const owing = await pressedUse(app, 'covered', log);
     assert.equal(owing.f.flags & (PRESS_OBSERVED | OWES_TICKET | ARMED), PRESS_OBSERVED | OWES_TICKET, 'the covered pressed use is not "pressed, owes, not armed"');
@@ -163,7 +170,7 @@ module.exports = function register({it}, ctx) {
     await clearDebts(app, log);
     const {publicKey, deviceId} = await app.edge.publicKey();
     const before = await app.edge.head();
-    const scopes = [{op: OP_SIGN, slot: 222, cap: 2}];
+    const scopes = [{op: OP_SIGN, slot: 222, cap: 2, identity: E2E_IDENTITY}];
     const reasonHash = sha256('okrn e2e: sign two agent messages');
 
     /* GRANT_CREATE waits for the PHYSICAL press - on the soft key, its own button */
@@ -215,7 +222,7 @@ module.exports = function register({it}, ctx) {
   it('edge: a held budget arms nothing until a pressed resume', async ({log, assert}) => {
     const app = await ready(log);
     await clearDebts(app, log);
-    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1}], reasonHash: sha256('okrn e2e: hold'), verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
+    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1, identity: E2E_IDENTITY}], reasonHash: sha256('okrn e2e: hold'), verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
     assert.equal(await app.edge.hold(g.grantId), true);
     let h = await app.edge.head();
     assert.equal(JSON.stringify(h.held), JSON.stringify([g.grantId]), 'HEAD does not report the hold');

@@ -26,6 +26,7 @@ const PUBKEY = 0x04;
 const VOUCH = 0x05;
 const LOSS = 0x34;
 const GRANT_CREATE = 0x10;
+const GRANT_LABEL = 0x11; /* R11a: {scope index, label 32}, no press - a derived code's identity */
 const GRANT_REVOKE = 0x12;
 const GRANT_HOLD = 0x13;
 const GRANT_RESUME = 0x14;
@@ -135,7 +136,14 @@ module.exports = function register({ it }, ctx) {
    * verified. `verified` is the key's current head - this test is the host,
    * and checks the chain itself. `scopes`: a cap (agent P-256 sign 222) or a list.
    */
-  const scopesOf = (scopes) => (typeof scopes === 'number' ? [{ op: OP_SIGN, slot: 222, cap: scopes }] : scopes);
+  /*
+   * R11a: agent sign 222 is a DERIVED code, shared by every P-256 identity, so
+   * a scope on it names one: the 32-byte label of the test identity every
+   * agent request here carries ("okt edge identity") - never a real one.
+   */
+  const OKT_LABEL = sha256(Buffer.from('okt edge identity'));
+  const derived = (slot) => (slot >= 201 && slot <= 203) || (slot >= 221 && slot <= 223);
+  const scopesOf = (scopes) => (typeof scopes === 'number' ? [{ op: OP_SIGN, slot: 222, cap: scopes, label: OKT_LABEL }] : scopes);
   function grantRequest(scopes, reasonHash, verified, lifetime = 0) {
     const req = Buffer.alloc(58);
     Buffer.from(grants.encodeScopes(scopesOf(scopes))).copy(req, 0);
@@ -148,6 +156,13 @@ module.exports = function register({ it }, ctx) {
   /* ... with its press -> {grantId, uses, G, chainSeq, ckpt, sig} */
   async function openBudget(device, scopes, reason, { signal, lifetime = 0 }) {
     const reasonHash = sha256(Buffer.from(reason));
+    /* R11a: each derived-code scope's label is staged first (no press); GRANT_CREATE consumes them */
+    const list = scopesOf(scopes);
+    for (let j = 0; j < list.length; j++) {
+      if (!derived(list[j].slot)) continue;
+      const staged = await edge(device, GRANT_LABEL, Buffer.concat([Buffer.from([j]), list[j].label || OKT_LABEL]), { signal, text: true });
+      if (staged !== 'EDGE:00') throw new Error(`GRANT_LABEL ${j} answered ${staged}`);
+    }
     const req = grantRequest(scopes, reasonHash, (await head(device, { signal })).head, lifetime);
     const [g, ckpt, s] = await edge(device, GRANT_CREATE, req, { signal, press: true, reports: 3 });
     return {
@@ -357,7 +372,8 @@ module.exports = function register({ it }, ctx) {
       const [opened] = await pickup(device, b.chainSeq, 1, { signal });
       assert.bytes(Buffer.from(chain.weld(before.head, opened.link)), b.ckpt.subarray(4, 36), 'the signed head is not this link welded on');
       const scopesEnc = Buffer.from([1, OP_SIGN, 222, 2, 0]);
-      const wantSubject = sha256(Buffer.concat([Buffer.from('OKEDGE-GRANT-v1'), scopesEnc, b.reasonHash, Buffer.from(b.G), Buffer.from([0, 0])]));
+      /* ... and (R11a) ends with the derived scope's full label: the identity the person approved */
+      const wantSubject = sha256(Buffer.concat([Buffer.from('OKEDGE-GRANT-v1'), scopesEnc, b.reasonHash, Buffer.from(b.G), Buffer.from([0, 0]), OKT_LABEL]));
       assert.bytes(Buffer.from(chain.decodeLink(opened.link).subject), wantSubject, 'the grant-create link does not commit to G and the lifetime');
 
       /* a request that skips ARM is pressed, even with a live budget (R13a) - and owes */
@@ -757,7 +773,7 @@ module.exports = function register({ it }, ctx) {
         { op: OP_SIGN, slot: 2, cap: 1 },
         { op: OP_SIGN, slot: 101, cap: 1 },
         { op: OP_DECRYPT, slot: 1, cap: 1 },
-        { op: OP_SIGN, slot: 222, cap: 1 },
+        { op: OP_SIGN, slot: 222, cap: 1, label: OKT_LABEL },
       ], 'okt: one of each op type', { signal });
 
       const rsaMessage = Buffer.from('okt edge RSA sign');
@@ -840,8 +856,9 @@ module.exports = function register({ it }, ctx) {
         Buffer.from(h.head).copy(req, 52, 0, 6);
         return req;
       };
-      assert.equal(await edge(device, GRANT_CREATE, raw([[222, 1025]]), { signal, text: true }), 'EDGE:04', 'a 1025-use budget was taken');
-      assert.equal(await edge(device, GRANT_CREATE, raw([[222, 1000], [2, 25]]), { signal, text: true }), 'EDGE:04', 'two scopes summing to 1025 were taken');
+      /* on stored slots (RSA2, ECC1): this is the use cap, not R11a's identity rule */
+      assert.equal(await edge(device, GRANT_CREATE, raw([[2, 1025]]), { signal, text: true }), 'EDGE:04', 'a 1025-use budget was taken');
+      assert.equal(await edge(device, GRANT_CREATE, raw([[2, 1000], [101, 25]]), { signal, text: true }), 'EDGE:04', 'two scopes summing to 1025 were taken');
       const b = await openBudget(device, 1024, 'okt: 1024 uses', { signal });
       log(`budget ${b.grantId}: ${b.uses} uses`);
       assert.equal(b.uses, 1024);
@@ -894,6 +911,56 @@ module.exports = function register({ it }, ctx) {
       await named(h.seq - 1); /* to+1 = the latest link */
       h = await head(device, { signal });
       await named(h.seq - 3); /* to+1 = a link in the ring */
+    });
+
+  /*
+   * R11a (2026-10-02, found when Brad's GitHub login signed on slot 201): a
+   * budget on a derived code covers ONE identity. A budget for the test
+   * identity never pays for, or makes owe, a use of another identity on the
+   * same code - Brad's own logins on 201 stay his.
+   */
+  it('edge: a budget on a derived code covers one identity - another identity on the same code is neither paid for nor made to owe (R11a)',
+    async ({ device, assert, signal, log }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+      const other = sha256(Buffer.from('okt someone else'));
+      const payloadAs = (text, label) => Buffer.concat([sha256(Buffer.from(text)), label]);
+      /* read each link right after the use that made it: the key holds only its last 8 */
+      const fieldsOf = async (seq) => chain.decodeLink((await pickup(device, seq, 1, { signal }))[0].link);
+
+      /* no label staged: a derived-code scope is refused (EDGE:03); stored slots never needed one */
+      const h0 = await head(device, { signal });
+      assert.equal(await edge(device, GRANT_CREATE, grantRequest(2, sha256(Buffer.from('r')), h0.head), { signal, text: true }), 'EDGE:03',
+        'a budget on a derived code without an identity was taken');
+
+      /* the budget for OKT_LABEL, held: covered for that identity only (R16 + R11a) */
+      const cover = await coverSlot(device, 'okt: cover the test identity on 222', { signal });
+      const theirs = await pressedSign(device, null, { signal, payload: payloadAs('okt other identity, direct', other) });
+      assert.equal((await head(device, { signal })).owed, 0, 'a direct press by ANOTHER identity on the covered code owes a ticket (R11a)');
+      assert.equal((await fieldsOf(theirs.seq)).flags & (OWES_TICKET | ARMED), 0, 'another identity\'s direct press carries the owes bit');
+      const ours = await pressedSign(device, null, { signal, payload: agentPayload('okt our identity, direct') });
+      assert.equal((await head(device, { signal })).owed, 1, 'a direct press by the budget\'s identity does not owe (R16)');
+      assert.equal((await fieldsOf(ours.seq)).flags & OWES_TICKET, OWES_TICKET, 'the budget\'s identity, pressed directly, does not owe');
+      await ticket(device, ours.seq, 'okt: ours', { signal });
+      assert.equal(await edge(device, GRANT_REVOKE, u32(cover.grantId), { signal, text: true }), 'EDGE:00');
+
+      /* a live budget for OKT_LABEL: an ARM for another identity's request never self-presses */
+      const b = await openBudget(device, 2, 'okt: the test identity, 2 signs', { signal });
+      const plOther = payloadAs('okt other identity, armed', other);
+      assert.equal(await armFor(device, (await head(device, { signal })).head, plOther, { signal }), 'EDGE:00');
+      const armedOther = await pressedSign(device, null, { signal, payload: plOther });
+      const fo = await fieldsOf(armedOther.seq);
+      assert.equal(fo.decision, APPROVE, 'an ARM paid for another identity\'s request - it must be pressed');
+      assert.equal(fo.flags & (OWES_TICKET | ARMED), OWES_TICKET | ARMED, 'an ARMed request owes, whatever its identity');
+      await ticket(device, armedOther.seq, 'okt: other, armed', { signal }); /* ARMed owes, whatever its identity (R16) */
+      const pl = agentPayload('okt our identity, armed');
+      assert.equal(await armFor(device, (await head(device, { signal })).head, pl, { signal }), 'EDGE:00');
+      const paid = await selfPressedSign(device, pl, { signal });
+      const fp = await fieldsOf(paid.seq);
+      log(trail([fo, fp]));
+      assert.equal(JSON.stringify([fp.decision, fp.grantId]), JSON.stringify([SELF_PRESS, b.grantId]), 'the budget did not pay for its own identity');
+      await ticket(device, paid.seq, 'okt: ours, armed', { signal });
+      assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:00');
     });
 
   it('edge: a checkpoint is the Edge key\'s signature over the head',

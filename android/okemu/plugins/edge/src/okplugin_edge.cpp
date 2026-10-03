@@ -146,7 +146,14 @@ static struct {
   uint8_t device_id[ID_BYTES];
 } ident;
 
-struct scope { uint8_t op, slot; uint16_t cap, used; };
+/*
+ * R11a: a scope on a DERIVED code (agent sign 201-203 / 221-223) names one
+ * identity - the first 16 bytes of its 32-byte derive label. Those codes are
+ * shared by every derived identity of a curve; without the label a budget for
+ * the agent's key would also pay for, and make owe, Brad's own logins.
+ */
+#define LABEL_PREFIX 16
+struct scope { uint8_t op, slot; uint16_t cap, used; uint8_t has_label; uint8_t label[LABEL_PREFIX]; };
 /* a live budget: RAM only - a lock or reboot is a new process, so it ends with the session (R15) */
 struct budget {
   uint32_t id;
@@ -158,6 +165,23 @@ struct budget {
   uint8_t genesis[32];
 };
 static struct budget budgets[MAX_LIVE];
+
+/*
+ * R11a: GRANT_LABEL stages a derived-code scope's label for the NEXT
+ * GRANT_CREATE (no press - it only narrows a request). A GRANT_CREATE
+ * consumes them, and 25 s without one clears them.
+ */
+#define LABEL_STAGE_MS 25000UL
+static struct {
+  uint8_t set[MAX_SCOPES];
+  uint8_t label[MAX_SCOPES][32];
+  unsigned long since;
+} staged;
+
+/* a derived code: the identity is in the request, not in the slot (R11a) */
+static int derived_code(uint8_t slot) {
+  return (slot >= 201 && slot <= 203) || (slot >= 221 && slot <= 223);
+}
 
 /*
  * R13a: ONE self-press, armed by ARM {head}. RAM only, and any link clears it
@@ -190,6 +214,9 @@ static struct {
   uint8_t armed; /* R16: an arm was waiting when this was primed (matched or not) */
   int8_t budget;
   uint8_t subject[32];
+  /* R11a: on a derived code, the identity's label prefix - the request's last 32 bytes are its label */
+  uint8_t has_label;
+  uint8_t label[LABEL_PREFIX];
 } pend;
 
 /*
@@ -216,6 +243,7 @@ static struct {
   uint8_t scopes_enc[1 + 4 * MAX_SCOPES];
   uint8_t scopes_len;
   uint16_t lifetime;          /* PRESS_GRANT: R15b minutes, 0 = DEFAULT_LIFETIME_MIN */
+  uint8_t labels[MAX_SCOPES][32]; /* PRESS_GRANT: R11a, the FULL labels of derived-code scopes, for the subject */
 } press;
 
 /* ------------------------------------------------------------ bytes and hashes */
@@ -628,14 +656,21 @@ static int head_is(const uint8_t *verified, uint8_t n) { return memcmp(verified,
  * scope with room. Anything else falls back to the press the person sees -
  * never a refusal path of its own.
  */
-static int budget_for(uint8_t op, uint8_t slot, struct scope **sc_out) {
+/* R11a: a scope matches op and slot - and, on a derived code, the identity's label */
+static int scope_matches(const struct scope *sc, uint8_t op, uint8_t slot, const uint8_t *label) {
+  if (sc->op != op || sc->slot != slot) return 0;
+  if (!sc->has_label) return 1;
+  return label && memcmp(sc->label, label, LABEL_PREFIX) == 0;
+}
+
+static int budget_for(uint8_t op, uint8_t slot, const uint8_t *label, struct scope **sc_out) {
   if (!armed || !budgets_may_pay()) return -1;
   for (int i = 0; i < MAX_LIVE; i++) {
     struct budget *b = &budgets[i];
     if (!alive(b) || b->on_hold || b->used >= b->uses) continue;
     for (int j = 0; j < b->nscopes; j++) {
       struct scope *sc = &b->scopes[j];
-      if (sc->op == op && sc->slot == slot && sc->used < sc->cap) {
+      if (scope_matches(sc, op, slot, label) && sc->used < sc->cap) {
         *sc_out = sc;
         return i;
       }
@@ -651,12 +686,12 @@ static int budget_for(uint8_t op, uint8_t slot, struct scope **sc_out) {
  * use its key outside Edge while Brad is checking it). The same scope match as
  * budget_for, without its "could pay now" conditions.
  */
-static int covered(uint8_t op, uint8_t slot) {
+static int covered(uint8_t op, uint8_t slot, const uint8_t *label) {
   for (int i = 0; i < MAX_LIVE; i++) {
     struct budget *b = &budgets[i];
     if (!alive(b)) continue;
     for (int j = 0; j < b->nscopes; j++)
-      if (b->scopes[j].op == op && b->scopes[j].slot == slot) return 1;
+      if (scope_matches(&b->scopes[j], op, slot, label)) return 1;
   }
   return 0;
 }
@@ -692,10 +727,29 @@ static void press_wait(uint8_t what, const uint8_t subject[32]) {
  * PHYSICAL press, never while a ticket is owed or a restore is unfinished
  * (R10, R18, R26), and never on a head the host did not verify.
  */
+/* R11a: GRANT_LABEL {scope index u8, label 32} - no press, no link; it only narrows the next GRANT_CREATE */
+static void grant_label(const uint8_t *buffer) {
+  uint8_t j = buffer[6];
+  if (j >= MAX_SCOPES) { status(EDGE_BAD_SCOPES); return; }
+  if (!staged.since || (unsigned long)(millis() - staged.since) > LABEL_STAGE_MS) memset(&staged, 0, sizeof(staged));
+  memcpy(staged.label[j], buffer + 7, 32);
+  staged.set[j] = 1;
+  staged.since = millis();
+  if (!staged.since) staged.since = 1; /* 0 means "nothing staged" */
+  status(EDGE_OK);
+}
+
 #define GRANT_HEAD_BYTES 6
 static void grant_create(const uint8_t *buffer) {
   uint8_t n = buffer[6];
   unsigned uses = 0;
+  /* R11a: this GRANT_CREATE consumes what GRANT_LABEL staged - fresh only (25 s) */
+  int fresh = staged.since && (unsigned long)(millis() - staged.since) <= LABEL_STAGE_MS;
+  uint8_t have[MAX_SCOPES];
+  uint8_t labels[MAX_SCOPES][32];
+  memcpy(have, staged.set, sizeof(have));
+  memcpy(labels, staged.label, sizeof(labels));
+  memset(&staged, 0, sizeof(staged));
   press_drop();
   if (automatic_blocked()) { status(blocked_status()); return; }
   if (!head_is(buffer + 58, GRANT_HEAD_BYTES)) { status(EDGE_STALE_HEAD); return; }
@@ -711,6 +765,13 @@ static void grant_create(const uint8_t *buffer) {
     sc->slot = p[1];
     sc->cap = get16(p + 2);
     if (!scope_allowed(sc->op, sc->slot) || sc->cap < 1) { press_drop(); status(EDGE_SCOPE_NOT_ALLOWED); return; }
+    if (derived_code(sc->slot)) {
+      /* R11a: a derived code names one identity, or the budget is refused (EDGE:03) */
+      if (!fresh || !have[j]) { press_drop(); status(EDGE_SCOPE_NOT_ALLOWED); return; }
+      sc->has_label = 1;
+      memcpy(sc->label, labels[j], LABEL_PREFIX);
+      memcpy(press.labels[j], labels[j], 32);
+    }
     uses += sc->cap;
     memcpy(press.scopes_enc + 1 + 4 * j, p, 4);
   }
@@ -751,6 +812,9 @@ static void grant_pressed(void) {
   uint8_t life[2];
   put16(life, press.lifetime);
   sha256_update(&ctx, life, 2); /* R12 + R15b: the subject ends with the lifetime the person approved */
+  /* R11a: then the FULL labels of derived-code scopes, in scope order - the identities the person approved */
+  for (int j = 0; j < press.b.nscopes; j++)
+    if (press.b.scopes[j].has_label) sha256_update(&ctx, press.labels[j], 32);
   sha256_final(&ctx, subject);
   press.b.id = id;
   press.b.opened = millis();
@@ -921,6 +985,9 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   pend.opcode = opcode;
   pend.slot = slot;
   H(pend.subject, NULL, msg, msg_len, NULL, 0, NULL, 0); /* SHA-256 of exactly what was submitted */
+  /* R11a: an agent request is message || identity label (32): the label picks the derived key */
+  pend.has_label = derived_code(slot) && msg_len >= 32;
+  if (pend.has_label) memcpy(pend.label, msg + msg_len - 32, LABEL_PREFIX);
   state_load();
   if (armed) {
     /* R13a: this request, after THIS head, is the one the arm was for - or the arm is spent */
@@ -929,7 +996,7 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
     if (memcmp(t, arm_token, 32) != 0) armed = 0;
   }
   struct scope *sc;
-  int i = budget_for(opcode == OKSIGN ? OP_SIGN : OP_DECRYPT, slot, &sc);
+  int i = budget_for(opcode == OKSIGN ? OP_SIGN : OP_DECRYPT, slot, pend.has_label ? pend.label : NULL, &sc);
   if (i >= 0) {
     pend.budget = (int8_t)i;
     user_input_mode = USER_INPUT_NONE; /* an armed budget pays: the firmware's own no-press path runs it (R13) */
@@ -969,11 +1036,11 @@ void okplugin_edge_decision(int decision) {
    *   - neither: owes nothing (the person's own keys), still linked.
    */
   if (pend.armed) flags |= FLAG_ARMED;
-  if (decision == OKEDGE_DECISION_APPROVE && (pend.armed || covered(op, pend.slot))) flags |= FLAG_OWES_TICKET;
+  if (decision == OKEDGE_DECISION_APPROVE && (pend.armed || covered(op, pend.slot, pend.has_label ? pend.label : NULL))) flags |= FLAG_OWES_TICKET;
 
   if (decision == OKEDGE_DECISION_APPROVE && pend.budget >= 0) {
     struct scope *sc;
-    if (budget_for(op, pend.slot, &sc) == pend.budget) { /* still armed, live, with room */
+    if (budget_for(op, pend.slot, pend.has_label ? pend.label : NULL, &sc) == pend.budget) { /* still armed, live, with room */
       struct budget *b = &budgets[pend.budget];
       uint8_t reveal[32];
       b->used++;
@@ -1135,6 +1202,9 @@ void okplugin_edge_recv(uint8_t *buffer) {
     case OKEDGE_PUBKEY:
       reply(ident.pub, 64);
       return;
+    case OKEDGE_GRANT_LABEL:
+      grant_label(buffer);
+      break;
     case OKEDGE_GRANT_CREATE:
       grant_create(buffer);
       return;

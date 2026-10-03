@@ -22,6 +22,7 @@
 #define OKEDGE_PUBKEY 0x04
 #define OKEDGE_VOUCH 0x05        /* R26: seq . head . vouch tag for the current head; refused while restoring */
 #define OKEDGE_GRANT_CREATE 0x10
+#define OKEDGE_GRANT_LABEL 0x11   /* R11a: {scope index, label 32}, no press - stages a derived identity's label for the next GRANT_CREATE */
 #define OKEDGE_GRANT_REVOKE 0x12
 #define OKEDGE_GRANT_HOLD 0x13   /* R15a: no press */
 #define OKEDGE_GRANT_RESUME 0x14 /* R15a: press */
