@@ -157,7 +157,7 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
   ring = 32;
 
   /* bump the name when demo() changes: a new history needs its own mirror, or the phone rightly calls it tampering */
-  constructor(name = 'fake-key-demo-2') {
+  constructor(name = 'fake-key-demo-3') {
     this.deviceId = utf8ToBytes(name.padEnd(16, '.').slice(0, 16));
   }
 
@@ -172,16 +172,21 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
     return this.links.length - 1;
   }
 
-  /** The last sign/decrypt has no ticket yet (R17's empty hook). */
+  /** The last sign/decrypt owes and has no ticket yet (R17's empty hook; R16: it owes only with bit 4). */
   private owesTicket(): boolean {
     for (let i = this.links.length - 1; i >= 0; i--) {
       const f = chain.decodeLink(this.links[i].link);
       if (f.op === OP.TICKET) return false;
       if (f.op === OP.SIGN || f.op === OP.DECRYPT) {
-        return f.decision === DECISION.APPROVE || f.decision === DECISION.SELF_PRESS;
+        return (f.decision === DECISION.APPROVE || f.decision === DECISION.SELF_PRESS) && !!(f.flags & FLAG.OWES_TICKET);
       }
     }
     return false;
+  }
+
+  /* R16: a slot is covered while a live budget has a scope for it - used up or not */
+  private covered(op: number, slot: number): boolean {
+    return this.live.some(b => b.scopes.some(sc => sc.op === op && sc.slot === slot));
   }
 
   /* ---- what an agent / a person does ---- */
@@ -215,9 +220,11 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
       if (!scope) continue;
       b.used++; // the budget's step counts across all of its scopes
       scope.used++;
-      return this.add({op, decision: DECISION.SELF_PRESS, slot, flags: flags | FLAG.BUDGET_SPENT, subject: sha(what), grantId: b.grantId, grantStep: b.used});
+      return this.add({op, decision: DECISION.SELF_PRESS, slot, flags: flags | FLAG.BUDGET_SPENT | FLAG.OWES_TICKET | FLAG.ARMED, subject: sha(what), grantId: b.grantId, grantStep: b.used});
     }
-    return this.add({op, decision: DECISION.APPROVE, slot, flags: flags | FLAG.PRESS_OBSERVED, subject: sha(what)});
+    /* R16, as the real key decides it at the sign: a human press owes only on a covered slot */
+    const owes = this.covered(op, slot) ? FLAG.OWES_TICKET : 0;
+    return this.add({op, decision: DECISION.APPROVE, slot, flags: flags | FLAG.PRESS_OBSERVED | owes, subject: sha(what)});
   }
 
   deny(what: string, op: number = OP.DECRYPT, slot = 1) {
