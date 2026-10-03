@@ -153,8 +153,21 @@ function metroAndStrays() {
   const metroPids = new Set(metros.map(p => p.pid));
   const listeners = listeningPids(METRO_PORT);
 
+  /*
+   * Under pm2 (metro.pm2.config.js, 2026-10-03) Metro's command line is pm2's
+   * own wrapper, not `react-native start`, so the pattern above misses it and
+   * this said "NONE running" while Metro answered on 8081. Whoever listens on
+   * the port IS the running Metro.
+   */
+  if (metros.length === 0 && listeners.length) {
+    for (const pid of listeners) {
+      const p = all.find(x => String(x.pid) === String(pid));
+      metros.push(p || {pid, started: '?', cmd: ''});
+      metroPids.add(pid);
+    }
+  }
   const metroRow = metros.length === 0
-    ? `NONE running   ! start it: npx react-native start --host 0.0.0.0`
+    ? `NONE running   ! start it: pm2 start metro.pm2.config.js (in ok-rn)`
     : metros.map(p => `pid ${p.pid} started ${whenStarted(p)}`).join(', ')
       + `   port ${METRO_PORT}: ${listeners.length ? listeners.join(',') : 'nobody listening !'}`
       + (metros.length > 1 ? '   ! MORE THAN ONE - the extra one starves the other' : '');
