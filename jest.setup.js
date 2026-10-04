@@ -108,6 +108,8 @@ jest.mock('./specs/NativeOkEmu', () => ({
     confirmState: jest.fn(() => Promise.resolve(0)),
     /* the app's own "answer me" for PressAlert (the Edge approval sheet) */
     setAttention: jest.fn(),
+    markSplashDone: jest.fn(),
+    splashDoneThisProcess: jest.fn(() => false),
     start: jest.fn(() =>
       Promise.resolve({started: true, message: '', storageDir: '/mock/okemu'}),
     ),
@@ -185,6 +187,11 @@ jest.mock('./specs/NativeOkSsl', () => ({
 jest.mock('./specs/NativeRsaGen', () => ({
   __esModule: true,
   default: {generatePrimes: jest.fn(() => Promise.reject(new Error('no RSA generator in jest')))},
+}));
+
+jest.mock('./specs/NativeEdgeAlert', () => ({
+  __esModule: true,
+  default: {post: jest.fn(), takeOpenedSeq: jest.fn(() => -1)},
 }));
 
 jest.mock('./specs/NativeCredProvider', () => ({

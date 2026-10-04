@@ -12,7 +12,7 @@
  */
 import React, {useEffect, useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {codes} from 'node-onlykey-lib/edge';
+import {codes, live} from 'node-onlykey-lib/edge';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {EdgeList, type EdgeListItem} from '../ui/EdgeList';
@@ -67,12 +67,23 @@ function copyProblem(c: EdgeCopyCheck | null): string | null {
   }
 }
 
+/* the phone's clock when it first stored the link (links carry no time) */
+const seenText = (ms?: number) => (ms ? `seen ${new Date(ms).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'})} · ` : '');
+const elapsed = (ms: number) => {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  return sec < 3600 ? `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}` : `${Math.floor(sec / 3600)} h ${Math.floor((sec % 3600) / 60)} min`;
+};
+
 function approval(row: EdgeRow): string {
   const f = row.fields;
   if (f.op === OP.TICKET) return `answers no request (#${f.refSeq})`; // only orphans are drawn as rows
   if (f.decision === DECISION.SELF_PRESS) return `self-press · budget ${f.grantId} step ${f.grantStep}`;
   if (f.decision === DECISION.DENY) return 'denied';
   if (f.decision === DECISION.TIMEOUT) return 'timed out';
+  /* B7: the key wrote which press this was (flags ARMED / OWES_TICKET) - lib live.classifyUse, as okedge watch */
+  const k = live.classifyUse(f)?.kind;
+  if (k === live.KIND.MISMATCHED_ARM) return 'pressed · its ARM did not match';
+  if (k === live.KIND.PRESS_UNDER_BUDGET) return 'pressed while a budget was live';
   if (f.flags & FLAG.PRESS_OBSERVED) return 'pressed';
   return 'approved';
 }
@@ -120,11 +131,17 @@ function TicketHook({t, verified}: {t: NonNullable<EdgeRow['ticket']>; verified:
   );
 }
 
-/** The latest use has no ticket yet - the key still takes one for it (R16). */
-function WaitingRow({seq}: {seq: number}) {
+/** The latest use has no ticket yet - the key still takes one for it (R16). B7: how long it has been owed. */
+function WaitingRow({seq, since}: {seq: number; since?: number}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!since) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [since]);
   return (
     <View style={[styles.link, styles.waiting]}>
-      <Text style={[styles.ticketTitle, {color: theme.warn}]}>Waiting for ticket</Text>
+      <Text style={[styles.ticketTitle, {color: theme.warn}]}>{since ? `Waiting for ticket · owed ${elapsed(now - since)}` : 'Waiting for ticket'}</Text>
       <Text style={styles.dim}>{`The agent has not yet said what it did with #${seq}.`}</Text>
     </View>
   );
@@ -144,7 +161,9 @@ function LinkRow({row, ticketVerified, budgetUses}: {row: EdgeRow; ticketVerifie
             {row.fields.op === OP.SIGN || row.fields.op === OP.DECRYPT ? ` · slot ${row.fields.slot}` : ''}
           </Text>
           <Text style={styles.dim}>
+            {seenText(row.seenAt)}
             {approval(row)}
+            {row.fields.decision === DECISION.SELF_PRESS && budgetUses?.has(row.fields.grantId) ? ` · ${Math.max(0, budgetUses.get(row.fields.grantId)! - row.fields.grantStep)} left` : ''}
             {row.fields.flags & FLAG.PREV_NO_TICKET ? ' · previous use had no ticket' : ''}
             {dim ? ' · unverifiable' : ''}
           </Text>
@@ -204,7 +223,19 @@ function LinkRow({row, ticketVerified, budgetUses}: {row: EdgeRow; ticketVerifie
         </View>
       ) : null}
       {/* a sign or decrypt no budget paid: hung under it like a ticket, in yellow, so it stands out in Presses (Brad, 2026-10-04) */}
-      {(row.fields.op === OP.SIGN || row.fields.op === OP.DECRYPT) && !row.fields.grantId ? (
+      {/* B7: the two presses that should never happen under a budget, in red - they stand out without looking */}
+      {live.classifyUse(row.fields)?.alarm ? (
+        <View style={[styles.ticket, {borderLeftColor: theme.error}]}>
+          <Text style={[styles.ticketTitle, {color: theme.error}]}>
+            {live.classifyUse(row.fields)!.kind === live.KIND.MISMATCHED_ARM ? '⚠ ARM did not match' : '⚠ Press during a live budget'}
+          </Text>
+          <Text style={styles.dim}>
+            {live.classifyUse(row.fields)!.kind === live.KIND.MISMATCHED_ARM
+              ? 'An agent ARMed the key, but the request that came was not the one it ARMed for - someone else may have jumped in. It needed a press and owes a ticket.'
+              : 'A press was asked for while a budget was live, so it owes a ticket (R16). If you did not expect it, hold the budget.'}
+          </Text>
+        </View>
+      ) : (row.fields.op === OP.SIGN || row.fields.op === OP.DECRYPT) && !row.fields.grantId ? (
         <View style={[styles.ticket, {borderLeftColor: theme.warn}]}>
           <Text style={[styles.ticketTitle, {color: theme.warn}]}>No budget</Text>
           <Text style={styles.dim}>{row.fields.decision === DECISION.APPROVE ? 'A press on the key - no budget paid for it.' : 'Asked outside any budget.'}</Text>
@@ -535,11 +566,19 @@ function RestoreCard({edge}: {edge: ReturnType<typeof useEdge>}) {
  * (App.tsx shows it only then), and the key's testing controls below check it
  * themselves too, so they stay hidden when the tab ships to everyone.
  */
-export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
+export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {testingMode?: boolean; focusSeq?: number | null; onFocused?: () => void}) {
   const edge = useEdge();
   const [open, setOpen] = useState<EdgeBudget | null>(null);
   /* two views (Brad, 2026-10-04): the budgets - live, then past as blocks - and the history, the whole chain */
   const [pane, setPane] = useState<'Budgets' | 'Presses'>('Budgets');
+  /* B7: opened from an alarm notification - Presses, that link marked */
+  const [marked, setMarked] = useState<number | null>(null);
+  useEffect(() => {
+    if (focusSeq === null) return;
+    setPane('Presses');
+    setMarked(focusSeq);
+    onFocused?.();
+  }, [focusSeq, onFocused]);
   const [confirmWaive, setConfirmWaive] = useState(false);
   const [confirmLoss, setConfirmLoss] = useState(false);
   /*
@@ -753,6 +792,20 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
   const attached = new Set<number>();
   for (const r of rows) if (r.ticket?.ticket) attached.add(r.ticket.ticket.seq);
   const liveUses = new Map(edge.budgets.map(b => [b.grantId, b.uses]));
+  /* B7: Hold one tap away while anything is live - stopping an agent never needs navigating */
+  const liveNow = edge.budgets.filter(b => !(edge.keyState?.held ?? []).includes(b.grantId));
+  if (!edge.isFake && liveNow.length) {
+    items.push({key: 'live-hold', kind: 'node', render: () => (
+      <View style={styles.holdBar}>
+        {liveNow.map(b => (
+          <View key={b.grantId} style={styles.row}>
+            <Text style={[styles.op, {flex: 1}]}>{`Budget ${b.grantId} live · ${Math.max(0, b.uses - b.used)} of ${b.uses} left`}</Text>
+            <Btn title="Hold" tone="danger" onPress={() => edge.hold(b.grantId)} disabled={edge.busy} />
+          </View>
+        ))}
+      </View>
+    )});
+  }
   items.push({key: 's-history', kind: 'section', title: 'Presses', right: rows.length ? `#${rows[0].seq} → #${rows[rows.length - 1].seq} · newest first` : 'nothing yet'});
   for (const r of rows) {
     if (r.fields.op === OP.TICKET && attached.has(r.seq)) continue; /* it hangs under its use */
@@ -760,8 +813,8 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
     const forBudget = r.fields.grantId ? edge.budgets.find(b => b.grantId === r.fields.grantId) ?? edge.past.find(b => b.grantId === r.fields.grantId) : undefined;
     items.push({key: `h${r.seq}`, kind: 'node', bare: true, render: () => {
       const body = (
-        <View style={styles.historyRow}>
-          {r.ticket?.status === 'waiting' ? <WaitingRow seq={r.seq} /> : null}
+        <View style={[styles.historyRow, r.seq === marked && styles.marked]}>
+          {r.ticket?.status === 'waiting' ? <WaitingRow seq={r.seq} since={r.seenAt} /> : null}
           <LinkRow row={r} budgetUses={liveUses} ticketVerified={r.ticket?.ticket ? verifiedAt.get(r.ticket.ticket.seq) !== false : true} />
         </View>
       );
@@ -777,7 +830,7 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
         <Segmented options={['Budgets', 'Presses'] as const} value={pane} onChange={setPane} />
       </View>
       <EdgeList
-        items={items.filter(it => it.key === 'status' || (pane === 'Presses') === (it.key === 's-history' || /^h\d/.test(it.key)))}
+        items={items.filter(it => it.key === 'status' || (pane === 'Presses') === (it.key === 's-history' || it.key === 'live-hold' || /^h\d/.test(it.key)))}
         bottomInset={DRAWER_HANDLE} refreshing={edge.busy} onRefresh={edge.sync}
       />
       <BottomDrawer title="Agents">
@@ -862,11 +915,13 @@ function TimeLeft({endsAt}: {endsAt: number}) {
 }
 
 const styles = StyleSheet.create({
+  holdBar: {paddingHorizontal: 16, paddingVertical: 8, gap: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.border},
   page: {padding: 12, gap: 12},
   /* the trust list: the screen is the list (src/ui/EdgeList.tsx), with the drawer's handle over its foot */
   screen: {flex: 1},
   statusStack: {gap: 12},
   historyRow: {paddingHorizontal: 16},
+  marked: {borderLeftWidth: 4, borderLeftColor: theme.error},
   paneBar: {paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.border},
   verdict: {fontSize: 20, fontWeight: '700', marginBottom: 4},
   dim: {color: theme.textDim, fontSize: 13, lineHeight: 19},

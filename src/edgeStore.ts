@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {chain, copy, tickets} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
+import {raiseAlarms} from './edgeAlerts';
 
 const KEY_PREFIX = 'okrn.edge.mirror.';
 const READ_BATCH = 16;
@@ -28,6 +29,7 @@ type StoredMirror = {
   lastSync: number | null;
   vouch?: {seq: number; head: string; tag: string} | null;
   setAside?: {link: string; head: string; at: number}[];
+  seen?: Record<string, number>;
 };
 
 export type Mirror = {
@@ -49,6 +51,12 @@ export type Mirror = {
    * 2026-10-04): above the key's head, it read as a rollback and stopped Sync.
    */
   setAside: {link: Uint8Array; head: Uint8Array; at: number}[];
+  /*
+   * B7: when THIS phone first stored each link (seq -> ms, its own clock). The
+   * chain carries no time; this is the copy's note, editable like the rest of it,
+   * so the tab shows it as "seen", never as when the key did it.
+   */
+  seen: Record<number, number>;
 };
 
 export type Verdict =
@@ -80,13 +88,15 @@ export type EdgeRow = {
   weld: string;
   verified: boolean;
   ticket?: ReturnType<typeof tickets.pairTickets>['uses'][number];
+  /** when this phone first stored the link (its clock; links carry no time) */
+  seenAt?: number;
 };
 
 const storageKey = (deviceId: Uint8Array) => KEY_PREFIX + toHex(deviceId);
 
 export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
   const raw = await AsyncStorage.getItem(storageKey(deviceId));
-  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: []};
+  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: [], seen: {}};
   const s = JSON.parse(raw) as StoredMirror;
   return {
     deviceId: fromHex(s.deviceId),
@@ -96,6 +106,7 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
     lastSync: s.lastSync,
     vouch: s.vouch ? {seq: s.vouch.seq, head: fromHex(s.vouch.head), tag: fromHex(s.vouch.tag)} : null,
     setAside: (s.setAside ?? []).map(x => ({link: fromHex(x.link), head: fromHex(x.head), at: x.at})),
+    seen: Object.fromEntries(Object.entries(s.seen ?? {}).map(([k, v]) => [Number(k), v])),
   };
 }
 
@@ -107,6 +118,7 @@ export async function saveMirror(m: Mirror): Promise<void> {
     lastSeen: m.lastSeen ? {seq: m.lastSeen.seq, head: toHex(m.lastSeen.head)} : null,
     lastSync: m.lastSync,
     vouch: m.vouch ? {seq: m.vouch.seq, head: toHex(m.vouch.head), tag: toHex(m.vouch.tag)} : null,
+    seen: Object.fromEntries(Object.entries(m.seen).map(([k, v]) => [String(k), v])),
     ...(m.setAside.length ? {setAside: m.setAside.map(x => ({link: toHex(x.link), head: toHex(x.head), at: x.at}))} : {}),
   };
   await AsyncStorage.setItem(storageKey(m.deviceId), JSON.stringify(s));
@@ -194,7 +206,7 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
     let welded = true;
     for (const r of got) {
       const last = mirror.links[mirror.links.length - 1];
-      if (follows(last, r)) mirror.links.push(r);
+      if (follows(last, r)) { mirror.links.push(r); mirror.seen[seqOf(r)] = mirror.seen[seqOf(r)] ?? now; }
       else if (!last || seqOf(r) > seqOf(last)) { welded = false; break; } /* not this chain's next link: read it again next sync */
     }
     if (!welded) break;
@@ -210,6 +222,8 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
     mirror.lastSeen = {seq: head.seq, head: head.head};
   }
   await saveMirror(mirror);
+  /* B7: new alarms become phone notifications - every sync, the tab's and the background copy's */
+  await raiseAlarms(mirror, view).catch(() => {});
   return {mirror, view};
 }
 
@@ -260,7 +274,7 @@ function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLi
   const paired = tickets.pairTickets(mirror.links, mirror.messages);
   const bySeq = new Map(paired.uses.map(u => [u.seq, u]));
   return decoded
-    .map(({r, f}) => ({seq: f.seq, fields: f, weld: toHex(r.head), verified: !unverified.has(f.seq), ticket: bySeq.get(f.seq)}))
+    .map(({r, f}) => ({seq: f.seq, fields: f, weld: toHex(r.head), verified: !unverified.has(f.seq), ticket: bySeq.get(f.seq), seenAt: mirror.seen[f.seq]}))
     .reverse();
 }
 

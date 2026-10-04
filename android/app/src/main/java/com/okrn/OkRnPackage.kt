@@ -7,6 +7,8 @@ import com.facebook.react.module.model.ReactModuleInfo
 import com.facebook.react.module.model.ReactModuleInfoProvider
 import com.okrn.specs.NativeBtKeyboardSpec
 import com.okrn.specs.NativeCredProviderSpec
+import com.okrn.specs.NativeEdgeAlertSpec
+import com.okrn.emu.NativeEdgeAlertModule
 import com.okrn.specs.NativeFidoGattSpec
 import com.okrn.specs.NativeOkEmuSpec
 import com.okrn.specs.NativeRsaGenSpec
@@ -45,6 +47,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeShareSpec.NAME -> NativeShareModule(reactContext)
       NativeBtKeyboardSpec.NAME -> NativeBtKeyboardModule(reactContext)
       NativeCredProviderSpec.NAME -> NativeCredProviderModule(reactContext)
+      NativeEdgeAlertSpec.NAME -> NativeEdgeAlertModule(reactContext)
       NativeRsaGenSpec.NAME -> NativeRsaGenModule(reactContext)
       NativeKdfSpec.NAME -> NativeKdfModule(reactContext)
       NativeOkSslSpec.NAME -> NativeOkSslModule(reactContext)
@@ -60,6 +63,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeShareSpec.NAME to moduleInfo(NativeShareSpec.NAME),
       NativeBtKeyboardSpec.NAME to moduleInfo(NativeBtKeyboardSpec.NAME),
       NativeCredProviderSpec.NAME to moduleInfo(NativeCredProviderSpec.NAME),
+      NativeEdgeAlertSpec.NAME to moduleInfo(NativeEdgeAlertSpec.NAME),
       NativeRsaGenSpec.NAME to moduleInfo(NativeRsaGenSpec.NAME),
       NativeKdfSpec.NAME to moduleInfo(NativeKdfSpec.NAME),
       NativeOkSslSpec.NAME to moduleInfo(NativeOkSslSpec.NAME),

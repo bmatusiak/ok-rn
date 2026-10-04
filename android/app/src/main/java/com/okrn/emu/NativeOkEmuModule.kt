@@ -450,6 +450,11 @@ class NativeOkEmuModule(
     PressAlert.setAttention(text, untilMs.toLong())
   }
 
+  /* the splash plays once per process: a JS reload keeps this (see specs/NativeOkEmu.ts) */
+  override fun markSplashDone() { splashDone = true }
+
+  override fun splashDoneThisProcess(): Boolean = splashDone
+
   override fun restartApp(promise: Promise) {
     try {
       /*
@@ -480,6 +485,8 @@ class NativeOkEmuModule(
   }
 
   companion object {
+    /** the splash has played in this process (a JS reload keeps native memory) */
+    @Volatile @JvmStatic private var splashDone = false
     private const val ERR_START = "ERR_EMU_START"
     private const val ERR_STOP = "ERR_EMU_STOP"
     private const val ERR_RESET = "ERR_EMU_RESET"

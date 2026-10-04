@@ -31,11 +31,27 @@ import 'react-native-get-random-values';
  */
 import './src/installWebCrypto';
 
+import React from 'react';
 import { AppRegistry } from 'react-native';
-import App from './App';
 import { name as appName } from './app.json';
+import { startupFailure, StartupBoundary } from './src/StartupFailure';
 
-AppRegistry.registerComponent(appName, () => App);
+/*
+ * App is required inside a guard, not imported: an error while its modules load
+ * (a native module this APK lacks) would otherwise leave the launch splash up
+ * forever with nothing to read. See src/StartupFailure.tsx.
+ */
+let Root;
+try {
+  const App = require('./App').default;
+  Root = function GuardedApp() {
+    return React.createElement(StartupBoundary, null, React.createElement(App));
+  };
+} catch (e) {
+  Root = startupFailure(e, 'loading the app');
+}
+
+AppRegistry.registerComponent(appName, () => Root);
 
 /*
  * EXPERIMENT - see REMOVAL.md. Remove this import and registration to drop it.

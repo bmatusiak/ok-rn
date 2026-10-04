@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {KeyboardAvoidingView, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
+import {AppState, KeyboardAvoidingView, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
 import {Btn, StatusPill} from './src/ui/components';
@@ -25,6 +25,23 @@ import {useTestingMode} from './src/hooks/useTestingMode';
 import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 
 import {SplashScreen} from './src/screens/SplashScreen';
+import NativeOkEmu from './specs/NativeOkEmu';
+
+/*
+ * THE SPLASH PLAYS ONCE PER PROCESS (Brad, 2026-10-04). Read when this module
+ * loads: a JS reload loads it again in the same process, and the native flag
+ * (specs/NativeOkEmu.ts) says the splash already played - so the app starts past
+ * it, and whatever comes next (the soft key's "stopped" banner, an error) is seen
+ * instead of a splash waiting forever for a firmware that cannot restart here.
+ * An APK without the call just plays the splash, as before.
+ */
+const SPLASH_SEEN: boolean = (() => {
+  try {
+    return NativeOkEmu.splashDoneThisProcess?.() === true;
+  } catch {
+    return false;
+  }
+})();
 import {LoginScreen} from './src/screens/LoginScreen';
 import {PinScreen} from './src/screens/PinScreen';
 import {SetupScreen} from './src/screens/SetupScreen';
@@ -44,6 +61,7 @@ import {PasskeysScreen} from './src/screens/PasskeysScreen';
 import {LogScreen} from './src/screens/LogScreen';
 import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
+import {takeOpenedAlarm} from './src/edgeAlerts';
 import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
 import {hasSoftKeyPlugin} from './src/buildInfo';
@@ -529,6 +547,17 @@ function Shell() {
   }, [getActiveKey, emu]);
 
   const [tab, setTab] = useState<Tab>('This Key');
+  /* B7: a tapped Edge alarm opens the Edge tab on its link (on launch and on every return to the app) */
+  const [edgeFocus, setEdgeFocus] = useState<number | null>(null);
+  useEffect(() => {
+    const look = () => {
+      const s = takeOpenedAlarm();
+      if (s !== null) { setTab(EDGE_TAB); setEdgeFocus(s); }
+    };
+    look();
+    const sub = AppState.addEventListener('change', st => { if (st === 'active') look(); });
+    return () => sub.remove();
+  }, []);
 
   /*
    * BACK TO THE LAST TAB after a restart you asked for (src/resumeTab.ts).
@@ -555,7 +584,7 @@ function Shell() {
    */
   const [openSlot, setOpenSlot] = useState<{id: string; index: number; label: string | null} | null>(null);
   const [drawer, setDrawer] = useState(false);
-  const [phase, setPhase] = useState<Phase>('splash');
+  const [phase, setPhase] = useState<Phase>(SPLASH_SEEN ? 'login' : 'splash');
   /* The first time inside after this process started: take the remembered tab, if any. */
   useEffect(() => {
     if (phase !== 'main' || resumeChecked.current) return;
@@ -576,7 +605,7 @@ function Shell() {
    * owner's choice) even when the key boots faster, so it cannot be cut off
    * half-spread. Leaving it waits for this AND for the firmware to settle.
    */
-  const [splashDone, setSplashDone] = useState(false);
+  const [splashDone, setSplashDone] = useState(SPLASH_SEEN);
 
   /*
    * The door opens and closes on what the DEVICE says, not on a local flag.
@@ -868,7 +897,10 @@ function Shell() {
         */}
         <KeyboardAvoidingView style={styles.body} key={sessionEpoch} behavior="padding">
           {phase === 'splash' ? (
-            <SplashScreen onDone={() => setSplashDone(true)} />
+            <SplashScreen onDone={() => {
+              setSplashDone(true);
+              try { NativeOkEmu.markSplashDone?.(); } catch {}
+            }} />
           ) : phase === 'login' ? (
             <LoginScreen
               device={emu.device}
@@ -976,7 +1008,7 @@ function Shell() {
             /* The PIN changes are on PIN Setup. */
             <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['prefs']} />
           ) : tab === EDGE_TAB ? (
-            <EdgeScreen testingMode={testing.enabled} />
+            <EdgeScreen testingMode={testing.enabled} focusSeq={edgeFocus} onFocused={() => setEdgeFocus(null)} />
           ) : tab === IN_DEV_TAB ? (
             <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} testing={testing.enabled} show={['derive', 'vault', 'stored']} />
           ) : tab === 'Passkeys' ? (

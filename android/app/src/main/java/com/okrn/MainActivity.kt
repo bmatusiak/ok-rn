@@ -17,6 +17,13 @@ class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     installSplashScreen()
     super.onCreate(savedInstanceState)
+    com.okrn.emu.NativeEdgeAlertModule.fromIntent(intent) /* B7: opened from an Edge alarm */
+  }
+
+  /* singleTask: a tapped Edge alarm reaches a running app here */
+  override fun onNewIntent(intent: android.content.Intent) {
+    super.onNewIntent(intent)
+    com.okrn.emu.NativeEdgeAlertModule.fromIntent(intent)
   }
 
   /**

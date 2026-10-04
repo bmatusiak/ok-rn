@@ -184,6 +184,17 @@ export interface Spec extends TurboModule {
    * firmware waits for takes precedence.
    */
   setAttention(text: string, untilMs: number): void;
+  /*
+   * THE SPLASH PLAYS ONCE PER PROCESS (Brad, 2026-10-04). A JS reload (Metro's
+   * hot reload) starts App again in the SAME process: the soft key cannot
+   * restart there ("its firmware thread cannot be replaced"), so a replayed
+   * splash waited for it forever and covered whatever came next - an error
+   * screen included. The flag lives in native memory, which a reload keeps.
+   */
+  /** Mark: the splash has played and closed in this process. */
+  markSplashDone(): void;
+  /** Has the splash already played in this process? */
+  splashDoneThisProcess(): boolean;
 
   readonly onStream: CodegenTypes.EventEmitter<StreamEvent>;
   readonly onLed: CodegenTypes.EventEmitter<LedEvent>;
