@@ -20,11 +20,12 @@ import {StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 import {request as requestLib} from 'node-onlykey-lib/edge';
 import {
   agentRequestsOn, liveAgentBudgets, loadLastRequests, loadOwnIdentities, onSheet, removeAgent,
-  saveOwnIdentities, setAgentRequestsOn, verifiedAgents, type Agent, type LastRequest,
+  saveOwnIdentities, loadTestIdentities, saveTestIdentities, setAgentRequestsOn, verifiedAgents, type Agent, type LastRequest,
 } from '../edgeAgents';
 import type {EdgeBudget} from '../edgeFake';
 import {Btn, Section} from './components';
 import {theme} from './theme';
+import {debuggingOn} from '../debugGuard';
 import {DrawerArea} from './BottomDrawer';
 
 const clock = (ms: number) => {
@@ -38,7 +39,7 @@ const when = (ms: number) => {
 
 /* changed: anything that moves when the tab's sync brings new budgets (the screen's list) - the card reads again */
 /* inDrawer: laid out as areas of the Agents drawer (src/ui/BottomDrawer.tsx), the switch in its own */
-export function EdgeAgentsCard({onChanged, changed, inDrawer = false}: {onChanged?: () => void; changed?: unknown; inDrawer?: boolean}) {
+export function EdgeAgentsCard({onChanged, changed, inDrawer = false, testingMode = false}: {onChanged?: () => void; changed?: unknown; inDrawer?: boolean; testingMode?: boolean}) {
   const [agents, setAgents] = useState<(Agent & {inCopy: number | null})[]>([]);
   const [budgets, setBudgets] = useState<Record<string, EdgeBudget[]>>({});
   const [last, setLast] = useState<Record<string, LastRequest>>({});
@@ -84,6 +85,15 @@ export function EdgeAgentsCard({onChanged, changed, inDrawer = false}: {onChange
   const saveOwn = async (names: string[]) => {
     await saveOwnIdentities(names);
     setOwn(names);
+  };
+  /* rule 10: test identities - marked only here, and only with debugging off */
+  const [testIds, setTestIds] = useState<string[]>([]);
+  const [addingTest, setAddingTest] = useState('');
+  const [testRefused, setTestRefused] = useState(false);
+  useEffect(() => { void loadTestIdentities().then(setTestIds).catch(() => {}); }, []);
+  const saveTest = async (names: string[]) => {
+    await saveTestIdentities(names);
+    setTestIds(names);
   };
 
   /* the switch and what it means - in the drawer they get an area of their own (Brad, 2026-10-04) */
@@ -201,6 +211,42 @@ export function EdgeAgentsCard({onChanged, changed, inDrawer = false}: {onChange
       </View>
     </>
   );
+  const testPart = (
+    <>
+      <Text style={[styles.name, {marginTop: 12}]}>Test identities</Text>
+      <Text style={styles.dim}>
+        While USB or wireless debugging is on, only budgets naming identities on this list can be approved, pressed, waived or settled - a computer can tap this phone then. Mark only identities that are tests. Marking needs debugging off; removing is always allowed.
+      </Text>
+      {testIds.map(n => (
+        <View key={n} style={styles.ownRow}>
+          <Text style={[styles.mono, {flex: 1}]}>{n}</Text>
+          <Btn title="Remove" onPress={() => void saveTest(testIds.filter(x => x !== n))} />
+        </View>
+      ))}
+      <View style={styles.ownRow}>
+        <TextInput
+          value={addingTest}
+          onChangeText={t => { setAddingTest(t); setTestRefused(false); }}
+          placeholder="ssh://test@host"
+          placeholderTextColor={theme.textDim}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={[styles.input, {flex: 1}]}
+        />
+        <Btn
+          title="Mark as test"
+          onPress={() => {
+            if (debuggingOn()) { setTestRefused(true); return; }
+            const n = addingTest.trim();
+            if (n && !testIds.includes(n)) void saveTest([...testIds, n]);
+            setAddingTest('');
+          }}
+          disabled={!addingTest.trim()}
+        />
+      </View>
+      {testRefused ? <Text style={[styles.op, {color: theme.error}]}>Debugging is on - turn off debugging to mark a test identity.</Text> : null}
+    </>
+  );
   if (inDrawer) {
     return (
       <>
@@ -213,6 +259,8 @@ export function EdgeAgentsCard({onChanged, changed, inDrawer = false}: {onChange
         </DrawerArea>
         <DrawerArea>{agentsPart}</DrawerArea>
         <DrawerArea>{ownPart}</DrawerArea>
+        {/* testing mode only - see src/debugGuard.ts */}
+        {testingMode ? <DrawerArea>{testPart}</DrawerArea> : null}
       </>
     );
   }
@@ -221,6 +269,7 @@ export function EdgeAgentsCard({onChanged, changed, inDrawer = false}: {onChange
       {explain}
       {agentsPart}
       {ownPart}
+      {testingMode ? testPart : null}
     </Section>
   );
 }

@@ -19,11 +19,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {approve as approveLib, note as noteLib, request as requestLib} from 'node-onlykey-lib/edge';
 import {SoftKeyEdge} from './edgeSoftKey';
 import {addNote, sync as syncCopy} from './edgeStore';
+import {setTestIdentities} from './debugGuard';
 import NativeOkEmu from '../specs/NativeOkEmu';
 
 const AGENTS = 'okrn.edge.agents';
 const SEEN = 'okrn.edge.seenNonces';
 const OWN = 'okrn.edge.ownIdentities';
+/* rule 10: identities Brad marked as test on this phone - only the Agents drawer writes this */
+const TEST_IDS = 'okrn.edge.testIdentities';
 const LAST = 'okrn.edge.agentLast';
 const ON = 'okrn.edge.agentRequests';
 const SEEN_KEPT = 2000;
@@ -68,6 +71,19 @@ export async function loadOwnIdentities(): Promise<string[]> {
 export async function saveOwnIdentities(names: string[]) {
   await AsyncStorage.setItem(OWN, JSON.stringify(names));
 }
+export async function loadTestIdentities(): Promise<string[]> {
+  const raw = await AsyncStorage.getItem(TEST_IDS);
+  const names: string[] = raw ? JSON.parse(raw) : [];
+  setTestIdentities(names);
+  return names;
+}
+/* the caller (the drawer) refuses ADDING while debugging is on; removing is always allowed (stricter) */
+export async function saveTestIdentities(names: string[]) {
+  await AsyncStorage.setItem(TEST_IDS, JSON.stringify(names));
+  setTestIdentities(names);
+}
+/* loaded once at start, so the sheet and the Edge tab can check without waiting */
+void loadTestIdentities().catch(() => {});
 
 /* the Agents card's "Requests" switch: off = every agent request is refused unread (a quick "stop all agents") */
 export async function agentRequestsOn(): Promise<boolean> {

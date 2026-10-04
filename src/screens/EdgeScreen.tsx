@@ -21,7 +21,7 @@ import {BudgetBlock} from '../ui/BudgetBlock';
 import {useEdge} from '../hooks/useEdge';
 import NativeEdgeAlert from '../../specs/NativeEdgeAlert';
 import {onSheet} from '../edgeAgents';
-import {consentRefusal, isTestLabel, markTestConsent} from '../debugGuard';
+import {consentRefusal, markTestConsent, scopesAreTest} from '../debugGuard';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
 import type {EdgeRow, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
@@ -664,15 +664,15 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
    */
   /*
    * Spec rule 10: a debt or a loss is "a test" only when every use it covers was
-   * spent by a budget marked TEST: (its reason). A gap has no links to look at, so
+   * spent by a budget whose every identity is marked test on this phone. A gap has no links to look at, so
    * accepting its loss is never a test.
    */
-  const reasonOf = (grantId: number) => [...edge.past, ...edge.budgets].find(b => b.grantId === grantId)?.reason;
+  const budgetIsTest = (grantId: number) => scopesAreTest([...edge.past, ...edge.budgets].find(b => b.grantId === grantId)?.scopes);
   const owedRows = (edge.view?.rows ?? []).filter(r => r.ticket?.status === 'waiting' || r.ticket?.status === 'missing');
-  const owedIsTest = owedRows.length > 0 && owedRows.every(r => r.fields.grantId > 0 && isTestLabel(reasonOf(r.fields.grantId)));
+  const owedIsTest = owedRows.length > 0 && owedRows.every(r => r.fields.grantId > 0 && budgetIsTest(r.fields.grantId));
   const lossIsTest = (from: number, to: number) => {
     const inRange = (edge.view?.rows ?? []).filter(r => r.seq >= from && r.seq <= to);
-    return inRange.length === to - from + 1 && inRange.every(r => r.fields.grantId > 0 && isTestLabel(reasonOf(r.fields.grantId)));
+    return inRange.length === to - from + 1 && inRange.every(r => r.fields.grantId > 0 && budgetIsTest(r.fields.grantId));
   };
   const items: EdgeListItem[] = [];
   if (ks?.restoring || broken || (ks && !ks.restoring && (ks.owed > 0 || ks.overflow))) {
@@ -917,7 +917,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
         bottomInset={DRAWER_HANDLE} refreshing={edge.busy} onRefresh={edge.sync}
       />
       <BottomDrawer title="Agents">
-        {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} inDrawer />}
+        {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} inDrawer testingMode={testingMode} />}
         {!testingMode ? null : edge.isFake ? (
           <Section title="Fake key (testing)">
             <Text style={styles.dim}>

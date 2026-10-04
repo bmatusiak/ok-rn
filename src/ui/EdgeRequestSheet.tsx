@@ -16,7 +16,7 @@ import {answerSheet, closeSheet, onSheet, pressFromSheet, type SheetState} from 
 import {request as requestLib} from 'node-onlykey-lib/edge';
 import {Btn} from './components';
 import {theme} from './theme';
-import {consentRefusal, isTestLabel, markTestConsent} from '../debugGuard';
+import {consentRefusal, markTestConsent, scopesAreTest} from '../debugGuard';
 
 /* what each typed refusal means, in the person's words (the agent gets the code) */
 const REFUSAL_TEXT: Record<string, string> = {
@@ -96,11 +96,13 @@ export function EdgeRequestSheet() {
   if (!s) return null;
   const a = s.ask;
   /*
-   * Spec rule 10, the app's lock: with debugging on, only a request marked TEST:
-   * (its reason, or a registering agent's name) can be approved or pressed here.
+   * Spec rule 10, the app's lock: with debugging on, only a request whose every
+   * identity Brad marked as test (Agents drawer) can be approved or pressed here.
+   * The TEST: reason is a label the agent writes, not a key.
    * Asked at render and again on the tap (debugging can be turned on in between).
    */
-  const isTest = a.kind === 'register' ? isTestLabel(a.name) : isTestLabel(a.view?.reason);
+  /* a registration names no identity: never a test. A request: every identity it names marked test on this phone */
+  const isTest = a.kind === 'register' ? false : scopesAreTest(a.view?.scopes);
   const refusal = s.phase === 'ask' || s.phase === 'press' ? consentRefusal(isTest) : null;
   const consent = (fn: () => void) => act(() => {
     if (consentRefusal(isTest)) return;

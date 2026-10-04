@@ -36,3 +36,19 @@ test('a test consent opens the Confirm panel for a minute, then closes', () => {
   expect(testConsentActive()).toBe(false);
   jest.useRealTimers();
 });
+
+test('a request is a test only if EVERY identity it names is marked test on the phone - not by its reason', () => {
+  const {setTestIdentities, scopesAreTest, setTestingMode} = require('../src/debugGuard');
+  setTestIdentities(['ssh://test@nitro16']);
+  setTestingMode(false); /* outside testing mode the list does not count at all */
+  expect(scopesAreTest([{identity: 'ssh://test@nitro16'}])).toBe(false);
+  setTestingMode(true);
+  expect(scopesAreTest([{identity: 'ssh://test@nitro16'}])).toBe(true);
+  expect(scopesAreTest([{identity: 'ssh://claude@nitro16'}])).toBe(false); /* a "TEST:" reason changes nothing */
+  expect(scopesAreTest([{identity: 'ssh://test@nitro16'}, {identity: 'ssh://claude@nitro16'}])).toBe(false);
+  expect(scopesAreTest([{}])).toBe(false); /* a slot scope names no identity */
+  expect(scopesAreTest([])).toBe(false);
+  setTestIdentities([]);
+  expect(scopesAreTest([{identity: 'ssh://test@nitro16'}])).toBe(false);
+  setTestingMode(false);
+});

@@ -22,6 +22,7 @@ import {useFidoGatt, type FidoSession} from './src/hooks/useFidoGatt';
 import {getOnlyKey} from './src/onlykey';
 import type {Backend} from './src/hooks/keySession';
 import {useTestingMode} from './src/hooks/useTestingMode';
+import {setTestingMode} from './src/debugGuard';
 import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 
 import {SplashScreen} from './src/screens/SplashScreen';
@@ -392,6 +393,7 @@ function Shell() {
   /* testing mode: the soft key's firmware console also goes to logcat (useOkEmu) */
   useEffect(() => {
     setFirmwareConsoleToLogcat(testing.enabled);
+    setTestingMode(testing.enabled);
   }, [testing.enabled]);
 
   /*
