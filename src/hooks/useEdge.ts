@@ -71,7 +71,8 @@ export function useEdge() {
       setEnded(s.ended ? await s.ended() : []);
       const pending = await s.pending();
       setRequests(pending);
-      setCopyCheck(pending.length ? await s.check() : null);
+      /* every sync, not only with a request waiting: a copy that fails the budget rules (R3) must show on the tab, not only on the sheet (2026-10-04) */
+      setCopyCheck(await s.check().catch(() => null));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

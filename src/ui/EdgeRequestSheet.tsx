@@ -25,6 +25,7 @@ const REFUSAL_TEXT: Record<string, string> = {
   ticket_owed: 'A ticket is owed for an earlier use. The agent was told "ticket_owed".',
   restoring: 'The key is finishing a restore. The agent was told "restoring".',
   invalid: 'The request could not be a budget. The agent was told "invalid".',
+  busy: 'Another request was on the phone. The agent was told "busy" and may ask again.',
 };
 
 const opName = (op: string) => (op === 'sign' ? 'Sign' : op === 'decrypt' ? 'Decrypt' : op);

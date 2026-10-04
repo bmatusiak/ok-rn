@@ -54,6 +54,7 @@ function copyProblem(c: EdgeCopyCheck | null): string | null {
   const at = c.seq !== undefined ? ` (#${c.seq})` : '';
   switch (c.reason) {
     case 'restoring': return 'The key was restored from a backup. Finish the restore first.';
+    case 'scope': return `A budget's spend does not match what its opening allows (R3)${at}.`;
     case 'chain': return `This phone's copy does not weld to the key${at}.`;
     case 'gap': return c.seq === undefined ? "Links are missing from this phone's copy." : `This phone's copy is missing #${c.seq}${c.to !== undefined && c.to !== c.seq ? `–#${c.to}` : ''}.`;
     case 'checkpoint': return "The key's checkpoint does not verify against this phone's copy.";
@@ -620,6 +621,40 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
           {ks && !ks.restoring && (ks.owed > 0 || ks.overflow) ? (
             <OwedBanner owed={ks.owed} overflow={ks.overflow} edge={edge} confirming={confirmWaive} setConfirming={setConfirmWaive} />
           ) : null}
+      </View>
+    )});
+  }
+  /*
+   * THE BUDGET RULES FAIL (R3 and the rest of verifyCopy): the tab says so, not only the
+   * request sheet (2026-10-04: the tab showed nothing while every request was refused
+   * copy_unverified). The fix the spec chose is a LOSS over that budget's links - your press.
+   */
+  const cc = edge.copyCheck;
+  if (cc && !cc.ok && cc.reason !== 'restoring' && cc.reason !== 'gap' && !broken) {
+    const atRow = cc.seq !== undefined ? (edge.view?.rows ?? []).find(r => r.seq === cc.seq) : undefined;
+    const grant = atRow?.fields.grantId;
+    const bud = grant ? edge.past.find(b => b.grantId === grant) ?? edge.budgets.find(b => b.grantId === grant) : undefined;
+    const lossFrom = bud?.firstSeq;
+    const lossTo = bud?.lastSeq;
+    const lossRange = lossFrom !== undefined && lossTo !== undefined ? (lossFrom === lossTo ? `#${lossFrom}` : `#${lossFrom}–#${lossTo}`) : '';
+    items.push({key: 'copyfail', kind: 'node', render: () => (
+      <View style={styles.mismatch}>
+        <Text style={[styles.ticketTitle, {color: theme.error}]}>This phone's copy does not pass the budget rules</Text>
+        <Text style={styles.op}>{`${copyProblem(cc) ?? cc.reason}${grant ? ` - budget ${grant}${lossRange ? ` (${lossRange})` : ''}` : ''}`}</Text>
+        <Text style={styles.dim}>Until it passes, every agent request is refused (copy_unverified). Accepting the loss records, with a press, that these links are set aside; the copy is checked after them.</Text>
+        {lossRange && edge.pressFor === 'loss' ? (
+          <>
+            <Text style={[styles.op, {color: theme.warn}]}>Press the key to accept the loss</Text>
+            <View style={styles.row}><Btn title="Press the soft key" tone="primary" onPress={edge.press} /></View>
+          </>
+        ) : lossRange && confirmLoss ? (
+          <View style={styles.row}>
+            <Btn title={`Yes, accept loss of ${lossRange}`} tone="danger" onPress={() => { setConfirmLoss(false); void edge.acceptLoss(lossFrom!, lossTo!); }} disabled={edge.busy} />
+            <Btn title="Cancel" onPress={() => setConfirmLoss(false)} disabled={edge.busy} />
+          </View>
+        ) : lossRange ? (
+          <View style={styles.row}><Btn title={`Accept loss of ${lossRange}…`} onPress={() => setConfirmLoss(true)} disabled={edge.busy} /></View>
+        ) : null}
       </View>
     )});
   }

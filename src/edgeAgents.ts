@@ -197,14 +197,26 @@ function askPerson(a: SheetAsk): Promise<'approve' | 'decline' | 'timeout'> {
   });
 }
 
-/* one at a time: a second request waits for the first sheet */
+/* one at a time: messages run in order */
 let queue: Promise<unknown> = Promise.resolve();
+/*
+ * ONE REQUEST ON THE PHONE AT A TIME (Brad, 2026-10-04: "need to reject multi attempts if 1
+ * is being requested"): while a budget request or a registration is on the sheet, another is
+ * refused at once - 'busy' - instead of waiting behind it, where its 2 minutes would run out
+ * unseen and a stack of sheets would follow.
+ */
+let inFlight = false;
 
 /**
  * The vendor bridge's hand-off: an assembled message from computer `from`.
  * -> the answer to send back, or null to answer nothing (dropped).
  */
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
+  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE;
+  if (asks && inFlight) {
+    return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
+  }
+  if (asks) inFlight = true;
   const run = queue.then(() => handle(msg, from)).catch((e: unknown) => {
     /*
      * Never leave the sheet stuck (it sat on "Press" for good when a press
@@ -216,6 +228,7 @@ export function handleEdgeMessage(msg: any, from: string): Promise<unknown | nul
     return {ok: false, refusal: 'invalid', detail: `the phone failed: ${detail}`};
   });
   queue = run.catch(() => undefined);
+  if (asks) run.finally(() => { inFlight = false; }).catch(() => undefined);
   return run;
 }
 
