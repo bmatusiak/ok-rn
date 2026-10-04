@@ -19,6 +19,7 @@ import {EdgeList, type EdgeListItem} from '../ui/EdgeList';
 import {BottomDrawer, DRAWER_HANDLE} from '../ui/BottomDrawer';
 import {BudgetBlock} from '../ui/BudgetBlock';
 import {useEdge} from '../hooks/useEdge';
+import NativeEdgeAlert from '../../specs/NativeEdgeAlert';
 import {onSheet} from '../edgeAgents';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
 import type {EdgeRow, Verdict} from '../edgeStore';
@@ -76,6 +77,8 @@ const elapsed = (ms: number) => {
 
 function approval(row: EdgeRow): string {
   const f = row.fields;
+  /* a WAIVE (code 0x8F + the press flag): your press accepted uses without their tickets */
+  if (f.op === OP.TICKET && f.code === 0x8f && (f.flags & FLAG.PRESS_OBSERVED)) return `waive · pressed (from #${f.refSeq})`;
   if (f.op === OP.TICKET) return `answers no request (#${f.refSeq})`; // only orphans are drawn as rows
   if (f.decision === DECISION.SELF_PRESS) return `self-press · budget ${f.grantId} step ${f.grantStep}`;
   if (f.decision === DECISION.DENY) return 'denied';
@@ -110,8 +113,22 @@ function TicketHook({t, verified}: {t: NonNullable<EdgeRow['ticket']>; verified:
       </View>
     );
   }
+  /*
+   * Waived: you accepted the use without its ticket (a pressed WAIVE link) - there
+   * is no ticket to show. Crashed the tab before (the Pixel, 2026-10-04: a waive
+   * during the B7 watcher test - t.ticket was null).
+   */
+  if (t.status === 'waived' || t.status === 'waived-unlisted' || !t.ticket) {
+    const by = (t as any).waivedBy as number | null | undefined;
+    return (
+      <View style={[styles.ticket, {borderLeftColor: theme.warn}]}>
+        <Text style={[styles.ticketTitle, {color: theme.warn}]}>Waived</Text>
+        <Text style={styles.dim}>{`You accepted this use without its ticket${by ? ` (waive #${by})` : ''}.`}</Text>
+      </View>
+    );
+  }
   const alarm = t.status === 'alarm';
-  const code = t.ticket!.code;
+  const code = t.ticket.code;
   const color = alarm ? theme.error : code < 0x10 ? theme.ok : theme.textDim;
   const name = t.ticket!.name ?? `unknown code 0x${code.toString(16).padStart(2, '0')}`;
   return (
@@ -915,6 +932,18 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
                 disabled={edge.busy}
               />
               <Btn title="Agent: one pressed sign" onPress={edge.agentSign} disabled={edge.busy} />
+            </View>
+            {/*
+              * B7 stage 2's heartbeat test (spec 2026-10-04): hang the JS thread for good,
+              * the way a dead JS side would look - no beats, no cleanup. The native
+              * watchdog must post "Edge watching stopped" within ~30 s. Restart the app after.
+              */}
+            <View style={styles.row}>
+              <Btn title="Freeze JS (test)" tone="danger" onPress={() => { for (;;) { /* never returns */ } }} />
+              <Btn
+                title="Post a test Edge alarm"
+                onPress={() => NativeEdgeAlert?.post(edge.view?.headSeq ?? 0, 'Edge: test alarm', 'A test alarm from the testing panel.', `budget ${edge.budgets.map(b => b.grantId).join(', ') || '-'}`, false)}
+              />
             </View>
           </Section>
         )}

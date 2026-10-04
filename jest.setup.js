@@ -191,7 +191,7 @@ jest.mock('./specs/NativeRsaGen', () => ({
 
 jest.mock('./specs/NativeEdgeAlert', () => ({
   __esModule: true,
-  default: {post: jest.fn(), takeOpenedSeq: jest.fn(() => -1)},
+  default: {post: jest.fn(), takeOpenedSeq: jest.fn(() => -1), beat: jest.fn(), setWatching: jest.fn(), takeHoldRequest: jest.fn(() => false), onHoldRequested: jest.fn(() => ({remove: jest.fn()})), onWatchTick: jest.fn(() => ({remove: jest.fn()}))},
 }));
 
 jest.mock('./specs/NativeCredProvider', () => ({

@@ -263,7 +263,8 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   }
   await saveMirror(mirror);
   /* B7: new alarms become phone notifications - every sync, the tab's and the background copy's */
-  await raiseAlarms(mirror, view).catch(() => {});
+  const live = await source.budgets().then(bs => bs.map(b => b.grantId)).catch(() => [] as number[]);
+  await raiseAlarms(mirror, view, live).catch(() => {});
   return {mirror, view};
 }
 

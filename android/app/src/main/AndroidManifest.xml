@@ -180,5 +180,13 @@
           android:name="android.support.FILE_PROVIDER_PATHS"
           android:resource="@xml/shared_files" />
       </provider>
+      <!--
+        B7 stage 2: an Edge alarm's Hold action. A broadcast, so it works from the
+        lock screen without unlocking (Hold only makes the key stricter). Not
+        exported: only this app's own notifications can send it.
+      -->
+      <receiver
+        android:name=".emu.NativeEdgeAlertModule$HoldReceiver"
+        android:exported="false" />
     </application>
 </manifest>

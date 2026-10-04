@@ -4,7 +4,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {chain, codes} from 'node-onlykey-lib/edge';
 import NativeEdgeAlert from '../specs/NativeEdgeAlert';
-import {alarmsAfter, raiseAlarms} from '../src/edgeAlerts';
+import {alarmsAfter, raiseAlarms, raiseWatchAlarms} from '../src/edgeAlerts';
 import type {EdgeRow, EdgeView, Mirror} from '../src/edgeStore';
 
 const {OP, DECISION, FLAG} = codes;
@@ -44,4 +44,23 @@ test('the first sync on a phone only records where the chain is; later syncs pos
   expect((NativeEdgeAlert!.post as jest.Mock).mock.calls.map(c => c[0])).toEqual([13, 14]);
   await raiseAlarms(mirror, view(rows));
   expect(NativeEdgeAlert!.post).toHaveBeenCalledTimes(2);
+});
+
+test('the watcher: refused ARMs rising (once), a ticket owed over 10 min (once), a used-up budget (quiet, not on a first look)', async () => {
+  const post = NativeEdgeAlert!.post as jest.Mock;
+  const now = 1_000_000_000;
+  const waiting: EdgeRow = {...rows[2], seenAt: now - 11 * 60 * 1000, ticket: {seq: 12, status: 'waiting'} as any};
+  const v = view([rows[0], rows[1], waiting]);
+  const past1 = [{grantId: 9, endedHow: 'used up', uses: 1, used: 1}];
+  await raiseWatchAlarms(mirror, v, {refusedArms: 0, live: [], past: past1}, now);
+  expect(post.mock.calls.map(c => c[1])).toEqual(['Edge: a ticket is owed too long']);
+  await raiseWatchAlarms(mirror, v, {refusedArms: 2, live: [5], past: [...past1, {grantId: 20, endedHow: 'used up', uses: 3, used: 3}]}, now);
+  expect(post.mock.calls.slice(1).map(c => [c[1], c[3], c[4]])).toEqual([
+    ['Edge: the key refused an ARM', 'budget 5', false],
+    ['Edge: budget 20 spent', 'budget 20', true],
+  ]);
+  post.mockClear();
+  await raiseWatchAlarms(mirror, v, {refusedArms: 0, live: [5], past: past1}, now); /* a restart: the count starts again */
+  await raiseWatchAlarms(mirror, v, {refusedArms: 0, live: [5], past: past1}, now);
+  expect(post).not.toHaveBeenCalled();
 });

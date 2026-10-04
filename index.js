@@ -54,6 +54,14 @@ try {
 AppRegistry.registerComponent(appName, () => Root);
 
 /*
+ * B7 stage 2: keeps React Native's JS timers running while Edge watches in the
+ * background (NativeEdgeAlertModule.keepJsTimers starts it, finishes it when
+ * watching stops). It does nothing itself and never ends; the watcher's own code
+ * lives in src/hooks/useEdgeBackgroundSync.ts.
+ */
+AppRegistry.registerHeadlessTask('OkrnEdgeWatch', () => () => new Promise(() => {}));
+
+/*
  * EXPERIMENT - see REMOVAL.md. Remove this import and registration to drop it.
  *
  * A SECOND registered root on the same bundle. The Credential Manager sheet
