@@ -20,7 +20,13 @@ import OkEmu from './transport/OkEmu';
 import {loadMirror} from './edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeCopyKey, EdgeEnded, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeReplay, EdgeRequest, EdgeSource} from './edgeFake';
 
-const {DECISION} = codes;
+const {DECISION, OP} = codes;
+
+/* how many of these uses have a ticket in the copy (a ticket link names the use it answers) */
+function ticketed(mirror: {links: {link: Uint8Array}[]}, uses: number[]): number {
+  const answered = new Set(mirror.links.map(r => chain.decodeLink(r.link)).filter(f => f.op === OP.TICKET).map(f => (f as {refSeq?: number}).refSeq));
+  return uses.filter(q => answered.has(q)).length;
+}
 const PICKUP_MAX = 8;
 const REGISTRY = 'okrn.edge.budgets.';
 
@@ -37,6 +43,8 @@ type Kept = {
   lifetime?: number; opened?: number;
   /* Continue asked for once already: the card goes */
   continued?: boolean;
+  /* budget history: when this phone first saw it no longer live (its clock) - the chain carries no times */
+  endedAt?: number;
   /* 4.7a: an ended agent budget's card dismissed (nothing on the key changes) */
   dismissed?: boolean;
   /* opened for an agent's EDGE_REQUEST: its registered key (hex) - a continue must come from the same agent */
@@ -90,48 +98,109 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   /* live budgets: the ids from the key, the details this phone kept, the spend from the chain */
+  /*
+   * One budget, as the cards show it: what this phone kept when it opened it
+   * (reason, scopes, agent, when) and what the chain says it spent. Live and past
+   * budgets alike (Brad, 2026-10-04: "what about budget history?").
+   */
+  /* the live budget ids at the last budgets() - to stamp when one goes */
+  private lastLive: number[] = [];
+
+  private budgetFrom(id: number, kept: Kept | null, mirror: Awaited<ReturnType<typeof loadMirror>>): EdgeBudget {
+    const spentRows = mirror.links
+      .map(r => ({f: chain.decodeLink(r.link), scope: (r.link as Uint8Array)[46] || 0}))
+      .filter(x => x.f.grantId === id && x.f.decision === DECISION.SELF_PRESS);
+    const spent = spentRows.map(x => x.f);
+    /* R3 (2026-10-03): byte 46 names the scope that paid - each identity its own count, from the chain */
+    const exact = spentRows.length > 0 && spentRows.every(x => x.scope > 0);
+    /*
+     * A spend names its budget and its step (grantId, grantStep), not its scope:
+     * the link's subject is a hash of the bytes signed. So the total comes from
+     * the steps, and a scope's count is exact only when no other scope of the
+     * budget shares its op and slot - two agent identities on slot 221 share one
+     * count, and the card draws them as one line (spec session, 2026-10-03: the
+     * gpg use showed under the ssh scope too).
+     */
+    const scopes = (kept?.scopes ?? []).map((sc, j) => ({
+      ...sc,
+      used: exact
+        ? spentRows.filter(x => x.scope === j + 1).length
+        : spent.filter(f => f.op === sc.op && f.slot === sc.slot).length,
+    }));
+    const stepsSpent = spent.reduce((m, f) => Math.max(m, f.grantStep), 0);
+    return {
+      grantId: id,
+      reason: kept ? kept.reason : `Budget ${id} (opened elsewhere)`,
+      uses: kept ? kept.uses : spent.length,
+      used: Math.max(stepsSpent, spent.length),
+      scopes,
+      /* every spend named its scope (R3): the per-scope counts are exact; else an older chain - shared slots stay one line */
+      exact: exact || spent.length === 0,
+      genesis: new Uint8Array(0),
+      endsAt: kept?.opened ? kept.opened + (kept.lifetime || DEFAULT_LIFETIME_MINUTES) * 60000 : undefined,
+      /* the audit log (budget history): when it opened, its lifetime, and how many uses got their ticket */
+      ...(kept?.opened ? {openedAt: kept.opened} : {}),
+      lifetime: kept?.lifetime || DEFAULT_LIFETIME_MINUTES,
+      ticketsFiled: ticketed(mirror, spent.map(f => f.seq)),
+      ...(kept?.endedAt ? {endedAt: kept.endedAt} : {}),
+      ...(kept?.agent ? {agent: kept.from} : {}),
+    };
+  }
+
   async budgets(): Promise<EdgeBudget[]> {
     const h = await this.edge.head();
     const mirror = await loadMirror(this.deviceId);
     const out: EdgeBudget[] = [];
+    /* a budget that was live at the last look and is not now: stamp when it was seen gone (the log's 'lasted') */
+    for (const gone of this.lastLive.filter(id => !(h.live as number[]).includes(id))) {
+      const key = REGISTRY + toHex(this.deviceId) + '.' + gone;
+      const raw = await AsyncStorage.getItem(key);
+      if (raw) {
+        const kept = JSON.parse(raw) as Kept;
+        if (!kept.endedAt) await AsyncStorage.setItem(key, JSON.stringify({...kept, endedAt: Date.now()}));
+      }
+    }
+    this.lastLive = [...(h.live as number[])];
     for (const id of h.live as number[]) {
       const raw = await AsyncStorage.getItem(REGISTRY + toHex(this.deviceId) + '.' + id);
-      const kept: Kept | null = raw ? JSON.parse(raw) : null;
-      const spentRows = mirror.links
-        .map(r => ({f: chain.decodeLink(r.link), scope: (r.link as Uint8Array)[46] || 0}))
-        .filter(x => x.f.grantId === id && x.f.decision === DECISION.SELF_PRESS);
-      const spent = spentRows.map(x => x.f);
-      /* R3 (2026-10-03): byte 46 names the scope that paid - each identity its own count, from the chain */
-      const exact = spentRows.length > 0 && spentRows.every(x => x.scope > 0);
-      /*
-       * A spend names its budget and its step (grantId, grantStep), not its scope:
-       * the link's subject is a hash of the bytes signed. So the total comes from
-       * the steps, and a scope's count is exact only when no other scope of the
-       * budget shares its op and slot - two agent identities on slot 221 share one
-       * count, and the card draws them as one line (spec session, 2026-10-03: the
-       * gpg use showed under the ssh scope too).
-       */
-      const scopes = (kept?.scopes ?? []).map((sc, j) => ({
-        ...sc,
-        used: exact
-          ? spentRows.filter(x => x.scope === j + 1).length
-          : spent.filter(f => f.op === sc.op && f.slot === sc.slot).length,
-      }));
-      const stepsSpent = spent.reduce((m, f) => Math.max(m, f.grantStep), 0);
-      out.push({
-        grantId: id,
-        reason: kept ? kept.reason : `Budget ${id} (opened elsewhere)`,
-        uses: kept ? kept.uses : spent.length,
-        used: Math.max(stepsSpent, spent.length),
-        scopes,
-        /* every spend named its scope (R3): the per-scope counts are exact; else an older chain - shared slots stay one line */
-        exact: exact || spent.length === 0,
-        genesis: new Uint8Array(0),
-        endsAt: kept?.opened ? kept.opened + (kept.lifetime || DEFAULT_LIFETIME_MINUTES) * 60000 : undefined,
-        ...(kept?.agent ? {agent: kept.from} : {}),
-      });
+      out.push(this.budgetFrom(id, raw ? JSON.parse(raw) : null, mirror));
     }
     return out;
+  }
+
+  /*
+   * BUDGET HISTORY: every budget this phone opened that is not live now, newest
+   * first, with how it ended - from the chain where it can say (a grant-end link:
+   * revoked or ended; every use spent), else from the clock (past its lifetime),
+   * else the key lost it with a lock or restart (budgets live in RAM).
+   */
+  async pastBudgets(): Promise<EdgeBudget[]> {
+    const h = await this.edge.head();
+    const mirror = await loadMirror(this.deviceId);
+    const prefix = REGISTRY + toHex(this.deviceId) + '.';
+    const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith(prefix));
+    const live = new Set(h.live as number[]);
+    const ends = new Set(mirror.links.map(r => chain.decodeLink(r.link)).filter(f => f.op === OP.GRANT_END).map(f => f.grantId));
+    const out: EdgeBudget[] = [];
+    for (const k of keys) {
+      const id = Number(k.slice(prefix.length));
+      if (!Number.isInteger(id) || live.has(id)) continue;
+      const raw = await AsyncStorage.getItem(k);
+      const b = this.budgetFrom(id, raw ? JSON.parse(raw) : null, mirror);
+      b.endedHow = ends.has(id) ? 'ended' : b.used >= b.uses ? 'used up' : b.endsAt && Date.now() > b.endsAt ? 'expired' : 'lost when the key locked or restarted';
+      /* like a block: the links it spans - its opening to the last link that names it (a use, its end) or answers one of its uses (a ticket) */
+      const decoded = mirror.links.map(r => chain.decodeLink(r.link));
+      const useSeqs = new Set(decoded.filter(f => f.grantId === id && f.op !== OP.TICKET).map(f => f.seq));
+      const mine = decoded.filter(f => (f.op !== OP.TICKET && f.grantId === id) || (f.op === OP.TICKET && useSeqs.has((f as {refSeq?: number}).refSeq as number)));
+      if (mine.length) {
+        b.firstSeq = mine[0].seq;
+        b.lastSeq = mine[mine.length - 1].seq;
+      }
+      /* an expiry needs no stamp: it ended at its lifetime (unless something ended it sooner) */
+      if (b.endedHow === 'expired' && b.endsAt && (!b.endedAt || b.endedAt > b.endsAt)) b.endedAt = b.endsAt;
+      out.push(b);
+    }
+    return out.sort((a, b2) => b2.grantId - a.grantId);
   }
 
   async messages() {

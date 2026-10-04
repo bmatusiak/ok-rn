@@ -30,6 +30,16 @@ export type EdgeBudget = {
   scopes: {op: number; slot: number; cap: number; used: number; identity?: string}[];
   /* R3: per-scope counts come from each spend's scope byte (else shared op+slot scopes are one count) */
   exact?: boolean;
+  /* a past budget (budget history): how it ended */
+  endedHow?: string;
+  /* the audit log: when it opened and ended (the phone's clock), its lifetime (minutes), uses that got a ticket */
+  openedAt?: number;
+  endedAt?: number;
+  lifetime?: number;
+  ticketsFiled?: number;
+  /* the links it spans, like a block: its opening to its last link (in this phone's copy) */
+  firstSeq?: number;
+  lastSeq?: number;
   genesis: Uint8Array;
   /** R15b: when its lifetime ends (the phone's clock), if this phone approved it */
   endsAt?: number;

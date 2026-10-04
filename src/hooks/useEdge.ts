@@ -28,6 +28,7 @@ export function useEdge() {
   const wantReal = backend === 'embedded' && hasSoftKeyPlugin('edge');
   const [view, setView] = useState<EdgeView | null>(null);
   const [budgets, setBudgets] = useState<EdgeBudget[]>([]);
+  const [past, setPast] = useState<EdgeBudget[]>([]);
   const [requests, setRequests] = useState<EdgeRequest[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +64,9 @@ export function useEdge() {
       }
       setView(await work(s));
       setBudgets(await s.budgets());
+      /* budget history: what this phone opened that is not live now (soft key only) */
+      const src = s as unknown as {pastBudgets?: () => Promise<EdgeBudget[]>};
+      setPast(src.pastBudgets ? await src.pastBudgets().catch(() => []) : []);
       setKeyState(s.state ? await s.state() : null);
       setEnded(s.ended ? await s.ended() : []);
       const pending = await s.pending();
@@ -224,7 +228,7 @@ export function useEdge() {
   }, [wantReal, source, sync]);
 
   return {
-    view, budgets, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal,
+    view, budgets, past, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
     hold, resume, waive, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss,
   };

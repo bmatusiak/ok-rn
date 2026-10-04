@@ -25,6 +25,7 @@ import {
 import type {EdgeBudget} from '../edgeFake';
 import {Btn, Section} from './components';
 import {theme} from './theme';
+import {DrawerArea} from './BottomDrawer';
 
 const clock = (ms: number) => {
   const t = new Date(ms);
@@ -36,7 +37,8 @@ const when = (ms: number) => {
 };
 
 /* changed: anything that moves when the tab's sync brings new budgets (the screen's list) - the card reads again */
-export function EdgeAgentsCard({onChanged, changed}: {onChanged?: () => void; changed?: unknown}) {
+/* inDrawer: laid out as areas of the Agents drawer (src/ui/BottomDrawer.tsx), the switch in its own */
+export function EdgeAgentsCard({onChanged, changed, inDrawer = false}: {onChanged?: () => void; changed?: unknown; inDrawer?: boolean}) {
   const [agents, setAgents] = useState<(Agent & {inCopy: number | null})[]>([]);
   const [budgets, setBudgets] = useState<Record<string, EdgeBudget[]>>({});
   const [last, setLast] = useState<Record<string, LastRequest>>({});
@@ -84,15 +86,17 @@ export function EdgeAgentsCard({onChanged, changed}: {onChanged?: () => void; ch
     setOwn(names);
   };
 
-  return (
-    <Section
-      title="Agents"
-      right={<Switch value={on} onValueChange={v => { setOn(v); void setAgentRequestsOn(v); }} />}>
+  /* the switch and what it means - in the drawer they get an area of their own (Brad, 2026-10-04) */
+  const toggle = <Switch value={on} onValueChange={v => { setOn(v); void setAgentRequestsOn(v); }} />;
+  const explain = (
       <Text style={styles.dim}>
         {on
           ? 'Requests on: a registered agent may ask for budgets; each still shows here and needs your press.'
           : 'Requests off: every agent request is refused unread.'}
       </Text>
+  );
+  const agentsPart = (
+    <>
 
       {agents.length === 0 ? (
         <Text style={styles.dim}>No agent is registered. An agent registers from its computer (onlykey-js edge register), with your Yes and a press.</Text>
@@ -150,6 +154,10 @@ export function EdgeAgentsCard({onChanged, changed}: {onChanged?: () => void; ch
         );
       })}
 
+    </>
+  );
+  const ownPart = (
+    <>
       <Text style={[styles.name, {marginTop: 8}]}>Your own identities</Text>
       <Text style={styles.dim}>A request naming one of these gets the red warning and a second confirm.</Text>
       {own.map(n => (
@@ -191,6 +199,28 @@ export function EdgeAgentsCard({onChanged, changed}: {onChanged?: () => void; ch
           disabled={!adding.trim()}
         />
       </View>
+    </>
+  );
+  if (inDrawer) {
+    return (
+      <>
+        <DrawerArea>
+          <View style={styles.toggleRow}>
+            <Text style={styles.name}>Requests from agents</Text>
+            {toggle}
+          </View>
+          {explain}
+        </DrawerArea>
+        <DrawerArea>{agentsPart}</DrawerArea>
+        <DrawerArea>{ownPart}</DrawerArea>
+      </>
+    );
+  }
+  return (
+    <Section title="Agents" right={toggle}>
+      {explain}
+      {agentsPart}
+      {ownPart}
     </Section>
   );
 }
@@ -199,6 +229,7 @@ const styles = StyleSheet.create({
   agent: {borderWidth: 1, borderColor: theme.border, borderRadius: theme.radius, padding: 10, gap: 4, marginTop: 8},
   unpressed: {borderColor: theme.warn, borderStyle: 'dashed'},
   name: {color: theme.text, fontWeight: '600', fontSize: 15},
+  toggleRow: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
   op: {color: theme.text, fontSize: 14, lineHeight: 20},
   dim: {color: theme.textDim, fontSize: 13, lineHeight: 19},
   mono: {color: theme.textSecondary, fontFamily: theme.mono, fontSize: 13},

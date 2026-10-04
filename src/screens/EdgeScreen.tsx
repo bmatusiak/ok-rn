@@ -13,8 +13,11 @@
 import React, {useEffect, useState} from 'react';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {codes} from 'node-onlykey-lib/edge';
-import {Btn, Section} from '../ui/components';
+import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
+import {EdgeList, type EdgeListItem} from '../ui/EdgeList';
+import {BottomDrawer, DRAWER_HANDLE} from '../ui/BottomDrawer';
+import {BudgetBlock} from '../ui/BudgetBlock';
 import {useEdge} from '../hooks/useEdge';
 import {onSheet} from '../edgeAgents';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
@@ -152,6 +155,60 @@ function LinkRow({row, ticketVerified, budgetUses}: {row: EdgeRow; ticketVerifie
         </View>
       ) : null}
       {row.ticket ? <TicketHook t={row.ticket} verified={ticketVerified} /> : null}
+      {/* the press that opened a budget: a blue receipt, like a ticket (Brad, 2026-10-04) */}
+      {row.fields.op === OP.GRANT_CREATE ? (
+        <View style={[styles.ticket, {borderLeftColor: theme.link}]}>
+          <Text style={[styles.ticketTitle, {color: theme.link}]}>Budget approved</Text>
+          <Text style={styles.dim}>{`Budget ${row.fields.grantId} opened with your Yes and a press.`}</Text>
+        </View>
+      ) : null}
+      {/*
+        * A budget's other moments, as receipts in the same family (Brad, 2026-10-04):
+        * blue = your press opened or resumed it; yellow = needs your attention
+        * (on hold, or a press no budget paid); grey = closed.
+        */}
+      {row.fields.op === OP.GRANT_HOLD ? (
+        <View style={[styles.ticket, {borderLeftColor: theme.warn}]}>
+          <Text style={[styles.ticketTitle, {color: theme.warn}]}>Budget on hold</Text>
+          <Text style={styles.dim}>{`Budget ${row.fields.grantId} pays for nothing until you resume it.`}</Text>
+        </View>
+      ) : null}
+      {row.fields.op === OP.GRANT_RESUME ? (
+        <View style={[styles.ticket, {borderLeftColor: theme.link}]}>
+          <Text style={[styles.ticketTitle, {color: theme.link}]}>Budget resumed</Text>
+          <Text style={styles.dim}>{`Budget ${row.fields.grantId} pays again - resumed with a press.`}</Text>
+        </View>
+      ) : null}
+      {row.fields.op === OP.GRANT_END ? (
+        <View style={[styles.ticket, {borderLeftColor: theme.textDim}]}>
+          <Text style={[styles.ticketTitle, {color: theme.textDim}]}>Budget ended</Text>
+          <Text style={styles.dim}>{`Budget ${row.fields.grantId} is closed - nothing more can spend from it.`}</Text>
+        </View>
+      ) : null}
+      {/* blue: your press registered an agent; red: history gone (a loss you accepted, a wipe) - always visible to an audit */}
+      {row.fields.op === OP.AGENT_ADD ? (
+        <View style={[styles.ticket, {borderLeftColor: theme.link}]}>
+          <Text style={[styles.ticketTitle, {color: theme.link}]}>Agent registered</Text>
+          <Text style={styles.dim}>An agent may now ask for budgets - registered with your press.</Text>
+        </View>
+      ) : null}
+      {row.fields.op === OP.LOSS || row.fields.op === OP.WIPE ? (
+        <View style={[styles.ticket, {borderLeftColor: theme.error}]}>
+          <Text style={[styles.ticketTitle, {color: theme.error}]}>{row.fields.op === OP.LOSS ? 'Loss accepted' : 'Wiped'}</Text>
+          <Text style={styles.dim}>
+            {row.fields.op === OP.LOSS
+              ? 'Links no copy holds were accepted as lost, with your press - the chain says so here.'
+              : 'The key was wiped - the chain starts again after this.'}
+          </Text>
+        </View>
+      ) : null}
+      {/* a sign or decrypt no budget paid: hung under it like a ticket, in yellow, so it stands out in Presses (Brad, 2026-10-04) */}
+      {(row.fields.op === OP.SIGN || row.fields.op === OP.DECRYPT) && !row.fields.grantId ? (
+        <View style={[styles.ticket, {borderLeftColor: theme.warn}]}>
+          <Text style={[styles.ticketTitle, {color: theme.warn}]}>No budget</Text>
+          <Text style={styles.dim}>{row.fields.decision === DECISION.APPROVE ? 'A press on the key - no budget paid for it.' : 'Asked outside any budget.'}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -479,6 +536,8 @@ function RestoreCard({edge}: {edge: ReturnType<typeof useEdge>}) {
 export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
   const edge = useEdge();
   const [open, setOpen] = useState<EdgeBudget | null>(null);
+  /* two views (Brad, 2026-10-04): the budgets - live, then past as blocks - and the history, the whole chain */
+  const [pane, setPane] = useState<'Budgets' | 'Presses'>('Budgets');
   const [confirmWaive, setConfirmWaive] = useState(false);
   const [confirmLoss, setConfirmLoss] = useState(false);
   /*
@@ -508,153 +567,207 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
   const broken = !ks?.restoring && v && (v.kind === 'tampered' || v.kind === 'gap') ? verdictLine(v) : null;
   const gap = v && v.kind === 'gap' ? {from: v.from, to: v.to} : null;
   const range = gap ? (gap.from === gap.to ? `#${gap.from}` : `#${gap.from}–#${gap.to}`) : '';
-  return (
-    <ScrollView contentContainerStyle={styles.page}>
-      {ks?.restoring ? <RestoreCard edge={edge} /> : null}
-      {broken ? (
-        <View style={styles.mismatch}>
-          <Text style={[styles.ticketTitle, {color: theme.error}]}>This phone's copy of the chain does not match the key</Text>
-          <Text style={[styles.op, {color: broken.color}]}>{broken.text}</Text>
-          <Text style={styles.dim}>
-            {`Key's head: #${edge.view?.headSeq ?? '?'}. Until the copy verifies, no budget can be approved here.`}
-          </Text>
-          {/*
-            * The ways out, in the spec's order: Rebuild from a copy (only when a
-            * peer holds the range - none yet, so not offered), then Accept loss.
-            * Never "verify from a checkpoint" alone.
-            */}
-          {gap && edge.pressFor === 'loss' ? (
-            <>
-              <Text style={[styles.op, {color: theme.warn}]}>Press the key to accept the loss</Text>
-              <View style={styles.row}>
-                <Btn title="Press the soft key" tone="primary" onPress={edge.press} />
-              </View>
-            </>
-          ) : gap && confirmLoss ? (
-            <>
+  /*
+   * THE TRUST LIST (Brad, 2026-10-04): the whole tab is one list, edge to edge
+   * (src/ui/EdgeList.tsx) - what needs you first (a restore, a copy that does
+   * not verify, tickets owed), the live budgets, then the history: every link
+   * in this phone's copy, newest first, each use with its ticket under it. Tap
+   * a live budget's link to open its chain. Agents, your identities and the
+   * testing panels are in the drawer at the bottom (src/ui/BottomDrawer.tsx).
+   */
+  const items: EdgeListItem[] = [];
+  if (ks?.restoring || broken || (ks && !ks.restoring && (ks.owed > 0 || ks.overflow))) {
+    items.push({key: 'status', kind: 'node', render: () => (
+      <View style={styles.statusStack}>
+          {ks?.restoring ? <RestoreCard edge={edge} /> : null}
+          {broken ? (
+            <View style={styles.mismatch}>
+              <Text style={[styles.ticketTitle, {color: theme.error}]}>This phone's copy of the chain does not match the key</Text>
+              <Text style={[styles.op, {color: broken.color}]}>{broken.text}</Text>
               <Text style={styles.dim}>
-                {`No copy holds ${range}. Accepting records in the chain, with a press, that ${range} ${gap.from === gap.to ? 'is' : 'are'} gone for good. Budgets can be approved again after it; anything those links owed must still be ticketed or waived.`}
+                {`Key's head: #${edge.view?.headSeq ?? '?'}. Until the copy verifies, no budget can be approved here.`}
               </Text>
-              <View style={styles.row}>
-                <Btn title={`Yes, accept loss of ${range}`} tone="danger" onPress={() => { setConfirmLoss(false); void edge.acceptLoss(gap.from, gap.to); }} disabled={edge.busy} />
-                <Btn title="Cancel" onPress={() => setConfirmLoss(false)} disabled={edge.busy} />
-              </View>
-            </>
-          ) : (
-            <View style={styles.row}>
-              <Btn title="Sync" tone="primary" onPress={edge.sync} disabled={edge.busy} />
-              {gap ? <Btn title={`Accept loss of ${range}…`} onPress={() => setConfirmLoss(true)} disabled={edge.busy} /> : null}
+              {/*
+                * The ways out, in the spec's order: Rebuild from a copy (only when a
+                * peer holds the range - none yet, so not offered), then Accept loss.
+                * Never "verify from a checkpoint" alone.
+                */}
+              {gap && edge.pressFor === 'loss' ? (
+                <>
+                  <Text style={[styles.op, {color: theme.warn}]}>Press the key to accept the loss</Text>
+                  <View style={styles.row}>
+                    <Btn title="Press the soft key" tone="primary" onPress={edge.press} />
+                  </View>
+                </>
+              ) : gap && confirmLoss ? (
+                <>
+                  <Text style={styles.dim}>
+                    {`No copy holds ${range}. Accepting records in the chain, with a press, that ${range} ${gap.from === gap.to ? 'is' : 'are'} gone for good. Budgets can be approved again after it; anything those links owed must still be ticketed or waived.`}
+                  </Text>
+                  <View style={styles.row}>
+                    <Btn title={`Yes, accept loss of ${range}`} tone="danger" onPress={() => { setConfirmLoss(false); void edge.acceptLoss(gap.from, gap.to); }} disabled={edge.busy} />
+                    <Btn title="Cancel" onPress={() => setConfirmLoss(false)} disabled={edge.busy} />
+                  </View>
+                </>
+              ) : (
+                <View style={styles.row}>
+                  <Btn title="Sync" tone="primary" onPress={edge.sync} disabled={edge.busy} />
+                  {gap ? <Btn title={`Accept loss of ${range}…`} onPress={() => setConfirmLoss(true)} disabled={edge.busy} /> : null}
+                </View>
+              )}
             </View>
-          )}
+          ) : null}
+          {ks && !ks.restoring && (ks.owed > 0 || ks.overflow) ? (
+            <OwedBanner owed={ks.owed} overflow={ks.overflow} edge={edge} confirming={confirmWaive} setConfirming={setConfirmWaive} />
+          ) : null}
+      </View>
+    )});
+  }
+  items.push({key: 's-budgets', kind: 'section', title: 'Budgets'});
+  items.push({key: 'budgets', kind: 'node', render: () => (
+    <>
+          {edge.error ? <Text style={[styles.dim, {color: theme.error}]}>{edge.error}</Text> : null}
+          {edge.requests.map(r => (
+            <PendingCard
+              key={`r${r.id}`}
+              r={r}
+              busy={edge.busy}
+              waiting={edge.pressFor === `r${r.id}`}
+              fake={edge.isFake}
+              blocked={copyProblem(edge.copyCheck)}
+              onApprove={() => edge.approve(r.id)}
+              onPress={edge.press}
+              onDecline={() => edge.decline(r.id)}
+            />
+          ))}
+          {edge.budgets.map(b => (
+            <BudgetCard
+              key={b.grantId}
+              b={b}
+              busy={edge.busy}
+              onOpen={() => setOpen(b)}
+              onRevoke={() => edge.revoke(b.grantId)}
+              held={edge.keyState?.held.includes(b.grantId)}
+              onHold={edge.keyState ? () => edge.hold(b.grantId) : undefined}
+              onResume={edge.keyState ? () => edge.resume(b.grantId) : undefined}
+              waitingResume={edge.pressFor === `resume:${b.grantId}`}
+              onPress={edge.press}
+            />
+          ))}
+          {edge.ended.map(e => (
+            <View key={`e${e.grantId}`} style={[styles.budget, styles.ended]}>
+              <Text style={[styles.ticketTitle, {color: theme.textDim}]}>Ended when the key locked or restarted</Text>
+              <Text style={styles.op}>{e.reason}</Text>
+              {e.agent ? (
+                <>
+                  {/* 4.7a: an agent's budget - the agent asks to continue it; the tab only hides the card */}
+                  <Text style={styles.dim}>
+                    {`Budget ${e.grantId} for ${e.agent} · ${e.usesLeft} use${e.usesLeft === 1 ? '' : 's'} and ${Math.floor(e.minutesLeft / 60)} h ${e.minutesLeft % 60} min were left. The agent asks to continue it if it still needs it. Dismiss only hides this card; the chain does not change.`}
+                  </Text>
+                  <View style={styles.row}>
+                    <Btn title="Dismiss" onPress={() => edge.dismissEnded(e.grantId)} disabled={edge.busy} />
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.dim}>
+                    {`Budget ${e.grantId} · ${e.usesLeft} use${e.usesLeft === 1 ? '' : 's'} and ${Math.floor(e.minutesLeft / 60)} h ${e.minutesLeft % 60} min left. Continue asks for exactly that – never more – with your Yes and a press.`}
+                  </Text>
+                  <View style={styles.row}>
+                    <Btn title="Continue" tone="primary" onPress={() => edge.continueBudget(e.grantId)} disabled={edge.busy} />
+                  </View>
+                </>
+              )}
+            </View>
+          ))}
+          {/* B3: a locked key says nothing - so say that, not "no budget" */}
+          {edge.view?.verdict.kind === 'locked' ? (
+            <Text style={[styles.dim, {color: theme.warn}]}>Unlock the key to sync. A locked key answers nothing, so its budgets cannot be read.</Text>
+          ) : null}
+          {edge.view?.verdict.kind !== 'locked' && edge.budgets.length === 0 && edge.requests.length === 0 && edge.ended.length === 0 ? (
+            <Text style={styles.dim}>
+              No budget. A budget lets an agent use the key a set number of times without a press; you approve it once.
+            </Text>
+          ) : null}
+    </>
+  )});
+  /* BUDGET HISTORY (Brad, 2026-10-04): every budget this phone opened that is not live now - tap one for its chain */
+  if (edge.past.length) {
+    items.push({key: 's-past', kind: 'section', title: 'Past budgets', right: `${edge.past.length}`});
+    for (const b of edge.past) {
+      items.push({key: `p${b.grantId}`, kind: 'node', bare: true, render: () => <BudgetBlock b={b} onPress={() => setOpen(b)} />});
+    }
+  }
+  const rows = edge.view?.rows ?? [];
+  const verifiedAt = new Map(rows.map(r => [r.seq, r.verified]));
+  const attached = new Set<number>();
+  for (const r of rows) if (r.ticket?.ticket) attached.add(r.ticket.ticket.seq);
+  const liveUses = new Map(edge.budgets.map(b => [b.grantId, b.uses]));
+  items.push({key: 's-history', kind: 'section', title: 'Presses', right: rows.length ? `#${rows[0].seq} → #${rows[rows.length - 1].seq} · newest first` : 'nothing yet'});
+  for (const r of rows) {
+    if (r.fields.op === OP.TICKET && attached.has(r.seq)) continue; /* it hangs under its use */
+    /* tap: the budget it was for - live or past (Brad, 2026-10-04); a press no budget paid has none */
+    const forBudget = r.fields.grantId ? edge.budgets.find(b => b.grantId === r.fields.grantId) ?? edge.past.find(b => b.grantId === r.fields.grantId) : undefined;
+    items.push({key: `h${r.seq}`, kind: 'node', bare: true, render: () => {
+      const body = (
+        <View style={styles.historyRow}>
+          {r.ticket?.status === 'waiting' ? <WaitingRow seq={r.seq} /> : null}
+          <LinkRow row={r} budgetUses={liveUses} ticketVerified={r.ticket?.ticket ? verifiedAt.get(r.ticket.ticket.seq) !== false : true} />
         </View>
-      ) : null}
-      {ks && !ks.restoring && (ks.owed > 0 || ks.overflow) ? (
-        <OwedBanner owed={ks.owed} overflow={ks.overflow} edge={edge} confirming={confirmWaive} setConfirming={setConfirmWaive} />
-      ) : null}
-      <Section title="Budgets">
-        {edge.error ? <Text style={[styles.dim, {color: theme.error}]}>{edge.error}</Text> : null}
-        {edge.requests.map(r => (
-          <PendingCard
-            key={`r${r.id}`}
-            r={r}
-            busy={edge.busy}
-            waiting={edge.pressFor === `r${r.id}`}
-            fake={edge.isFake}
-            blocked={copyProblem(edge.copyCheck)}
-            onApprove={() => edge.approve(r.id)}
-            onPress={edge.press}
-            onDecline={() => edge.decline(r.id)}
-          />
-        ))}
-        {edge.budgets.map(b => (
-          <BudgetCard
-            key={b.grantId}
-            b={b}
-            busy={edge.busy}
-            onOpen={() => setOpen(b)}
-            onRevoke={() => edge.revoke(b.grantId)}
-            held={edge.keyState?.held.includes(b.grantId)}
-            onHold={edge.keyState ? () => edge.hold(b.grantId) : undefined}
-            onResume={edge.keyState ? () => edge.resume(b.grantId) : undefined}
-            waitingResume={edge.pressFor === `resume:${b.grantId}`}
-            onPress={edge.press}
-          />
-        ))}
-        {edge.ended.map(e => (
-          <View key={`e${e.grantId}`} style={[styles.budget, styles.ended]}>
-            <Text style={[styles.ticketTitle, {color: theme.textDim}]}>Ended when the key locked or restarted</Text>
-            <Text style={styles.op}>{e.reason}</Text>
-            {e.agent ? (
-              <>
-                {/* 4.7a: an agent's budget - the agent asks to continue it; the tab only hides the card */}
-                <Text style={styles.dim}>
-                  {`Budget ${e.grantId} for ${e.agent} · ${e.usesLeft} use${e.usesLeft === 1 ? '' : 's'} and ${Math.floor(e.minutesLeft / 60)} h ${e.minutesLeft % 60} min were left. The agent asks to continue it if it still needs it. Dismiss only hides this card; the chain does not change.`}
-                </Text>
-                <View style={styles.row}>
-                  <Btn title="Dismiss" onPress={() => edge.dismissEnded(e.grantId)} disabled={edge.busy} />
-                </View>
-              </>
-            ) : (
-              <>
-                <Text style={styles.dim}>
-                  {`Budget ${e.grantId} · ${e.usesLeft} use${e.usesLeft === 1 ? '' : 's'} and ${Math.floor(e.minutesLeft / 60)} h ${e.minutesLeft % 60} min left. Continue asks for exactly that – never more – with your Yes and a press.`}
-                </Text>
-                <View style={styles.row}>
-                  <Btn title="Continue" tone="primary" onPress={() => edge.continueBudget(e.grantId)} disabled={edge.busy} />
-                </View>
-              </>
-            )}
-          </View>
-        ))}
-        {/* B3: a locked key says nothing - so say that, not "no budget" */}
-        {edge.view?.verdict.kind === 'locked' ? (
-          <Text style={[styles.dim, {color: theme.warn}]}>Unlock the key to sync. A locked key answers nothing, so its budgets cannot be read.</Text>
-        ) : null}
-        {edge.view?.verdict.kind !== 'locked' && edge.budgets.length === 0 && edge.requests.length === 0 && edge.ended.length === 0 ? (
-          <Text style={styles.dim}>
-            No budget. A budget lets an agent use the key a set number of times without a press; you approve it once.
-          </Text>
-        ) : null}
-      </Section>
+      );
+      return forBudget ? (
+        <Pressable onPress={() => setOpen(forBudget)} accessibilityRole="button" accessibilityLabel={`Open budget ${forBudget.grantId}`}>{body}</Pressable>
+      ) : body;
+    }});
+  }
 
-      {/* 4.7a: who may ask for budgets, what each holds, and Remove */}
-      {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} />}
-
-      {!testingMode ? null : edge.isFake ? (
-        <Section title="Fake key (testing)">
-          <Text style={styles.dim}>
-            A fake key - this build's soft key has no Edge. These do what an agent or the CLI would; the budgets update after each.
-          </Text>
-          <View style={styles.row}>
-            <Btn
-              title="Agent: request a budget"
-              onPress={() => edge.request('onlykey-js on NITRO16', 'Sign three commits on feature/edge', [{op: OP.SIGN, slot: 101, cap: 3}])}
-              disabled={edge.busy}
-            />
-            <Btn title="Agent: use + OK ticket" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); k.ticket(0x00, 'Used as stated; the target accepted it.'); })} disabled={edge.busy} />
-            <Btn title="Agent: use, no ticket" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); })} disabled={edge.busy} />
-            <Btn title="Alarm ticket" onPress={() => edge.act(k => { k.use('tag'); k.ticket(0x82, 'Decrypted output may have been written to a shared folder.'); })} disabled={edge.busy} />
-            <Btn title="Denied request" onPress={() => edge.act(k => k.deny('decrypt notes.age'))} disabled={edge.busy} />
-            <Btn title="Lock (ends budgets)" onPress={() => edge.act(k => k.lock())} disabled={edge.busy} />
-            <Btn title="New fake key" onPress={edge.resetFake} disabled={edge.busy} />
-          </View>
-        </Section>
-      ) : (
-        <Section title="Soft key (testing)">
-          <Text style={styles.dim}>
-            The soft key has Edge. Until an agent's MCP server can send requests, this makes one; agent signs come from the CLI or the e2e test.
-          </Text>
-          <View style={styles.row}>
-            <Btn
-              title="Agent: request a budget"
-              onPress={() => edge.request('testing on this phone', 'Sign three agent messages (P-256)', [{op: OP.SIGN, slot: 222, cap: 3}])}
-              disabled={edge.busy}
-            />
-            <Btn title="Agent: one pressed sign" onPress={edge.agentSign} disabled={edge.busy} />
-          </View>
-        </Section>
-      )}
-    </ScrollView>
+  return (
+    <View style={styles.screen}>
+      <View style={styles.paneBar}>
+        <Segmented options={['Budgets', 'Presses'] as const} value={pane} onChange={setPane} />
+      </View>
+      <EdgeList
+        items={items.filter(it => it.key === 'status' || (pane === 'Presses') === (it.key === 's-history' || /^h\d/.test(it.key)))}
+        bottomInset={DRAWER_HANDLE} refreshing={edge.busy} onRefresh={edge.sync}
+      />
+      <BottomDrawer title="Agents">
+        {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} inDrawer />}
+        {!testingMode ? null : edge.isFake ? (
+          <Section title="Fake key (testing)">
+            <Text style={styles.dim}>
+              A fake key - this build's soft key has no Edge. These do what an agent or the CLI would; the budgets update after each.
+            </Text>
+            <View style={styles.row}>
+              <Btn
+                title="Agent: request a budget"
+                onPress={() => edge.request('onlykey-js on NITRO16', 'Sign three commits on feature/edge', [{op: OP.SIGN, slot: 101, cap: 3}])}
+                disabled={edge.busy}
+              />
+              <Btn title="Agent: use + OK ticket" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); k.ticket(0x00, 'Used as stated; the target accepted it.'); })} disabled={edge.busy} />
+              <Btn title="Agent: use, no ticket" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); })} disabled={edge.busy} />
+              <Btn title="Alarm ticket" onPress={() => edge.act(k => { k.use('tag'); k.ticket(0x82, 'Decrypted output may have been written to a shared folder.'); })} disabled={edge.busy} />
+              <Btn title="Denied request" onPress={() => edge.act(k => k.deny('decrypt notes.age'))} disabled={edge.busy} />
+              <Btn title="Lock (ends budgets)" onPress={() => edge.act(k => k.lock())} disabled={edge.busy} />
+              <Btn title="New fake key" onPress={edge.resetFake} disabled={edge.busy} />
+            </View>
+          </Section>
+        ) : (
+          <Section title="Soft key (testing)">
+            <Text style={styles.dim}>
+              The soft key has Edge. Until an agent's MCP server can send requests, this makes one; agent signs come from the CLI or the e2e test.
+            </Text>
+            <View style={styles.row}>
+              <Btn
+                title="Agent: request a budget"
+                onPress={() => edge.request('testing on this phone', 'Sign three agent messages (P-256)', [{op: OP.SIGN, slot: 222, cap: 3}])}
+                disabled={edge.busy}
+              />
+              <Btn title="Agent: one pressed sign" onPress={edge.agentSign} disabled={edge.busy} />
+            </View>
+          </Section>
+        )}
+      </BottomDrawer>
+    </View>
   );
 }
 
@@ -700,6 +813,11 @@ function TimeLeft({endsAt}: {endsAt: number}) {
 
 const styles = StyleSheet.create({
   page: {padding: 12, gap: 12},
+  /* the trust list: the screen is the list (src/ui/EdgeList.tsx), with the drawer's handle over its foot */
+  screen: {flex: 1},
+  statusStack: {gap: 12},
+  historyRow: {paddingHorizontal: 16},
+  paneBar: {paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.border},
   verdict: {fontSize: 20, fontWeight: '700', marginBottom: 4},
   dim: {color: theme.textDim, fontSize: 13, lineHeight: 19},
   row: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10},
