@@ -651,8 +651,8 @@ module.exports = function register({ it }, ctx) {
         assert.equal(h.restoring, 1, `${label}: HEAD does not say the key is restoring`);
         return h;
       };
-      /* REPLAY: 46 link bytes + the first 8 of the head the copy stored after it */
-      const replayReq = (link, headBytes) => Buffer.concat([Buffer.from(link).subarray(0, 46), Buffer.from(headBytes).subarray(0, 8)]);
+      /* REPLAY: 47 link bytes (R3: through byte 46, the scope) + the first 8 of the head the copy stored after it */
+      const replayReq = (link, headBytes) => Buffer.concat([Buffer.from(link).subarray(0, 47), Buffer.from(headBytes).subarray(0, 8)]);
       const replay = (link, headBytes) => edge(device, REPLAY, replayReq(link, headBytes), { signal, text: true });
       const replayDone = (seq, tag, newest, opts = {}) =>
         edge(device, REPLAY_DONE, Buffer.concat([u32(seq), Buffer.from(tag), u32(newest)]), { signal, press: true, ...opts });
@@ -1213,6 +1213,10 @@ module.exports = function register({ it }, ctx) {
         f = await lastLink();
         assert.equal(JSON.stringify([f.decision, f.flags & PRESS_OBSERVED]), JSON.stringify([codes.DECISION.APPROVE, PRESS_OBSERVED]), 'the shared endpoint was paid by the budget');
         assert.ok(f.seq > (before.seq || 0));
+        /* R16: that press used the agent's key under its budget, so it owes a ticket - the next exec names it, then it is ticketed */
+        r = await run(['exec', '--head', svc.agent.budget().head(), '--reason', 'owed', '--', 'git', '--version']);
+        assert.match(r.lines.join('\n'), new RegExp(`the key owes tickets for #${f.seq}`));
+        r = await run(['ticket', String(f.seq), '--msg', 'pressed sign on the shared endpoint (R16)']);
 
         /* must fail safely: a stale head; Hold from the phone */
         r = await run(['exec', '--head', '00'.repeat(32), '--reason', 'stale', '--', 'git', '--version']);

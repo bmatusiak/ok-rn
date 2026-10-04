@@ -837,7 +837,8 @@ static void grant_pressed(void) {
   press.b.opened = millis();
   press.b.lifetime_ms = (uint32_t)(press.lifetime ? press.lifetime : DEFAULT_LIFETIME_MIN) * 60000UL;
   budgets[slot] = press.b;
-  append(OP_GRANT_CREATE, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, id, 0, NULL);
+  /* R3: the opening carries its scope count in byte 46, so every spend of it must name one of 1..N */
+  append_scoped(OP_GRANT_CREATE, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, id, 0, press.b.nscopes, NULL);
 
   put32(r, id);
   put16(r + 4, press.b.uses);
