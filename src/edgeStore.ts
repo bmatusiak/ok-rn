@@ -27,6 +27,7 @@ type StoredMirror = {
   lastSeen: {seq: number; head: string} | null;
   lastSync: number | null;
   vouch?: {seq: number; head: string; tag: string} | null;
+  setAside?: {link: string; head: string; at: number}[];
 };
 
 export type Mirror = {
@@ -41,6 +42,13 @@ export type Mirror = {
    * be committed; anything newer falls under the LOSS.
    */
   vouch: {seq: number; head: Uint8Array; tag: Uint8Array} | null;
+  /*
+   * Records that were never links of this chain, moved out of `links` (kept, not
+   * deleted, so what happened stays readable). A reply meant for a computer on
+   * the Bluetooth bridge was once stored as link #447194052 (the A13,
+   * 2026-10-04): above the key's head, it read as a rollback and stopped Sync.
+   */
+  setAside: {link: Uint8Array; head: Uint8Array; at: number}[];
 };
 
 export type Verdict =
@@ -58,7 +66,13 @@ export type EdgeView = {
   lastSync: number | null;
   /** newest first, for the chain view */
   rows: EdgeRow[];
+  /** records moved out of the copy because they were never links of this chain (Mirror.setAside) */
+  setAside?: {seq: number | null; at: number}[];
 };
+
+const asideOf = (mirror: Mirror) => mirror.setAside.map(x => {
+  try { return {seq: chain.decodeLink(x.link).seq, at: x.at}; } catch { return {seq: null, at: x.at}; }
+});
 
 export type EdgeRow = {
   seq: number;
@@ -72,7 +86,7 @@ const storageKey = (deviceId: Uint8Array) => KEY_PREFIX + toHex(deviceId);
 
 export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
   const raw = await AsyncStorage.getItem(storageKey(deviceId));
-  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null};
+  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: []};
   const s = JSON.parse(raw) as StoredMirror;
   return {
     deviceId: fromHex(s.deviceId),
@@ -81,6 +95,7 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
     lastSeen: s.lastSeen ? {seq: s.lastSeen.seq, head: fromHex(s.lastSeen.head)} : null,
     lastSync: s.lastSync,
     vouch: s.vouch ? {seq: s.vouch.seq, head: fromHex(s.vouch.head), tag: fromHex(s.vouch.tag)} : null,
+    setAside: (s.setAside ?? []).map(x => ({link: fromHex(x.link), head: fromHex(x.head), at: x.at})),
   };
 }
 
@@ -92,6 +107,7 @@ export async function saveMirror(m: Mirror): Promise<void> {
     lastSeen: m.lastSeen ? {seq: m.lastSeen.seq, head: toHex(m.lastSeen.head)} : null,
     lastSync: m.lastSync,
     vouch: m.vouch ? {seq: m.vouch.seq, head: toHex(m.vouch.head), tag: toHex(m.vouch.tag)} : null,
+    ...(m.setAside.length ? {setAside: m.setAside.map(x => ({link: toHex(x.link), head: toHex(x.head), at: x.at}))} : {}),
   };
   await AsyncStorage.setItem(storageKey(m.deviceId), JSON.stringify(s));
 }
@@ -101,6 +117,38 @@ export async function forgetMirror(deviceId: Uint8Array): Promise<void> {
 }
 
 const seqOf = (r: EdgeLinkRecord) => chain.decodeLink(r.link).seq;
+const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/*
+ * Does `r` belong after `prev` in this copy? A link the key wrote has bytes
+ * 47-63 zero (R3); the very next seq must weld from prev's head. A later seq
+ * cannot be welded here (a gap) - the copy check judges it.
+ */
+function follows(prev: EdgeLinkRecord | undefined, r: EdgeLinkRecord): boolean {
+  let f;
+  try { f = chain.decodeLink(r.link); } catch { return false; }
+  if (!f.reservedZero) return false;
+  if (!prev) return true;
+  const p = seqOf(prev);
+  if (f.seq <= p) return false;
+  return f.seq !== p + 1 || sameBytes(chain.weld(prev.head, r.link), r.head);
+}
+
+/*
+ * Records past the key's head that are not links of this chain go to setAside.
+ * Only those: a real link past the head welds, so a copy that is truly ahead of
+ * the key (a rollback) still reads as one.
+ */
+function setAsideStrays(mirror: Mirror, keySeq: number, now: number): void {
+  for (let n = mirror.links.length; n > 0; n = mirror.links.length) {
+    const r = mirror.links[n - 1];
+    let seq;
+    try { seq = seqOf(r); } catch { seq = Infinity; }
+    if (seq <= keySeq || follows(mirror.links[n - 2], r)) return;
+    mirror.links.pop();
+    mirror.setAside.push({link: r.link, head: r.head, at: now});
+  }
+}
 
 /**
  * B1: HEAD, then READ from the last mirrored seq; store what came; verify the
@@ -121,6 +169,7 @@ export function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mir
 async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror; view: EdgeView}> {
   const mirror = await loadMirror(source.deviceId);
   const head = await source.head();
+  setAsideStrays(mirror, head.seq, now);
   const have = mirror.links.length ? seqOf(mirror.links[mirror.links.length - 1]) : -1;
   /*
    * From the next link this copy lacks - but never before the oldest link the
@@ -132,7 +181,13 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   for (let from = Math.max(have + 1, head.ringFrom); from <= head.seq; ) {
     const got = await source.read(from, READ_BATCH);
     if (!got.length) break;
-    for (const r of got) if (seqOf(r) > (mirror.links.length ? seqOf(mirror.links[mirror.links.length - 1]) : -1)) mirror.links.push(r);
+    let welded = true;
+    for (const r of got) {
+      const last = mirror.links[mirror.links.length - 1];
+      if (follows(last, r)) mirror.links.push(r);
+      else if (!last || seqOf(r) > seqOf(last)) { welded = false; break; } /* not this chain's next link: read it again next sync */
+    }
+    if (!welded) break;
     from = seqOf(got[got.length - 1]) + 1;
   }
   mirror.messages = {...mirror.messages, ...(await source.messages())};
@@ -165,7 +220,7 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
 export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[] = [], key: EdgeCopyKey | null = null): EdgeView {
   const decoded = mirror.links.map(r => ({r, f: chain.decodeLink(r.link)}));
   if (!head) {
-    return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror)};
+    return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror), setAside: asideOf(mirror)};
   }
   /*
    * R27 "what counts as verified": the library's one answer, the same Approve
@@ -188,7 +243,7 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
   else if (open.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: open[0].from, to: open[0].to};
   else if (lost.length) verdict = {kind: 'verified', through: head.seq, lost};
   else verdict = {kind: 'verified', through: result.verifiedThrough};
-  return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror)};
+  return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror)};
 }
 
 function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLink>}[], unverified: Set<number>, mirror: Mirror): EdgeRow[] {
@@ -204,13 +259,22 @@ function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLi
  * every red and amber verdict can be seen against a key that is telling the
  * truth. Each returns the edited mirror, already saved.
  */
-export type Tamper = 'flip' | 'delete' | 'swap' | 'truncate' | 'forget';
+export type Tamper = 'flip' | 'delete' | 'swap' | 'truncate' | 'forget' | 'stray';
 export async function tamper(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
   const m = await loadMirror(deviceId);
   const mid = Math.floor(m.links.length / 2);
   if (how === 'forget') {
     await forgetMirror(deviceId);
     return loadMirror(deviceId);
+  }
+  if (how === 'stray') {
+    /* what the A13 stored on 2026-10-04: a 64-byte signature taken for a link (a seq far past the head, bytes 47-63 not zero) */
+    const junk = Uint8Array.from({length: 64}, () => Math.floor(Math.random() * 256));
+    junk[3] = 0x1a;
+    junk[50] |= 1;
+    m.links.push({link: junk, head: Uint8Array.from({length: 32}, () => Math.floor(Math.random() * 256)), reveal: null});
+    await saveMirror(m);
+    return m;
   }
   if (m.links.length < 3) return m;
   if (how === 'flip') m.links[mid].link[20] ^= 0x01;

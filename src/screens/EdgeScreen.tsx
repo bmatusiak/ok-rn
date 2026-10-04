@@ -420,6 +420,7 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
           <Btn title="Swap two" tone="danger" onPress={() => edge.tamper('swap')} disabled={edge.busy} />
           <Btn title="Cut the tail" tone="danger" onPress={() => edge.tamper('truncate')} disabled={edge.busy} />
           <Btn title="Forget copy" onPress={() => edge.tamper('forget')} disabled={edge.busy} />
+          <Btn title="Store a stray reply" tone="danger" onPress={() => edge.tamper('stray')} disabled={edge.busy} />
         </View>
       </Section>
     </ScrollView>
@@ -621,6 +622,20 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
           {ks && !ks.restoring && (ks.owed > 0 || ks.overflow) ? (
             <OwedBanner owed={ks.owed} overflow={ks.overflow} edge={edge} confirming={confirmWaive} setConfirming={setConfirmWaive} />
           ) : null}
+      </View>
+    )});
+  }
+  /*
+   * Records the copy set aside: they were never links of this chain - a reply
+   * meant for a computer on the Bluetooth bridge, stored as a link (the A13,
+   * 2026-10-04). Said once here so the audit is not silent about it.
+   */
+  const aside = edge.view?.setAside ?? [];
+  if (aside.length) {
+    items.push({key: 'setaside', kind: 'node', render: () => (
+      <View style={styles.mismatch}>
+        <Text style={[styles.op, {color: theme.warn}]}>{`Set aside ${aside.length === 1 ? 'one record' : `${aside.length} records`} that ${aside.length === 1 ? 'was' : 'were'} not a link of this chain`}</Text>
+        <Text style={styles.dim}>{`${aside.map(a => (a.seq === null ? '?' : `#${a.seq}`)).join(', ')}: a reply meant for a computer on Bluetooth, stored by mistake. The copy is checked without ${aside.length === 1 ? 'it' : 'them'}.`}</Text>
       </View>
     )});
   }

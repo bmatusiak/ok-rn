@@ -4,7 +4,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {FakeEdgeKey} from '../src/edgeFake';
-import {evaluate, loadMirror, sync, tamper} from '../src/edgeStore';
+import {evaluate, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
 
 beforeEach(async () => {
   await AsyncStorage.clear();
@@ -103,4 +103,42 @@ test('three budgets are live at once, each spending its own steps', async () => 
 test('never synced: not-synced, and nothing claimed', async () => {
   const k = FakeEdgeKey.demo();
   expect(evaluate(await loadMirror(k.deviceId), null).verdict).toEqual({kind: 'not-synced'});
+});
+
+/*
+ * The A13 (2026-10-04): a signature meant for a computer on the Bluetooth bridge
+ * was stored as link #447194052. Above the key's head it read as a rollback, and
+ * Sync - starting past it - read nothing. The next sync sets it aside and catches up.
+ */
+test('a stored record that is not a link, past the key\'s head, is set aside and the copy catches up', async () => {
+  const k = new FakeEdgeKey();
+  k.use('commit 1');
+  k.use('commit 2');
+  await sync(k);
+  const m = await loadMirror(k.deviceId);
+  const junk = Uint8Array.from({length: 64}, (_, i) => (i * 37 + 11) & 0xff); /* seq far past the head, bytes 47-63 not zero */
+  m.links.push({link: junk, head: new Uint8Array(32).fill(7), reveal: null});
+  await saveMirror(m);
+  expect((await verifyOnly(k)).verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
+  k.use('commit 3');
+  const {view, mirror} = await sync(k);
+  const head = await k.head();
+  expect(view.verdict).toEqual({kind: 'verified', through: head.seq});
+  expect(mirror.links).toHaveLength(head.seq + 1);
+  expect(mirror.setAside).toHaveLength(1);
+  expect(mirror.setAside[0].link).toEqual(junk);
+  expect((await loadMirror(k.deviceId)).setAside).toHaveLength(1);
+});
+
+test('real links past the key\'s head are not set aside: the copy still reads as a rollback', async () => {
+  const k = FakeEdgeKey.demo();
+  await sync(k);
+  const m = await loadMirror(k.deviceId);
+  m.lastSeen = null; /* the copy alone says it is ahead, not a remembered head */
+  await saveMirror(m);
+  const older = new FakeEdgeKey();
+  older.use('commit 1');
+  const {view, mirror} = await sync(older);
+  expect(view.verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
+  expect(mirror.setAside).toHaveLength(0);
 });
