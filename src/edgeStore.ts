@@ -30,6 +30,8 @@ type StoredMirror = {
   vouch?: {seq: number; head: string; tag: string} | null;
   setAside?: {link: string; head: string; at: number}[];
   seen?: Record<string, number>;
+  reasons?: Record<string, {agent: string; text: string; at: number}>;
+  refusals?: {agent: string; seq: number; status: string; at: number}[];
 };
 
 export type Mirror = {
@@ -57,6 +59,15 @@ export type Mirror = {
    * so the tab shows it as "seen", never as when the key did it.
    */
   seen: Record<number, number>;
+  /*
+   * B7 stage 2: EDGE_NOTE - the agent's own words (spec 2026-10-04). Kept as it
+   * said them; the tab shows a reason only for a seq that agent's budget paid
+   * (checked at display: a note can come before its link is synced). They change
+   * nothing - no state, no debts, no budgets.
+   */
+  reasons: Record<number, {agent: string; text: string; at: number}>;
+  /* refused ARMs as the agents reported them (their word; the key's own count is HEAD's), newest 50 */
+  refusals: {agent: string; seq: number; status: string; at: number}[];
 };
 
 export type Verdict =
@@ -74,6 +85,8 @@ export type EdgeView = {
   lastSync: number | null;
   /** newest first, for the chain view */
   rows: EdgeRow[];
+  /** B7 stage 2: refused ARMs the agents reported (their word), newest last */
+  refusals?: Mirror['refusals'];
   /** records moved out of the copy because they were never links of this chain (Mirror.setAside) */
   setAside?: {seq: number | null; at: number}[];
 };
@@ -90,13 +103,15 @@ export type EdgeRow = {
   ticket?: ReturnType<typeof tickets.pairTickets>['uses'][number];
   /** when this phone first stored the link (its clock; links carry no time) */
   seenAt?: number;
+  /** B7 stage 2: the reason an agent's note gave for this seq (not yet checked against the budget's agent) */
+  note?: {agent: string; text: string; at: number};
 };
 
 const storageKey = (deviceId: Uint8Array) => KEY_PREFIX + toHex(deviceId);
 
 export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
   const raw = await AsyncStorage.getItem(storageKey(deviceId));
-  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: [], seen: {}};
+  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: [], seen: {}, reasons: {}, refusals: []};
   const s = JSON.parse(raw) as StoredMirror;
   return {
     deviceId: fromHex(s.deviceId),
@@ -107,6 +122,8 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
     vouch: s.vouch ? {seq: s.vouch.seq, head: fromHex(s.vouch.head), tag: fromHex(s.vouch.tag)} : null,
     setAside: (s.setAside ?? []).map(x => ({link: fromHex(x.link), head: fromHex(x.head), at: x.at})),
     seen: Object.fromEntries(Object.entries(s.seen ?? {}).map(([k, v]) => [Number(k), v])),
+    reasons: Object.fromEntries(Object.entries(s.reasons ?? {}).map(([k, v]) => [Number(k), v])),
+    refusals: s.refusals ?? [],
   };
 }
 
@@ -119,6 +136,8 @@ export async function saveMirror(m: Mirror): Promise<void> {
     lastSync: m.lastSync,
     vouch: m.vouch ? {seq: m.vouch.seq, head: toHex(m.vouch.head), tag: toHex(m.vouch.tag)} : null,
     seen: Object.fromEntries(Object.entries(m.seen).map(([k, v]) => [String(k), v])),
+    ...(Object.keys(m.reasons).length ? {reasons: Object.fromEntries(Object.entries(m.reasons).map(([k, v]) => [String(k), v]))} : {}),
+    ...(m.refusals.length ? {refusals: m.refusals} : {}),
     ...(m.setAside.length ? {setAside: m.setAside.map(x => ({link: toHex(x.link), head: toHex(x.head), at: x.at}))} : {}),
   };
   await AsyncStorage.setItem(storageKey(m.deviceId), JSON.stringify(s));
@@ -188,6 +207,27 @@ export function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mir
   return run;
 }
 
+/**
+ * B7 stage 2: keep a verified EDGE_NOTE (edgeAgents checked the signature and
+ * that its key was registered with a press). In the sync queue, so a note and a
+ * sync never save over each other.
+ */
+export type EdgeNote = {agent: string; seq: number; reason?: string; ticketMsg?: string; armRefused?: string};
+export function addNote(deviceId: Uint8Array, n: EdgeNote, now = Date.now()): Promise<void> {
+  const run = syncing.then(() => addNoteNow(deviceId, n, now), () => addNoteNow(deviceId, n, now));
+  syncing = run.catch(() => undefined);
+  return run;
+}
+async function addNoteNow(deviceId: Uint8Array, n: EdgeNote, now: number): Promise<void> {
+  const m = await loadMirror(deviceId);
+  const agent = n.agent.toLowerCase();
+  if (n.reason !== undefined) m.reasons[n.seq] = {agent, text: n.reason, at: now};
+  /* by the use's seq, as tickets.pairTickets reads it: shown only if it hashes to the ticket */
+  if (n.ticketMsg !== undefined) m.messages[n.seq] = n.ticketMsg;
+  if (n.armRefused !== undefined) m.refusals = [...m.refusals, {agent, seq: n.seq, status: n.armRefused, at: now}].slice(-50);
+  await saveMirror(m);
+}
+
 async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror; view: EdgeView}> {
   const mirror = await loadMirror(source.deviceId);
   const head = await source.head();
@@ -244,7 +284,7 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
 export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[] = [], key: EdgeCopyKey | null = null): EdgeView {
   const decoded = mirror.links.map(r => ({r, f: chain.decodeLink(r.link)}));
   if (!head) {
-    return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror), setAside: asideOf(mirror)};
+    return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror), setAside: asideOf(mirror), refusals: mirror.refusals};
   }
   /*
    * R27 "what counts as verified": the library's one answer, the same Approve
@@ -267,14 +307,14 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
   else if (open.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: open[0].from, to: open[0].to};
   else if (lost.length) verdict = {kind: 'verified', through: head.seq, lost};
   else verdict = {kind: 'verified', through: result.verifiedThrough};
-  return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror)};
+  return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror), refusals: mirror.refusals};
 }
 
 function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLink>}[], unverified: Set<number>, mirror: Mirror): EdgeRow[] {
   const paired = tickets.pairTickets(mirror.links, mirror.messages);
   const bySeq = new Map(paired.uses.map(u => [u.seq, u]));
   return decoded
-    .map(({r, f}) => ({seq: f.seq, fields: f, weld: toHex(r.head), verified: !unverified.has(f.seq), ticket: bySeq.get(f.seq), seenAt: mirror.seen[f.seq]}))
+    .map(({r, f}) => ({seq: f.seq, fields: f, weld: toHex(r.head), verified: !unverified.has(f.seq), ticket: bySeq.get(f.seq), seenAt: mirror.seen[f.seq], note: mirror.reasons[f.seq]}))
     .reverse();
 }
 

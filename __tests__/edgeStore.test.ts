@@ -4,7 +4,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {FakeEdgeKey} from '../src/edgeFake';
-import {evaluate, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
+import {addNote, evaluate, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
 
 beforeEach(async () => {
   await AsyncStorage.clear();
@@ -166,4 +166,30 @@ test('a head report stored as a link (reserved bytes zero, seq jump) is set asid
   expect(view.verdict).toEqual({kind: 'verified', through: head.seq});
   expect(mirror.setAside.map(x => x.link)).toEqual([junk]);
   expect(view.setAside).toEqual([{seq: 447194052, at: expect.any(Number)}]);
+});
+
+/*
+ * B7 stage 2: EDGE_NOTE reaches the copy. The soft key gives no ticket messages
+ * (they never reach the key): the agent's note does, and it shows only when it
+ * hashes to the ticket. A reason is kept on its seq.
+ */
+test('a note\'s reason lands on its row; its ticket message shows only when it hashes to the ticket', async () => {
+  const k = new FakeEdgeKey();
+  const seq = k.use('commit 1');
+  k.ticket(0x00, 'pushed ok-rn');
+  k.messages = async () => ({}); /* as the soft key: no messages from the key */
+  await sync(k);
+  await addNote(k.deviceId, {agent: 'AB'.repeat(32), seq, reason: 'git push origin master'});
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq: 999, armRefused: 'ticket_owed'});
+  let {view} = await sync(k);
+  let row = view.rows.find(r => r.seq === seq)!;
+  expect(row.note).toMatchObject({agent: 'ab'.repeat(32), text: 'git push origin master'});
+  expect(row.ticket?.messageStatus).toBe('none');
+  expect(view.refusals).toMatchObject([{seq: 999, status: 'ticket_owed'}]);
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, ticketMsg: 'not what was ticketed'});
+  row = (await sync(k)).view.rows.find(r => r.seq === seq)!;
+  expect(row.ticket?.messageStatus).toBe('mismatch');
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, ticketMsg: 'pushed ok-rn'});
+  row = (await sync(k)).view.rows.find(r => r.seq === seq)!;
+  expect(row.ticket).toMatchObject({messageStatus: 'match', message: 'pushed ok-rn'});
 });

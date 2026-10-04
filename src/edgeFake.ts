@@ -23,6 +23,8 @@ export type EdgeLinkRecord = {link: Uint8Array; head: Uint8Array; reveal?: Uint8
 /** R27: may a budget be asked for from this copy? The first thing that fails, in words. */
 export type EdgeCopyCheck = {ok: true} | {ok: false; reason: string; seq?: number; to?: number};
 export type EdgeBudget = {
+  /* B7 stage 2: the registered key of the agent it was opened for (hex) - a note shows only from it */
+  agentKey?: string;
   grantId: number;
   reason: string;
   uses: number;
@@ -99,7 +101,8 @@ export type EdgeCopyKey = {
   checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array} | null;
 };
 
-export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; restoring: boolean};
+/* refusedArms: B7 stage 2, HEAD byte 60 - ARMs the key refused since it started (0 on older firmware) */
+export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; restoring: boolean; refusedArms?: number};
 
 /**
  * A replay's outcome (spec B6): the key took #from..#to; it stopped because

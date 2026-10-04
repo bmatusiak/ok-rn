@@ -131,6 +131,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return {
       grantId: id,
       reason: kept ? kept.reason : `Budget ${id} (opened elsewhere)`,
+      agentKey: kept?.agent,
       uses: kept ? kept.uses : spent.length,
       used: Math.max(stepsSpent, spent.length),
       scopes,
@@ -213,7 +214,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   async state(): Promise<EdgeKeyState> {
     const h = await this.edge.head();
-    return {owed: h.owed, overflow: h.overflow, held: h.held, restoring: h.restoring};
+    return {owed: h.owed, overflow: h.overflow, held: h.held, restoring: h.restoring, refusedArms: h.refusedArms ?? 0};
   }
 
   async hold(grantId: number) {

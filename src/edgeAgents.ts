@@ -16,9 +16,9 @@
  *   ssh://bmatusiak@localhost.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {approve as approveLib, request as requestLib} from 'node-onlykey-lib/edge';
+import {approve as approveLib, note as noteLib, request as requestLib} from 'node-onlykey-lib/edge';
 import {SoftKeyEdge} from './edgeSoftKey';
-import {sync as syncCopy} from './edgeStore';
+import {addNote, sync as syncCopy} from './edgeStore';
 import NativeOkEmu from '../specs/NativeOkEmu';
 
 const AGENTS = 'okrn.edge.agents';
@@ -212,6 +212,8 @@ let inFlight = false;
  * -> the answer to send back, or null to answer nothing (dropped).
  */
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
+  /* B7 stage 2: a note changes nothing, so it never waits behind a sheet */
+  if (msg?.type === noteLib.TYPE) return handleNote(msg).catch(() => null);
   const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE;
   if (asks && inFlight) {
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
@@ -230,6 +232,24 @@ export function handleEdgeMessage(msg: any, from: string): Promise<unknown | nul
   queue = run.catch(() => undefined);
   if (asks) run.finally(() => { inFlight = false; }).catch(() => undefined);
   return run;
+}
+
+/*
+ * EDGE_NOTE (spec 2026-10-04): from a key registered with a press, signed, new;
+ * anything else is dropped unanswered, like an unregistered request. Kept in the
+ * copy of this phone's key; whether its seq is that agent's is the tab's check.
+ */
+const notesSeen = new Set<string>();
+async function handleNote(msg: any): Promise<unknown | null> {
+  const agents = await pressedAgents();
+  const v = noteLib.verify(msg, {registered: agents.map(a => a.key), seen: notesSeen});
+  if (!v.ok) return null;
+  notesSeen.add(String(msg.nonce).toLowerCase());
+  if (notesSeen.size > 1000) notesSeen.delete(notesSeen.values().next().value as string);
+  const s = await SoftKeyEdge.open();
+  if (!s) return null; /* locked, or no Edge: nothing to keep it with */
+  await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, armRefused: msg.armRefused});
+  return {ok: true};
 }
 
 async function handle(msg: any, from: string): Promise<unknown | null> {

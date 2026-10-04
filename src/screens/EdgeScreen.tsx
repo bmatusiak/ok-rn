@@ -131,6 +131,11 @@ function TicketHook({t, verified}: {t: NonNullable<EdgeRow['ticket']>; verified:
   );
 }
 
+/* B7 stage 2 (spec 2026-10-04): a ticket owed this long is misbehaviour - red */
+const OWED_RED_MS = 10 * 60 * 1000;
+/* a paid use whose agent said nothing about it within this long: "no reason given" */
+const NO_REASON_MS = 60 * 1000;
+
 /** The latest use has no ticket yet - the key still takes one for it (R16). B7: how long it has been owed. */
 function WaitingRow({seq, since}: {seq: number; since?: number}) {
   const [now, setNow] = useState(Date.now());
@@ -141,13 +146,15 @@ function WaitingRow({seq, since}: {seq: number; since?: number}) {
   }, [since]);
   return (
     <View style={[styles.link, styles.waiting]}>
-      <Text style={[styles.ticketTitle, {color: theme.warn}]}>{since ? `Waiting for ticket · owed ${elapsed(now - since)}` : 'Waiting for ticket'}</Text>
+      <Text style={[styles.ticketTitle, {color: since && now - since > OWED_RED_MS ? theme.error : theme.warn}]}>
+        {since ? `${now - since > OWED_RED_MS ? '⚠ ' : ''}Waiting for ticket · owed ${elapsed(now - since)}` : 'Waiting for ticket'}
+      </Text>
       <Text style={styles.dim}>{`The agent has not yet said what it did with #${seq}.`}</Text>
     </View>
   );
 }
 
-function LinkRow({row, ticketVerified, budgetUses}: {row: EdgeRow; ticketVerified: boolean; budgetUses?: Map<number, number>}) {
+function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom}: {row: EdgeRow; ticketVerified: boolean; budgetUses?: Map<number, number>; agentOf?: Map<number, string>; notesFrom?: Map<string, number>}) {
   const dim = !row.verified;
   return (
     <View style={[styles.link, dim && styles.unverified]}>
@@ -174,6 +181,23 @@ function LinkRow({row, ticketVerified, budgetUses}: {row: EdgeRow; ticketVerifie
           <Progress used={row.fields.grantStep} total={budgetUses.get(row.fields.grantId)!} />
         </View>
       ) : null}
+      {/*
+        * B7 stage 2: what the agent said this use was for - its claim, quoted, plain
+        * text; only from the agent whose budget paid it (EDGE_NOTE, spec 2026-10-04)
+        */}
+      {(() => {
+        const agent = row.fields.grantId ? agentOf?.get(row.fields.grantId) : undefined;
+        if (!agent || (row.fields.op !== OP.SIGN && row.fields.op !== OP.DECRYPT)) return null;
+        if (row.note && row.note.agent === agent) {
+          return <Text style={styles.reason}>{`the agent says: “${row.note.text}”`}</Text>;
+        }
+        /* only once this agent sends notes at all: uses from before EDGE_NOTE are not "no reason" */
+        const since = notesFrom?.get(agent);
+        if (row.fields.decision === DECISION.SELF_PRESS && since !== undefined && row.seenAt && row.seenAt >= since && Date.now() - row.seenAt > NO_REASON_MS) {
+          return <Text style={[styles.reason, {color: theme.warn}]}>No reason given - the agent did not say what this use was for.</Text>;
+        }
+        return null;
+      })()}
       {row.ticket ? <TicketHook t={row.ticket} verified={ticketVerified} /> : null}
       {/* the press that opened a budget: a blue receipt, like a ticket (Brad, 2026-10-04) */}
       {row.fields.op === OP.GRANT_CREATE ? (
@@ -792,6 +816,31 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
   const attached = new Set<number>();
   for (const r of rows) if (r.ticket?.ticket) attached.add(r.ticket.ticket.seq);
   const liveUses = new Map(edge.budgets.map(b => [b.grantId, b.uses]));
+  /* each agent's first note (this phone's clock): "no reason given" counts from there */
+  const notesFrom = new Map<string, number>();
+  for (const r of edge.view?.rows ?? []) {
+    if (r.note && !(notesFrom.get(r.note.agent)! <= r.note.at)) notesFrom.set(r.note.agent, Math.min(r.note.at, r.seenAt ?? r.note.at));
+  }
+  const agentOf = new Map([...edge.past, ...edge.budgets].filter(b => b.agentKey).map(b => [b.grantId, String(b.agentKey).toLowerCase()]));
+  /*
+   * B7 stage 2: refused ARMs write no link. The key's own count since it started
+   * (HEAD byte 60) is the evidence; the agents' notes say which and why (their word).
+   */
+  const refusedByKey = edge.keyState?.refusedArms ?? 0;
+  const reported = (edge.view?.refusals ?? []).slice(-3).reverse();
+  if (!edge.isFake && (refusedByKey > 0 || reported.length)) {
+    items.push({key: 'live-refused', kind: 'node', render: () => (
+      <View style={[styles.mismatch, {borderColor: theme.error}]}>
+        <Text style={[styles.ticketTitle, {color: theme.error}]}>
+          {refusedByKey > 0 ? `⚠ The key refused ${refusedByKey} ARM${refusedByKey === 1 ? '' : 's'} since it started` : 'Refused ARMs reported by an agent'}
+        </Text>
+        {reported.map((r, i) => (
+          <Text key={i} style={styles.dim}>{`${new Date(r.at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})} · head #${r.seq} · the agent says: “${r.status}”`}</Text>
+        ))}
+        <Text style={styles.dim}>A refused ARM writes no link. If you did not expect one, hold the budget.</Text>
+      </View>
+    )});
+  }
   /* B7: Hold one tap away while anything is live - stopping an agent never needs navigating */
   const liveNow = edge.budgets.filter(b => !(edge.keyState?.held ?? []).includes(b.grantId));
   if (!edge.isFake && liveNow.length) {
@@ -815,7 +864,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
       const body = (
         <View style={[styles.historyRow, r.seq === marked && styles.marked]}>
           {r.ticket?.status === 'waiting' ? <WaitingRow seq={r.seq} since={r.seenAt} /> : null}
-          <LinkRow row={r} budgetUses={liveUses} ticketVerified={r.ticket?.ticket ? verifiedAt.get(r.ticket.ticket.seq) !== false : true} />
+          <LinkRow row={r} budgetUses={liveUses} agentOf={agentOf} notesFrom={notesFrom} ticketVerified={r.ticket?.ticket ? verifiedAt.get(r.ticket.ticket.seq) !== false : true} />
         </View>
       );
       return forBudget ? (
@@ -830,7 +879,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
         <Segmented options={['Budgets', 'Presses'] as const} value={pane} onChange={setPane} />
       </View>
       <EdgeList
-        items={items.filter(it => it.key === 'status' || (pane === 'Presses') === (it.key === 's-history' || it.key === 'live-hold' || /^h\d/.test(it.key)))}
+        items={items.filter(it => it.key === 'status' || (pane === 'Presses') === (it.key === 's-history' || it.key === 'live-hold' || it.key === 'live-refused' || /^h\d/.test(it.key)))}
         bottomInset={DRAWER_HANDLE} refreshing={edge.busy} onRefresh={edge.sync}
       />
       <BottomDrawer title="Agents">
@@ -915,6 +964,7 @@ function TimeLeft({endsAt}: {endsAt: number}) {
 }
 
 const styles = StyleSheet.create({
+  reason: {color: theme.textDim, fontStyle: 'italic', marginTop: 4, marginLeft: 56},
   holdBar: {paddingHorizontal: 16, paddingVertical: 8, gap: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.border},
   page: {padding: 12, gap: 12},
   /* the trust list: the screen is the list (src/ui/EdgeList.tsx), with the drawer's handle over its foot */
