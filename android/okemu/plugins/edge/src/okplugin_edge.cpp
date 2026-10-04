@@ -200,6 +200,19 @@ static uint8_t armed;
  */
 static uint8_t arm_token[32];
 
+/*
+ * B7 stage 2 (spec, 2026-10-04): ARMs this key refused since power-up, in HEAD
+ * byte 60. RAM only - a refused ARM writes no link (any host could flood the
+ * chain and wear the flash), so this count is the key's own evidence; the
+ * phone's watcher alarms when it rises. Stops at 255.
+ */
+static uint8_t refused_arms;
+static void status(uint8_t code);
+static void refuse_arm(uint8_t code) {
+  if (refused_arms < 255) refused_arms++;
+  status(code);
+}
+
 /* the last links, with a self-press's reveal, for edge JS to pick up */
 static struct held_link {
   uint8_t used;
@@ -1202,7 +1215,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       r[57] = st.owed_n;
       r[58] = st.overflow;
       r[59] = st.restored;
-      reply(r, 60);
+      r[60] = refused_arms; /* B7: refused ARMs since power-up (RAM only) */
+      reply(r, 61);
       return;
     }
     case OKEDGE_PICKUP: {
@@ -1326,9 +1340,9 @@ void okplugin_edge_recv(uint8_t *buffer) {
        * fits - this head, this request - is decided when the request is primed
        * (okplugin_edge_primed); a stale head shows there, as a press.
        */
-      if (st.restored) { status(EDGE_RESTORING); return; }
-      if (owes()) { status(EDGE_TICKET_OWED); return; }
-      if (!any_budget_payable()) { status(EDGE_NOTHING_TO_ARM); return; }
+      if (st.restored) { refuse_arm(EDGE_RESTORING); return; }
+      if (owes()) { refuse_arm(EDGE_TICKET_OWED); return; }
+      if (!any_budget_payable()) { refuse_arm(EDGE_NOTHING_TO_ARM); return; }
       memcpy(arm_token, buffer + 6, 32);
       armed = 1;
       status(EDGE_OK);

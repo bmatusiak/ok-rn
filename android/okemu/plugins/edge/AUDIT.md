@@ -30,7 +30,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 
 | Sub-op | Reply |
 |---|---|
-| `01 HEAD` | `seq` u32 (0xFFFFFFFF = none) · `head` 32 · oldest pickable seq u32 · live budget ids 4×u32 · held mask (bit i = budget i on hold) · owed count · overflow · restoring (R26) |
+| `01 HEAD` | `seq` u32 (0xFFFFFFFF = none) · `head` 32 · oldest pickable seq u32 · live budget ids 4×u32 · held mask (bit i = budget i on hold) · owed count · overflow · restoring (R26) · refused ARMs since power-up u8 (B7 stage 2, RAM only, stops at 255) |
 | `02 PICKUP` `from`, `count` ≤ 8 | per link: the link; then its head + the self-press reveal (zeros if none) |
 | `03 CHECKPOINT` (`EDGE:0E` while restoring: nothing is signed then, R26) | `seq` · `head`; then the Edge key's P-256 signature over `SHA256("OKEDGE-CKPT-v1" ‖ device_id ‖ seq ‖ head)` |
 | `04 PUBKEY` | the Edge public key X‖Y; edge JS derives device_id from it |
