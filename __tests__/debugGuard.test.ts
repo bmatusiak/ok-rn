@@ -69,8 +69,8 @@ test('debug build in testing mode: debugging on, the lock lets every consent thr
 });
 
 test('release build: setTestingMode(true) does nothing - the lock stays on with debugging on', () => {
-  const was = (global as any).__DEV__;
-  (global as any).__DEV__ = false;
+  const was = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
   try {
     jest.isolateModules(() => {
       const NativeOkEmuR = require('../specs/NativeOkEmu').default;
@@ -81,13 +81,13 @@ test('release build: setTestingMode(true) does nothing - the lock stays on with 
       expect(g.consentRefusal(false)).toBe(g.DEBUG_REFUSAL);
     });
   } finally {
-    (global as any).__DEV__ = was;
+    (globalThis as any).__DEV__ = was;
   }
 });
 
 test('release build: useTestingMode cannot be switched on - not by setEnabled, not by toggle', () => {
-  const was = (global as any).__DEV__;
-  (global as any).__DEV__ = false;
+  const was = (globalThis as any).__DEV__;
+  (globalThis as any).__DEV__ = false;
   try {
     jest.isolateModules(() => {
       const React = require('react');
@@ -103,6 +103,6 @@ test('release build: useTestingMode cannot be switched on - not by setEnabled, n
       expect(t.enabled).toBe(false);
     });
   } finally {
-    (global as any).__DEV__ = was;
+    (globalThis as any).__DEV__ = was;
   }
 });
