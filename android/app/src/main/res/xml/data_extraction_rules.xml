@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NOTHING OF THIS APP LEAVES THE PHONE BY BACKUP OR TRANSFER.
+
+  android:allowBackup="false" alone is not enough here: for an app targeting
+  Android 12+ (this one: targetSdk 36) it stops cloud and adb backup but NOT
+  device-to-device transfer (setting up a new phone from the old one). That
+  would copy files/okemu/ - the soft key's whole flash and EEPROM, its secrets,
+  and the Edge per-device salt (R28: the salt must never leave this device, or
+  the new phone is a second writer of this chain). Every domain is excluded
+  from both. A soft key moves to a new phone only by its own encrypted backup.
+-->
+<data-extraction-rules>
+  <cloud-backup>
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+    <exclude domain="device_root" path="." />
+    <exclude domain="device_file" path="." />
+    <exclude domain="device_database" path="." />
+    <exclude domain="device_sharedpref" path="." />
+  </cloud-backup>
+  <device-transfer>
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
+    <exclude domain="device_root" path="." />
+    <exclude domain="device_file" path="." />
+    <exclude domain="device_database" path="." />
+    <exclude domain="device_sharedpref" path="." />
+  </device-transfer>
+</data-extraction-rules>

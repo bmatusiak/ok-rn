@@ -1261,12 +1261,15 @@ class NativeFidoGattModule(
        * is quietly filtered out looks exactly like a write that never arrived,
        * and the host retries either way.
        *
-       * THE BYTES ONLY IN A DEBUG BUILD. This printed the first twelve bytes of
+       * NO BYTES, IN ANY BUILD (spec session 2026-10-04, mcp-service.md 4.7b: "both
+       * are leaks"). It once printed the first twelve bytes of
        * every Control Point write to LOGCAT, unguarded - and logcat is the
        * worse sink of the two this app has, because an adb session or a crash
        * reporter reads it without touching the phone. It is a raw wire-frame
        * prefix off a live CTAP exchange; nothing here promises what a host puts
-       * in the first twelve bytes.
+       * in the first twelve bytes - over the vendor service that is up to three
+       * bytes of a key load or a PIN. A debug build was no excuse either: the
+       * Pixel's debug build tests what the A13 runs.
        *
        * Nothing else catches this: app/build.gradle has `minifyEnabled false`
        * and proguard-rules.pro is comments only, so there is no
@@ -1280,12 +1283,7 @@ class NativeFidoGattModule(
       Log.d(
         TAG,
         "write: ${characteristic.uuid} len=${value.size} offset=$offset " +
-          "prepared=$preparedWrite" +
-          if (BuildConfig.DEBUG) {
-            " bytes=${value.take(12).joinToString("") { "%02x".format(it) }}"
-          } else {
-            ""
-          },
+          "prepared=$preparedWrite",
       )
 
       if (responseNeeded) {
