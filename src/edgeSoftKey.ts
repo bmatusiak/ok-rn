@@ -67,7 +67,8 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   /** null when the soft key does not answer Edge (no plugin, or locked). */
   static async open(): Promise<SoftKeyEdge | null> {
     const app = await getOnlyKey('embedded');
-    if ((await app.edge.probe({timeoutMs: 1500})) !== 'edge') return null;
+    /* 4 s: right after start the background sync's chain reads go first (lib client.js deviceIdentity, 2026-10-04) */
+    if ((await app.edge.probe({timeoutMs: 4000})) !== 'edge') return null;
     const {deviceId} = await app.edge.publicKey();
     return new SoftKeyEdge(app.edge, deviceId);
   }
