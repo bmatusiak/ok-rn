@@ -22,6 +22,7 @@ import {useFidoGatt, type FidoSession} from './src/hooks/useFidoGatt';
 import {getOnlyKey} from './src/onlykey';
 import type {Backend} from './src/hooks/keySession';
 import {useTestingMode} from './src/hooks/useTestingMode';
+import NativeShare from './specs/NativeShare';
 import {setTestingMode} from './src/debugGuard';
 import {useWipeOnLock} from './src/hooks/useWipeOnLock';
 
@@ -559,6 +560,20 @@ function Shell() {
     };
     look();
     const sub = AppState.addEventListener('change', st => { if (st === 'active') look(); });
+    return () => sub.remove();
+  }, []);
+
+  /*
+   * NOTHING STAGED FOR A SHARE OUTLIVES IT (Brad, 2026-10-04): a decrypted message,
+   * a backup or an encrypted private key sits in the cache only while the share
+   * sheet uses it. Wiped when the app goes to the background too - the native side
+   * skips this while a share is in flight (opening the sheet backgrounds the app)
+   * and wipes on the sheet's own result; MainApplication wipes at start.
+   */
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', st => {
+      if (st === 'background') NativeShare.clearShared().catch(() => undefined);
+    });
     return () => sub.remove();
   }, []);
 

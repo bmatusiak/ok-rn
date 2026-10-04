@@ -22,6 +22,8 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     super.onCreate()
+    /* nothing staged for a share outlives it - a process killed mid-share is wiped here */
+    com.okrn.share.NativeShareModule.wipeSharedDir(this)
     loadReactNative(this)
     /* a sound when the soft key waits for a press (PressAlert): native, so it works with the screen off */
     com.okrn.emu.PressAlert.start(this)

@@ -36,6 +36,14 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
    */
   private var pending: Promise? = null
 
+  /*
+   * A share is in flight: the chooser (or the app chosen from it) is reading the
+   * staged file. Opening the chooser itself sends this app to the background, so
+   * the background clear must wait for the chooser's result - or the receiving
+   * app would find nothing to read.
+   */
+  @Volatile private var sharing = false
+
   private val activityListener: ActivityEventListener =
     object : BaseActivityEventListener() {
       override fun onActivityResult(
@@ -44,6 +52,12 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
         resultCode: Int,
         data: Intent?,
       ) {
+        /* the share sheet came back (shared or not): what was staged for it goes now */
+        if (requestCode == SHARE_REQUEST) {
+          sharing = false
+          wipeSharedDir(reactApplicationContext)
+          return
+        }
         if (requestCode != PICK_FILE_REQUEST) return
         val promise = pending ?: return
         pending = null
@@ -136,30 +150,27 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
         return
       }
 
-      activity.startActivity(chooser)
+      /*
+       * FOR RESULT, so the chooser's return is our cue to wipe: a decrypted
+       * message, a backup or an encrypted private key is written only for the
+       * share and must not outlive it (Brad, 2026-10-04). A process killed
+       * mid-share is wiped at the next start (MainApplication.onCreate).
+       */
+      sharing = true
+      activity.startActivityForResult(chooser, SHARE_REQUEST)
       promise.resolve(true)
     } catch (e: Exception) {
       promise.reject(ERR, e.message ?: "share failed", e)
     }
   }
 
+  /*
+   * Called when the app goes to the background (App.tsx) and when a screen that
+   * shared leaves. Skipped while a share is in flight - its own result wipes.
+   */
   override fun clearShared(promise: Promise) {
     try {
-      val dir = File(reactApplicationContext.cacheDir, SHARED_DIR)
-      var removed = 0
-      dir.listFiles()?.forEach { file ->
-        /*
-         * Overwritten before deletion. Deleting a file unlinks it; the bytes
-         * stay on the filesystem until something reuses them, and these bytes
-         * are the whole contents of a hardware key.
-         */
-        runCatching {
-          val blank = ByteArray(file.length().toInt().coerceAtMost(1 shl 20))
-          file.writeBytes(blank)
-        }
-        if (file.delete()) removed++
-      }
-      promise.resolve(removed.toDouble())
+      promise.resolve(if (sharing) 0.0 else wipeSharedDir(reactApplicationContext).toDouble())
     } catch (e: Exception) {
       promise.reject(ERR, e.message ?: "clear failed", e)
     }
@@ -303,6 +314,29 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
 
   companion object {
     const val ERR = "E_SHARE"
+
+    /** The share chooser's result: the cue to wipe what was staged for it. */
+    const val SHARE_REQUEST = 0x0C52
+
+    /**
+     * Overwrite then delete everything staged for a share. Deleting a file
+     * unlinks it; the bytes stay on the filesystem until something reuses them,
+     * and these bytes can be a decrypted message or a whole key's backup.
+     * Static so MainApplication can run it at start, before any JS.
+     */
+    @JvmStatic
+    fun wipeSharedDir(context: android.content.Context): Int {
+      val dir = File(context.cacheDir, SHARED_DIR)
+      var removed = 0
+      dir.listFiles()?.forEach { file ->
+        runCatching {
+          val blank = ByteArray(file.length().toInt().coerceAtMost(1 shl 20))
+          file.writeBytes(blank)
+        }
+        if (file.delete()) removed++
+      }
+      return removed
+    }
 
     /** Must match the cache-path in res/xml/shared_files.xml. */
     const val SHARED_DIR = "shared"
