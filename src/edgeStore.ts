@@ -32,7 +32,18 @@ type StoredMirror = {
   seen?: Record<string, number>;
   reasons?: Record<string, {agent: string; text: string; at: number}>;
   refusals?: {agent: string; seq: number; status: string; at: number}[];
+  publicKey?: string;
+  continued?: ContinueCheck | null;
 };
+
+/*
+ * R28: this copy's chain begins with a CONTINUE link - checked once against the
+ * old copies this phone keeps (lib copy.checkContinue). ok: it names exactly an
+ * old copy's head (and, when that copy starts at its chain's first link, its
+ * debts). Not ok: 'no-old-copy' (restored onto this phone - nothing to compare)
+ * or 'no-match' (no copy here has that head - shown as an alarm).
+ */
+export type ContinueCheck = {ok: boolean; fromDeviceId?: string; oldSeq: number; debtsChecked?: boolean; reason?: string};
 
 export type Mirror = {
   deviceId: Uint8Array;
@@ -68,6 +79,13 @@ export type Mirror = {
   reasons: Record<number, {agent: string; text: string; at: number}>;
   /* refused ARMs as the agents reported them (their word; the key's own count is HEAD's), newest 50 */
   refusals: {agent: string; seq: number; status: string; at: number}[];
+  /*
+   * R28 (spec: "keep the old checkpoint public key with the old copy"): the key's
+   * checkpoint public key, saved at each sync - so after the key moves to its own
+   * chain, this old copy and its checkpoints stay checkable without the key.
+   */
+  publicKey?: Uint8Array | null;
+  continued?: ContinueCheck | null;
 };
 
 export type Verdict =
@@ -89,6 +107,8 @@ export type EdgeView = {
   refusals?: Mirror['refusals'];
   /** records moved out of the copy because they were never links of this chain (Mirror.setAside) */
   setAside?: {seq: number | null; at: number}[];
+  /** R28: this chain continues an old one (Mirror.continued) */
+  continued?: ContinueCheck | null;
 };
 
 const asideOf = (mirror: Mirror) => mirror.setAside.map(x => {
@@ -124,6 +144,8 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
     seen: Object.fromEntries(Object.entries(s.seen ?? {}).map(([k, v]) => [Number(k), v])),
     reasons: Object.fromEntries(Object.entries(s.reasons ?? {}).map(([k, v]) => [Number(k), v])),
     refusals: s.refusals ?? [],
+    publicKey: s.publicKey ? fromHex(s.publicKey) : null,
+    continued: s.continued ?? null,
   };
 }
 
@@ -139,6 +161,8 @@ export async function saveMirror(m: Mirror): Promise<void> {
     ...(Object.keys(m.reasons).length ? {reasons: Object.fromEntries(Object.entries(m.reasons).map(([k, v]) => [String(k), v]))} : {}),
     ...(m.refusals.length ? {refusals: m.refusals} : {}),
     ...(m.setAside.length ? {setAside: m.setAside.map(x => ({link: toHex(x.link), head: toHex(x.head), at: x.at}))} : {}),
+    ...(m.publicKey ? {publicKey: toHex(m.publicKey)} : {}),
+    ...(m.continued ? {continued: m.continued} : {}),
   };
   await AsyncStorage.setItem(storageKey(m.deviceId), JSON.stringify(s));
 }
@@ -228,6 +252,25 @@ async function addNoteNow(deviceId: Uint8Array, n: EdgeNote, now: number): Promi
   await saveMirror(m);
 }
 
+/* R28: a chain that begins with a CONTINUE - which old copy on this phone does it continue? */
+async function continuedFrom(mirror: Mirror): Promise<ContinueCheck | null> {
+  const first = mirror.links[0];
+  let f;
+  try { f = first ? chain.decodeLink(first.link) : null; } catch { return null; }
+  if (!f || f.op !== OP_CONTINUE) return null;
+  const own = toHex(mirror.deviceId);
+  const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith(KEY_PREFIX) && k !== KEY_PREFIX + own);
+  let unverifiable: ContinueCheck | null = null;
+  for (const k of keys) {
+    const old = await loadMirror(fromHex(k.slice(KEY_PREFIX.length)));
+    const r = copy.checkContinue(first.link, {deviceId: old.deviceId, links: old.links});
+    if (r.ok) return {ok: true, fromDeviceId: toHex(old.deviceId), oldSeq: r.oldSeq ?? f.seq - 1, debtsChecked: r.debtsChecked};
+    if (r.reason === 'unverifiable') unverifiable = {ok: false, fromDeviceId: toHex(old.deviceId), oldSeq: r.oldSeq ?? f.seq - 1, reason: 'unverifiable'};
+  }
+  return unverifiable ?? {ok: false, oldSeq: f.seq - 1, reason: keys.length ? 'no-match' : 'no-old-copy'};
+}
+const OP_CONTINUE = 16;
+
 async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror; view: EdgeView}> {
   const mirror = await loadMirror(source.deviceId);
   const head = await source.head();
@@ -253,6 +296,9 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
     from = seqOf(got[got.length - 1]) + 1;
   }
   mirror.messages = {...mirror.messages, ...(await source.messages())};
+  const ownKey = source.copyKey ? await source.copyKey().catch(() => null) : null;
+  if (ownKey?.publicKey) mirror.publicKey = ownKey.publicKey;
+  if (!mirror.continued) mirror.continued = await continuedFrom(mirror);
   /* R26: keep the key's newest vouch with the copy (a restoring key gives none) */
   const v = source.vouch ? await source.vouch() : null;
   if (v) mirror.vouch = v;
@@ -285,7 +331,7 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
 export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[] = [], key: EdgeCopyKey | null = null): EdgeView {
   const decoded = mirror.links.map(r => ({r, f: chain.decodeLink(r.link)}));
   if (!head) {
-    return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror), setAside: asideOf(mirror), refusals: mirror.refusals};
+    return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null};
   }
   /*
    * R27 "what counts as verified": the library's one answer, the same Approve
@@ -308,7 +354,7 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
   else if (open.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: open[0].from, to: open[0].to};
   else if (lost.length) verdict = {kind: 'verified', through: head.seq, lost};
   else verdict = {kind: 'verified', through: result.verifiedThrough};
-  return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror), refusals: mirror.refusals};
+  return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null};
 }
 
 function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLink>}[], unverified: Set<number>, mirror: Mirror): EdgeRow[] {

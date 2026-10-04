@@ -21,7 +21,7 @@ import {consentRefusal, markTestConsent, scopesAreTest} from '../debugGuard';
 /* what each typed refusal means, in the person's words (the agent gets the code) */
 const REFUSAL_TEXT: Record<string, string> = {
   declined: 'You declined. The agent was told "declined".',
-  timeout: 'Nobody answered in time. The agent was told "timeout".',
+  timeout: 'Nobody answered in time. The agent was told "timeout". Until you close this, new requests are refused without asking - nobody is here to answer them.',
   copy_unverified: 'This phone\'s copy of the chain does not verify, so nothing was sent to the key. The agent was told "copy_unverified".',
   ticket_owed: 'A ticket is owed for an earlier use. The agent was told "ticket_owed".',
   restoring: 'The key is finishing a restore. The agent was told "restoring".',

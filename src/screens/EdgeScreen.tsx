@@ -23,7 +23,7 @@ import NativeEdgeAlert from '../../specs/NativeEdgeAlert';
 import {onSheet} from '../edgeAgents';
 import {consentRefusal, markTestConsent, scopesAreTest} from '../debugGuard';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
-import type {EdgeRow, Verdict} from '../edgeStore';
+import type {EdgeRow, EdgeView, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
 
 const {OP, DECISION, FLAG} = codes;
@@ -172,7 +172,10 @@ function WaitingRow({seq, since}: {seq: number; since?: number}) {
   );
 }
 
-function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom}: {row: EdgeRow; ticketVerified: boolean; budgetUses?: Map<number, number>; agentOf?: Map<number, string>; notesFrom?: Map<string, number>}) {
+/* R28: how many debts a continue link carried, in words */
+const debtsLine = (n: number) => (n === 0 ? 'No debts carried over.' : `${n} debt${n === 1 ? '' : 's'} carried over - still owed here.`);
+
+function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued}: {row: EdgeRow; continued?: EdgeView['continued']; ticketVerified: boolean; budgetUses?: Map<number, number>; agentOf?: Map<number, string>; notesFrom?: Map<string, number>}) {
   const dim = !row.verified;
   return (
     <View style={[styles.link, dim && styles.unverified]}>
@@ -264,6 +267,25 @@ function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom}: {row: Ed
           </Text>
         </View>
       ) : null}
+      {/*
+        * R28: the first link of this phone key's OWN chain. Blue: it names exactly the
+        * head of an old copy this phone keeps (checked by the lib). Yellow: nothing here
+        * to check it against (restored onto this phone). Red: no copy here has that head.
+        */}
+      {row.fields.op === OP.CONTINUE ? (
+        <View style={[styles.ticket, {borderLeftColor: !continued ? theme.textDim : continued.ok ? theme.link : continued.reason === 'no-match' ? theme.error : theme.warn}]}>
+          <Text style={[styles.ticketTitle, {color: !continued ? theme.textDim : continued.ok ? theme.link : continued.reason === 'no-match' ? theme.error : theme.warn}]}>This key's own chain starts here</Text>
+          <Text style={styles.dim}>
+            {!continued
+              ? 'Continues another chain - not checked yet.'
+              : continued.ok
+                ? `Continues #${continued.oldSeq} of chain ${(continued.fromDeviceId ?? '').slice(0, 8)}… - checked against this phone's copy${continued.debtsChecked ? ', debts included' : ''}. ${debtsLine(row.fields.grantId)}`
+                : continued.reason === 'no-match'
+                  ? `Says it continues #${continued.oldSeq}, but no copy on this phone has that head.`
+                  : `Continues #${continued.oldSeq} of a chain this phone cannot check (no full copy here). ${debtsLine(row.fields.grantId)}`}
+          </Text>
+        </View>
+      ) : null}
       {/* a sign or decrypt no budget paid: hung under it like a ticket, in yellow, so it stands out in Presses (Brad, 2026-10-04) */}
       {/* B7: the two presses that should never happen under a budget, in red - they stand out without looking */}
       {live.classifyUse(row.fields)?.alarm ? (
@@ -322,6 +344,7 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
   waitingResume?: boolean;
   onPress?: () => void;
 }) {
+  const complete = b.uses > 0 && b.used >= b.uses;
   const body = (
     <>
       <Text style={styles.op}>{b.reason}</Text>
@@ -337,11 +360,18 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
           <Progress used={s.used} total={s.cap} />
         </View>
       ))}
-      {b.endsAt ? <TimeLeft endsAt={b.endsAt} /> : null}
+      {/* every use spent: the timer means nothing any more (Brad, 2026-10-04: "replace timer with complete") */}
+      {complete ? (
+        <Text style={[styles.ticketTitle, {color: theme.ok}]}>Complete</Text>
+      ) : b.endsAt ? (
+        <TimeLeft endsAt={b.endsAt} />
+      ) : null}
       <Text style={styles.dim}>
-        {b.endsAt
-          ? `Budget ${b.grantId} · ends at ${new Date(b.endsAt).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}, or when you lock the key.`
-          : `Budget ${b.grantId} · ends when you lock the key.`}
+        {complete
+          ? `Budget ${b.grantId} · every use spent - it pays for nothing more, but covers its identities until it ends.`
+          : b.endsAt
+            ? `Budget ${b.grantId} · ends at ${new Date(b.endsAt).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}, or when you lock the key.`
+            : `Budget ${b.grantId} · ends when you lock the key.`}
       </Text>
     </>
   );
@@ -362,6 +392,16 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
             <Btn title="Press the soft key" tone="primary" onPress={() => onPress?.()} />
           </View>
         </>
+      ) : onRevoke && complete ? (
+        /*
+         * every use spent: nothing to hold, but it still COVERS its identities until it
+         * ends (R16 - a later pressed use owes a ticket). End writes the grant-end link and
+         * frees the key's slot; the agent normally does this itself once its last use is
+         * ticketed (spec 2026-10-04).
+         */
+        <View style={styles.row}>
+          <Btn title="End" tone="danger" onPress={onRevoke} disabled={busy} />
+        </View>
       ) : onRevoke ? (
         <View style={styles.row}>
           {held && onResume ? <Btn title="Resume" tone="primary" onPress={onResume} disabled={busy} /> : null}
@@ -876,7 +916,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
     )});
   }
   /* B7: Hold one tap away while anything is live - stopping an agent never needs navigating */
-  const liveNow = edge.budgets.filter(b => !(edge.keyState?.held ?? []).includes(b.grantId));
+  const liveNow = edge.budgets.filter(b => !(edge.keyState?.held ?? []).includes(b.grantId) && !(b.uses > 0 && b.used >= b.uses));
   if (!edge.isFake && liveNow.length) {
     items.push({key: 'live-hold', kind: 'node', render: () => (
       <View style={styles.holdBar}>
@@ -898,7 +938,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
       const body = (
         <View style={[styles.historyRow, r.seq === marked && styles.marked]}>
           {r.ticket?.status === 'waiting' ? <WaitingRow seq={r.seq} since={r.seenAt} /> : null}
-          <LinkRow row={r} budgetUses={liveUses} agentOf={agentOf} notesFrom={notesFrom} ticketVerified={r.ticket?.ticket ? verifiedAt.get(r.ticket.ticket.seq) !== false : true} />
+          <LinkRow row={r} continued={edge.view?.continued} budgetUses={liveUses} agentOf={agentOf} notesFrom={notesFrom} ticketVerified={r.ticket?.ticket ? verifiedAt.get(r.ticket.ticket.seq) !== false : true} />
         </View>
       );
       return forBudget ? (

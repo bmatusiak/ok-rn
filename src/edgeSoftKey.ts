@@ -198,8 +198,16 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
         b.firstSeq = mine[0].seq;
         b.lastSeq = mine[mine.length - 1].seq;
       }
-      /* an expiry needs no stamp: it ended at its lifetime (unless something ended it sooner) */
-      if (b.endedHow === 'expired' && b.endsAt && (!b.endedAt || b.endedAt > b.endsAt)) b.endedAt = b.endsAt;
+      /*
+       * WHEN IT ENDED (spec 2026-10-04: "lasted 10 min of 5 min" - count to its end):
+       * its grant-end link, when this phone saw it; else the stamp from when it was
+       * seen gone - but never past its lifetime, which no budget outlives (the phone
+       * may have looked long after it expired).
+       */
+      const endLink = decoded.find(f => f.op === OP.GRANT_END && f.grantId === id);
+      const endSeen = endLink ? mirror.seen[endLink.seq] : undefined;
+      if (endSeen) b.endedAt = endSeen;
+      if (b.endsAt && (!b.endedAt || b.endedAt > b.endsAt)) b.endedAt = b.endsAt;
       out.push(b);
     }
     return out.sort((a, b2) => b2.grantId - a.grantId);

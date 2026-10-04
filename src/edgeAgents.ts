@@ -154,8 +154,25 @@ let current: SheetState | null = null;
 let answer: ((a: 'approve' | 'decline' | 'timeout') => void) | null = null;
 let soft: SoftKeyEdge | null = null;
 
+/*
+ * AFTER THE ANSWER (Brad, 2026-10-04): a DECLINE closes itself after 30 s - the
+ * person was there and saw it. A TIMEOUT stays open, and while it is open every
+ * new request (budget or registration) is refused at once with no sheet: nobody
+ * is at the phone to press anyway, until someone checks and closes it.
+ */
+const DECLINED_CLOSE_MS = 30_000;
+let declinedTimer: ReturnType<typeof setTimeout> | null = null;
+export const UNATTENDED_DETAIL = 'nobody is at the phone - an earlier request timed out and nobody has checked yet';
+function unattended(): boolean {
+  return current?.phase === 'done' && !current.result.ok && current.result.refusal === 'timeout';
+}
+
 function show(s: SheetState | null) {
   current = s;
+  if (declinedTimer) { clearTimeout(declinedTimer); declinedTimer = null; }
+  if (s?.phase === 'done' && !s.result.ok && s.result.refusal === 'declined') {
+    declinedTimer = setTimeout(() => { declinedTimer = null; if (current === s) show(null); }, DECLINED_CLOSE_MS);
+  }
   attention(s);
   for (const l of listeners) l(s);
 }
@@ -274,6 +291,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
     if (msg?.type === requestLib.REGISTER_TYPE) {
       /* the press is the KEY's (AGENT_ADD), so registering needs this phone's key with Edge */
       if (!requestLib.verifyRegister(msg, {seen}).ok) return null;
+      if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
       soft = soft ?? (await SoftKeyEdge.open());
       if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
       const agents = await pressedAgents();
@@ -303,6 +321,8 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
     const agents = await pressedAgents();
     /* not registered: refused before anything in it is read - no sheet, no answer */
     if (!agents.some(a => a.key === String(msg.agent).toLowerCase())) return null;
+    /* a timed-out sheet nobody has closed: nobody is there to press - refused at once, no new sheet */
+    if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
     soft = soft ?? (await SoftKeyEdge.open());
     if (!soft) return {ok: false, refusal: 'invalid', detail: 'this phone\'s key has no Edge'};
     await soft.loadAgentBudgets();
