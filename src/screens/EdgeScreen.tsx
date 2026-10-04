@@ -481,6 +481,16 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
   const [open, setOpen] = useState<EdgeBudget | null>(null);
   const [confirmWaive, setConfirmWaive] = useState(false);
   const [confirmLoss, setConfirmLoss] = useState(false);
+  /*
+   * An agent's sheet ended (a budget opened, an agent registered): the budgets
+   * and the copy moved. ABOVE the early return below: a hook after it ran only
+   * while no budget was open, so opening one rendered a hook fewer - React's
+   * "Rendered fewer hooks than expected" red box (Brad, 2026-10-03).
+   */
+  useEffect(() => onSheet(st => {
+    if (st?.phase === 'done') void edge.sync();
+  }), [edge.sync]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (open) {
     /* the live numbers if the budget is still live; the snapshot taken when it was opened if it ended */
     const b = edge.budgets.find(x => x.grantId === open.grantId) ?? open;
@@ -491,10 +501,6 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
    * budget's chain view, so with no budget open a copy that does not verify
    * would show nowhere. Only when something is wrong; a good copy stays quiet.
    */
-  /* an agent's sheet ended (a budget opened, an agent registered): the budgets and the copy moved */
-  useEffect(() => onSheet(st => {
-    if (st?.phase === 'done') void edge.sync();
-  }), [edge.sync]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const v = edge.view?.verdict;
   const ks = edge.keyState;
