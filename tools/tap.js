@@ -45,6 +45,26 @@ async function main() {
   const VALUED = new Set(['--scroll', '--below', '--hold', '--gap']);
   const labels = args.filter((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1]));
 
+  /*
+   * SPEC RULE 10 (onlykey-edge build/scenarios.md, 2026-10-04): automation may
+   * approve, press, waive or accept loss ONLY for TEST budgets and identities,
+   * labelled. Real ones are Brad's: he approves and presses on the phone himself.
+   * So these labels need --test, and Approve / the sheet's press also need the
+   * request's reason on screen to start "TEST:" (the label the script asked with).
+   */
+  const SENSITIVE = /^(Approve|Press the soft key|Confirm|Yes, waive|Waive…|Accept loss.*|Yes, accept loss.*|Yes, let it sign as me)$/;
+  const sensitive = labels.filter((l) => SENSITIVE.test(l));
+  if (sensitive.length) {
+    if (!args.includes('--test')) {
+      throw new Error(`refused (spec rule 10): "${sensitive.join('", "')}" is a consent tap - automation may do it only for a TEST budget/identity (pass --test then); real ones are Brad's`);
+    }
+    if (sensitive.some((l) => l === 'Approve' || l === 'Press the soft key')) {
+      if (!allLabels(dumpUi({trace})).some((t) => /^TEST:/.test(t))) {
+        throw new Error('refused (spec rule 10): no request reason starting "TEST:" on screen - this sheet is not a test budget');
+      }
+    }
+  }
+
   if (args.includes('--labels') || !labels.length) {
     /*
      * SCROLL FIRST, if asked, and WITHOUT a label to hunt for.
