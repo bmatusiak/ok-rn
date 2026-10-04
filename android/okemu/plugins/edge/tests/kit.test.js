@@ -102,6 +102,7 @@ module.exports = function register({ it }, ctx) {
     return {
       seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), oldest: r.readUInt32LE(36),
       live: ids.filter(Boolean), held: ids.filter((id, i) => id && (r[56] >> i) & 1), owed: r[57], overflow: r[58], restoring: r[59],
+      refusedArms: r[60], /* B7 stage 2: ARMs refused since power-up (RAM only) */
     };
   }
 
@@ -468,6 +469,9 @@ module.exports = function register({ it }, ctx) {
       let h = await head(device, { signal });
       assert.equal(JSON.stringify(h.held), JSON.stringify([b.grantId]), 'HEAD does not report the budget on hold');
       assert.equal(await armFor(device, h.head, agentPayload('okt held'), { signal }), 'EDGE:0D', 'ARM went through under a held budget');
+      /* B7 stage 2: a refused ARM writes no link, but HEAD byte 60 counts it */
+      assert.equal((await head(device, { signal })).refusedArms, Math.min(255, h.refusedArms + 1), 'HEAD byte 60 did not count the refused ARM');
+      assert.equal((await head(device, { signal })).seq, h.seq, 'a refused ARM wrote a link');
 
       /* while a use owes, resume is refused (R18) */
       const p = await pressedSign(device, 'okt held: pressed', { signal });
