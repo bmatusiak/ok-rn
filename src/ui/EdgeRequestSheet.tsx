@@ -72,6 +72,26 @@ export function EdgeRequestSheet() {
     if (!next || next.phase !== 'ask') setConfirming(false);
   }), []);
   const left = useSecondsLeft(s && s.phase !== 'done' ? s.until : null);
+  /*
+   * NO DOUBLE TAPS (Brad, 2026-10-04: a tap on Approve took a moment to register, the
+   * timer ticked, a second tap landed on the next step by accident). The buttons start
+   * disabled and wake 1 s after each step appears (the ask, the second confirm, the
+   * press); a tap disables them all until the phone has moved to the next step.
+   */
+  const [ready, setReady] = useState(false);
+  const [acting, setActing] = useState(false);
+  useEffect(() => {
+    setReady(false);
+    setActing(false);
+    const t = setTimeout(() => setReady(true), 1000);
+    return () => clearTimeout(t);
+  }, [s?.phase, s?.ask, confirming]);
+  const off = !ready || acting;
+  const act = (fn: () => void) => () => {
+    if (off) return;
+    setActing(true);
+    fn();
+  };
   if (!s) return null;
   const a = s.ask;
 
@@ -137,19 +157,19 @@ export function EdgeRequestSheet() {
                 <Btn
                   title={a.kind === 'register' ? 'Register' : 'Approve'}
                   tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
-                  disabled={a.kind === 'request' && !!a.blocked}
-                  onPress={() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve'))}
+                  disabled={off || (a.kind === 'request' && !!a.blocked)}
+                  onPress={act(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}
                 />
-                <Btn title="Decline" onPress={() => answerSheet('decline')} />
+                <Btn title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
               </View>
             ) : null}
             {s.phase === 'ask' && confirming ? (
               <>
                 <Text style={[styles.op, {color: theme.error}]}>Are you sure? The agent could sign as you until this budget ends.</Text>
                 <View style={styles.row}>
-                  <Btn title="Yes, let it sign as me" tone="danger" onPress={() => answerSheet('approve')} />
-                  <Btn title="Back" onPress={() => setConfirming(false)} />
-                  <Btn title="Decline" onPress={() => answerSheet('decline')} />
+                  <Btn title="Yes, let it sign as me" tone="danger" disabled={off} onPress={act(() => answerSheet('approve'))} />
+                  <Btn title="Back" disabled={off} onPress={act(() => setConfirming(false))} />
+                  <Btn title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
                 </View>
               </>
             ) : null}
@@ -163,7 +183,7 @@ export function EdgeRequestSheet() {
                   This phone is also the key, so its press proves less than a hard key's.
                 </Text>
                 <View style={styles.row}>
-                  <Btn title="Press the soft key" tone="primary" onPress={() => void pressFromSheet()} />
+                  <Btn title="Press the soft key" tone="primary" disabled={off} onPress={act(() => void pressFromSheet())} />
                 </View>
               </>
             ) : null}
