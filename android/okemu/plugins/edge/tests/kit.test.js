@@ -57,6 +57,8 @@ const PRIMED = /Encrypted Buffer/g;
 const P256_SPKI = Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex');
 
 module.exports = function register({ it }, ctx) {
+  /* R28: the backup the R26 test kept in the PREVIOUS run - read now, before this run's R26 test replaces it */
+  const keptAtLoad = (() => { try { return JSON.parse(require('fs').readFileSync(require('path').join(require('os').tmpdir(), 'okt-plugin-backup.json'), 'utf8')); } catch { return null; } })();
   const { chain, grants, tickets } = ctx.requireLib('node-onlykey-lib/edge');
   const sha256 = (b) => crypto.createHash('sha256').update(b).digest();
   const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
@@ -596,8 +598,9 @@ module.exports = function register({ it }, ctx) {
        * writes while restoring is uncovered and owes nothing.
        */
       await coverSlot(device, 'okt: cover sign 222 for the backup', { signal });
-      await pressedSign(device, 'okt edge before the backup', { signal });
+      const owedAtBackup = await pressedSign(device, 'okt edge before the backup', { signal });
       const atBackup = await head(device, { signal });
+      const backupDeviceId = deviceIdOf(await pubkey(device, { signal }));
       assert.equal(atBackup.owed, 1);
 
       /* the backup: hold button 1, the key types it */
@@ -622,7 +625,11 @@ module.exports = function register({ it }, ctx) {
        * restored onto a v3.0.4 emulator, which has no plugin code at all.
        */
       const keep = require('path').join(require('os').tmpdir(), 'okt-plugin-backup.json');
-      require('fs').writeFileSync(keep, JSON.stringify({ passphrase: PASSPHRASE, slot: 2, label: 'edgebkup', data: Buffer.from(parsed.data).toString('hex') }));
+      require('fs').writeFileSync(keep, JSON.stringify({
+        passphrase: PASSPHRASE, slot: 2, label: 'edgebkup', data: Buffer.from(parsed.data).toString('hex'),
+        /* R28: the chain this backup came from - the next run restores it onto "another device" */
+        edge: { deviceId: Buffer.from(backupDeviceId).toString('hex'), seq: atBackup.seq, head: Buffer.from(atBackup.head).toString('hex'), owed: [owedAtBackup.seq] },
+      }));
       log(`kept for the older-firmware restore: ${keep}`);
 
       /* two links the backup does not have - the host's copy holds them, each with the key's vouch tag */
@@ -1236,5 +1243,71 @@ module.exports = function register({ it }, ctx) {
         await lib.destroy();
         if (savedHome === undefined) delete process.env.OKEDGE_HOME; else process.env.OKEDGE_HOME = savedHome;
       }
+    });
+
+  /*
+   * R28 (onlykey-edge firmware.md, decided 2026-10-04): one chain per physical
+   * device. "Another device restored from the same backup" is exactly what this
+   * file sees across two runs: every run starts from the kit's cached
+   * 'initialized' snapshot (the same K132) but makes a NEW salt on its first Edge
+   * request. So the backup the R26 test kept LAST run (read when this file loads), restored here, comes
+   * from another device: the key must start its own chain with a continue link -
+   * the next seq, on its own genesis, carrying the debts - and never write onto
+   * the backup's chain (R26 replay is for a device's own chain only). LAST in the
+   * file: the restore brings in that run's keys, which no later test expects.
+   */
+  it('edge: a backup from another device starts this device\'s own chain - a continue link first, the debts carried, never a second writer (R28)',
+    async ({ device, assert, signal, log, skip }) => {
+      /* read when this file was loaded: the R26 test above has since kept THIS run's backup */
+      const kept = keptAtLoad;
+      if (!kept) skip('no backup kept by an earlier run yet - the R26 test keeps one; run this file again');
+      if (!kept.edge) skip('the kept backup predates R28 (it does not name its chain) - run this file again');
+      const from = { deviceId: Buffer.from(kept.edge.deviceId, 'hex'), seq: kept.edge.seq, head: Buffer.from(kept.edge.head, 'hex'), owed: kept.edge.owed };
+
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const mine = deviceIdOf(await pubkey(device, { signal }));
+      assert.ok(!Buffer.from(mine).equals(from.deviceId), 'this run has the same Edge device id as the last one - the salt is not per device');
+
+      /* the backup key the backup was made under, then the restore (config mode, as R26's) */
+      await device.enterConfigMode(ctx.PINS.primary, { signal });
+      let since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({
+        msg: ctx.okmsg.MSG.OKSETPRIV, slot: 131,
+        payload: Buffer.concat([Buffer.from([161]), sha256(Buffer.from(kept.passphrase, 'utf8'))]),
+      });
+      const set = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Successfully|Error/, timeoutMs: 10000, signal });
+      assert.match(ctx.okmsg.text(set), /Successfully set Backup Passphrase/);
+      await device.restart({ signal });
+      await device.unlock(ctx.PINS.primary, { signal });
+      await device.enterConfigMode(ctx.PINS.primary, { signal });
+      const gen = device.generation;
+      for (const payload of ctx.kit.backup.toRestorePackets(Buffer.from(kept.data, 'hex'))) {
+        device.sendVendor({ msg: ctx.okmsg.MSG.OKRESTORE, payload });
+        await device.sleep(50, { signal });
+      }
+      await device.waitForReboot({ from: gen, timeoutMs: 90000, signal });
+      await device.waitReady({ signal });
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+
+      const h = await head(device, { signal });
+      const pub = await pubkey(device, { signal });
+      const id = deviceIdOf(pub);
+      log(`restored a backup of chain ${kept.edge.deviceId} at #${from.seq} (owed ${from.owed.join(',')}): now chain ${Buffer.from(id).toString('hex')} at #${h.seq}, owed ${h.owed}, restoring ${h.restoring}`);
+      assert.ok(!Buffer.from(id).equals(from.deviceId), 'the restored key took the backup\'s chain id - it would be a second writer of that chain');
+      /* not "the same id as before": a restore brings back the backup's K132, and the id is HKDF(this device's salt, K132) - what must hold is that it is never the backup's chain (checked above) */
+      assert.equal(h.restoring, 0, 'another device\'s backup put the key into R26 restoring - replay is for its own chain only');
+      assert.equal(h.seq, from.seq + 1, 'the continue link is not the next seq after the backup\'s head');
+      assert.equal(h.owed, from.owed.length, 'the debts did not carry into the new chain');
+
+      const [c] = await pickup(device, h.seq, 1, { signal });
+      const f = chain.decodeLink(c.link);
+      assert.equal(f.op, 16, 'the first link is not a continue');
+      assert.equal(f.grantId, from.owed.length, 'grant_id is not the number of debts carried');
+      assert.equal(f.flags, 0);
+      const seqs = from.owed.map((n) => u32(n));
+      const want = sha256(Buffer.concat([Buffer.from('OKEDGE-CONTINUE-v1'), from.deviceId, u32(from.seq), from.head, ...seqs]));
+      assert.bytes(Buffer.from(f.subject), want, 'the continue subject does not commit to the backup\'s chain, head and debts');
+      assert.bytes(Buffer.from(c.head), Buffer.from(chain.weld(chain.genesis(id), c.link)), 'the continue is not welded onto this device\'s own genesis');
+      assert.bytes(Buffer.from(h.head), Buffer.from(c.head));
     });
 };
