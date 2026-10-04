@@ -1,3 +1,4 @@
+import {noteRpId} from '../keyChainRecorder';
 import {protocol} from 'node-onlykey-lib';
 import NativeFidoGatt from '../../specs/NativeFidoGatt';
 import {bytes as okbytes} from 'node-onlykey-lib';
@@ -120,7 +121,10 @@ class FidoGattClient {
          * library's CBOR decoder is the right parser and the wrong thing to
          * grow in Kotlin, so the id is filled in here, from the same bytes.
          */
-        this.emit('request', event.rpId ? event : {...event, rpId: rpIdFromPayload(event.commandName, event.hex)});
+        const withRp = event.rpId ? event : {...event, rpId: rpIdFromPayload(event.commandName, event.hex)};
+        /* the Key Chain recorder names a FIDO derive by this rpId (the firmware reports only its hash) */
+        noteRpId(withRp.rpId);
+        this.emit('request', withRp);
       }),
     );
   }

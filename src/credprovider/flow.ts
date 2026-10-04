@@ -23,6 +23,7 @@
  * the locked check below is protecting hardware, not just producing a better
  * error message for the emulator.
  */
+import {noteRpId} from '../keyChainRecorder';
 import {bytes, device as deviceLib, protocol} from 'node-onlykey-lib';
 import {getOnlyKey} from '../onlykey';
 import OkEmu from '../transport/OkEmu';
@@ -489,6 +490,8 @@ export async function runCredentialFlow(
 
   const assertion = options as RequestOptionsJSON;
   emit('getAssertion', 'run', assertion.rpId ?? '');
+  /* the Key Chain recorder names a FIDO derive by this rpId (the firmware reports only its hash) */
+  noteRpId(assertion.rpId ?? '');
   const params = getAssertionParams(assertion, clientDataHash, pin);
   const reply = await ctap.getAssertion(params, {
       timeoutMs: 10000,

@@ -55,3 +55,15 @@ test('recorded once, last seen after that; a bad record throws (and is dropped b
   expect(list[0].tools).toEqual(['soft key']);
   expect(() => decodeDerive('00')).toThrow();
 });
+
+test('a FIDO derive is named by the rpId its request carried (the firmware reports only the hash)', () => {
+  const {noteRpId} = require('../src/keyChainRecorder');
+  const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
+  noteRpId('apps.onlykey.io');
+  const h = sha256(Uint8Array.from('apps.onlykey.io', (c: string) => c.charCodeAt(0)));
+  const pub = new Uint8Array(32).fill(8);
+  const hex = record({transport: 1, code: 128, keytype: 1, pub});
+  const r = decodeDerive(hex);
+  r.rpIdHash = Array.from(h as Uint8Array, (x: number) => x.toString(16).padStart(2, '0')).join('');
+  expect(deriveEntry(r, 'now').rpId).toBe('apps.onlykey.io');
+});

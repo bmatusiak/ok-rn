@@ -21,6 +21,21 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NativeOkEmu from '../specs/NativeOkEmu';
 
 const keychain = require('node-onlykey-lib/keychain');
+const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
+
+/*
+ * THE rpId TEXT (spec session, 2026-10-03): the firmware reports only the rpId's
+ * hash. The FIDO paths that hand the soft key a request (Bluetooth FIDO,
+ * src/transport/FidoGatt.ts; the passkey provider, src/credprovider/flow.ts)
+ * note the text here first; a derive whose rpId hash matches is named by it.
+ */
+const rpIds = new Map<string, string>();
+export function noteRpId(rpId: string): void {
+  if (!rpId || typeof rpId !== 'string') return;
+  const bytes = Uint8Array.from(rpId, c => c.charCodeAt(0) & 0xff);
+  rpIds.set(hexOf(sha256(bytes)), rpId);
+  while (rpIds.size > 64) rpIds.delete(rpIds.keys().next().value as string);
+}
 
 /* the Key Chain tab's own storage (KeyChainScreen LIST_KEY) */
 export const KEYCHAIN_LIST_KEY = 'okrn.keychain.list';
@@ -78,6 +93,7 @@ export function deriveEntry(r: DeriveRecord, now: string) {
     code: r.code,
     transport: r.transport,
     ...(r.rpIdHash ? {rpIdHash: r.rpIdHash} : {}),
+    ...(r.rpIdHash && rpIds.has(r.rpIdHash) ? {rpId: rpIds.get(r.rpIdHash)} : {}),
     fingerprint: keychain.list.fingerprint(pub),
     firstSeen: now,
     lastSeen: now,
@@ -103,10 +119,14 @@ export function recordDerive(r: DeriveRecord): Promise<void> {
     if (!e) return;
     const raw = await AsyncStorage.getItem(KEYCHAIN_LIST_KEY);
     const entries: any[] = raw ? keychain.list.parse(raw) : [];
-    const old = entries.find(x => x.id === e.id);
+    /* the same key already here by its name (imported from a computer): that entry, not a second one */
+    const old = entries.find(x => x.id === e.id) || (keychain.list.findTwin ? keychain.list.findTwin(entries, e) : null);
     if (old) {
       old.lastSeen = now;
       if (r.rpIdHash && !old.rpIdHash) old.rpIdHash = r.rpIdHash;
+      if (e.rpId && !old.rpId) old.rpId = e.rpId;
+      if (!old.labelHash && String(old.label).startsWith('hash:') === false) old.labelHash = r.labelHash;
+      old.tools = [...new Set([...(old.tools || []), 'soft key'])];
     } else {
       entries.push(e);
     }
