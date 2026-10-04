@@ -32,6 +32,12 @@ object OkEmuNative {
         /** NeoPixel state, one packed 0x00RRGGBB entry per pixel. */
         fun onLed(packedRgb: IntArray)
 
+        /**
+         * A firmware plugin's event (plugins/key_chain: a derived public key the
+         * soft key answered - public data only). Optional; the JNI layer looks it up.
+         */
+        fun onPluginEvent(name: String, data: ByteArray) {}
+
         /** The firmware executed CPU_RESTART(). */
         fun onRestart()
     }

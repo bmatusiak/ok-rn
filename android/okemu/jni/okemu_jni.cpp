@@ -63,6 +63,7 @@ JavaVM *g_vm = nullptr;
 jobject g_listener = nullptr;      /* global ref to the Kotlin callback object */
 jmethodID g_onStream = nullptr;    /* (byte[] data, int iface, int dir) -> void */
 jmethodID g_onLed = nullptr;       /* (int[] packedRgb) -> void */
+jmethodID g_onPluginEvent = nullptr; /* (String name, byte[] data) -> void; optional */
 jmethodID g_onRestart = nullptr;   /* () -> void */
 
 pthread_t g_fw_thread = 0;
@@ -173,6 +174,25 @@ std::string jstr(JNIEnv *env, jstring s) {
 
 }  // namespace
 
+/*
+ * A firmware plugin's event (plugins/key_chain: a derived public key the soft
+ * key answered). The plugin declares this weak; the soft key provides it and
+ * hands the bytes to the listener's optional onPluginEvent(name, data).
+ */
+extern "C" void okemu_plugin_event(const char *name, const uint8_t *data, int len) {
+  JNIEnv *env = env_for_current_thread();
+  if (!env || !g_listener || !g_onPluginEvent || !name || !data || len <= 0) return;
+  jstring jname = env->NewStringUTF(name);
+  jbyteArray arr = env->NewByteArray(static_cast<jsize>(len));
+  if (jname && arr) {
+    env->SetByteArrayRegion(arr, 0, static_cast<jsize>(len), reinterpret_cast<const jbyte *>(data));
+    env->CallVoidMethod(g_listener, g_onPluginEvent, jname, arr);
+  }
+  if (arr) env->DeleteLocalRef(arr);
+  if (jname) env->DeleteLocalRef(jname);
+  if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
 extern "C" {
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
@@ -218,6 +238,9 @@ Java_com_okrn_okemu_OkEmuNative_nativeStart(JNIEnv *env, jclass,
   g_onStream = env->GetMethodID(cls, "onStream", "([BII)V");
   g_onLed = env->GetMethodID(cls, "onLed", "([I)V");
   g_onRestart = env->GetMethodID(cls, "onRestart", "()V");
+  /* optional: a firmware plugin's event (key_chain). A listener without it is fine. */
+  g_onPluginEvent = env->GetMethodID(cls, "onPluginEvent", "(Ljava/lang/String;[B)V");
+  if (!g_onPluginEvent) env->ExceptionClear();
   if (!g_onStream || !g_onLed || !g_onRestart) {
     env->ExceptionClear();
     return env->NewStringUTF("listener is missing onStream/onLed/onRestart");

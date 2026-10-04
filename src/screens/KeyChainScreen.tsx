@@ -13,6 +13,7 @@ import NativeSecrets from '../../specs/NativeSecrets';
 import NativeShare from '../../specs/NativeShare';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const keychain = require('node-onlykey-lib/keychain');
+import {KEYCHAIN_LIST_KEY, onKeyChainRecorded} from '../keyChainRecorder';
 import {
   type Probe, type Entry, type Job, type DeviceType, type HostType, type RemoveTarget, SLOTS, slotName, DEVICE_TYPES, KIND_TITLE,
   TYPE_INFO, KIND_INFO, SCHEME_INFO, labelText, slotOutcome, Choice, type Progress, ProgressList,
@@ -42,7 +43,8 @@ import {KeyChainRemove} from './keychain/KeyChainRemove';
  *     this phone (keychain.list refuses anything private).
  */
 
-const LIST_KEY = 'okrn.keychain.list';
+/* shared with the derive recorder (src/keyChainRecorder.ts) */
+const LIST_KEY = KEYCHAIN_LIST_KEY;
 const CACHE_KEY = 'okrn.keychain.slots';
 const PENDING_KEY = 'okrn.keychain.pending';
 /*
@@ -178,6 +180,13 @@ export function KeyChainScreen({
 
   /* A host-made private key is in memory during its step: keep it off screenshots. */
   useSecureScreen(blockScreenshots && (busy === 'host' || hostCopy));
+
+  /* a derive the soft key answered was recorded (src/keyChainRecorder.ts): read the list again */
+  useEffect(() => onKeyChainRecorded(() => {
+    AsyncStorage.getItem(LIST_KEY)
+      .then(raw => raw && setEntries(keychain.list.parse(raw)))
+      .catch(() => {});
+  }), []);
 
   const saveEntries = useCallback(async (next: Entry[]) => {
     setEntries(next);

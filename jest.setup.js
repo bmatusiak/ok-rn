@@ -133,6 +133,7 @@ jest.mock('./specs/NativeOkEmu', () => ({
     ),
     onStream: jest.fn(subscribe(okEmuListeners.stream)),
     onLed: jest.fn(subscribe(okEmuListeners.led)),
+    onPluginEvent: jest.fn(() => ({remove: () => {}})),
     onRestartRequested: jest.fn(subscribe(okEmuListeners.restart)),
   },
 }));

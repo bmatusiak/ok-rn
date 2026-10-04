@@ -48,6 +48,7 @@ import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
 import {hasSoftKeyPlugin} from './src/buildInfo';
 import {setFirmwareConsoleToLogcat} from './src/hooks/useOkEmu';
+import {startKeyChainRecorder} from './src/keyChainRecorder';
 
 /*
  * 'This Key', not 'Key' and no longer 'Soft Key'.
@@ -277,6 +278,8 @@ function RadioStatus({
 }
 
 export default function App() {
+  /* every derive the soft key answers goes into the Key Chain list (plugins/key_chain) */
+  useEffect(() => startKeyChainRecorder(), []);
   return (
     <SafeAreaProvider>
       <Shell />

@@ -35,6 +35,7 @@ type Staged = {
   unreleased?: boolean;
   /** Soft-key firmware plugins staged in (okemu/plugins/); absent when none. */
   plugins?: string[];
+  slotPlugins?: string[];
 };
 
 /*
@@ -117,6 +118,7 @@ export type BuildInfo = {
    * the soft key backend (see hasSoftKeyPlugin).
    */
   plugins: string[];
+  slotPlugins: string[];
 };
 
 export const buildInfo: BuildInfo = {
@@ -142,6 +144,9 @@ export const buildInfo: BuildInfo = {
   unreleased: staged.unreleased === true,
   builtFor: '',
   plugins: Array.isArray(staged.plugins) ? staged.plugins.filter(p => typeof p === 'string') : [],
+  /* the plugins that keep state - the storage slot's name (stateless ones like key_chain do not move it) */
+  slotPlugins: Array.isArray(staged.slotPlugins) ? staged.slotPlugins.filter(p => typeof p === 'string')
+    : Array.isArray(staged.plugins) ? staged.plugins.filter(p => typeof p === 'string') : [],
 };
 
 /**
@@ -249,8 +254,8 @@ export const storageSlot: string = (() => {
    * in flash or EEPROM, and the base soft key must never boot against that, or
    * the other way round. No plugins = the slot it always had.
    */
-  if (!buildInfo.plugins.length) return model;
+  if (!buildInfo.slotPlugins.length) return model;
   /* '.'-joined: NativeOkEmuModule takes [A-Za-z0-9._-] only */
-  const suffix = 'plugins-' + [...buildInfo.plugins].sort().join('.');
+  const suffix = 'plugins-' + [...buildInfo.slotPlugins].sort().join('.');
   return model ? `${model}-${suffix}` : suffix;
 })();

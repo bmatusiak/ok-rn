@@ -30,6 +30,12 @@ export type StreamEvent = {
   length: number;
 };
 
+/** A firmware plugin's event (plugins/key_chain: a derived public key, src/keyChainRecorder.ts). */
+export type PluginEvent = {
+  name: string;
+  hex: string;
+};
+
 export type LedEvent = {
   /** One packed 0x00RRGGBB entry per NeoPixel. */
   pixels: number[];
@@ -181,6 +187,7 @@ export interface Spec extends TurboModule {
 
   readonly onStream: CodegenTypes.EventEmitter<StreamEvent>;
   readonly onLed: CodegenTypes.EventEmitter<LedEvent>;
+  readonly onPluginEvent: CodegenTypes.EventEmitter<PluginEvent>;
   readonly onRestartRequested: CodegenTypes.EventEmitter<void>;
 }
 

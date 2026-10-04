@@ -404,6 +404,14 @@ class NativeOkEmuModule(
     emit { emitOnRestartRequested() }
   }
 
+  /* a firmware plugin's event: key_chain's derived public key (src/keyChainRecorder.ts) */
+  override fun onPluginEvent(name: String, data: ByteArray) {
+    val map = Arguments.createMap()
+    map.putString("name", name)
+    map.putString("hex", data.toHex())
+    emit { emitOnPluginEvent(map) }
+  }
+
   /**
    * Events raised before JS subscribes, or after teardown, have no listener.
    * Dropping them is correct - there is nothing to deliver to.

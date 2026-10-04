@@ -1667,6 +1667,9 @@ function writePluginTests(names) {
     + 'module.exports = [\n' + rows.join('') + '];\n');
 }
 
+/* the plugins that keep state of their own - the storage slot is named after these (firmware-plugins slotPlugins) */
+let SLOT_PLUGINS = null;
+
 function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, pluginNames,
                         enforcingOrigins) {
   const out = path.join(OKEMU, '..', '..', 'src', 'generated');
@@ -1739,6 +1742,12 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, pluginNam
      * soft-key-only feature (src/buildInfo.ts), never a firmware version's.
      */
     ...(pluginNames.length ? { plugins: pluginNames } : {}),
+    /**
+     * The plugins the storage slot is named after: those that keep state of
+     * their own. A stateless plugin (key_chain) joins or leaves a build without
+     * moving the soft key to another, empty slot.
+     */
+    ...(pluginNames.length ? { slotPlugins: SLOT_PLUGINS ?? pluginNames } : {}),
     /**
      * Whether webcryptcheck() actually consults the trusted-origin table and
      * the field 31 policy, rather than returning 2 for everything.
@@ -1989,6 +1998,8 @@ function main() {
    */
   cleanOnSwap(release);
   const pluginSet = plugins.load(PLUGINS, { dir: PLUGINS_DIR, release });
+  /* the lib's firmware-plugins.slotPlugins rule, inline until ok-rn pins a lib that has it */
+  SLOT_PLUGINS = pluginSet.filter((p) => !p.stateless).map((p) => p.name);
 
   /*
    * A release may DECLARE the build options it has to be staged with - see
