@@ -8,7 +8,7 @@
  * Both answer the same EdgeSource / EdgeInbox calls. One instance per app
  * session, kept outside React so switching tabs keeps it.
  */
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type EdgeInbox, type EdgeKeyState, type EdgeReplay, type EdgeRequest, type EdgeSource} from '../edgeFake';
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {hasSoftKeyPlugin} from '../buildInfo';
@@ -16,6 +16,9 @@ import {useBackend} from './KeyContext';
 import {evaluate, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
 
 type Source = EdgeSource & EdgeInbox;
+
+/* how often the open Edge tab checks whether the key's chain moved */
+const HEAD_POLL_MS = 4000;
 
 let fake: FakeEdgeKey | null = null;
 let real: SoftKeyEdge | null = null;
@@ -190,6 +193,35 @@ export function useEdge() {
   useEffect(() => {
     void sync();
   }, [sync]);
+
+  /*
+   * THE CARD FOLLOWS THE KEY (spec session, 2026-10-03, bug 2): an agent spends
+   * straight on the key over Bluetooth, not through this tab, so the copy fell
+   * behind and the card said 0 spent. While the tab is open, read the key's head
+   * every few seconds; when it moved, sync - the budgets and their spend reload.
+   * Safe beside an agent: a computer's conversation holds the key's lane
+   * (vendorBridge), and this read waits its turn.
+   */
+  const lastSeq = useRef<number | null>(null);
+  useEffect(() => {
+    if (!wantReal) return;
+    let stopped = false;
+    const t = setInterval(async () => {
+      try {
+        const s = await source();
+        if (!s || stopped) return;
+        const {seq} = await s.head();
+        if (lastSeq.current !== null && seq !== lastSeq.current) void sync();
+        lastSeq.current = seq;
+      } catch {
+        /* the key busy, locked or gone: the next tick tries again */
+      }
+    }, HEAD_POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+  }, [wantReal, source, sync]);
 
   return {
     view, budgets, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal,

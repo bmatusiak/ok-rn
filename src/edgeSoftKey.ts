@@ -100,15 +100,24 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       const spent = mirror.links
         .map(r => chain.decodeLink(r.link))
         .filter(f => f.grantId === id && f.decision === DECISION.SELF_PRESS);
+      /*
+       * A spend names its budget and its step (grantId, grantStep), not its scope:
+       * the link's subject is a hash of the bytes signed. So the total comes from
+       * the steps, and a scope's count is exact only when no other scope of the
+       * budget shares its op and slot - two agent identities on slot 221 share one
+       * count, and the card draws them as one line (spec session, 2026-10-03: the
+       * gpg use showed under the ssh scope too).
+       */
       const scopes = (kept?.scopes ?? []).map(sc => ({
         ...sc,
         used: spent.filter(f => f.op === sc.op && f.slot === sc.slot).length,
       }));
+      const stepsSpent = spent.reduce((m, f) => Math.max(m, f.grantStep), 0);
       out.push({
         grantId: id,
         reason: kept ? kept.reason : `Budget ${id} (opened elsewhere)`,
         uses: kept ? kept.uses : spent.length,
-        used: spent.length,
+        used: Math.max(stepsSpent, spent.length),
         scopes,
         genesis: new Uint8Array(0),
         endsAt: kept?.opened ? kept.opened + (kept.lifetime || DEFAULT_LIFETIME_MINUTES) * 60000 : undefined,

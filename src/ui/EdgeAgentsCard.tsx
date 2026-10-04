@@ -35,7 +35,8 @@ const when = (ms: number) => {
   return new Date().toDateString() === d.toDateString() ? clock(ms) : `${d.toLocaleDateString()} ${clock(ms)}`;
 };
 
-export function EdgeAgentsCard({onChanged}: {onChanged?: () => void}) {
+/* changed: anything that moves when the tab's sync brings new budgets (the screen's list) - the card reads again */
+export function EdgeAgentsCard({onChanged, changed}: {onChanged?: () => void; changed?: unknown}) {
   const [agents, setAgents] = useState<(Agent & {inCopy: number | null})[]>([]);
   const [budgets, setBudgets] = useState<Record<string, EdgeBudget[]>>({});
   const [last, setLast] = useState<Record<string, LastRequest>>({});
@@ -62,6 +63,10 @@ export function EdgeAgentsCard({onChanged}: {onChanged?: () => void}) {
       if (st?.phase === 'done') void load();
     });
   }, [load]);
+  /* the tab's live refresh synced (an agent spent): the uses left follow */
+  useEffect(() => {
+    if (changed !== undefined) void load();
+  }, [changed, load]);
 
   const remove = async (key: string) => {
     setBusy(true);

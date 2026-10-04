@@ -198,10 +198,10 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
       {held ? <Text style={[styles.ticketTitle, {color: theme.warn}]}>On hold – it pays for nothing until you resume it</Text> : null}
       <Text style={styles.dim}>{`${b.used} of ${b.uses} uses spent${b.used >= b.uses ? ' – used up' : ''}`}</Text>
       <Progress used={b.used} total={b.uses} thick />
-      {b.scopes.map((s, i) => (
+      {scopeLines(b.scopes).map((s, i) => (
         <View key={i} style={styles.scope}>
           <Text style={styles.dim}>
-            {s.identity ? `${opName(s.op)} · ${s.identity} · slot ${s.slot} · ${s.used} / ${s.cap}` : `${opName(s.op)} · slot ${s.slot} · ${s.used} / ${s.cap}`}
+            {s.identities.length ? `${opName(s.op)} · ${s.identities.join(' + ')} · slot ${s.slot} · ${s.used} / ${s.cap}` : `${opName(s.op)} · slot ${s.slot} · ${s.used} / ${s.cap}`}
           </Text>
           <Progress used={s.used} total={s.cap} />
         </View>
@@ -612,7 +612,7 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
       </Section>
 
       {/* 4.7a: who may ask for budgets, what each holds, and Remove */}
-      {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} />}
+      {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} />}
 
       {!testingMode ? null : edge.isFake ? (
         <Section title="Fake key (testing)">
@@ -652,6 +652,25 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
   );
 }
 
+
+/*
+ * One line per op+slot. The chain says which budget and step paid, not which
+ * of two scopes on the same slot (see edgeSoftKey budgets()), so scopes that
+ * share op and slot are one line: their identities, one count, their caps added.
+ */
+function scopeLines(scopes: EdgeBudget['scopes']) {
+  const out: {op: number; slot: number; identities: string[]; used: number; cap: number}[] = [];
+  for (const s of scopes) {
+    const line = out.find(l => l.op === s.op && l.slot === s.slot);
+    if (line) {
+      if (s.identity) line.identities.push(s.identity);
+      line.cap += s.cap;
+    } else {
+      out.push({op: s.op, slot: s.slot, identities: s.identity ? [s.identity] : [], used: s.used, cap: s.cap});
+    }
+  }
+  return out;
+}
 
 /*
  * A budget's countdown (Brad, 2026-10-03: "a countdown to things that expire"):
