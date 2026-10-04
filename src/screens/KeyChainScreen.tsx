@@ -149,6 +149,8 @@ export function KeyChainScreen({
   const [pgpText, setPgpText] = useState('');
   const [pgpCheck, setPgpCheck] = useState<{info: any; match: {signSlot: number | null; ecdhSlot: number | null}} | null>(null);
   const [scheme, setScheme] = useState<'Label' | 'SSH' | 'GPG'>('Label');
+  /* agent derivation version for SSH/GPG: v1 (lib-agent's default, your own keys) or v2 (HKDF - the Edge agent's keys) */
+  const [deriveVersion, setDeriveVersion] = useState<'v1' | 'v2'>('v1');
   const [deriveType, setDeriveType] = useState('p256');
   const [deriveLabel, setDeriveLabel] = useState('');
   const [devType, setDevType] = useState<DeviceType>('ed25519');
@@ -394,13 +396,13 @@ export function KeyChainScreen({
    * panel share one implementation of each (no second way to make a key).
    * Each returns true when it worked; failures land in `error`.
    */
-  const deriveWith = useCallback(async (d: {scheme: string; type: string; label: string}) => {
+  const deriveWith = useCallback(async (d: {scheme: string; type: string; label: string; version?: number}) => {
     setBusy('derive');
     setError(null);
     setStatus(null);
     try {
       const {okcrypto} = await getKey();
-      const entry = await keychain.derive.derivePublic(okcrypto, {scheme: d.scheme, type: d.type, label: d.label.trim()});
+      const entry = await keychain.derive.derivePublic(okcrypto, {scheme: d.scheme, type: d.type, label: d.label.trim(), ...(d.version ? {version: d.version} : {})});
       const made = keychain.list.createEntry(entry);
       const {entries: next, added} = keychain.list.merge(entries, [made]);
       await saveEntries(next);
@@ -415,8 +417,9 @@ export function KeyChainScreen({
     }
   }, [getKey, entries, saveEntries]);
   const derive = useCallback(async () => {
-    if (await deriveWith({scheme: scheme.toLowerCase(), type: deriveType, label: deriveLabel})) setAdding(false);
-  }, [deriveWith, scheme, deriveType, deriveLabel]);
+    const version = scheme === 'Label' ? undefined : deriveVersion === 'v2' ? 2 : 1;
+    if (await deriveWith({scheme: scheme.toLowerCase(), type: deriveType, label: deriveLabel, version})) setAdding(false);
+  }, [deriveWith, scheme, deriveType, deriveLabel, deriveVersion]);
 
   /* ---------------------------------------------------------- on the OnlyKey */
   const taken = (n: number) => {
@@ -905,6 +908,16 @@ export function KeyChainScreen({
                 ))}
               </View>
               <Text style={styles.note}>{TYPE_INFO[deriveType]}</Text>
+              {scheme !== 'Label' ? (
+                <>
+                  <Segmented options={['v1', 'v2'] as const} value={deriveVersion} onChange={setDeriveVersion} />
+                  <Text style={styles.note}>
+                    {deriveVersion === 'v2'
+                      ? 'v2 (HKDF, firmware 3.0.5+): the derivation the Edge agent uses for its own keys.'
+                      : 'v1: the derivation onlykey-agent and your own SSH/GPG keys use.'}
+                  </Text>
+                </>
+              ) : null}
               <TextInput
                 value={deriveLabel}
                 onChangeText={setDeriveLabel}
