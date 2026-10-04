@@ -25,7 +25,7 @@ import {
 import type {EdgeBudget} from '../edgeFake';
 import {Btn, Section} from './components';
 import {theme} from './theme';
-import {debuggingOn} from '../debugGuard';
+import {debuggingOn, testingModeOn} from '../debugGuard';
 import {DrawerArea} from './BottomDrawer';
 
 const clock = (ms: number) => {
@@ -215,7 +215,7 @@ export function EdgeAgentsCard({onChanged, changed, inDrawer = false, testingMod
     <>
       <Text style={[styles.name, {marginTop: 12}]}>Test identities</Text>
       <Text style={styles.dim}>
-        While USB or wireless debugging is on, only budgets naming identities on this list can be approved, pressed, waived or settled - a computer can tap this phone then. Mark only identities that are tests. Marking needs debugging off; removing is always allowed.
+        Testing mode only. Identities that are tests - never one that signs anything real. A production build has no such list: there, with debugging on, nothing can be approved, pressed, waived or settled.
       </Text>
       {testIds.map(n => (
         <View key={n} style={styles.ownRow}>
@@ -236,7 +236,8 @@ export function EdgeAgentsCard({onChanged, changed, inDrawer = false, testingMod
         <Btn
           title="Mark as test"
           onPress={() => {
-            if (debuggingOn()) { setTestRefused(true); return; }
+            /* the lock is off only in testing mode (option 1, Brad 2026-10-04) - and this section exists only there */
+            if (debuggingOn() && !testingModeOn()) { setTestRefused(true); return; }
             const n = addingTest.trim();
             if (n && !testIds.includes(n)) void saveTest([...testIds, n]);
             setAddingTest('');

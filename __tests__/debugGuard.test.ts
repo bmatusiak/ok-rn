@@ -52,3 +52,57 @@ test('a request is a test only if EVERY identity it names is marked test on the 
   expect(scopesAreTest([{identity: 'ssh://test@nitro16'}])).toBe(false);
   setTestingMode(false);
 });
+
+/*
+ * Option 1 (Brad, 2026-10-04): the lock applies only outside testing mode, and
+ * testing mode exists only in debug builds. These prove a RELEASE build (__DEV__
+ * false) can neither turn testing mode on nor open the lock with it.
+ */
+test('debug build in testing mode: debugging on, the lock lets every consent through', () => {
+  const g = require('../src/debugGuard');
+  debugging(true);
+  g.setTestingMode(true);
+  expect(g.consentRefusal(false)).toBeNull();
+  g.setTestingMode(false);
+  expect(g.consentRefusal(false)).toBe(g.DEBUG_REFUSAL);
+  debugging(false);
+});
+
+test('release build: setTestingMode(true) does nothing - the lock stays on with debugging on', () => {
+  const was = (global as any).__DEV__;
+  (global as any).__DEV__ = false;
+  try {
+    jest.isolateModules(() => {
+      const NativeOkEmuR = require('../specs/NativeOkEmu').default;
+      (NativeOkEmuR.debuggingOn as jest.Mock).mockReturnValue(true);
+      const g = require('../src/debugGuard');
+      g.setTestingMode(true);
+      expect(g.testingModeOn()).toBe(false);
+      expect(g.consentRefusal(false)).toBe(g.DEBUG_REFUSAL);
+    });
+  } finally {
+    (global as any).__DEV__ = was;
+  }
+});
+
+test('release build: useTestingMode cannot be switched on - not by setEnabled, not by toggle', () => {
+  const was = (global as any).__DEV__;
+  (global as any).__DEV__ = false;
+  try {
+    jest.isolateModules(() => {
+      const React = require('react');
+      const TestRenderer = require('react-test-renderer');
+      const {useTestingMode} = require('../src/hooks/useTestingMode');
+      let t: any;
+      const Probe = () => { t = useTestingMode(); return null; };
+      TestRenderer.act(() => { TestRenderer.create(React.createElement(Probe)); });
+      expect(t.available).toBe(false);
+      TestRenderer.act(() => t.setEnabled(true));
+      expect(t.enabled).toBe(false);
+      TestRenderer.act(() => t.toggle());
+      expect(t.enabled).toBe(false);
+    });
+  } finally {
+    (global as any).__DEV__ = was;
+  }
+});

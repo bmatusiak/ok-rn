@@ -29,17 +29,31 @@ export function debuggingOn(): boolean {
   }
 }
 
+/*
+ * ONLY OUTSIDE TESTING MODE (Brad, 2026-10-04, rule 10 rewritten: "the Pixel is
+ * yours, all test"). Testing mode exists only in debug builds - useTestingMode is
+ * a no-op when __DEV__ is false, and setTestingMode below checks __DEV__ again -
+ * so a production build (the A13) always has the full lock, and the Pixel in
+ * testing mode may register, approve, press and mark test.
+ * __tests__/debugGuard.test.ts proves a release build cannot turn it on.
+ */
+let testingMode = false;
+export function setTestingMode(on: boolean): void {
+  testingMode = __DEV__ && on;
+}
+export const testingModeOn = () => testingMode;
+
 /** The refusal text, or null when this consent may go ahead. Ask at render AND on the tap. */
 export function consentRefusal(isTest: boolean): string | null {
-  return !isTest && debuggingOn() ? DEBUG_REFUSAL : null;
+  return !isTest && !testingMode && debuggingOn() ? DEBUG_REFUSAL : null;
 }
 
 /*
  * TEST IDENTITIES (rule 10, 2026-10-04): what makes a request a test is not its
  * reason text - the agent writes that - but the identities it names. Brad marks
  * test identities on this phone (Agents drawer), like "yours"; the CLI, agents
- * and imported files cannot set or clear the mark, and marking is itself refused
- * while debugging is on (or a script could mark the real identity). Kept here in
+ * and imported files cannot set or clear the mark. The list exists only in testing
+ * mode, where the lock is off (option 1, Brad 2026-10-04). Kept here in
  * memory for the render-time checks; src/edgeAgents.ts loads and saves the list.
  */
 let testIdentities = new Set<string>();
@@ -49,12 +63,10 @@ let testIdentities = new Set<string>();
  * testing mode the list does not exist as far as consent goes: with debugging on,
  * every approve / press / waive / accept loss is refused, no exceptions. A release
  * build cannot turn testing mode on (useTestingMode is a no-op outside __DEV__), so
- * a production phone never has test identities at all. App.tsx sets this.
+ * a production phone never has test identities at all. App.tsx sets testingMode
+ * (declared above, with the lock). In testing mode the lock is off anyway; the list
+ * still names what is a test for the scripts' own seatbelt.
  */
-let testingMode = false;
-export function setTestingMode(on: boolean): void {
-  testingMode = on;
-}
 export function setTestIdentities(names: string[]): void {
   testIdentities = new Set(names.map(n => n.trim()).filter(Boolean));
 }
