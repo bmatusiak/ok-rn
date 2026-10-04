@@ -44,8 +44,8 @@ export type Mirror = {
   vouch: {seq: number; head: Uint8Array; tag: Uint8Array} | null;
   /*
    * Records that were never links of this chain, moved out of `links` (kept, not
-   * deleted, so what happened stays readable). A reply meant for a computer on
-   * the Bluetooth bridge was once stored as link #447194052 (the A13,
+   * deleted, so what happened stays readable). A late PICKUP reply, read one
+   * report out of step, was once stored as link #447194052 (the A13,
    * 2026-10-04): above the key's head, it read as a rollback and stopped Sync.
    */
   setAside: {link: Uint8Array; head: Uint8Array; at: number}[];
@@ -135,16 +135,26 @@ function follows(prev: EdgeLinkRecord | undefined, r: EdgeLinkRecord): boolean {
 }
 
 /*
- * Records past the key's head that are not links of this chain go to setAside.
- * Only those: a real link past the head welds, so a copy that is truly ahead of
- * the key (a rollback) still reads as one.
+ * Records past the key's head that no sync ever verified, and that do not weld
+ * straight onto the record before them, go to setAside. MEASURED ON THE A13
+ * (2026-10-04, decoded from its storage): a PICKUP had timed out after link #86
+ * but before #86's head; that late head arrived first in the next PICKUP, every
+ * report after it shifted by one, and the copy stored the head (32 bytes, then
+ * zeros - its reserved bytes WERE zero) as "link #447194052", with link #86 as
+ * its head. A seq jump looks like a gap, so shape alone cannot tell it apart.
+ * What can: a real link past the key's head was verified when it was copied
+ * (lastSeen reaches it) or welds onto the one before it. So a copy that is
+ * truly ahead of the key still reads as a rollback.
  */
 function setAsideStrays(mirror: Mirror, keySeq: number, now: number): void {
+  const verified = mirror.lastSeen ? mirror.lastSeen.seq : -1;
   for (let n = mirror.links.length; n > 0; n = mirror.links.length) {
     const r = mirror.links[n - 1];
     let seq;
     try { seq = seqOf(r); } catch { seq = Infinity; }
-    if (seq <= keySeq || follows(mirror.links[n - 2], r)) return;
+    if (seq <= keySeq || seq <= verified) return;
+    const prev = mirror.links[n - 2];
+    if (prev && seq === seqOf(prev) + 1 && follows(prev, r)) return;
     mirror.links.pop();
     mirror.setAside.push({link: r.link, head: r.head, at: now});
   }
@@ -268,7 +278,7 @@ export async function tamper(deviceId: Uint8Array, how: Tamper): Promise<Mirror>
     return loadMirror(deviceId);
   }
   if (how === 'stray') {
-    /* what the A13 stored on 2026-10-04: a 64-byte signature taken for a link (a seq far past the head, bytes 47-63 not zero) */
+    /* a report that is not a link, stored as one (a seq far past the head; here random, bytes 47-63 not zero - the A13's was a late head report) */
     const junk = Uint8Array.from({length: 64}, () => Math.floor(Math.random() * 256));
     junk[3] = 0x1a;
     junk[50] |= 1;

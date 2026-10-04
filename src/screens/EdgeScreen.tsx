@@ -626,8 +626,8 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
     )});
   }
   /*
-   * Records the copy set aside: they were never links of this chain - a reply
-   * meant for a computer on the Bluetooth bridge, stored as a link (the A13,
+   * Records the copy set aside: they were never links of this chain - a late
+   * reply read one report out of step and stored as a link (the A13,
    * 2026-10-04). Said once here so the audit is not silent about it.
    */
   const aside = edge.view?.setAside ?? [];
@@ -635,7 +635,7 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
     items.push({key: 'setaside', kind: 'node', render: () => (
       <View style={styles.mismatch}>
         <Text style={[styles.op, {color: theme.warn}]}>{`Set aside ${aside.length === 1 ? 'one record' : `${aside.length} records`} that ${aside.length === 1 ? 'was' : 'were'} not a link of this chain`}</Text>
-        <Text style={styles.dim}>{`${aside.map(a => (a.seq === null ? '?' : `#${a.seq}`)).join(', ')}: a reply meant for a computer on Bluetooth, stored by mistake. The copy is checked without ${aside.length === 1 ? 'it' : 'them'}.`}</Text>
+        <Text style={styles.dim}>{`${aside.map(a => (a.seq === null ? '?' : `#${a.seq}`)).join(', ')}: a reply read out of step, stored by mistake. The copy is checked without ${aside.length === 1 ? 'it' : 'them'}.`}</Text>
       </View>
     )});
   }

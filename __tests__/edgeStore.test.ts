@@ -142,3 +142,28 @@ test('real links past the key\'s head are not set aside: the copy still reads as
   expect(view.verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
   expect(mirror.setAside).toHaveLength(0);
 });
+
+/*
+ * The A13's exact record, decoded from its storage: a PICKUP read one report out
+ * of step, so a head report (32 bytes, then 32 zeros - reserved bytes zero) was
+ * stored as a link, with the next real link's first 32 bytes as its head.
+ */
+test('a head report stored as a link (reserved bytes zero, seq jump) is set aside, and the copy catches up', async () => {
+  const k = new FakeEdgeKey();
+  k.use('commit 1');
+  k.use('commit 2');
+  await sync(k);
+  const m = await loadMirror(k.deviceId);
+  const nextLink = (await k.read(0, 1))[0].link;
+  const junk = new Uint8Array(64);
+  junk.set([0xc4, 0xa3, 0xa7, 0x1a, 0x4e, 0x2d, 0x7f, 0xc8], 0); /* seq 447194052, op 78 */
+  m.links.push({link: junk, head: nextLink.slice(0, 32), reveal: nextLink.slice(32, 64)});
+  await saveMirror(m);
+  expect((await verifyOnly(k)).verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
+  k.use('commit 3');
+  const {view, mirror} = await sync(k);
+  const head = await k.head();
+  expect(view.verdict).toEqual({kind: 'verified', through: head.seq});
+  expect(mirror.setAside.map(x => x.link)).toEqual([junk]);
+  expect(view.setAside).toEqual([{seq: 447194052, at: expect.any(Number)}]);
+});
