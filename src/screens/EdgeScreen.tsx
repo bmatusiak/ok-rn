@@ -198,7 +198,7 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
       {held ? <Text style={[styles.ticketTitle, {color: theme.warn}]}>On hold – it pays for nothing until you resume it</Text> : null}
       <Text style={styles.dim}>{`${b.used} of ${b.uses} uses spent${b.used >= b.uses ? ' – used up' : ''}`}</Text>
       <Progress used={b.used} total={b.uses} thick />
-      {scopeLines(b.scopes).map((s, i) => (
+      {scopeLines(b.scopes, b.exact).map((s, i) => (
         <View key={i} style={styles.scope}>
           <Text style={styles.dim}>
             {s.identities.length ? `${opName(s.op)} · ${s.identities.join(' + ')} · slot ${s.slot} · ${s.used} / ${s.cap}` : `${opName(s.op)} · slot ${s.slot} · ${s.used} / ${s.cap}`}
@@ -658,8 +658,10 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
  * of two scopes on the same slot (see edgeSoftKey budgets()), so scopes that
  * share op and slot are one line: their identities, one count, their caps added.
  */
-function scopeLines(scopes: EdgeBudget['scopes']) {
+function scopeLines(scopes: EdgeBudget['scopes'], exact = false) {
   const out: {op: number; slot: number; identities: string[]; used: number; cap: number}[] = [];
+  /* R3: when every spend named its scope, each identity is its own line with its own count */
+  if (exact) return scopes.map(s => ({op: s.op, slot: s.slot, identities: s.identity ? [s.identity] : [], used: s.used, cap: s.cap}));
   for (const s of scopes) {
     const line = out.find(l => l.op === s.op && l.slot === s.slot);
     if (line) {

@@ -28,6 +28,8 @@ export type EdgeBudget = {
   uses: number;
   used: number;
   scopes: {op: number; slot: number; cap: number; used: number; identity?: string}[];
+  /* R3: per-scope counts come from each spend's scope byte (else shared op+slot scopes are one count) */
+  exact?: boolean;
   genesis: Uint8Array;
   /** R15b: when its lifetime ends (the phone's clock), if this phone approved it */
   endsAt?: number;

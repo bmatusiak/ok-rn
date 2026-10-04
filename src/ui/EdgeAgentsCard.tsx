@@ -113,9 +113,19 @@ export function EdgeAgentsCard({onChanged, changed}: {onChanged?: () => void; ch
             </Text>
             {held.length ? (
               held.map(b => (
-                <Text key={b.grantId} style={styles.op}>
-                  {`Budget ${b.grantId}: ${Math.max(0, b.uses - b.used)} of ${b.uses} use${b.uses === 1 ? '' : 's'} left${b.endsAt ? `, until ${clock(b.endsAt)}` : ''}`}
-                </Text>
+                <View key={b.grantId}>
+                  <Text style={styles.op}>
+                    {`Budget ${b.grantId}: ${Math.max(0, b.uses - b.used)} of ${b.uses} use${b.uses === 1 ? '' : 's'} left${b.endsAt ? `, until ${clock(b.endsAt)}` : ''}`}
+                  </Text>
+                  {/* R3: each identity on its own line, its own uses left, from the chain */}
+                  {b.exact
+                    ? b.scopes.map((sc, i) => (
+                        <Text key={i} style={styles.dim}>
+                          {`  ${sc.identity || `slot ${sc.slot}`}: ${Math.max(0, sc.cap - sc.used)} of ${sc.cap} left`}
+                        </Text>
+                      ))
+                    : null}
+                </View>
               ))
             ) : (
               <Text style={styles.dim}>No live budget.</Text>

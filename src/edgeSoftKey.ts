@@ -97,9 +97,12 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     for (const id of h.live as number[]) {
       const raw = await AsyncStorage.getItem(REGISTRY + toHex(this.deviceId) + '.' + id);
       const kept: Kept | null = raw ? JSON.parse(raw) : null;
-      const spent = mirror.links
-        .map(r => chain.decodeLink(r.link))
-        .filter(f => f.grantId === id && f.decision === DECISION.SELF_PRESS);
+      const spentRows = mirror.links
+        .map(r => ({f: chain.decodeLink(r.link), scope: (r.link as Uint8Array)[46] || 0}))
+        .filter(x => x.f.grantId === id && x.f.decision === DECISION.SELF_PRESS);
+      const spent = spentRows.map(x => x.f);
+      /* R3 (2026-10-03): byte 46 names the scope that paid - each identity its own count, from the chain */
+      const exact = spentRows.length > 0 && spentRows.every(x => x.scope > 0);
       /*
        * A spend names its budget and its step (grantId, grantStep), not its scope:
        * the link's subject is a hash of the bytes signed. So the total comes from
@@ -108,9 +111,11 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
        * count, and the card draws them as one line (spec session, 2026-10-03: the
        * gpg use showed under the ssh scope too).
        */
-      const scopes = (kept?.scopes ?? []).map(sc => ({
+      const scopes = (kept?.scopes ?? []).map((sc, j) => ({
         ...sc,
-        used: spent.filter(f => f.op === sc.op && f.slot === sc.slot).length,
+        used: exact
+          ? spentRows.filter(x => x.scope === j + 1).length
+          : spent.filter(f => f.op === sc.op && f.slot === sc.slot).length,
       }));
       const stepsSpent = spent.reduce((m, f) => Math.max(m, f.grantStep), 0);
       out.push({
@@ -119,6 +124,8 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
         uses: kept ? kept.uses : spent.length,
         used: Math.max(stepsSpent, spent.length),
         scopes,
+        /* every spend named its scope (R3): the per-scope counts are exact; else an older chain - shared slots stay one line */
+        exact: exact || spent.length === 0,
         genesis: new Uint8Array(0),
         endsAt: kept?.opened ? kept.opened + (kept.lifetime || DEFAULT_LIFETIME_MINUTES) * 60000 : undefined,
         ...(kept?.agent ? {agent: kept.from} : {}),

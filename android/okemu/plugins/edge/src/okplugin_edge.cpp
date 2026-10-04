@@ -460,6 +460,8 @@ static int same_ct(const uint8_t *a, const uint8_t *b, int n) {
 
 static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
     uint32_t grant_id, uint16_t grant_step, const uint8_t *reveal);
+static void append_scoped(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
+    uint32_t grant_id, uint16_t grant_step, uint8_t scope, const uint8_t *reveal);
 
 /* the public key and device id (RAM), and the genesis on a new chain; 0 without K132 */
 static int ensure_identity(void) {
@@ -589,8 +591,22 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
 /* A link the key writes itself (lib chain.encodeLink), as its next seq. */
 static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
     uint32_t grant_id, uint16_t grant_step, const uint8_t *reveal) {
+  append_scoped(op, decision, slot, flags, subject, grant_id, grant_step, 0, reveal);
+}
+
+/*
+ * R3 (2026-10-03): byte 46 = which of the budget's scopes paid, 1-based, on a
+ * link that spends a budget (flags BUDGET_SPENT); 0 on every other link (and on
+ * every link before this). The step and the subject cannot say it - two scopes
+ * on the same op+slot (two identities on slot 221) differ only by label - and
+ * the card and a verifier need each identity's own count. Bytes 47-63 stay
+ * reserved zero.
+ */
+static void append_scoped(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
+    uint32_t grant_id, uint16_t grant_step, uint8_t scope, const uint8_t *reveal) {
   uint8_t link[LINK_BYTES];
   memset(link, 0, sizeof(link));
+  link[46] = scope;
   put32(link, st.seq == SEQ_NONE ? 0 : st.seq + 1);
   link[4] = op;
   link[5] = decision;
@@ -961,8 +977,8 @@ static void agent_add_pressed(void) {
 }
 
 /*
- * R26 REPLAY: [6..51] the link's first REPLAY_BYTES (bytes 46-63 of every link
- * are reserved zeros), [52..59] the first 8 bytes of the head the copy stored
+ * R26 REPLAY: [6..52] the link's first REPLAY_BYTES (byte 46 is R3's scope;
+ * bytes 47-63 of every link are reserved zeros), [53..60] the first 8 bytes of the head the copy stored
  * after it (CHOSEN, pending the spec). The key takes it only as its NEXT seq,
  * and only if welding it onto its own head gives the head the copy stored -
  * the seq alone would let any link through, and the copy's own head is the one
@@ -970,7 +986,7 @@ static void agent_add_pressed(void) {
  * written it: a use owes, a ticket pays its ref_seq, a waive over exactly this
  * list clears it.
  */
-#define REPLAY_BYTES 46
+#define REPLAY_BYTES 47 /* R3: through byte 46, the scope */
 #define REPLAY_HEAD_BYTES 8
 static void replay(const uint8_t *buffer) {
   uint8_t link[LINK_BYTES];
@@ -1061,7 +1077,8 @@ void okplugin_edge_decision(int decision) {
       b->used++;
       sc->used++;
       hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
-      append(op, DECISION_SELF_PRESS, pend.slot, flags | FLAG_BUDGET_SPENT, pend.subject, b->id, b->used, reveal);
+      append_scoped(op, DECISION_SELF_PRESS, pend.slot, flags | FLAG_BUDGET_SPENT, pend.subject, b->id, b->used,
+                    (uint8_t)(sc - b->scopes + 1), reveal); /* R3: byte 46, which scope paid */
       memset(reveal, 0, 32);
       return;
     }
