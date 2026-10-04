@@ -38,6 +38,8 @@ import com.okrn.okemu.OkEmuNative
 object PressAlert {
   private const val POLL_MS = 400L
   private const val LOUD_AFTER_MS = 10_000L
+  /* the app's 2-minute question (setAttention): soft for the first minute, loud for the second (Brad, 2026-10-03) */
+  private const val ASK_LOUD_AFTER_MS = 60_000L
   private const val SOFT_EVERY_MS = 2_000L
   private const val LOUD_EVERY_MS = 3_000L
   /* one silent channel for the prompt; the first try (okrn.press.soft/loud) carried sounds and is removed */
@@ -51,6 +53,8 @@ object PressAlert {
   private const val OP_HMAC = 0xf5
   private const val OP_WEBAUTHN = 0xf6
   private const val OP_EDGE = 0xf8
+  /* not a firmware opcode: the app's own question (setAttention), kept apart from every opcode<<8|slot */
+  private const val ASK = 0x10000
 
   private val handler = Handler(Looper.getMainLooper())
   private var started = false
@@ -61,6 +65,9 @@ object PressAlert {
   private lateinit var app: Context
   private var pool: android.media.SoundPool? = null
   private var softId = 0
+  /* setAttention: the app's question and when it runs out (0 = none) */
+  @Volatile private var askText = ""
+  @Volatile private var askUntil = 0L
   private var loudId = 0
 
   fun start(context: Context) {
@@ -103,8 +110,21 @@ object PressAlert {
     return (opcode shl 8) or slot
   }
 
+  /**
+   * The app asks for attention (the Edge approval sheet waiting for a Yes) -
+   * sounded and notified like a press until untilMs, or until a call with 0.
+   * A press the firmware waits for still wins (check() asks the firmware first).
+   */
+  fun setAttention(text: String, untilMs: Long) {
+    askText = text
+    askUntil = untilMs
+    if (started) handler.post { try { check() } catch (_: Throwable) {} }
+  }
+
+  private fun asking(now: Long): Int? = if (askUntil > now) ASK else null
+
   private fun check() {
-    val w = waitingFor()
+    val w = waitingFor() ?: asking(System.currentTimeMillis())
     val now = System.currentTimeMillis()
     if (w == null) {
       if (current != null) {
@@ -120,7 +140,7 @@ object PressAlert {
       post(w)
     }
     if (now >= nextSound) {
-      val loud = now - since >= LOUD_AFTER_MS
+      val loud = now - since >= if (w == ASK) ASK_LOUD_AFTER_MS else LOUD_AFTER_MS
       pool?.play(if (loud) loudId else softId, 1f, 1f, 1, 0, 1f)
       nextSound = now + if (loud) LOUD_EVERY_MS else SOFT_EVERY_MS
     }
@@ -142,10 +162,13 @@ object PressAlert {
     )
     @Suppress("DEPRECATION")
     val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(app, CHANNEL) else Notification.Builder(app)
+    val title = if (w == ASK) "Answer on the phone" else "Press needed"
+    val text = if (w == ASK) "$askText. Open ok-rn to approve or decline before it times out."
+      else "Confirm on your key: ${what(w)}. It stops waiting after 25 s."
     val n = builder
       .setSmallIcon(R.drawable.ic_stat_o)
-      .setContentTitle("Press needed")
-      .setContentText("Confirm on your key: ${what(w)}. It stops waiting after 20 s.")
+      .setContentTitle(title)
+      .setContentText(text)
       .setContentIntent(open)
       .setAutoCancel(true)
       .setCategory(Notification.CATEGORY_ALARM)

@@ -43,6 +43,25 @@ function until(minutes: number, from: number): string {
   return `${span} (until ${hh}:${mm})`;
 }
 
+/*
+ * THE COUNTDOWN to whatever runs out next (Brad, 2026-10-03: "a countdown to
+ * things that expire"): the two minutes to say Yes, then the key's 25 s press
+ * window. Seconds left, redrawn each second; null when nothing is running.
+ * Red when the loud sound starts (PressAlert): the question's second minute, the
+ * press after its first 10 s - the colour and the sound say the same thing.
+ */
+function useSecondsLeft(until: number | null): number | null {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!until) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [until]);
+  return until ? Math.max(0, Math.ceil((until - now) / 1000)) : null;
+}
+const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+
 export function EdgeRequestSheet() {
   const [s, setS] = useState<SheetState | null>(null);
   /* the second confirm, for a request naming the person's own identity */
@@ -51,6 +70,7 @@ export function EdgeRequestSheet() {
     setS(next);
     if (!next || next.phase !== 'ask') setConfirming(false);
   }), []);
+  const left = useSecondsLeft(s && s.phase !== 'done' ? s.until : null);
   if (!s) return null;
   const a = s.ask;
 
@@ -108,6 +128,9 @@ export function EdgeRequestSheet() {
             {s.phase === 'ask' && !confirming && a.kind === 'request' && a.blocked ? (
               <Text style={[styles.dim, {color: theme.error}]}>{`Approve is off: ${a.blocked} Nothing is sent to the key.`}</Text>
             ) : null}
+            {s.phase === 'ask' && left !== null ? (
+              <Text style={[styles.countdown, left <= 60 && {color: theme.error}]}>{`Answer within ${mmss(left)}`}</Text>
+            ) : null}
             {s.phase === 'ask' && !confirming ? (
               <View style={styles.row}>
                 <Btn
@@ -132,8 +155,11 @@ export function EdgeRequestSheet() {
             {s.phase === 'press' ? (
               <>
                 <Text style={[styles.op, {color: theme.warn}]}>Press the key to confirm</Text>
+                {left !== null ? (
+                  <Text style={[styles.countdown, left <= 15 && {color: theme.error}]}>{`Press within ${mmss(left)}`}</Text>
+                ) : null}
                 <Text style={styles.dim}>
-                  This phone is also the key, so its press proves less than a hard key's. The key stops waiting after 25 s.
+                  This phone is also the key, so its press proves less than a hard key's.
                 </Text>
                 <View style={styles.row}>
                   <Btn title="Press the soft key" tone="primary" onPress={() => void pressFromSheet()} />
@@ -175,4 +201,5 @@ const styles = StyleSheet.create({
   warningTitle: {color: theme.error, fontWeight: '700', fontSize: 16},
   warningText: {color: theme.text, fontSize: 14, lineHeight: 20},
   row: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10},
+  countdown: {color: theme.warn, fontSize: 20, fontWeight: '700', marginTop: 6},
 });

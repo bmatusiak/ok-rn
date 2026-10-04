@@ -206,6 +206,7 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
           <Progress used={s.used} total={s.cap} />
         </View>
       ))}
+      {b.endsAt ? <TimeLeft endsAt={b.endsAt} /> : null}
       <Text style={styles.dim}>
         {b.endsAt
           ? `Budget ${b.grantId} · ends at ${new Date(b.endsAt).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}, or when you lock the key.`
@@ -651,6 +652,24 @@ export function EdgeScreen({testingMode = false}: {testingMode?: boolean}) {
   );
 }
 
+
+/*
+ * A budget's countdown (Brad, 2026-10-03: "a countdown to things that expire"):
+ * minutes left, then m:ss in the last minute; red in the last five minutes.
+ */
+function TimeLeft({endsAt}: {endsAt: number}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const sec = Math.max(0, Math.ceil((endsAt - now) / 1000));
+  const text = sec === 0 ? 'ended'
+    : sec < 60 ? `0:${String(sec).padStart(2, '0')} left`
+    : sec < 3600 ? `${Math.ceil(sec / 60)} min left`
+    : `${Math.floor(sec / 3600)} h ${Math.floor((sec % 3600) / 60)} min left`;
+  return <Text style={[styles.op, {fontWeight: '700', color: sec <= 300 ? theme.error : theme.warn}]}>{text}</Text>;
+}
 
 const styles = StyleSheet.create({
   page: {padding: 12, gap: 12},

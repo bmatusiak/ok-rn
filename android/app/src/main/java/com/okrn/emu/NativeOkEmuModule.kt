@@ -437,6 +437,11 @@ class NativeOkEmuModule(
    * PROCESS: the firmware's globals live in this one and nothing short of
    * replacing it resets them.
    */
+  /* the app's own "answer me" (the Edge approval sheet) - PressAlert sounds it like a press */
+  override fun setAttention(text: String, untilMs: Double) {
+    PressAlert.setAttention(text, untilMs.toLong())
+  }
+
   override fun restartApp(promise: Promise) {
     try {
       /*

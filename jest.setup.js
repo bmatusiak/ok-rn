@@ -106,6 +106,8 @@ jest.mock('./specs/NativeOkEmu', () => ({
     isRunning: jest.fn(() => true),
     /* nothing waits: the firmware's confirmation state reads 0 (okemu_jni.cpp nativeConfirmState) */
     confirmState: jest.fn(() => Promise.resolve(0)),
+    /* the app's own "answer me" for PressAlert (the Edge approval sheet) */
+    setAttention: jest.fn(),
     start: jest.fn(() =>
       Promise.resolve({started: true, message: '', storageDir: '/mock/okemu'}),
     ),

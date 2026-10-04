@@ -19,6 +19,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {approve as approveLib, request as requestLib} from 'node-onlykey-lib/edge';
 import {SoftKeyEdge} from './edgeSoftKey';
 import {sync as syncCopy} from './edgeStore';
+import NativeOkEmu from '../specs/NativeOkEmu';
 
 const AGENTS = 'okrn.edge.agents';
 const SEEN = 'okrn.edge.seenNonces';
@@ -27,8 +28,11 @@ const LAST = 'okrn.edge.agentLast';
 const ON = 'okrn.edge.agentRequests';
 const SEEN_KEPT = 2000;
 export const DEFAULT_OWN_IDENTITIES = ['ssh://bmatusiak@localhost'];
-/* how long the sheet waits for the person before the agent is told 'timeout' */
-const SHEET_WAIT_MS = 90000;
+/* how long the sheet waits for the person before the agent is told 'timeout' -
+ * two minutes to read the request and say Yes (Brad, 2026-10-03; was 90 s) */
+const SHEET_WAIT_MS = 120000;
+/* the firmware's own press window: the key stops waiting after 25 s */
+export const PRESS_WAIT_MS = 25000;
 
 /* seq: the key's AGENT_ADD link for it - registered with a press */
 export type Agent = {key: string; name: string; registered: number; seq?: number};
@@ -122,9 +126,10 @@ export type SheetAsk =
   | {kind: 'register'; agent: string; name: string; fingerprint: string}
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
   | {kind: 'request'; agentName: string; view: any; blocked: string | null; at: number};
+/* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
 export type SheetState =
-  | {phase: 'ask'; ask: SheetAsk}
-  | {phase: 'press'; ask: SheetAsk}
+  | {phase: 'ask'; ask: SheetAsk; until: number}
+  | {phase: 'press'; ask: SheetAsk; until: number}
   | {phase: 'done'; ask: SheetAsk; result: {ok: true; text: string} | {ok: false; refusal: string; detail?: string}};
 
 type Listener = (s: SheetState | null) => void;
@@ -135,7 +140,29 @@ let soft: SoftKeyEdge | null = null;
 
 function show(s: SheetState | null) {
   current = s;
+  attention(s);
   for (const l of listeners) l(s);
+}
+
+/*
+ * THE SOUND while the sheet waits for a Yes (Brad, 2026-10-03: "we need to add
+ * sound to that because its important"). The press already sounds - the
+ * firmware's confirm state drives PressAlert - but the question before it is
+ * the app's, not the firmware's, so nothing rang and a request timed out
+ * unseen. The app tells PressAlert itself: the same soft/loud repeat and the
+ * same notification, until the person answers or the window runs out. The
+ * press phase hands back to the firmware's own state.
+ */
+function attention(s: SheetState | null) {
+  try {
+    if (s && s.phase === 'ask') {
+      NativeOkEmu.setAttention(s.ask.kind === 'register' ? 'An agent asks to register' : 'An agent asks for a budget', s.until);
+    } else {
+      NativeOkEmu.setAttention('', 0);
+    }
+  } catch {
+    /* no native side (jest, an old build): the sheet still shows */
+  }
 }
 export function onSheet(l: Listener): () => void {
   listeners.add(l);
@@ -157,7 +184,7 @@ export async function pressFromSheet() {
 }
 
 function askPerson(a: SheetAsk): Promise<'approve' | 'decline' | 'timeout'> {
-  show({phase: 'ask', ask: a});
+  show({phase: 'ask', ask: a, until: Date.now() + SHEET_WAIT_MS});
   return new Promise(resolve => {
     const timer = setTimeout(() => {
       answer = null;
@@ -209,7 +236,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
           asked = {kind: 'register', ...v};
           return askPerson(asked);
         },
-        onPress: () => asked && show({phase: 'press', ask: asked}),
+        onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
       });
       if (r.dropped) return null;
       if (r.ok && !r.already) {
@@ -253,7 +280,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
         const a = await askPerson(asked);
         return blocked ? 'copy_unverified' : a;
       },
-      onPress: () => asked && show({phase: 'press', ask: asked}),
+      onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
     });
     if (r.dropped) return null;
     if (r.ok) await syncCopy(soft).catch(() => undefined); /* the opening link, into the tab's copy */

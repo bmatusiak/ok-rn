@@ -171,6 +171,14 @@ export interface Spec extends TurboModule {
   /** Stop, then boot again against the same storage - the firmware's CPU_RESTART(). */
   restart(): Promise<StartResult>;
 
+  /**
+   * The app asks for the person's attention (an Edge approval sheet waiting for
+   * a Yes): PressAlert sounds and posts its notification as it does for a press,
+   * until untilMs (ms since epoch) or a call with untilMs 0. A press the
+   * firmware waits for takes precedence.
+   */
+  setAttention(text: string, untilMs: number): void;
+
   readonly onStream: CodegenTypes.EventEmitter<StreamEvent>;
   readonly onLed: CodegenTypes.EventEmitter<LedEvent>;
   readonly onRestartRequested: CodegenTypes.EventEmitter<void>;
