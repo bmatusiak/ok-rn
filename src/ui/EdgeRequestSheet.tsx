@@ -152,7 +152,11 @@ export function EdgeRequestSheet() {
             {s.phase === 'ask' && left !== null ? (
               <Text style={[styles.countdown, left <= 60 && {color: theme.error}]}>{`Answer within ${mmss(left)}`}</Text>
             ) : null}
-            {s.phase === 'ask' && !confirming ? (
+            {/* the tap registered: say so at once - the phone syncs and checks its copy before the key asks for the press (the 'lag', Brad 2026-10-04) */}
+            {s.phase === 'ask' && acting ? (
+              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
+            ) : null}
+            {s.phase === 'ask' && !confirming && !acting ? (
               <View style={styles.row}>
                 <Btn
                   title={a.kind === 'register' ? 'Register' : 'Approve'}
