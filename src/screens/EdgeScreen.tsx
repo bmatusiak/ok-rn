@@ -21,6 +21,7 @@ import {BudgetBlock} from '../ui/BudgetBlock';
 import {useEdge} from '../hooks/useEdge';
 import NativeEdgeAlert from '../../specs/NativeEdgeAlert';
 import {onSheet} from '../edgeAgents';
+import {consentRefusal, isTestLabel, markTestConsent} from '../debugGuard';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
 import type {EdgeRow, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
@@ -505,7 +506,9 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
  * no budget, no resume, no self-press. Waive is the way out for uses nobody
  * will ticket: the person's Yes here first, then a press on the key.
  */
-function OwedBanner({owed, overflow, edge, confirming, setConfirming}: {
+function OwedBanner({owed, overflow, edge, confirming, setConfirming, isTest = false}: {
+  /* spec rule 10: every owed use belongs to a budget marked TEST: */
+  isTest?: boolean;
   owed: number;
   overflow: boolean;
   edge: ReturnType<typeof useEdge>;
@@ -521,15 +524,17 @@ function OwedBanner({owed, overflow, edge, confirming, setConfirming}: {
       {edge.pressFor === 'waive' ? (
         <>
           <Text style={[styles.op, {color: theme.warn}]}>Press the key to waive</Text>
+          {consentRefusal(isTest) ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal(isTest)}</Text> : null}
           <View style={styles.row}>
-            <Btn title="Press the soft key" tone="primary" onPress={edge.press} />
+            <Btn title="Press the soft key" tone="primary" disabled={consentRefusal(isTest) !== null} onPress={() => { if (!consentRefusal(isTest)) edge.press(); }} />
           </View>
         </>
       ) : confirming ? (
         <>
           <Text style={styles.dim}>Waive records, in the chain, that you accept these uses without their tickets. It needs a press on the key.</Text>
           <View style={styles.row}>
-            <Btn title="Yes, waive" tone="danger" onPress={() => { setConfirming(false); void edge.waive(); }} disabled={edge.busy} />
+            {consentRefusal(isTest) ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal(isTest)}</Text> : null}
+            <Btn title="Yes, waive" tone="danger" onPress={() => { if (consentRefusal(isTest)) return; if (isTest) markTestConsent(); setConfirming(false); void edge.waive(); }} disabled={edge.busy || consentRefusal(isTest) !== null} />
             <Btn title="Cancel" onPress={() => setConfirming(false)} disabled={edge.busy} />
           </View>
         </>
@@ -573,7 +578,7 @@ function RestoreCard({edge}: {edge: ReturnType<typeof useEdge>}) {
             <>
               <Text style={[styles.op, {color: theme.warn}]}>Press the key to finish</Text>
               <View style={styles.row}>
-                <Btn title="Press the soft key" tone="primary" onPress={edge.press} />
+                <Btn title="Press the soft key" tone="primary" disabled={consentRefusal(false) !== null} onPress={() => { if (!consentRefusal(false)) edge.press(); }} />
               </View>
             </>
           ) : (
@@ -657,6 +662,18 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
    * a live budget's link to open its chain. Agents, your identities and the
    * testing panels are in the drawer at the bottom (src/ui/BottomDrawer.tsx).
    */
+  /*
+   * Spec rule 10: a debt or a loss is "a test" only when every use it covers was
+   * spent by a budget marked TEST: (its reason). A gap has no links to look at, so
+   * accepting its loss is never a test.
+   */
+  const reasonOf = (grantId: number) => [...edge.past, ...edge.budgets].find(b => b.grantId === grantId)?.reason;
+  const owedRows = (edge.view?.rows ?? []).filter(r => r.ticket?.status === 'waiting' || r.ticket?.status === 'missing');
+  const owedIsTest = owedRows.length > 0 && owedRows.every(r => r.fields.grantId > 0 && isTestLabel(reasonOf(r.fields.grantId)));
+  const lossIsTest = (from: number, to: number) => {
+    const inRange = (edge.view?.rows ?? []).filter(r => r.seq >= from && r.seq <= to);
+    return inRange.length === to - from + 1 && inRange.every(r => r.fields.grantId > 0 && isTestLabel(reasonOf(r.fields.grantId)));
+  };
   const items: EdgeListItem[] = [];
   if (ks?.restoring || broken || (ks && !ks.restoring && (ks.owed > 0 || ks.overflow))) {
     items.push({key: 'status', kind: 'node', render: () => (
@@ -678,7 +695,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
                 <>
                   <Text style={[styles.op, {color: theme.warn}]}>Press the key to accept the loss</Text>
                   <View style={styles.row}>
-                    <Btn title="Press the soft key" tone="primary" onPress={edge.press} />
+                    <Btn title="Press the soft key" tone="primary" disabled={consentRefusal(false) !== null} onPress={() => { if (!consentRefusal(false)) edge.press(); }} />
                   </View>
                 </>
               ) : gap && confirmLoss ? (
@@ -687,7 +704,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
                     {`No copy holds ${range}. Accepting records in the chain, with a press, that ${range} ${gap.from === gap.to ? 'is' : 'are'} gone for good. Budgets can be approved again after it; anything those links owed must still be ticketed or waived.`}
                   </Text>
                   <View style={styles.row}>
-                    <Btn title={`Yes, accept loss of ${range}`} tone="danger" onPress={() => { setConfirmLoss(false); void edge.acceptLoss(gap.from, gap.to); }} disabled={edge.busy} />
+                    <Btn title={`Yes, accept loss of ${range}`} tone="danger" onPress={() => { if (consentRefusal(lossIsTest(gap.from, gap.to))) return; setConfirmLoss(false); void edge.acceptLoss(gap.from, gap.to); }} disabled={edge.busy} />
                     <Btn title="Cancel" onPress={() => setConfirmLoss(false)} disabled={edge.busy} />
                   </View>
                 </>
@@ -700,7 +717,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
             </View>
           ) : null}
           {ks && !ks.restoring && (ks.owed > 0 || ks.overflow) ? (
-            <OwedBanner owed={ks.owed} overflow={ks.overflow} edge={edge} confirming={confirmWaive} setConfirming={setConfirmWaive} />
+            <OwedBanner owed={ks.owed} overflow={ks.overflow} edge={edge} confirming={confirmWaive} setConfirming={setConfirmWaive} isTest={owedIsTest} />
           ) : null}
       </View>
     )});
@@ -740,11 +757,11 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
         {lossRange && edge.pressFor === 'loss' ? (
           <>
             <Text style={[styles.op, {color: theme.warn}]}>Press the key to accept the loss</Text>
-            <View style={styles.row}><Btn title="Press the soft key" tone="primary" onPress={edge.press} /></View>
+            <View style={styles.row}><Btn title="Press the soft key" tone="primary" disabled={consentRefusal(false) !== null} onPress={() => { if (!consentRefusal(false)) edge.press(); }} /></View>
           </>
         ) : lossRange && confirmLoss ? (
           <View style={styles.row}>
-            <Btn title={`Yes, accept loss of ${lossRange}`} tone="danger" onPress={() => { setConfirmLoss(false); void edge.acceptLoss(lossFrom!, lossTo!); }} disabled={edge.busy} />
+            <Btn title={`Yes, accept loss of ${lossRange}`} tone="danger" onPress={() => { if (consentRefusal(lossIsTest(lossFrom!, lossTo!))) return; setConfirmLoss(false); void edge.acceptLoss(lossFrom!, lossTo!); }} disabled={edge.busy} />
             <Btn title="Cancel" onPress={() => setConfirmLoss(false)} disabled={edge.busy} />
           </View>
         ) : lossRange ? (

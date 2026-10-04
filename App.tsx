@@ -62,6 +62,7 @@ import {LogScreen} from './src/screens/LogScreen';
 import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
 import {takeOpenedAlarm} from './src/edgeAlerts';
+import {consentRefusal, testConsentActive} from './src/debugGuard';
 import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
 import {hasSoftKeyPlugin} from './src/buildInfo';
@@ -878,8 +879,15 @@ function Shell() {
                     : 'Press a button, or enter the code the computer shows on This Key.'}
               </Text>
             </View>
-            {keyWaiting.mode === 'press' ? (
-              <Btn title="Confirm" tone="primary" onPress={() => void OkEmu.pressQueue('1')} />
+            {/*
+              * Spec rule 10, the app's lock: an Edge approval (budget, waive, loss,
+              * restore, registration) cannot be pressed here while debugging is on,
+              * unless a TEST consent started it (src/debugGuard.ts).
+              */}
+            {keyWaiting.what === 'edge' && consentRefusal(testConsentActive()) ? (
+              <Text style={[styles.promptBody, {color: theme.error, flexShrink: 1}]}>Turn off debugging to approve this.</Text>
+            ) : keyWaiting.mode === 'press' ? (
+              <Btn title="Confirm" tone="primary" onPress={() => { if (keyWaiting.what === 'edge' && consentRefusal(testConsentActive())) return; void OkEmu.pressQueue('1'); }} />
             ) : tab !== 'This Key' ? (
               <Btn title="Keypad" tone="primary" onPress={() => setTab('This Key')} />
             ) : null}

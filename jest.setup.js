@@ -110,6 +110,7 @@ jest.mock('./specs/NativeOkEmu', () => ({
     setAttention: jest.fn(),
     markSplashDone: jest.fn(),
     splashDoneThisProcess: jest.fn(() => false),
+    debuggingOn: jest.fn(() => false),
     start: jest.fn(() =>
       Promise.resolve({started: true, message: '', storageDir: '/mock/okemu'}),
     ),

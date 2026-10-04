@@ -195,6 +195,13 @@ export interface Spec extends TurboModule {
   markSplashDone(): void;
   /** Has the splash already played in this process? */
   splashDoneThisProcess(): boolean;
+  /*
+   * SPEC RULE 10, ENFORCED IN THE APP (onlykey-edge build/scenarios.md, 2026-10-04):
+   * is USB or wireless debugging on (Settings.Global adb_enabled / adb_wifi_enabled)?
+   * Then a computer can tap this phone, so ok-rn refuses approve / press / waive /
+   * accept loss for anything not marked as a test (src/debugGuard.ts).
+   */
+  debuggingOn(): boolean;
 
   readonly onStream: CodegenTypes.EventEmitter<StreamEvent>;
   readonly onLed: CodegenTypes.EventEmitter<LedEvent>;

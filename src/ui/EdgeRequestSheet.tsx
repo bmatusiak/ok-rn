@@ -16,6 +16,7 @@ import {answerSheet, closeSheet, onSheet, pressFromSheet, type SheetState} from 
 import {request as requestLib} from 'node-onlykey-lib/edge';
 import {Btn} from './components';
 import {theme} from './theme';
+import {consentRefusal, isTestLabel, markTestConsent} from '../debugGuard';
 
 /* what each typed refusal means, in the person's words (the agent gets the code) */
 const REFUSAL_TEXT: Record<string, string> = {
@@ -94,6 +95,18 @@ export function EdgeRequestSheet() {
   };
   if (!s) return null;
   const a = s.ask;
+  /*
+   * Spec rule 10, the app's lock: with debugging on, only a request marked TEST:
+   * (its reason, or a registering agent's name) can be approved or pressed here.
+   * Asked at render and again on the tap (debugging can be turned on in between).
+   */
+  const isTest = a.kind === 'register' ? isTestLabel(a.name) : isTestLabel(a.view?.reason);
+  const refusal = s.phase === 'ask' || s.phase === 'press' ? consentRefusal(isTest) : null;
+  const consent = (fn: () => void) => act(() => {
+    if (consentRefusal(isTest)) return;
+    if (isTest) markTestConsent();
+    fn();
+  });
 
   return (
     <Modal transparent animationType="slide" visible onRequestClose={() => (s.phase === 'done' ? closeSheet() : undefined)}>
@@ -156,14 +169,15 @@ export function EdgeRequestSheet() {
             {s.phase === 'ask' && acting ? (
               <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
             ) : null}
+            {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
             {s.phase === 'ask' && !confirming && !acting ? (
               <View style={styles.row}>
                 <Btn
                   large
                   title={a.kind === 'register' ? 'Register' : 'Approve'}
                   tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
-                  disabled={off || (a.kind === 'request' && !!a.blocked)}
-                  onPress={act(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}
+                  disabled={off || refusal !== null || (a.kind === 'request' && !!a.blocked)}
+                  onPress={consent(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}
                 />
                 <Btn large title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
               </View>
@@ -172,7 +186,7 @@ export function EdgeRequestSheet() {
               <>
                 <Text style={[styles.op, {color: theme.error}]}>Are you sure? The agent could sign as you until this budget ends.</Text>
                 <View style={styles.row}>
-                  <Btn large title="Yes, let it sign as me" tone="danger" disabled={off} onPress={act(() => answerSheet('approve'))} />
+                  <Btn large title="Yes, let it sign as me" tone="danger" disabled={off || refusal !== null} onPress={consent(() => answerSheet('approve'))} />
                   <Btn large title="Back" disabled={off} onPress={act(() => setConfirming(false))} />
                   <Btn large title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
                 </View>
@@ -187,8 +201,9 @@ export function EdgeRequestSheet() {
                 <Text style={styles.dim}>
                   This phone is also the key, so its press proves less than a hard key's.
                 </Text>
+                {refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
                 <View style={styles.row}>
-                  <Btn large title="Press the soft key" tone="primary" disabled={off} onPress={act(() => void pressFromSheet())} />
+                  <Btn large title="Press the soft key" tone="primary" disabled={off || refusal !== null} onPress={consent(() => void pressFromSheet())} />
                 </View>
               </>
             ) : null}

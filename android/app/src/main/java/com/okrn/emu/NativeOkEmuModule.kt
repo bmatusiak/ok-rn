@@ -455,6 +455,14 @@ class NativeOkEmuModule(
 
   override fun splashDoneThisProcess(): Boolean = splashDone
 
+  /* spec rule 10: USB or wireless debugging on = a computer can tap this phone (see specs/NativeOkEmu.ts) */
+  override fun debuggingOn(): Boolean {
+    val cr = reactApplicationContext.contentResolver
+    val usb = android.provider.Settings.Global.getInt(cr, android.provider.Settings.Global.ADB_ENABLED, 0) == 1
+    val wifi = android.provider.Settings.Global.getInt(cr, "adb_wifi_enabled", 0) == 1
+    return usb || wifi
+  }
+
   override fun restartApp(promise: Promise) {
     try {
       /*
