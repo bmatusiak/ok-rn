@@ -278,10 +278,10 @@ export async function tamper(deviceId: Uint8Array, how: Tamper): Promise<Mirror>
     return loadMirror(deviceId);
   }
   if (how === 'stray') {
-    /* a report that is not a link, stored as one (a seq far past the head; here random, bytes 47-63 not zero - the A13's was a late head report) */
-    const junk = Uint8Array.from({length: 64}, () => Math.floor(Math.random() * 256));
-    junk[3] = 0x1a;
-    junk[50] |= 1;
+    /* the A13's stray (2026-10-04): a late head report stored as a link - reserved bytes zero, a seq far past the head */
+    const junk = new Uint8Array(64); /* the A13's shape: a head report (32 bytes, then zeros) */
+    junk.set(Uint8Array.from({length: 32}, () => Math.floor(Math.random() * 256)), 0);
+    junk[3] = 0x1a; /* a seq far past the head */
     m.links.push({link: junk, head: Uint8Array.from({length: 32}, () => Math.floor(Math.random() * 256)), reveal: null});
     await saveMirror(m);
     return m;
