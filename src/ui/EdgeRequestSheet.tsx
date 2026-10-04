@@ -159,21 +159,22 @@ export function EdgeRequestSheet() {
             {s.phase === 'ask' && !confirming && !acting ? (
               <View style={styles.row}>
                 <Btn
+                  large
                   title={a.kind === 'register' ? 'Register' : 'Approve'}
                   tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
                   disabled={off || (a.kind === 'request' && !!a.blocked)}
                   onPress={act(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}
                 />
-                <Btn title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
+                <Btn large title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
               </View>
             ) : null}
             {s.phase === 'ask' && confirming ? (
               <>
                 <Text style={[styles.op, {color: theme.error}]}>Are you sure? The agent could sign as you until this budget ends.</Text>
                 <View style={styles.row}>
-                  <Btn title="Yes, let it sign as me" tone="danger" disabled={off} onPress={act(() => answerSheet('approve'))} />
-                  <Btn title="Back" disabled={off} onPress={act(() => setConfirming(false))} />
-                  <Btn title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
+                  <Btn large title="Yes, let it sign as me" tone="danger" disabled={off} onPress={act(() => answerSheet('approve'))} />
+                  <Btn large title="Back" disabled={off} onPress={act(() => setConfirming(false))} />
+                  <Btn large title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
                 </View>
               </>
             ) : null}
@@ -187,7 +188,7 @@ export function EdgeRequestSheet() {
                   This phone is also the key, so its press proves less than a hard key's.
                 </Text>
                 <View style={styles.row}>
-                  <Btn title="Press the soft key" tone="primary" disabled={off} onPress={act(() => void pressFromSheet())} />
+                  <Btn large title="Press the soft key" tone="primary" disabled={off} onPress={act(() => void pressFromSheet())} />
                 </View>
               </>
             ) : null}
@@ -198,7 +199,7 @@ export function EdgeRequestSheet() {
                 </Text>
                 {!s.result.ok && s.result.detail ? <Text style={styles.dim}>{s.result.detail}</Text> : null}
                 <View style={styles.row}>
-                  <Btn title="Close" onPress={closeSheet} />
+                  <Btn large title="Close" onPress={closeSheet} />
                 </View>
               </>
             ) : null}
@@ -215,7 +216,8 @@ const styles = StyleSheet.create({
     backgroundColor: theme.surface, borderTopLeftRadius: 14, borderTopRightRadius: 14,
     borderTopWidth: 2, borderColor: theme.warn, maxHeight: '88%',
   },
-  body: {padding: 16, gap: 8},
+  /* room under the buttons: in debug builds React Native's warning toasts sit along the bottom and catch taps (2026-10-04) */
+  body: {padding: 16, paddingBottom: 64, gap: 8},
   title: {fontWeight: '600', fontSize: 17},
   op: {color: theme.text, fontSize: theme.fontSize, lineHeight: theme.lineHeight},
   dim: {color: theme.textDim, fontSize: 13, lineHeight: 19},

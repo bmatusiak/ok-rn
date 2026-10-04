@@ -207,11 +207,14 @@ export function Btn({
   onPress,
   disabled,
   tone = 'default',
+  large = false,
 }: {
   title: string;
   onPress: () => void;
   disabled?: boolean;
   tone?: 'default' | 'primary' | 'danger';
+  /* a bigger tap target - the Edge approval sheet (Brad, 2026-10-04: Close was hard to hit) */
+  large?: boolean;
 }) {
   const bg =
     tone === 'primary' ? theme.accent : tone === 'danger' ? theme.error : theme.surfaceAlt;
@@ -238,6 +241,7 @@ export function Btn({
       disabled={disabled}
       style={({pressed}) => [
         styles.btn,
+        large && styles.btnLarge,
         /*
          * 0.4 WAS TOO FAR. A disabled button still has to be READ - it is how
          * you find out what is unavailable and, with the reason beside it, why.
@@ -250,7 +254,7 @@ export function Btn({
          */
         {backgroundColor: bg, opacity: disabled ? 0.55 : pressed ? 0.75 : 1},
       ]}>
-      <Text style={[styles.btnText, {color: fg}]}>{title}</Text>
+      <Text style={[styles.btnText, large && styles.btnTextLarge, {color: fg}]}>{title}</Text>
     </Pressable>
   );
 }
@@ -402,6 +406,8 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   btnText: {fontSize: 13, fontWeight: '600'},
+  btnLarge: {paddingHorizontal: 22, paddingVertical: 15, minHeight: 52, justifyContent: 'center'},
+  btnTextLarge: {fontSize: 16},
 
   segmented: {
     flexDirection: 'row',
