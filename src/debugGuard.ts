@@ -18,7 +18,7 @@ export const TEST_LABEL = /^TEST:/;
 export const isTestLabel = (text: string | null | undefined) => TEST_LABEL.test(String(text ?? '').trim());
 
 export const DEBUG_REFUSAL =
-  'Debugging is on - turn off debugging to approve this. USB or wireless debugging lets a computer tap this phone, so while it is on only budgets naming test identities (marked in the Agents drawer) can be approved, pressed, waived or settled.';
+  'Debugging is on - turn off debugging to approve this. USB or wireless debugging lets a computer tap this phone, so nothing can be approved, pressed, waived or settled while it is on.';
 
 /** USB or wireless debugging on. An APK without the call says no (it predates the rule). */
 export function debuggingOn(): boolean {
