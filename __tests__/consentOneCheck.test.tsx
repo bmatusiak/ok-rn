@@ -133,6 +133,8 @@ const PATHS: {path: string; file: string; anchor: RegExp}[] = [
   {path: 'the key\'s Confirm panel (Edge)', file: 'App.tsx', anchor: /title="Confirm" tone="primary" onPress=\{\(\) => \{ if \(keyWaiting\.what === 'edge'[^\n]*/},
   {path: 'resume a held budget', file: 'src/screens/EdgeScreen.tsx', anchor: /title="Resume"[^\n]*/},
   {path: 'Mark as test', file: 'src/ui/EdgeAgentsCard.tsx', anchor: /title="Mark as test"[\s\S]{0,400}?setTestRefused\(true\)/},
+  /* R29: unpairing starts on the phone - its Yes, then the press */
+  {path: 'unpair another key of yours', file: 'src/ui/EdgeSiblingsCard.tsx', anchor: /title="Unpair"[\s\S]{0,300}?consentRefusal\(\)/},
   {path: 'the sheet (budget, registration, peer, sibling)', file: 'src/ui/EdgeRequestSheet.tsx', anchor: /const consent = [^\n]*\n[^\n]*/},
 ];
 
@@ -144,7 +146,7 @@ test.each(PATHS)('$path asks the shared check', ({file, anchor}) => {
 });
 
 test('every "Press the soft key" button on the Edge tab asks the shared check', () => {
-  const text = fs.readFileSync(path.join(ROOT, 'src/screens/EdgeScreen.tsx'), 'utf8');
+  const text = ['src/screens/EdgeScreen.tsx', 'src/ui/EdgeSiblingsCard.tsx'].map(f => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
   const presses = [...text.matchAll(/title="Press the soft key"[^\n]*/g)].map(m => m[0]);
   expect(presses.length).toBeGreaterThan(0);
   for (const p of presses) expect(p).toMatch(/consentRefusal\(\)/);

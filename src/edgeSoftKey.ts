@@ -241,6 +241,22 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     this.pressWanted = null;
   }
 
+  /* R29: the other keys of yours this key is paired with - X || Y and device id, hex (no press) */
+  async siblings(): Promise<{index: number; key: string; deviceId: string}[]> {
+    const l = await this.edge.siblings();
+    return l.siblings.map((s: any) => ({index: s.index, key: toHex(s.publicKey), deviceId: toHex(s.deviceId)}));
+  }
+
+  /*
+   * R29 (spec, 2026-10-05): unpairing starts on the phone - the list, Remove,
+   * a PHYSICAL press - never from a computer; each phone unpairs its own key.
+   * The key links it (sibling-remove, op 18).
+   */
+  async removeSibling(index: number, onPress?: () => void) {
+    await this.edge.siblingRemove(index, {onPress: this.pressing(onPress), timeoutMs: 30000});
+    this.pressWanted = null;
+  }
+
   /*
    * R26: hand the restoring key this phone's copy, from the link after its
    * restored head, in order, each with the head the copy stored after it. The

@@ -20,6 +20,7 @@ import {approve as approveLib, chain, note as noteLib, request as requestLib, sy
 import {SoftKeyEdge} from './edgeSoftKey';
 import {keepMergedKeyChain, readKeyChainList} from './keyChainRecorder';
 import {addNote, keepOffered, mergeOffered, sync as syncCopy} from './edgeStore';
+import {rememberSiblingName} from './edgeSiblingNames';
 import {setTestIdentities} from './debugGuard';
 import NativeOkEmu from '../specs/NativeOkEmu';
 
@@ -485,6 +486,8 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
         onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
       });
       if (r.dropped) return null;
+      /* the name the sheet showed, for "Your other keys" - the key keeps no names */
+      if (r.ok && asked) await rememberSiblingName((asked as any).sibling, (asked as any).name).catch(() => undefined);
       if (r.ok && !r.already) await syncCopy(soft).catch(() => undefined); /* the sibling-add link, into the tab's copy */
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `Paired with ${(asked as any).name} (the key linked it as #${r.seq})`} : r});
       return r;

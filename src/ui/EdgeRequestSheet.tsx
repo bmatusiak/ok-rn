@@ -150,8 +150,9 @@ export function EdgeRequestSheet() {
             ) : a.kind === 'sibling' ? (
               <>
                 <Text style={[styles.title, {color: theme.warn}]}>Pair with another key of yours?</Text>
-                <Text style={styles.op}>{a.name}</Text>
-                <Text style={[styles.title, {color: theme.warn}]}>{`Code ${a.code}`}</Text>
+                {/* the other device's name, then the code, each alone on its line and as wide as the sheet: the person reads them across two phones (Brad, 2026-10-05) */}
+                <Text style={[styles.code, styles.codeName]} numberOfLines={1} adjustsFontSizeToFit>{a.name}</Text>
+                <Text style={styles.code} numberOfLines={1} adjustsFontSizeToFit accessibilityLabel={`Code ${a.code}`}>{a.code}</Text>
                 <Text style={styles.dim}>{`Its key ${requestLib.fingerprint(a.sibling)} · asked by the computer ${a.place}`}</Text>
                 <Text style={styles.dim}>
                   The other phone shows a code too. Pair only if both show the same code - a different code means a key was changed on the way. Pairing takes a press on the key, which records it in the chain. Paired keys are not in the backup: a restored key pairs again.
@@ -288,4 +289,6 @@ const styles = StyleSheet.create({
   warningText: {color: theme.text, fontSize: 14, lineHeight: 20},
   row: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10},
   countdown: {color: theme.warn, fontSize: 20, fontWeight: '700', marginTop: 6},
+  code: {color: theme.warn, fontSize: 120, fontWeight: '700', textAlign: 'center', alignSelf: 'stretch', fontVariant: ['tabular-nums'], marginVertical: 4},
+  codeName: {fontSize: 60},
 });

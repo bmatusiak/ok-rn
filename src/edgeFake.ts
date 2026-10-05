@@ -72,6 +72,10 @@ export interface EdgeSource {
   resume?(grantId: number, onPress?: () => void): Promise<void>;
   /** R18: clear every owed ticket - a physical press. */
   waive?(onPress?: () => void): Promise<void>;
+  /** R29: the other keys of yours this key is paired with (no press). */
+  siblings?(): Promise<{index: number; key: string; deviceId: string}[]>;
+  /** R29: unpair one - started on this phone only, a physical press. */
+  removeSibling?(index: number, onPress?: () => void): Promise<void>;
   /** R26: replay this phone's copy into a restoring key; where it stopped and why. */
   replayCopy?(): Promise<EdgeReplay>;
   /** R26: "restored to #N" - a physical press; the key links a LOSS over anything not replayed. */

@@ -22,6 +22,7 @@ import {useEdge} from '../hooks/useEdge';
 import NativeEdgeAlert from '../../specs/NativeEdgeAlert';
 import {onSheet} from '../edgeAgents';
 import {consentRefusal} from '../debugGuard';
+import {EdgeSiblingsCard} from '../ui/EdgeSiblingsCard';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
 import type {EdgeRow, EdgeView, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
@@ -955,8 +956,10 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
         items={items.filter(it => it.key === 'status' || (pane === 'Presses') === (it.key === 's-history' || it.key === 'live-hold' || it.key === 'live-refused' || /^h\d/.test(it.key)))}
         bottomInset={DRAWER_HANDLE} refreshing={edge.busy} onRefresh={edge.sync}
       />
-      <BottomDrawer title="Agents">
+      {/* Brad, 2026-10-05: the drawer holds more than agents now */}
+      <BottomDrawer title="Edge Management">
         {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} inDrawer testingMode={testingMode} />}
+        {edge.isFake ? null : <EdgeSiblingsCard edge={edge} />}
         {!testingMode ? null : edge.isFake ? (
           <Section title="Fake key (testing)">
             <Text style={styles.dim}>

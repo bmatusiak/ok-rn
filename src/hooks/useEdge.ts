@@ -140,6 +140,19 @@ export function useEdge() {
     }
     return (await syncMirror(s)).view;
   }), [run]);
+  /* R29: the paired keys (no press), and unpairing one - the person's Yes on screen (EdgeScreen), then the press */
+  const siblings = useCallback(async () => {
+    const s = await source();
+    return (await s?.siblings?.()) ?? [];
+  }, [source]);
+  const removeSibling = useCallback((index: number) => run(async s => {
+    try {
+      await s.removeSibling?.(index, () => setPressFor(`sibling:${index}`));
+    } finally {
+      setPressFor(null);
+    }
+    return (await syncMirror(s)).view;
+  }), [run]);
   /* Continue: a request for what is left; then Approve is the usual Yes and press */
   const continueBudget = useCallback((grantId: number) => run(async s => {
     await s.continueBudget?.(grantId);
@@ -231,6 +244,6 @@ export function useEdge() {
   return {
     view, budgets, past, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
-    hold, resume, waive, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss,
+    hold, resume, waive, siblings, removeSibling, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss,
   };
 }
