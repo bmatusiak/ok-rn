@@ -6,6 +6,7 @@ import {useSharedBtKeyboard} from '../hooks/BtKeyboardContext';
 import {useKeyName} from '../hooks/KeyContext';
 import type {FidoSession} from '../hooks/useFidoGatt';
 import type {BtAuto} from '../hooks/useBtAuto';
+import {PairedComputersCard} from '../ui/PairedComputersCard';
 
 /*
  * ONE TAB, ONE FLOW: turn it on, choose a target, use it.
@@ -465,6 +466,9 @@ export function BluetoothScreen({
               </View>
             ) : null}
           </Section>
+
+          {/* Part T: who the API link answers (src/btTransit.ts) */}
+          <PairedComputersCard testing={testing} />
         </>
       ) : null}
     </ScrollView>
