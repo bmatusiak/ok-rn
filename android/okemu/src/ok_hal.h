@@ -127,6 +127,8 @@ void okemu_firmware_run(void);
 
 void     okemu_time_start(void);
 uint32_t okemu_micros(void);
+/* milliseconds since start from the 64-bit clock (wraps at 49.7 days, like the Teensy's) - see ok_hal.cpp */
+uint32_t okemu_millis(void);
 void     okemu_delay_ms(uint32_t ms);
 /* Republishes the host clock into the core's systick_millis_count, which
  * Teensy's millis() reads inline. Monotonic: safe to call from both the

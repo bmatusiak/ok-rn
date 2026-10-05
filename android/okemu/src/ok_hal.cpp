@@ -99,9 +99,19 @@ struct Hal {
 
 Hal g;
 
+/*
+ * THE KEY'S CLOCK COUNTS WHILE THE PHONE SLEEPS (2026-10-05). CLOCK_MONOTONIC
+ * stops in deep sleep on Android, so a phone that slept counted fewer hours than
+ * passed - and an Edge budget's lifetime (R15b, millis() since its press) ran
+ * slow. CLOCK_BOOTTIME keeps counting; MONOTONIC only where it does not exist.
+ */
 uint64_t now_us() {
   struct timespec ts;
+#ifdef CLOCK_BOOTTIME
+  clock_gettime(CLOCK_BOOTTIME, &ts);
+#else
   clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
   return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
@@ -376,6 +386,16 @@ void okemu_request_restart(void)   { std::lock_guard<std::mutex> lk(g.mu); g.res
 void okemu_time_start(void) { g.t0_us = now_us(); }
 
 uint32_t okemu_micros(void) { return (uint32_t)(now_us() - g.t0_us); }
+/*
+ * millis() FROM THE FULL 64-BIT TIME (2026-10-05). It was okemu_micros() / 1000,
+ * and okemu_micros() is 32-bit - it wraps every 71.6 minutes - so millis() could
+ * never pass 4,294,967 ms, and since the tick only moves forward it FROZE there:
+ * 71.6 minutes after the soft key started, every firmware timer stopped (an Edge
+ * budget never expired - budget 143 on the A13 signed past its end - press
+ * windows never closed). Proven with a host test of this arithmetic. Now it wraps
+ * at 49.7 days, like the Teensy's own counter.
+ */
+uint32_t okemu_millis(void) { return (uint32_t)((now_us() - g.t0_us) / 1000ULL); }
 
 void okemu_delay_ms(uint32_t ms) {
   struct timespec ts;

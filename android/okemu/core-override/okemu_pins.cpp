@@ -30,7 +30,7 @@ volatile uint32_t systick_millis_count = 0;
  * own millis() comparisons do.
  */
 void okemu_sync_systick(void) {
-  const uint32_t ms = okemu_micros() / 1000u;
+  const uint32_t ms = okemu_millis(); /* not okemu_micros()/1000: that froze at 71.6 min (ok_hal.cpp) */
   if ((int32_t)(ms - systick_millis_count) > 0) systick_millis_count = ms;
 }
 
