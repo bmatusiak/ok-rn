@@ -122,6 +122,13 @@ try {
     logger.lifecycle("versionCode: no git history here, using ${buildNumber}")
 }
 
+/* the staged debugging lock (src/generated/firmware.json): off = a TEST build (tools/release-guards.js) */
+def stagedLockOff = {
+    def f = rootProject.file('../src/generated/firmware.json')
+    if (!f.exists()) return false
+    try { return new groovy.json.JsonSlurper().parse(f).debugLock == false } catch (ignored) { return false }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -212,6 +219,8 @@ android {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
             signingConfig signingConfigs.debug
+            /* an unlocked (TEST) build says so in its version - it can never pass for a pre-release (tools/release-guards.js) */
+            versionNameSuffix stagedLockOff() ? "-TEST-nolock" : ""
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
@@ -285,25 +294,21 @@ tasks.register('copyPressSounds', Copy) {
 preBuild.dependsOn copyPressSounds
 
 /*
- * A RELEASE BUILD REFUSES DEBUG FIRMWARE (log audit, spec order 2026-10-04).
- *
- * stage.js leaves the firmware's DEBUG gate as the sources have it, and the
- * working tree has it ON - so a plain `gradlew assembleRelease` used to package a
- * soft key that prints key bytes, RNG output and PIN digits to its console in a
- * production-looking apk. tools/release.js sets OKEMU_PRODUCTION=1 and checks
- * afterwards; this makes Gradle itself refuse, whoever runs it. The same test
- * release.js uses: the define ACTIVE in the staged onlykey.h is a DEBUG build.
+ * WHAT A RELEASE BUILD REFUSES - tools/release-guards.js, one place, tested by
+ * jest (__tests__/releaseGuards.test.ts); Gradle runs it before every release
+ * build, whoever runs it:
+ *  - DEBUG firmware (log audit, spec order 2026-10-04): the staged soft key's
+ *    onlykey.h with DEBUG active prints key material to its console;
+ *  - the debugging lock OFF (Brad, 2026-10-05) unless THIS build asked for a
+ *    TEST build (OKRN_DEBUG_LOCK=off) - a lock-off staging left over from an
+ *    earlier TEST build is refused.
  */
-def refuseDebugFirmware = {
-    def h = rootProject.file('okemu/.stage/libraries/onlykey/onlykey.h')
-    if (!h.exists()) {
-        throw new GradleException("release build refused: no staged soft-key firmware at ${h} to check the DEBUG gate of")
-    }
-    if (h.text =~ /(?m)^#define DEBUG\s/) {
-        throw new GradleException(
-            "release build refused: the staged soft-key firmware has DEBUG on (it would print key " +
-            "material to its console). Build releases with `node tools/release.js` (it sets " +
-            "OKEMU_PRODUCTION=1), or set OKEMU_PRODUCTION=1 yourself.")
+def refuseUnsafeRelease = {
+    def out = new StringBuilder(), err = new StringBuilder()
+    def p = ['node', rootProject.file('../tools/release-guards.js').absolutePath].execute(null, rootProject.file('..'))
+    p.waitForProcessOutput(out, err)
+    if (p.exitValue() != 0) {
+        throw new GradleException(err.toString().trim() ?: "release build refused by tools/release-guards.js (exit ${p.exitValue()})")
     }
 }
-tasks.matching { it.name == 'preReleaseBuild' }.configureEach { doFirst { refuseDebugFirmware() } }
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach { doFirst { refuseUnsafeRelease() } }
