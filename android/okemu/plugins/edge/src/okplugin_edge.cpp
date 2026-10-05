@@ -56,6 +56,8 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_GRANT_HOLD 13
 #define OP_GRANT_RESUME 14
 #define OP_AGENT_ADD 15
+#define OP_SIBLING_ADD 17    /* R29 */
+#define OP_SIBLING_REMOVE 18 /* R29 */
 #define OP_SYNC 20     /* sync phase 2: every approved sync writes one (Brad, 2026-10-05) */
 #define OP_CONTINUE 16 /* R28: the first link of a device's own chain, carrying another chain's debts */
 #define DECISION_SELF_PRESS 4
@@ -266,7 +268,7 @@ static struct {
  * replaces it.
  */
 enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE, PRESS_LOSS, PRESS_AGENT_ADD,
-  PRESS_PEER_ADD, PRESS_PEER_REMOVE, PRESS_SYNC };
+  PRESS_PEER_ADD, PRESS_PEER_REMOVE, PRESS_SYNC, PRESS_SIBLING_ADD, PRESS_SIBLING_REMOVE };
 static struct {
   uint8_t what;
   unsigned long since;
@@ -286,7 +288,8 @@ static struct {
   uint8_t scopes_len;
   uint16_t lifetime;          /* PRESS_GRANT: R15b minutes, 0 = DEFAULT_LIFETIME_MIN */
   uint8_t labels[MAX_SCOPES][32]; /* PRESS_GRANT: R11a, the FULL labels of derived-code scopes, for the subject */
-  uint8_t peer[64];           /* PRESS_PEER_ADD: the peer's key, X || Y (PEER_REMOVE: the index is in id) */
+  uint8_t peer[64];           /* PRESS_PEER_ADD / PRESS_SIBLING_ADD: the key, X || Y (the REMOVEs: the index is in id) */
+  uint8_t sib_id[ID_BYTES];   /* PRESS_SIBLING_ADD: the sibling's device id */
 } press;
 
 /* ------------------------------------------------------------ bytes and hashes */
@@ -1149,15 +1152,20 @@ static void agent_add_pressed(void) {
 #define PAIRS_BYTES 600 /* a multiple of 4: flash takes words */
 #define PAIRS_CHECKED 596
 #define PEERS_AT 16
+#define SIBS_AT (PEERS_AT + MAX_PEERS * 64) /* 272: siblings, key 64 . device id 16 each */
 static const uint8_t PAIRS_MAGIC[8] = {'O', 'K', 'E', 'P', 'A', 'I', 'R', '1'};
 static struct {
   uint32_t gen;
   uint8_t peer_n;
   uint8_t peer[MAX_PEERS][64];
+  uint8_t sib_n;
+  uint8_t sib[MAX_SIBLINGS][64 + ID_BYTES]; /* R29: key X || Y . device id */
 } pairs;
 static uint8_t pairs_loaded;
 static uint8_t peer_x[32];     /* PEER_ADD part 0: X, until part 1 brings Y (RAM only) */
 static uint8_t peer_x_staged;
+static uint8_t sib_x[32];      /* SIBLING_ADD part 0: X, until part 1 brings Y and the id (RAM only) */
+static uint8_t sib_x_staged;
 /* SYNC's parts, until the third brings the last (RAM only): peer hash 32 . first 4 . last 4 . head 32 . Key Chain hash 32 */
 static uint8_t sync_fields[104];
 static uint8_t sync_parts;
@@ -1180,6 +1188,8 @@ static void pairs_load(void) {
     pairs.gen = gen;
     pairs.peer_n = rec[12] > MAX_PEERS ? MAX_PEERS : rec[12];
     memcpy(pairs.peer, rec + PEERS_AT, sizeof(pairs.peer));
+    pairs.sib_n = rec[13] > MAX_SIBLINGS ? MAX_SIBLINGS : rec[13];
+    memcpy(pairs.sib, rec + SIBS_AT, sizeof(pairs.sib));
   }
   pairs_loaded = 1;
 }
@@ -1192,6 +1202,8 @@ static void pairs_save(void) {
   put32(rec + 8, pairs.gen);
   rec[12] = pairs.peer_n;
   memcpy(rec + PEERS_AT, pairs.peer, sizeof(pairs.peer));
+  rec[13] = pairs.sib_n;
+  memcpy(rec + SIBS_AT, pairs.sib, sizeof(pairs.sib));
   H(check, NULL, rec, PAIRS_CHECKED, NULL, 0, NULL, 0);
   memcpy(rec + PAIRS_CHECKED, check, 4);
   okcore_flashsector(rec, (unsigned long *)((pairs.gen & 1) ? PAIRS_B : PAIRS_A), PAIRS_BYTES);
@@ -1226,6 +1238,45 @@ static void peer_add_pressed(void) {
  */
 static void sync_pressed(void) {
   append(OP_SYNC, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, press.verified, 0, 0, NULL);
+  reply_seq_head();
+}
+
+/*
+ * R29 SIBLINGS: other keys with their own chain that are yours (Brad's second
+ * phone), paired with a press on EACH, unpaired the same way. Kept in the pairs
+ * record beside the peers, so NOT in the backup either (Brad, 2026-10-05: a
+ * restored key pairs again). The subject the press binds: SHA256("OKEDGE-
+ * SIBLING-v1" || the sibling's Edge key X || Y || its device id). The 6-digit
+ * code the person compares on both phones is the APP's (spec, 2026-10-05: the
+ * computer relays the keys and could swap one); the key checks the id belongs
+ * to the key, and refuses itself, a known sibling and a fifth. Link first, then
+ * the list (as for peers).
+ */
+static void sibling_subject(const uint8_t key[64], const uint8_t id[ID_BYTES], uint8_t out[32]) {
+  H(out, "OKEDGE-SIBLING-v1", key, 64, id, ID_BYTES, NULL, 0);
+}
+
+static void sibling_add_pressed(void) {
+  pairs_load();
+  if (pairs.sib_n >= MAX_SIBLINGS) { status(EDGE_SIBLINGS_FULL); return; }
+  uint8_t index = pairs.sib_n;
+  append(OP_SIBLING_ADD, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, press.verified, 0, 0, NULL);
+  memcpy(pairs.sib[index], press.peer, 64);
+  memcpy(pairs.sib[index] + 64, press.sib_id, ID_BYTES);
+  pairs.sib_n++;
+  pairs_save();
+  reply_seq_head();
+}
+
+static void sibling_remove_pressed(void) {
+  pairs_load();
+  uint8_t index = (uint8_t)press.id;
+  if (index >= pairs.sib_n) { status(EDGE_NO_SUCH_SIBLING); return; }
+  append(OP_SIBLING_REMOVE, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, press.verified, 0, 0, NULL);
+  for (int i = index; i + 1 < pairs.sib_n; i++) memcpy(pairs.sib[i], pairs.sib[i + 1], 64 + ID_BYTES);
+  pairs.sib_n--;
+  memset(pairs.sib[pairs.sib_n], 0, 64 + ID_BYTES);
+  pairs_save();
   reply_seq_head();
 }
 
@@ -1314,6 +1365,8 @@ void okplugin_edge_decision(int decision) {
     else if (what == PRESS_PEER_ADD) peer_add_pressed();
     else if (what == PRESS_PEER_REMOVE) peer_remove_pressed();
     else if (what == PRESS_SYNC) sync_pressed();
+    else if (what == PRESS_SIBLING_ADD) sibling_add_pressed();
+    else if (what == PRESS_SIBLING_REMOVE) sibling_remove_pressed();
     press_drop();
     return;
   }
@@ -1759,6 +1812,71 @@ void okplugin_edge_recv(uint8_t *buffer) {
       press.verified_len = 32;
       H(what, "OKEDGE-SYNC", press.verified, 32, st.head, 32, NULL, 0);
       press_wait(PRESS_SYNC, what);
+      return;
+    }
+    case OKEDGE_SIBLING_ADD: {
+      /*
+       * Two parts, as PEER_ADD (X || Y does not fit; no point decompression in
+       * the base build): [6] = 0, X at [7..38] -> staged, EDGE:00 (a new X drops
+       * any pending one); [6] = 1, Y at [7..38], device id at [39..54] -> the
+       * whole key checked, then the press. Refused while restoring (R26).
+       */
+      uint8_t what[32];
+      press_drop();
+      if (st.restored) { status(EDGE_RESTORING); return; }
+      if (buffer[6] == 0) {
+        memcpy(sib_x, buffer + 7, 32);
+        sib_x_staged = 1;
+        status(EDGE_OK);
+        return;
+      }
+      if (buffer[6] != 1 || !sib_x_staged) { status(EDGE_BAD_KEY); return; }
+      sib_x_staged = 0;
+      memcpy(press.peer, sib_x, 32);
+      memcpy(press.peer + 32, buffer + 7, 32);
+      memcpy(press.sib_id, buffer + 39, ID_BYTES);
+      if (!uECC_valid_public_key(press.peer, uECC_secp256r1())) { press_drop(); status(EDGE_BAD_KEY); return; }
+      {
+        /* the id must be the one this key's chain is named by (chain.deviceIdOf) - and never this key itself */
+        uint8_t h[32];
+        H(h, "OKEDGE-DEVICE-v1", press.peer, 64, NULL, 0, NULL, 0);
+        if (memcmp(h, press.sib_id, ID_BYTES) != 0 || memcmp(press.peer, ident.pub, 64) == 0) { press_drop(); status(EDGE_BAD_KEY); return; }
+      }
+      pairs_load();
+      for (int i = 0; i < pairs.sib_n; i++)
+        if (memcmp(pairs.sib[i], press.peer, 64) == 0) { press_drop(); status(EDGE_SIBLING_KNOWN); return; }
+      if (pairs.sib_n >= MAX_SIBLINGS) { press_drop(); status(EDGE_SIBLINGS_FULL); return; }
+      sibling_subject(press.peer, press.sib_id, press.verified);
+      press.verified_len = 32;
+      H(what, "OKEDGE-SIBLING-ADD", press.verified, 32, st.head, 32, NULL, 0);
+      press_wait(PRESS_SIBLING_ADD, what);
+      return;
+    }
+    case OKEDGE_SIBLING_REMOVE: {
+      /* {index} at [6], a press; refused while restoring */
+      uint8_t what[32];
+      press_drop();
+      if (st.restored) { status(EDGE_RESTORING); return; }
+      pairs_load();
+      if (buffer[6] >= pairs.sib_n) { status(EDGE_NO_SUCH_SIBLING); return; }
+      press.id = buffer[6];
+      sibling_subject(pairs.sib[buffer[6]], pairs.sib[buffer[6]] + 64, press.verified);
+      press.verified_len = 32;
+      H(what, "OKEDGE-SIBLING-REMOVE", press.verified, 32, st.head, 32, NULL, 0);
+      press_wait(PRESS_SIBLING_REMOVE, what);
+      return;
+    }
+    case OKEDGE_SIBLING_LIST: {
+      /* count . max, then one report per slot (always max): X || Y, zeros when empty - the id is the key's own (chain.deviceIdOf) */
+      pairs_load();
+      r[0] = pairs.sib_n;
+      r[1] = MAX_SIBLINGS;
+      reply(r, 2);
+      for (int i = 0; i < MAX_SIBLINGS; i++) {
+        memset(r, 0, sizeof(r));
+        if (i < pairs.sib_n) memcpy(r, pairs.sib[i], 64);
+        reply(r, 64);
+      }
       return;
     }
     case OKEDGE_PEER_LIST: {

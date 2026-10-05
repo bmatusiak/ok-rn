@@ -29,6 +29,9 @@ const AGENT_ADD = 0x15; /* mcp-service 4.7a: {agent key 32}, press */
 const PEER_ADD = 0x30;    /* R20: {P-256 key, compressed 33}, press */
 const PEER_REMOVE = 0x31; /* R20: {index}, press */
 const PEER_LIST = 0x32;   /* R20: count . k . max, then one report per slot */
+const SIBLING_ADD = 0x35;    /* R29: {0, X} staged, then {1, Y, device id} and a press */
+const SIBLING_REMOVE = 0x36; /* R29: {index}, press */
+const SIBLING_LIST = 0x37;   /* R29: count . max, then one report per slot */
 const SYNC = 0x39;        /* sync phase 2: {subject 32}, press; a sync link (op 20), no ticket (number CHOSEN) */
 const GRANT_CREATE = 0x10;
 const GRANT_LABEL = 0x11; /* R11a: {scope index, label 32}, no press - a derived code's identity */
@@ -1087,6 +1090,53 @@ module.exports = function register({ it }, ctx) {
       await edge(device, PEER_REMOVE, Buffer.of(at), { signal, press: true });
     });
 
+  /*
+   * R29 (P2b): another key that is yours, paired with a press. Subject =
+   * SHA256("OKEDGE-SIBLING-v1" || key X || Y || device id), computed here with
+   * node:crypto, not the lib. The key refuses itself, an id that is not the
+   * key's own, a known sibling; no press, no link; removal is a press too.
+   */
+  it('edge: SIBLING_ADD / SIBLING_REMOVE take a press and link the sibling (R29); itself, a wrong id, a known key are refused',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const sha = (...b) => crypto.createHash('sha256').update(Buffer.concat(b)).digest();
+      const idOf = (key) => sha(Buffer.from('OKEDGE-DEVICE-v1'), key).subarray(0, 16);
+      const part = (n, bytes, opts) => edge(device, SIBLING_ADD, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
+      const add = async (key, id, opts) => {
+        assert.equal(await part(0, key.subarray(0, 32), { text: true }), 'EDGE:00', 'part 0 (X) was not staged');
+        return part(1, Buffer.concat([key.subarray(32), id]), opts);
+      };
+      const list = async () => {
+        const [h, ...slots] = await edge(device, SIBLING_LIST, null, { signal, reports: 5 });
+        return slots.slice(0, h[0]).map((r) => Buffer.from(r.subarray(0, 64)).toString('hex'));
+      };
+      for (let l = await list(); l.length; l = await list()) await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, press: true });
+      const e = crypto.createECDH('prime256v1'); e.generateKeys();
+      const key = e.getPublicKey().subarray(1);
+      const [own] = await edge(device, PUBKEY, null, { signal });
+      const self = Buffer.from(own.subarray(0, 64));
+      assert.equal(await add(self, idOf(self), { text: true }), 'EDGE:15', 'the key took itself as a sibling');
+      assert.equal(await add(key, Buffer.alloc(16, 9), { text: true }), 'EDGE:15', 'an id that is not the key\'s own was taken');
+      const before = await head(device, { signal });
+      await add(key, idOf(key), { text: true }).catch(() => null);
+      await device.sleep(26000, { signal });
+      assert.equal((await head(device, { signal })).seq, before.seq, 'an unpressed SIBLING_ADD wrote a link');
+      const [r] = await add(key, idOf(key), { press: true });
+      const [l] = await pickup(device, r.readUInt32LE(0), 1, { signal });
+      const f = chain.decodeLink(l.link);
+      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([17, APPROVE, 0, PRESS_OBSERVED, 0]), 'the sibling link is not the R29 layout');
+      assert.bytes(Buffer.from(f.subject), sha(Buffer.from('OKEDGE-SIBLING-v1'), key, idOf(key)));
+      assert.equal(JSON.stringify(await list()), JSON.stringify([key.toString('hex')]));
+      assert.equal(await add(key, idOf(key), { text: true }), 'EDGE:18', 'a known sibling was not refused');
+      const [rr] = await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, press: true });
+      const [lr] = await pickup(device, rr.readUInt32LE(0), 1, { signal });
+      const fr = chain.decodeLink(lr.link);
+      assert.equal(JSON.stringify([fr.op, fr.flags & PRESS_OBSERVED]), JSON.stringify([18, PRESS_OBSERVED]), 'the sibling-remove link is not the R29 layout');
+      assert.bytes(Buffer.from(fr.subject), sha(Buffer.from('OKEDGE-SIBLING-v1'), key, idOf(key)));
+      assert.equal((await list()).length, 0);
+      assert.equal(await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, text: true }), 'EDGE:1A');
+    });
+
   it('edge: PEER_ADD / PEER_REMOVE take a press and link the peer; PEER_LIST survives a restart; no press, no peer (R20)',
     async ({ device, assert, signal }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
@@ -1120,7 +1170,19 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await part(0, Buffer.alloc(32, 0xee), { text: true }), 'EDGE:00');
       assert.equal(await part(1, Buffer.alloc(32, 0xee), { text: true }), 'EDGE:15', 'a point off the curve was not refused');
       assert.equal(await part(1, xy(b).subarray(32), { text: true }), 'EDGE:15', 'a Y without its X was not refused');
-      await add(b, { press: true });
+      /*
+       * The spec (2026-10-05): the press binds the WHOLE key - a new X while
+       * another key waits for its press resets it. Key c's X and Y go in, its
+       * press is pending; b's X arrives, then b's Y and the press: the link is
+       * b's, and c is never listed.
+       */
+      const c = ecdh();
+      assert.equal(await part(0, xy(c).subarray(0, 32), { text: true }), 'EDGE:00');
+      device.sendVendor({ msg: OKEDGE, slot: PEER_ADD, payload: Buffer.concat([Buffer.of(1), xy(c).subarray(32)]) });
+      await device.sleep(800, { signal });
+      const [rb] = await add(b, { press: true });
+      const [lb] = await pickup(device, rb.readUInt32LE(0), 1, { signal });
+      assert.bytes(Buffer.from(chain.decodeLink(lb.link).subject), crypto.createHash('sha256').update(xy(b)).digest());
       await device.restart({ signal });
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       const kept = await list();

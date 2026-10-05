@@ -32,6 +32,7 @@ const REFUSAL_TEXT: Record<string, string> = {
 /* a place that keeps copies is a computer, not an agent (Brad, 2026-10-05) */
 const refusalText = (refusal: string, kind: string) => {
   const t = REFUSAL_TEXT[refusal] ?? `Refused: ${refusal}`;
+  if (kind === 'sibling') return t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The keys could not be paired');
   return kind === 'peer' || kind === 'sync' ? t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The computer could not be added') : t;
 };
 
@@ -146,6 +147,16 @@ export function EdgeRequestSheet() {
                   Links this phone's copy lacks, checked against the key before you see this, and the Key Chain lists merged both ways. A press records the sync in the chain. It brings history and public keys only - never budgets, debts, registrations or what is marked yours.
                 </Text>
               </>
+            ) : a.kind === 'sibling' ? (
+              <>
+                <Text style={[styles.title, {color: theme.warn}]}>Pair with another key of yours?</Text>
+                <Text style={styles.op}>{a.name}</Text>
+                <Text style={[styles.title, {color: theme.warn}]}>{`Code ${a.code}`}</Text>
+                <Text style={styles.dim}>{`Its key ${requestLib.fingerprint(a.sibling)} · asked by the computer ${a.place}`}</Text>
+                <Text style={styles.dim}>
+                  The other phone shows a code too. Pair only if both show the same code - a different code means a key was changed on the way. Pairing takes a press on the key, which records it in the chain. Paired keys are not in the backup: a restored key pairs again.
+                </Text>
+              </>
             ) : a.kind === 'peer' ? (
               <>
                 <Text style={[styles.title, {color: theme.warn}]}>Keep copies on this computer?</Text>
@@ -200,14 +211,14 @@ export function EdgeRequestSheet() {
             ) : null}
             {/* the tap registered: say so at once - the phone syncs and checks its copy before the key asks for the press (the 'lag', Brad 2026-10-04) */}
             {s.phase === 'ask' && acting ? (
-              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : a.kind === 'peer' ? 'Adding - getting the key ready…' : a.kind === 'sync' ? 'Syncing - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
+              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : a.kind === 'peer' ? 'Adding - getting the key ready…' : a.kind === 'sync' ? 'Syncing - getting the key ready…' : a.kind === 'sibling' ? 'Pairing - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
             ) : null}
             {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
             {s.phase === 'ask' && !confirming && !acting ? (
               <View style={styles.row}>
                 <Btn
                   large
-                  title={a.kind === 'register' ? 'Register' : a.kind === 'peer' ? 'Add' : a.kind === 'sync' ? 'Sync' : 'Approve'}
+                  title={a.kind === 'register' ? 'Register' : a.kind === 'peer' ? 'Add' : a.kind === 'sync' ? 'Sync' : a.kind === 'sibling' ? 'Pair' : 'Approve'}
                   tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
                   disabled={off || refusal !== null || (a.kind === 'request' && !!a.blocked)}
                   onPress={consent(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}

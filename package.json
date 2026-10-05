@@ -19,7 +19,7 @@
     "@bmatusiak/rectify": "github:bmatusiak/rectify#a0d9f0e6e537053122273b1f763ac87ae461361c",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native/new-app-screen": "0.87.1",
-    "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#0f316854e714317f0323f0a112507da8c697346e",
+    "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#db74afd59549cb8d472ce7a5e6a5beef16cf135c",
     "react": "19.2.3",
     "react-native": "0.87.1",
     "react-native-get-random-values": "^2.0.0",

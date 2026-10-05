@@ -145,6 +145,8 @@ export type SheetAsk =
   | {kind: 'peer'; peer: string; name: string; fingerprint: string}
   /* okedge sync phase 2: a place on the key's list offers links this phone's copy lacks */
   | {kind: 'sync'; peer: string; name: string; fingerprint: string; count: number; ranges: number[][]; keychainIn?: number; keychainOut?: number}
+  /* R29 (P2b): a place on the key's list asks to pair the key with another key of yours; code = from both keys, the other phone shows it too */
+  | {kind: 'sibling'; peer: string; place: string; name: string; sibling: string; siblingId: string; code: string}
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
   | {kind: 'request'; agentName: string; view: any; blocked: string | null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
@@ -194,7 +196,7 @@ function show(s: SheetState | null) {
 function attention(s: SheetState | null) {
   try {
     if (s && s.phase === 'ask') {
-      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : s.ask.kind === 'sync' ? 'A computer offers to sync your copy' : 'An agent asks for a budget';
+      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : s.ask.kind === 'sync' ? 'A computer offers to sync your copy' : s.ask.kind === 'sibling' ? 'A computer asks to pair another key of yours' : 'An agent asks for a budget';
       NativeOkEmu.setAttention(what, s.until);
     } else {
       NativeOkEmu.setAttention('', 0);
@@ -253,7 +255,7 @@ let inFlight = false;
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
   /* B7 stage 2: a note changes nothing, so it never waits behind a sheet */
   if (msg?.type === noteLib.TYPE) return handleNote(msg).catch(() => null);
-  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE || msg?.type === syncLib.COMMIT_TYPE;
+  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE || msg?.type === syncLib.COMMIT_TYPE || msg?.type === syncLib.SIBLING_TYPE;
   if (asks && inFlight) {
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
   }
@@ -318,7 +320,9 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   if (msg.type === syncLib.HAVE_TYPE) {
     syncNames.set(peer, p.name);
     const {mirror} = await syncCopy(soft); /* what this copy holds NOW, the key's newest included */
-    return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r)))};
+    /* the Key Chain list's digest too: a place whose list matches sends nothing (an empty sync took ~50 s with the whole list both ways) */
+    const keychainDigest = Array.from(syncLib.keychainDigest(await readKeyChainList()) as Uint8Array, (x: number) => x.toString(16).padStart(2, '0')).join('');
+    return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r))), keychainDigest};
   }
   if (msg.type === syncLib.TAKE_TYPE) {
     /* only after THIS place's commit was approved with a press */
@@ -459,6 +463,30 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       if (r.dropped) return null;
       if (r.ok && !r.already) await syncCopy(soft).catch(() => undefined); /* the peer-add link, into the tab's copy */
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `${r.name} keeps copies now (the key linked it as #${r.seq})`} : r});
+      return r;
+    }
+    if (msg?.type === syncLib.SIBLING_TYPE) {
+      /*
+       * R29 (okedge sync phase 2, P2b): pair this key with another key of yours.
+       * Only from a place already on the KEY's list (approveSibling checks it).
+       * The place relays the other key, so the sheet shows the code from both
+       * keys; the other phone shows the same code only if neither key was swapped.
+       */
+      if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
+      soft = soft ?? (await SoftKeyEdge.open());
+      if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
+      let asked: SheetAsk | null = null;
+      const r: any = await soft.addSibling(msg, {
+        seen,
+        ask: async (v: {peer: string; place: string; name: string; sibling: string; siblingId: string; code: string}) => {
+          asked = {kind: 'sibling', ...v};
+          return askPerson(asked);
+        },
+        onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
+      });
+      if (r.dropped) return null;
+      if (r.ok && !r.already) await syncCopy(soft).catch(() => undefined); /* the sibling-add link, into the tab's copy */
+      if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `Paired with ${(asked as any).name} (the key linked it as #${r.seq})`} : r});
       return r;
     }
     if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.KEYCHAIN_TYPE, syncLib.COMMIT_TYPE, syncLib.TAKE_TYPE].includes(msg?.type)) return await handleSync(msg, seen);

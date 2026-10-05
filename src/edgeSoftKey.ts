@@ -586,6 +586,27 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return r;
   }
 
+  /**
+   * R29 (okedge sync phase 2, P2b): a place on the key's list asks to pair this
+   * key with another key of yours (EDGE_SIBLING_ADD) - the sheet shows the code
+   * made from both keys, the person's Yes, then a PHYSICAL press; the key links
+   * it (sibling-add).
+   */
+  async addSibling(msg: any, o: {seen: Set<string>; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
+    const r: any = await approveLib.approveSibling(msg, {
+      edge: this.edge,
+      seen: o.seen,
+      ask: o.ask,
+      onPress: () => {
+        this.pressWanted = () => undefined;
+        o.onPress?.();
+      },
+      timeoutMs: 30000,
+    });
+    this.pressWanted = null;
+    return r;
+  }
+
   /** R20: the key's own list of places that keep copies (no press) - X || Y hex. */
   async peerKeys(): Promise<string[]> {
     const l = await this.edge.peers();
