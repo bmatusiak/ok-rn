@@ -302,11 +302,19 @@ class NativeFidoGattModule(
 
   private fun layoutPrefs() = reactContext.getSharedPreferences(LAYOUT_PREFS, Context.MODE_PRIVATE)
 
+  /*
+   * Called once a computer has sent a WHOLE message (vendor or FIDO) - it found
+   * our services, subscribed and wrote, so this layout works for it. It was
+   * called on every READ before, and on the Pixel (2026-10-05) a computer whose
+   * discovery was failing read two characteristics at handle 200 and that was
+   * remembered over the layout that worked: the landing check then aimed for the
+   * broken one.
+   */
   private fun rememberLayoutAsKnown() {
     val h = currentFidoHandle()
     if (h > 0 && layoutPrefs().getInt(KEY_KNOWN_FIDO_HANDLE, -1) != h) {
       layoutPrefs().edit().putInt(KEY_KNOWN_FIDO_HANDLE, h).apply()
-      Log.i(TAG, "a computer read our FIDO service at handle $h - remembered as the known layout")
+      Log.i(TAG, "a computer completed a message with our FIDO service at handle $h - remembered as the known layout")
     }
   }
 
@@ -1206,7 +1214,6 @@ class NativeFidoGattModule(
        * for is the whole diagnosis.
        */
       Log.d(TAG, "read request: ${characteristic.uuid}")
-      rememberLayoutAsKnown()
 
       val value = when (characteristic.uuid) {
         // Max Control Point write, big-endian, capped to the negotiated MTU.
@@ -1397,6 +1404,7 @@ class NativeFidoGattModule(
       }
       Log.d(TAG, "control point: message cmd=0x${"%02x".format(message.command)} " +
         "len=${message.payload.size}")
+      rememberLayoutAsKnown()
       val id = "req-" + requestCounter.incrementAndGet()
       val sender = addressKey(device.address)
       pendingRequests[id] = Pending(message.command, sender)
@@ -1531,6 +1539,7 @@ class NativeFidoGattModule(
     }
     Log.d(TAG, "vendor: message cmd=0x${"%02x".format(message.command)} " +
       "len=${message.payload.size}")
+    rememberLayoutAsKnown()
 
     val event = Arguments.createMap()
     event.putString("requestId", "")

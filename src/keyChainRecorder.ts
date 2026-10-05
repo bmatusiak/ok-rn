@@ -137,6 +137,28 @@ export function recordDerive(r: DeriveRecord): Promise<void> {
   return run;
 }
 
+/** This phone's Key Chain list as it is now (public entries). */
+export async function readKeyChainList(): Promise<any[]> {
+  const raw = await AsyncStorage.getItem(KEYCHAIN_LIST_KEY);
+  return raw ? keychain.list.parse(raw) : [];
+}
+
+/**
+ * okedge sync phase 2: keep a list merged with a place's (after the sheet, Yes
+ * and the press) - in THIS queue, merged into the list as it is NOW, so a derive
+ * recorded meanwhile is never lost (the copy sync lost approved links that way).
+ */
+export function keepMergedKeyChain(merged: any[]): Promise<void> {
+  const run = queue.then(async () => {
+    const now = await readKeyChainList();
+    const m = keychain.list.merge(now, merged);
+    await AsyncStorage.setItem(KEYCHAIN_LIST_KEY, keychain.list.serialize(m.entries));
+    for (const l of listeners) l();
+  });
+  queue = run.catch(() => {});
+  return run;
+}
+
 /** Listen for the soft key's derive events for the life of the app. */
 export function startKeyChainRecorder(): () => void {
   try {

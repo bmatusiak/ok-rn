@@ -18,6 +18,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {approve as approveLib, chain, note as noteLib, request as requestLib, sync as syncLib} from 'node-onlykey-lib/edge';
 import {SoftKeyEdge} from './edgeSoftKey';
+import {keepMergedKeyChain, readKeyChainList} from './keyChainRecorder';
 import {addNote, keepOffered, mergeOffered, sync as syncCopy} from './edgeStore';
 import {setTestIdentities} from './debugGuard';
 import NativeOkEmu from '../specs/NativeOkEmu';
@@ -143,7 +144,7 @@ export type SheetAsk =
   /* R20 (sync phase 2, P2a): a place that keeps copies asks to be on the key's list */
   | {kind: 'peer'; peer: string; name: string; fingerprint: string}
   /* okedge sync phase 2: a place on the key's list offers links this phone's copy lacks */
-  | {kind: 'sync'; peer: string; name: string; fingerprint: string; count: number; ranges: number[][]}
+  | {kind: 'sync'; peer: string; name: string; fingerprint: string; count: number; ranges: number[][]; keychainIn?: number; keychainOut?: number}
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
   | {kind: 'request'; agentName: string; view: any; blocked: string | null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
@@ -193,7 +194,7 @@ function show(s: SheetState | null) {
 function attention(s: SheetState | null) {
   try {
     if (s && s.phase === 'ask') {
-      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : s.ask.kind === 'sync' ? 'A computer offers links for your copy' : 'An agent asks for a budget';
+      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : s.ask.kind === 'sync' ? 'A computer offers to sync your copy' : 'An agent asks for a budget';
       NativeOkEmu.setAttention(what, s.until);
     } else {
       NativeOkEmu.setAttention('', 0);
@@ -252,7 +253,7 @@ let inFlight = false;
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
   /* B7 stage 2: a note changes nothing, so it never waits behind a sheet */
   if (msg?.type === noteLib.TYPE) return handleNote(msg).catch(() => null);
-  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE || msg?.type === syncLib.LINKS_TYPE;
+  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE || msg?.type === syncLib.COMMIT_TYPE;
   if (asks && inFlight) {
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
   }
@@ -299,7 +300,10 @@ async function handleNote(msg: any): Promise<unknown | null> {
  * Yes, the press, and the key's sync link - and only then is the copy kept.
  */
 const syncNames = new Map<string, string>(); /* the name each place gave in its HAVE */
-const syncStaged = new Map<string, {peer: string; parts: number; got: Map<number, any[]>}>();
+/* one sync's parts, by sid, in memory only (nothing changes until the press) */
+const syncStaged = new Map<string, {peer: string; links: Map<number, any[]>; linkParts: number; keychain: Map<number, any[]>; keychainParts: number}>();
+/* after an approved COMMIT: the merged Key Chain list the place may TAKE back, by sid */
+const syncTakes = new Map<string, {peer: string; parts: any[][]}>();
 async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> {
   if (!syncLib.verify(msg, {seen}).ok) return null;
   seen.add(String(msg.nonce).toLowerCase());
@@ -310,47 +314,95 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   if (String(msg.payload.deviceId).toLowerCase() !== toHexId(soft.deviceId)) {
     return {ok: false, refusal: 'invalid', detail: "those links are another chain's, not this phone's key"};
   }
+  const p = msg.payload;
   if (msg.type === syncLib.HAVE_TYPE) {
-    syncNames.set(peer, msg.payload.name);
+    syncNames.set(peer, p.name);
     const {mirror} = await syncCopy(soft); /* what this copy holds NOW, the key's newest included */
     return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r)))};
   }
-  const p = msg.payload;
+  if (msg.type === syncLib.TAKE_TYPE) {
+    /* only after THIS place's commit was approved with a press */
+    const t = syncTakes.get(p.sid);
+    if (!t || t.peer !== peer || p.part >= t.parts.length) return {ok: false, refusal: 'invalid', detail: 'nothing approved to take'};
+    if (p.part === t.parts.length - 1) syncTakes.delete(p.sid);
+    return {ok: true, part: p.part, parts: t.parts.length, entries: t.parts[p.part]};
+  }
   let st = syncStaged.get(p.sid);
   if (!st) {
-    st = {peer, parts: p.parts, got: new Map()};
+    st = {peer, links: new Map(), linkParts: 0, keychain: new Map(), keychainParts: 0};
     syncStaged.set(p.sid, st);
   }
-  if (st.peer !== peer || st.parts !== p.parts) return {ok: false, refusal: 'invalid', detail: 'a part of another sync'};
-  st.got.set(p.part, syncLib.recordsOf(msg));
-  if (st.got.size < st.parts) return {ok: true, staged: st.got.size};
+  if (st.peer !== peer) return {ok: false, refusal: 'invalid', detail: 'a part of another sync'};
+  if (msg.type === syncLib.LINKS_TYPE) {
+    st.links.set(p.part, syncLib.recordsOf(msg));
+    st.linkParts = p.parts;
+    return {ok: true, staged: st.links.size};
+  }
+  if (msg.type === syncLib.KEYCHAIN_TYPE) {
+    st.keychain.set(p.part, p.entries);
+    st.keychainParts = p.parts;
+    return {ok: true, staged: st.keychain.size};
+  }
+  /* COMMIT: every part here, then ONE sheet for links and list */
   syncStaged.delete(p.sid);
-  const offered = [...st.got.entries()].sort((a, b) => a[0] - b[0]).flatMap(([, r]) => r);
+  if (st.links.size !== p.linkParts || st.keychain.size !== p.keychainParts) {
+    return {ok: false, refusal: 'invalid', detail: `parts missing (links ${st.links.size}/${p.linkParts}, Key Chain ${st.keychain.size}/${p.keychainParts}) - sync again`};
+  }
   if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
+  const offered = [...st.links.entries()].sort((a, b) => a[0] - b[0]).flatMap(([, r]) => r);
   const m = await mergeOffered(soft, offered);
   if (m.conflicts.length) {
     return {ok: false, refusal: 'invalid', detail: `a fork: this phone's copy holds different links at #${m.conflicts.join(', #')} - nothing taken; settle it on the phone`};
   }
-  if (!m.added.length) return {ok: true, count: 0, seq: null};
-  if (m.view.verdict.kind !== 'verified' && m.view.verdict.kind !== 'gap') {
+  if (m.added.length && m.view.verdict.kind !== 'verified' && m.view.verdict.kind !== 'gap') {
     return {ok: false, refusal: 'copy_unverified', detail: `with those links this phone's copy would not verify (${m.view.verdict.kind}) - nothing taken`};
   }
+  /* the Key Chain: every entry checked again on arrival (private or "yours" refused) */
+  let plan = {merged: [] as any[], in: 0, out: 0};
+  if (p.keychainParts) {
+    let place: any[];
+    try {
+      place = syncLib.keychainEntriesOf([...st.keychain.entries()].sort((a, b) => a[0] - b[0]).flatMap(([, e]) => e));
+    } catch (e: unknown) {
+      return {ok: false, refusal: 'invalid', detail: `the Key Chain list was refused: ${String((e as any)?.message || e)}`};
+    }
+    plan = syncLib.keychainPlan(await readKeyChainList(), place);
+  }
+  const keychainMoves = plan.in > 0 || plan.out > 0;
+  if (!m.added.length && !keychainMoves) return {ok: true, count: 0, seq: null};
   const name = syncNames.get(peer) ?? 'a place that keeps copies';
   let asked: SheetAsk | null = null;
   const r: any = await soft.approveSync({
-    peer, name, added: m.added, head: m.candidate.links[m.candidate.links.length - 1].head,
-    ask: async (v: {peer: string; name: string; fingerprint: string; count: number; ranges: number[][]}) => {
-      asked = {kind: 'sync', ...v};
-      return askPerson(asked);
+    peer, name, added: m.added,
+    head: m.candidate.links[m.candidate.links.length - 1].head,
+    keychainHash: keychainMoves ? syncLib.keychainDigest(plan.merged) : null,
+    keychainIn: plan.in,
+    keychainOut: plan.out,
+    ask: async (v: any) => {
+      const sheet: SheetAsk = {kind: 'sync', ...v};
+      asked = sheet;
+      return askPerson(sheet);
     },
     onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
   });
-  if (r.ok && r.count) {
-    await keepOffered(soft.deviceId, m.added);
-    await syncCopy(soft).catch(() => undefined); /* the sync link itself, into the copy */
+  let takeParts = 0;
+  if (r.ok && r.seq !== null) {
+    if (m.added.length) {
+      await keepOffered(soft.deviceId, m.added);
+      await syncCopy(soft).catch(() => undefined); /* the sync link itself, into the copy */
+    }
+    if (keychainMoves) {
+      await keepMergedKeyChain(plan.merged);
+      const parts = syncLib.keychainParts(plan.merged);
+      syncTakes.set(p.sid, {peer, parts});
+      takeParts = parts.length;
+    }
   }
-  if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `This phone's copy took ${r.count} link${r.count === 1 ? '' : 's'} from ${name} (the key linked the sync as #${r.seq})`} : r});
-  return r;
+  if (asked) {
+    const what = [m.added.length ? `${m.added.length} link${m.added.length === 1 ? '' : 's'}` : '', plan.in ? `${plan.in} Key Chain entr${plan.in === 1 ? 'y' : 'ies'}` : ''].filter(Boolean).join(' and ') || 'nothing new';
+    show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `This phone took ${what} from ${name} (the key linked the sync as #${r.seq})`} : r});
+  }
+  return r.ok ? {...r, keychainIn: plan.in, keychainOut: plan.out, takeParts} : r;
 }
 const toHexId = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
 const seqOfLink = (r: any) => chain.decodeLink(r.link).seq;
@@ -409,7 +461,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `${r.name} keeps copies now (the key linked it as #${r.seq})`} : r});
       return r;
     }
-    if (msg?.type === syncLib.HAVE_TYPE || msg?.type === syncLib.LINKS_TYPE) return await handleSync(msg, seen);
+    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.KEYCHAIN_TYPE, syncLib.COMMIT_TYPE, syncLib.TAKE_TYPE].includes(msg?.type)) return await handleSync(msg, seen);
     if (msg?.type !== requestLib.TYPE) return null;
     /* the Agents card's switch is off: refused unread, like an unregistered agent */
     if (!(await agentRequestsOn())) return null;

@@ -277,6 +277,30 @@ function RadioStatus({
     if (btk.ready === true) stopOurs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [btk.radioOn]);
+  /*
+   * THE SAME CHECK AT APP START (2026-10-05). An app that starts before the
+   * system's services are in (after a phone restart, an update) lands ours ahead
+   * of them, exactly as after a radio toggle - and a computer that knew the
+   * other order could not discover us. Once ours first advertises: not where a
+   * computer last COMPLETED a message with us -> the same restart sequence.
+   * An unknown position (nothing completed yet) is left as it is: a first start
+   * already lands after the system's services.
+   */
+  const startChecked = useRef(false);
+  useEffect(() => {
+    if (startChecked.current || !on || !advertising || step.current !== 'idle') return;
+    startChecked.current = true;
+    const now = NativeFidoGatt.fidoHandle();
+    const known = NativeFidoGatt.fidoKnownHandle();
+    if (known <= 0 || now === known) return;
+    console.log(`[bt] app start: our FIDO service at ${now}, a computer last completed with it at ${known} - restarting ours`);
+    layoutTries.current = 0;
+    resumeHost.current = btk.chosenHost ?? null;
+    step.current = 'waitReady';
+    setAskingReady(true);
+    if (btk.ready === true) stopOurs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [advertising, on]);
   useEffect(() => {
     if (step.current === 'waitReady' && btk.ready === true) stopOurs();
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -132,11 +132,18 @@ export function EdgeRequestSheet() {
                 <Text style={[styles.title, {color: theme.warn}]}>Sync this phone's copy?</Text>
                 <Text style={styles.op}>{`From ${a.name}`}</Text>
                 <Text style={styles.op}>{`Key ${a.fingerprint}`}</Text>
-                <Text style={styles.op}>
-                  {`${a.count} link${a.count === 1 ? '' : 's'}: ${a.ranges.map(([x, y]) => (x === y ? `#${x}` : `#${x}-#${y}`)).join(', ')}`}
-                </Text>
+                {a.count ? (
+                  <Text style={styles.op}>
+                    {`${a.count} link${a.count === 1 ? '' : 's'}: ${a.ranges.map(([x, y]) => (x === y ? `#${x}` : `#${x}-#${y}`)).join(', ')}`}
+                  </Text>
+                ) : null}
+                {a.keychainIn || a.keychainOut ? (
+                  <Text style={styles.op}>
+                    {`Key Chain: ${a.keychainIn || 0} entr${a.keychainIn === 1 ? 'y' : 'ies'} to this phone, ${a.keychainOut || 0} to the computer (public keys only)`}
+                  </Text>
+                ) : null}
                 <Text style={styles.dim}>
-                  Links this phone's copy lacks, checked against the key before you see this. A press records the sync in the chain. It brings history only - never budgets, debts or registrations.
+                  Links this phone's copy lacks, checked against the key before you see this, and the Key Chain lists merged both ways. A press records the sync in the chain. It brings history and public keys only - never budgets, debts, registrations or what is marked yours.
                 </Text>
               </>
             ) : a.kind === 'peer' ? (

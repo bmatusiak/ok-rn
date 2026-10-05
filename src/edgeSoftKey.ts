@@ -597,12 +597,15 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * phone's copy, already merged and checked by the caller - the sheet, Yes,
    * a PHYSICAL press, and the key's `sync` link (approve.approveSync).
    */
-  async approveSync(o: {peer: string; name: string; added: any[]; head: Uint8Array; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
+  async approveSync(o: {peer: string; name: string; added: any[]; head: Uint8Array; keychainHash?: Uint8Array | null; keychainIn?: number; keychainOut?: number; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
     const r: any = await approveLib.approveSync({
       peer: o.peer,
       name: o.name,
       added: o.added,
       head: o.head, /* the copy's head after the merge - part of the sync's subject (spec, 2026-10-05) */
+      keychainHash: o.keychainHash ?? null,
+      keychainIn: o.keychainIn ?? 0,
+      keychainOut: o.keychainOut ?? 0,
       edge: this.edge,
       ask: o.ask,
       onPress: () => {
