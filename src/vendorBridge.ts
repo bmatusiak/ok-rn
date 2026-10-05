@@ -447,11 +447,13 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
 
   const off = FidoGatt.on('request', onRequest);
   transit.setSender(sendFrame);
+  transit.setLog(log);
   void transit.load().catch((err: unknown) => log('error', `[bt] the pairing store did not load: ${String(err)}`));
 
   return () => {
     off();
-    transit.setSender(null);
+    transit.releaseSender(sendFrame); /* only if still ours: another bridge may have taken over */
+    transit.releaseLog(log);
     transit.endSessions();
     if (offReport) offReport();
     if (offWrite) offWrite();

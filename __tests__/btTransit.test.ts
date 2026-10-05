@@ -259,3 +259,17 @@ test('an unreadable store (Keystore key gone) starts clean instead of guessing',
   expect(await p.gate.list()).toHaveLength(0);
   expect(storage.m.get('okt.btpair.v1')!.startsWith('bx')).toBe(true);
 });
+
+test('a second bridge that takes over keeps the sender when the first one stops (two React roots, production 2026-10-05)', async () => {
+  const p = phone();
+  const {record} = await pair(p);
+  const second: {cmd: number; bytes: Uint8Array}[] = [];
+  const first = (cmd: number, bytes: Uint8Array) => p.sent.push({cmd, bytes});
+  const other = (cmd: number, bytes: Uint8Array) => second.push({cmd, bytes});
+  p.gate.setSender(first);
+  p.gate.setSender(other); /* the new root's bridge starts... */
+  p.gate.releaseSender(first); /* ...then the old root's bridge stops */
+  const h = bt.cliHello(record, {name: 'NITRO16'});
+  await p.gate.handle(0x05, h.msg, PC);
+  expect(second.some(f => f.cmd === CMD.PAIR)).toBe(true); /* the answer went out */
+});

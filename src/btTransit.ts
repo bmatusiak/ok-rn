@@ -133,7 +133,8 @@ export function createBtTransit(deps: Deps = {}) {
   const box = deps.box ?? NativeSecrets;
   const now = deps.now ?? Date.now;
   const isTestingMode = deps.isTestingMode ?? testingModeOn;
-  const log: Log = deps.log ?? (() => {});
+  /* the app's log, given by the bridge (setLog); a gate with no log failed silently in production (2026-10-05) */
+  let log: Log = deps.log ?? (() => {});
   const alarm = deps.alarm ?? postBluetoothAlarm;
   let alarmIds = 0;
 
@@ -229,11 +230,18 @@ export function createBtTransit(deps: Deps = {}) {
     if (type === bt.T.HELLO) return onHello(s, msg, address);
 
     /* everything else is pairing, and pairing exists only while the window is open */
-    if (!pairWindowOpen()) return;
+    if (!pairWindowOpen()) {
+      log('info', `[bt] a pairing message from ${address} - "Pair a computer" is not open: no answer`);
+      return;
+    }
     if (type === bt.T.COMMIT) {
       if (pair.address && pair.address !== address) return; /* one computer at a time */
       const r = bt.phonePairOnCommit({identity: identity(s), windowOpenUntil: pair.until, now: now()}, msg);
-      if (!r) return;
+      if (!r) {
+        log('info', `[bt] a pairing request from ${address} was not well formed: no answer`);
+        return;
+      }
+      log('info', `[bt] pairing: ${address} committed, answering with this phone's keys`);
       pair = {...pair, address, lib: r.state, view: {stage: 'waiting', until: pair.until}};
       send(CMD.PAIR, r.msg);
       return;
@@ -367,8 +375,11 @@ export function createBtTransit(deps: Deps = {}) {
           return null;
         }
       } catch (e) {
-        /* a replayed, reordered or forged frame: refused, and refused silently */
-        log('info', `[bt] a frame from ${address} was refused (${(e as any)?.code ?? (e instanceof Error ? e.name : 'error')})`);
+        /* a replayed, reordered or forged frame: refused, and refused silently - but never invisibly */
+        const what = (e as any)?.code ?? (e instanceof Error ? e.name : 'error');
+        log('info', `[bt] a frame (command 0x${(command | 0x80).toString(16)}) was refused (${what})`);
+        /* the error CLASS only - no bytes, no address - so a release build shows why too (2026-10-05) */
+        console.warn(`[bt] gate: command 0x${(command | 0x80).toString(16)} failed: ${what}${e instanceof Error && !(e as any).code ? ' ' + e.message.slice(0, 80) : ''}`);
       }
       return null;
     },
@@ -386,8 +397,26 @@ export function createBtTransit(deps: Deps = {}) {
     },
 
     /** How replies leave (vendorBridge's serialised send chain). */
-    setSender(fn: Sender | null) {
+    setSender(fn: Sender) {
       sender = fn;
+    },
+    /*
+     * ...and let go of it ONLY IF IT IS STILL YOURS. Found in a production build
+     * on the Pixel (2026-10-05): the app starts two React roots, the second App
+     * mounted its bridge before the first one unmounted, and the first one's
+     * cleanup set the shared sender to null - every pairing and hello was then
+     * accepted and its answer went nowhere (diagnosed: "sender false").
+     */
+    releaseSender(fn: Sender) {
+      if (sender === fn) sender = null;
+    },
+
+    /** Where the gate logs (the bridge's log - the app's Log tab); released the same way. */
+    setLog(fn: Log) {
+      log = fn;
+    },
+    releaseLog(fn: Log) {
+      if (log === fn) log = deps.log ?? (() => {});
     },
 
     /** Forget every live session (the bridge stopped, Bluetooth went off). */

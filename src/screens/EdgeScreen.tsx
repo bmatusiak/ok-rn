@@ -332,9 +332,11 @@ function ChainList({rows, budgetUses}: {rows: EdgeRow[]; budgetUses?: Map<number
   );
 }
 
-function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress}: {
+function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, ended = false}: {
   b: EdgeBudget;
   busy: boolean;
+  /* its grant-end link is in the chain (ended by hand, revoked): no countdown any more */
+  ended?: boolean;
   onOpen?: () => void;
   onRevoke?: () => void;
   /* R15a: on hold, it pays for nothing; Hold needs no press, Resume needs one */
@@ -361,13 +363,18 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
         </View>
       ))}
       {/* every use spent: the timer means nothing any more (Brad, 2026-10-04: "replace timer with complete") */}
-      {complete ? (
+      {/* ended (its grant-end link): no countdown either - budget 191 on the A13 kept "55 min left" after it ended (Brad, 2026-10-05) */}
+      {ended ? (
+        <Text style={[styles.ticketTitle, {color: theme.textDim}]}>Ended</Text>
+      ) : complete ? (
         <Text style={[styles.ticketTitle, {color: theme.ok}]}>Complete</Text>
       ) : b.endsAt ? (
         <TimeLeft endsAt={b.endsAt} />
       ) : null}
       <Text style={styles.dim}>
-        {complete
+        {ended
+          ? `Budget ${b.grantId} · ended - nothing more can spend from it.`
+          : complete
           ? `Budget ${b.grantId} · every use spent - it pays for nothing more, but covers its identities until it ends.`
           : b.endsAt
             ? `Budget ${b.grantId} · ends at ${new Date(b.endsAt).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}, or when you lock the key.`
@@ -508,7 +515,7 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
         </View>
       </Section>
       <Section title={`Budget ${b.grantId}`}>
-        <BudgetCard b={b} busy={false} />
+        <BudgetCard b={b} busy={false} ended={ended} />
         <Text style={[styles.dim, {color: inOrder ? theme.textDim : theme.error}]}>
           {steps.length === 0
             ? 'Nothing spent from it yet.'
