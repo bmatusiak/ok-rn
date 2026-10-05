@@ -64,7 +64,7 @@ import {PasskeysScreen} from './src/screens/PasskeysScreen';
 import {LogScreen} from './src/screens/LogScreen';
 import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
-import {takeOpenedAlarm} from './src/edgeAlerts';
+import {BT_SEQ_BASE, takeOpenedAlarm} from './src/edgeAlerts';
 import {consentRefusal, testConsentActive} from './src/debugGuard';
 import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
@@ -557,7 +557,8 @@ function Shell() {
   useEffect(() => {
     const look = () => {
       const s = takeOpenedAlarm();
-      if (s !== null) { setTab(EDGE_TAB); setEdgeFocus(s); }
+      if (s !== null && s >= BT_SEQ_BASE) setTab('Bluetooth'); /* Part T: a Bluetooth pairing alarm */
+      else if (s !== null) { setTab(EDGE_TAB); setEdgeFocus(s); }
     };
     look();
     const sub = AppState.addEventListener('change', st => { if (st === 'active') look(); });

@@ -32,11 +32,13 @@ function phone(opts: {testing?: boolean; storage?: ReturnType<typeof memory>} = 
   let t = 1_000_000;
   const storage = opts.storage ?? memory();
   const sent: {cmd: number; bytes: Uint8Array}[] = [];
-  const gate = createBtTransit({storage, box, now: () => t, isTestingMode: () => !!opts.testing});
+  const alarms: string[] = [];
+  const gate = createBtTransit({storage, box, now: () => t, isTestingMode: () => !!opts.testing, alarm: (_id, text) => alarms.push(text)});
   gate.setSender((cmd, bytes) => sent.push({cmd, bytes}));
   return {
     gate,
     sent,
+    alarms,
     storage,
     tick: (ms: number) => {
       t += ms;
@@ -190,6 +192,7 @@ test('the pairing is bound to the computer name and its Bluetooth address: eithe
   const {record} = await pair(p);
   expect(await connect(p, record, 'OTHER-PC')).toBeNull();
   expect((await p.gate.notices())[0]).toMatchObject({kind: 'revoked-name', name: 'NITRO16'});
+  expect(p.alarms[0]).toMatch(/another computer name/);
   expect(await p.gate.list()).toHaveLength(0);
 
   const q = phone();
@@ -213,14 +216,18 @@ test('day 6: the renewal rides inside the session; the old secret used afterward
   reply[0] = KIND.CONTROL;
   reply.set(accepted.payload, 1);
   expect(await p.gate.handle(0x04, bt.seal(session, reply), PC)).toBeNull();
-  expect((await p.gate.list())[0].epoch).toBe(1);
+  expect((await p.gate.list())[0].epoch).toBe(0); /* two-phase: pending until the CLI proves it */
 
-  /* the renewed pairing connects; the copy raises the alarm and the computer is dropped */
-  expect(await connect(p, accepted.record)).not.toBeNull();
+  /* the renewed pairing connects (and is promoted); the copy raises the alarm and the computer is dropped */
+  const renewed = bt.cliUseNext(accepted.record);
+  expect(await connect(p, renewed)).not.toBeNull();
+  expect((await p.gate.list())[0].epoch).toBe(1);
   expect(await connect(p, copied)).toBeNull();
   expect((await p.gate.notices())[0]).toMatchObject({kind: 'copy', name: 'NITRO16'});
+  expect(p.alarms).toHaveLength(1); /* T5: the phone notification, not only the card */
+  expect(p.alarms[0]).toMatch(/copy of NITRO16's pairing/);
   expect(await p.gate.list()).toHaveLength(0);
-  expect(await connect(p, accepted.record)).toBeNull(); /* re-pair needed */
+  expect(await connect(p, renewed)).toBeNull(); /* re-pair needed */
 });
 
 test('a pairing that missed its renewal expires and must pair again', async () => {

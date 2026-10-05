@@ -22,6 +22,11 @@ export interface Spec extends TurboModule {
   post(seq: number, title: string, text: string, lockText: string, quiet: boolean): void;
   /** The link whose notification was tapped since the last call, then forgotten; -1 when none. */
   takeOpenedSeq(): number;
+  /**
+   * Part T: a Bluetooth pairing alarm (copy, revoke, expiry). Lock screen: only
+   * "Bluetooth alarm". A tap opens the app with takeOpenedSeq() = BT_SEQ_BASE + id.
+   */
+  postBluetooth(id: number, text: string): void;
   /** The JS side is watching: call every 10 s. 30 s without one while watching -> the "stopped" notice. */
   beat(): void;
   /** Edge watching on (soft key running, unlocked, Edge present) or off (no "stopped" notice then). */

@@ -68,6 +68,14 @@ export async function raiseAlarms(mirror: Mirror, view: EdgeView, live: number[]
   await AsyncStorage.setItem(key, String(newest));
 }
 
+/* Part T: a tapped Bluetooth alarm comes back as takeOpenedSeq() >= this (NativeEdgeAlertModule BT_SEQ_BASE) */
+export const BT_SEQ_BASE = 1_000_000_000;
+
+/** Part T: post a Bluetooth pairing alarm (no-op on an APK without the module). */
+export function postBluetoothAlarm(id: number, text: string): void {
+  NativeEdgeAlert?.postBluetooth?.(id, text);
+}
+
 /** The link whose alarm was tapped (once), or null. */
 export function takeOpenedAlarm(): number | null {
   const s = NativeEdgeAlert ? NativeEdgeAlert.takeOpenedSeq() : -1;

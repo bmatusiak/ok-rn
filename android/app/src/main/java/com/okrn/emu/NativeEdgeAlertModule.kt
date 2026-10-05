@@ -90,6 +90,44 @@ class NativeEdgeAlertModule(reactContext: ReactApplicationContext) : NativeEdgeA
     manager.notify(ID_BASE + (s and 0xffffff).toInt(), full.build())
   }
 
+  /**
+   * Part T: a Bluetooth pairing alarm (a copied pairing, a revoke, an expiry).
+   * The same alarm channel and the same lock-screen rule as Edge's: the lock
+   * screen says only "Bluetooth alarm"; the details are in the app. No Hold - it
+   * is not about a budget. A tap opens the app with EXTRA_SEQ = BT_SEQ_BASE + id,
+   * which App.tsx reads as "open the Bluetooth tab".
+   */
+  override fun postBluetooth(id: Double, text: String) {
+    val app = reactApplicationContext.applicationContext
+    val manager = manager(app)
+    channels(manager)
+    val s = BT_SEQ_BASE + (id.toLong() and 0xffff)
+    val launch = (app.packageManager.getLaunchIntentForPackage(app.packageName) ?: Intent()).apply {
+      putExtra(EXTRA_SEQ, s)
+      addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    }
+    val open = PendingIntent.getActivity(
+      app, (s and 0x7fffffff).toInt(), launch,
+      PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    val public = builder(app, CHANNEL)
+      .setSmallIcon(R.drawable.ic_stat_o)
+      .setContentTitle("Bluetooth alarm")
+      .setContentText("open ok-rn")
+      .setContentIntent(open)
+    val full = builder(app, CHANNEL)
+      .setSmallIcon(R.drawable.ic_stat_o)
+      .setContentTitle("Bluetooth alarm")
+      .setContentText(text)
+      .setStyle(Notification.BigTextStyle().bigText(text))
+      .setContentIntent(open)
+      .setAutoCancel(true)
+      .setVisibility(Notification.VISIBILITY_PRIVATE)
+      .setPublicVersion(public.build())
+      .setCategory(Notification.CATEGORY_ALARM)
+    manager.notify(ID_BT_BASE + (id.toLong() and 0xffff).toInt(), full.build())
+  }
+
   override fun takeOpenedSeq(): Double {
     val s = opened
     opened = -1L
@@ -190,6 +228,9 @@ class NativeEdgeAlertModule(reactContext: ReactApplicationContext) : NativeEdgeA
     private const val PREFS = "okrn.edge.alert"
     private const val KEY_HOLD = "holdPending"
     private const val ID_BASE = 0x0E000000
+    /* Part T alarms: their own id range, and a seq range App.tsx maps to the Bluetooth tab (edgeAlerts.ts BT_SEQ_BASE) */
+    private const val ID_BT_BASE = 0x0E100000
+    const val BT_SEQ_BASE = 1_000_000_000L
     private const val ID_STOPPED = 0x0E0F0001
     private const val ID_HOLD_WAITING = 0x0E0F0002
     private const val BEAT_TIMEOUT_MS = 30_000L

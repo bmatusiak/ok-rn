@@ -24,14 +24,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {Alert, StyleSheet, Switch, Text, View} from 'react-native';
 import {Btn, Section} from './components';
 import {theme} from './theme';
-import {btTransit, type BtTransit, type Notice, type PairedComputer, type PairingView} from '../btTransit';
-
-const NOTICE_TEXT: Record<Notice['kind'], (name: string) => string> = {
-  copy: name => `A copy of ${name}'s pairing was used after its weekly renewal. Only a copied pairing file could do that - ${name} was removed. Pair it again if it was you.`,
-  'revoked-name': name => `${name}'s pairing was used under another computer name - revoked. Pair it again under its new name.`,
-  'revoked-mac': name => `${name}'s pairing was used from another Bluetooth address - revoked.`,
-  expired: name => `${name}'s pairing missed its weekly renewal and expired. Pair it again.`,
-};
+import {btTransit, NOTICE_TEXT, type BtTransit, type Notice, type PairedComputer, type PairingView} from '../btTransit';
 
 function ago(ms: number | null, now: number): string {
   if (!ms) return 'never used';
@@ -122,6 +115,17 @@ export function PairedComputersCard({testing = false, gate = btTransit}: {testin
           </View>
         ))
       )}
+
+      {/* testing mode only (T6): make the next connection renew without waiting six days */}
+      {testing
+        ? list.map(c => (
+            <Btn
+              key={`age-${c.id}`}
+              title={`Test: make ${c.name}'s renewal due`}
+              onPress={() => void gate.ageForTest(c.id, 6 * 24 * 60 * 60 * 1000 + 60_000)}
+            />
+          ))
+        : null}
 
       {pairing.stage === 'closed' || pairing.stage === 'paired' || pairing.stage === 'failed' ? (
         <>

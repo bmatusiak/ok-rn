@@ -38,6 +38,7 @@ import {bytes as okbytes} from 'node-onlykey-lib';
 import * as bt from 'node-onlykey-lib/btpair';
 import NativeSecrets from '../specs/NativeSecrets';
 import {testingModeOn} from './debugGuard';
+import {postBluetoothAlarm} from './edgeAlerts';
 
 export const CMD = {PLAIN: 0x83, SEALED: 0x84, PAIR: 0x85} as const;
 export const KIND = {REPORT: 0x01, CONTROL: 0x02} as const;
@@ -82,6 +83,14 @@ export type Notice = {
   at: number;
 };
 
+/** What each notice says - the card and the phone notification use the same words. */
+export const NOTICE_TEXT: Record<Notice['kind'], (name: string) => string> = {
+  copy: name => `A copy of ${name}'s pairing was used after its weekly renewal. Only a copied pairing file could do that - ${name} was removed. Pair it again if it was you.`,
+  'revoked-name': name => `${name}'s pairing was used under another computer name - revoked. Pair it again under its new name.`,
+  'revoked-mac': name => `${name}'s pairing was used from another Bluetooth address - revoked.`,
+  expired: name => `${name}'s pairing missed its weekly renewal and expired. Pair it again.`,
+};
+
 export type PairingView =
   | {stage: 'closed'}
   | {stage: 'waiting'; until: number}
@@ -106,6 +115,8 @@ export type Deps = {
   now?: () => number;
   isTestingMode?: () => boolean;
   log?: Log;
+  /** How a notice reaches the person outside the app: a phone notification (T5). */
+  alarm?: (id: number, text: string) => void;
 };
 
 const asHex = (s: string) => okbytes.toHex(okbytes.utf8ToBytes(s));
@@ -123,6 +134,8 @@ export function createBtTransit(deps: Deps = {}) {
   const now = deps.now ?? Date.now;
   const isTestingMode = deps.isTestingMode ?? testingModeOn;
   const log: Log = deps.log ?? (() => {});
+  const alarm = deps.alarm ?? postBluetoothAlarm;
+  let alarmIds = 0;
 
   let state: Stored | null = null;
   let loading: Promise<Stored> | null = null;
@@ -191,6 +204,12 @@ export function createBtTransit(deps: Deps = {}) {
 
   function notice(s: Stored, kind: Notice['kind'], rec: PairRecord) {
     s.notices = [{kind, id: rec.id, name: rec.name, at: now()}, ...s.notices].slice(0, NOTICES_MAX);
+    /* the card shows it in red; this reaches the person when ok-rn is not on screen */
+    try {
+      alarm((alarmIds = (alarmIds + 1) & 0xffff), NOTICE_TEXT[kind](rec.name));
+    } catch {
+      /* an APK without the notification module: the card still shows it */
+    }
   }
 
   function drop(s: Stored, id: string) {
@@ -311,7 +330,7 @@ export function createBtTransit(deps: Deps = {}) {
     if (!next) return;
     s.records = s.records.map(r => (r.id === rec.id ? (next as PairRecord) : r));
     await save();
-    log('info', `[bt] ${rec.name}'s pairing renewed (week ${next.epoch})`);
+    log('info', `[bt] ${rec.name}'s renewal agreed - it takes over when ${rec.name} next connects (two-phase)`);
     changed();
   }
 
