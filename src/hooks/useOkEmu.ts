@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState} from 'react-native';
+import {errStack, errText} from '../logSafe';
 import {bytes as okbytes, device as device_, protocol} from 'node-onlykey-lib';
 import OkEmu, {DIR, IFACE, PRESS_TICKS, bandFor, type Iface} from '../transport/OkEmu';
 import {secret, secretBytes} from '../redact';
@@ -546,7 +547,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
           setDevice(info.state as DeviceState);
         }
       } catch (error) {
-        console.log(`[softkey] resume: could not ask the key: ${String(error)}`);
+        console.log(`[softkey] resume: could not ask the key: ${errText(error)}`);
       }
     });
     return () => sub.remove();
@@ -568,10 +569,10 @@ export function useOkEmu({log, autoStart = false}: Options) {
        * silent from an exception thrown before anything was ever written.
        */
       log('error', `OKCONNECT: ${String(error)}`);
-      console.log(`[softkey] OKCONNECT failed: ${String(error)}`);
-      if (error instanceof Error && error.stack) {
-        console.log(`[softkey] ${error.stack.replace(/\s*\n\s*/g, ' | ').slice(0, 400)}`);
-      }
+      console.log(`[softkey] OKCONNECT failed: ${errText(error)}`);
+      /* the stack in debug builds only (src/logSafe.ts) */
+      const stack = errStack(error);
+      if (stack) console.log(`[softkey] ${stack}`);
       return null;
     } finally {
       setBusy(false);
@@ -658,7 +659,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
         return true;
       } catch (error) {
         log('error', `provision: ${String(error)}`);
-        console.log(`[softkey] provision failed: ${String(error)}`);
+        console.log(`[softkey] provision failed: ${errText(error)}`);
         return false;
       } finally {
         offProgress?.();

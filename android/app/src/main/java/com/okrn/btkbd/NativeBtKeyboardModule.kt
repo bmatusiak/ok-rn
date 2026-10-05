@@ -469,7 +469,8 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
      * connect" could not be told apart from "it never tried", because nothing
      * anywhere recorded which. tools/logwatch.js watches for these.
      */
-    Log.i(TAG, "$next: $message")
+    /* release: the state only - the message names the paired host (LogSafe) */
+    Log.i(TAG, "$next: ${com.okrn.LogSafe.detail(com.okrn.LogSafe.scrub(message), "<host>")}")
     val event: WritableMap = Arguments.createMap()
     event.putString("state", next)
     event.putString("message", message)

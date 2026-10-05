@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, device as device_, protocol, transport as oktransport} from 'node-onlykey-lib';
+import {errText, scrub} from '../logSafe';
 
 import UsbPipe from '../transport/UsbPipe';
 import {secretBytes} from '../redact';
@@ -135,7 +136,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
        * key that went "stopped" with no line saying why was diagnosed by
        * guesswork once. tools/logwatch.js watches for these.
        */
-      console.log(`[hardkey] usb ${event.state}: ${event.message}`);
+      console.log(`[hardkey] usb ${event.state}: ${scrub(String(event.message ?? ''))}`);
       if (event.state === 'connected') {
         setState('running');
       } else if (event.state === 'connecting') {
@@ -353,7 +354,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
       return result;
     } catch (error) {
       log('error', `OKCONNECT: ${String(error)}`);
-      console.log(`[hardkey] OKCONNECT failed: ${String(error)}`);
+      console.log(`[hardkey] OKCONNECT failed: ${errText(error)}`);
       return null;
     } finally {
       setBusy(false);

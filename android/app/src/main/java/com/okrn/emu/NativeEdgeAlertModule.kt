@@ -76,7 +76,7 @@ class NativeEdgeAlertModule(reactContext: ReactApplicationContext) : NativeEdgeA
      * so a public version guarantees nothing. The details (title/text) are in the
      * app - a tap opens Presses on the link.
      */
-    android.util.Log.i("okemu", "[edge-watch] alarm #$s: $title")
+    android.util.Log.i("okemu", "[edge-watch] alarm ${com.okrn.LogSafe.detail("#$s: $title", "posted")}")
     val full = builder(app, channel)
       .setSmallIcon(R.drawable.ic_stat_o)
       .setContentTitle(if (quiet) "Edge notice" else "Edge alarm")
@@ -136,7 +136,7 @@ class NativeEdgeAlertModule(reactContext: ReactApplicationContext) : NativeEdgeA
           watchTask = -1
         }
       } catch (e: Throwable) {
-        android.util.Log.w("okemu", "[edge-watch] headless task: ${e.message}")
+        android.util.Log.w("okemu", "[edge-watch] headless task: ${com.okrn.LogSafe.error(e)}")
       }
     }
   }

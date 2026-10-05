@@ -1,5 +1,6 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {AppState, KeyboardAvoidingView, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
+import {errText} from './src/logSafe';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
 import {Btn, StatusPill} from './src/ui/components';
@@ -544,7 +545,7 @@ function Shell() {
         setConfigMode(ON);
       }
     } catch (e) {
-      console.log(`[config] label probe failed: ${String((e as Error)?.message ?? e)}`);
+      console.log(`[config] label probe failed: ${errText(e)}`);
     } finally {
       setChecking(false);
     }

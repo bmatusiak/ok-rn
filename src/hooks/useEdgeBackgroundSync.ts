@@ -24,6 +24,7 @@
  * WHAT: edgeStore.sync - the same sync the tab runs (serialised with it there),
  * into the same stored copy. The tab shows the result when it opens.
  */
+import {detail, errText} from '../logSafe';
 import {useEffect, useRef} from 'react';
 import {sync} from '../edgeStore';
 import {beat, onHoldRequested, onWatchTick, raiseWatchAlarms, takeHoldRequest, watching} from '../edgeAlerts';
@@ -88,7 +89,7 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
           await raiseWatchAlarms(mirror, view, {refusedArms: st.refusedArms, live: live.map(b => b.grantId), past});
         }
       } catch (e) {
-        console.log(`[edge-watch] sync failed: ${String((e as any)?.message ?? e)}`);
+        console.log(`[edge-watch] sync failed: ${errText(e)}`);
         /* the next tick tries again; the tab shows any real error when opened */
       } finally {
         busy = false;
@@ -129,7 +130,7 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
       const st = await source.state();
       const ids = (await source.budgets()).map(b => b.grantId).filter(id => !st.held.includes(id));
       for (const id of ids) await source.hold(id);
-      console.log(`[edge-watch] hold: ${ids.length ? ids.join(', ') : 'nothing live to hold'}`);
+      console.log(`[edge-watch] hold: ${ids.length ? detail(ids.join(', '), `${ids.length} budget(s)`) : 'nothing live to hold'}`);
       return true;
     };
     const tryHold = async () => {

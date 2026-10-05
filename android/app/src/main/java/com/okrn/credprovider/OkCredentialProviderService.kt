@@ -77,7 +77,7 @@ class OkCredentialProviderService : CredentialProviderService() {
       CredProviderGate.TAG,
       "beginGetCredential: ${options.size} public-key option(s) of " +
         "${request.beginGetCredentialOptions.size} total, caller=" +
-        (request.callingAppInfo?.packageName ?: "unknown"),
+        com.okrn.LogSafe.detail(request.callingAppInfo?.packageName ?: "unknown", "<app>"),
     )
 
     val response = BeginGetCredentialResponse.Builder()
@@ -115,7 +115,7 @@ class OkCredentialProviderService : CredentialProviderService() {
     Log.i(
       CredProviderGate.TAG,
       "beginCreateCredential: caller=" +
-        (request.callingAppInfo?.packageName ?: "unknown"),
+        com.okrn.LogSafe.detail(request.callingAppInfo?.packageName ?: "unknown", "<app>"),
     )
 
     val entry = CreateEntry.Builder(ENTRY_USERNAME, pendingIntentFor(ACTION_CREATE, 0))

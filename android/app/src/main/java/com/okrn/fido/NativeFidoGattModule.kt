@@ -519,7 +519,8 @@ class NativeFidoGattModule(
    * onCharacteristicWriteRequest about where bytes may be logged.
    */
   private fun report(message: String) {
-    Log.i(TAG, message)
+    /* the UI state keeps the detail; logcat gets no MAC addresses in a release build (LogSafe) */
+    Log.i(TAG, com.okrn.LogSafe.scrub(message))
     setState(state, message)
   }
 

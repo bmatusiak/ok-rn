@@ -81,7 +81,7 @@ class CredProviderActivity : ReactActivity() {
     // The hash's PRESENCE is logged, never its bytes.
     Log.i(
       CredProviderGate.TAG,
-      "${p.action} from ${p.callerPackage} clientDataHash=" +
+      "${p.action} from ${com.okrn.LogSafe.detail(p.callerPackage, "<app>")} clientDataHash=" +
         if (p.clientDataHashB64.isEmpty()) "NULL" else "present",
     )
   }
