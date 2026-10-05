@@ -101,17 +101,15 @@ export function BluetoothScreen({
 
   const setMaster = useCallback(
     (next: boolean) => {
-      setOn(next);
       /*
-       * Off means off, for both. Leaving either running under a switch that
-       * says Bluetooth is off would be the screen lying about the radio.
+       * Off means off, for both - the keyboard withdrawn and the GATT server
+       * stopped. That teardown now follows the switch itself (App.tsx
+       * RadioStatus, "OFF MEANS THE NATIVE TEARDOWN"), so every path that turns
+       * it off gets it, not only this screen.
        */
-      if (!next) {
-        if (published) void bt.withdraw();
-        if (advertising) void fido.stop();
-      }
+      setOn(next);
     },
-    [bt, fido, setOn, published, advertising],
+    [setOn],
   );
 
   /*

@@ -280,6 +280,40 @@ class NativeFidoGattModule(
 
   override fun getState(): String = state
 
+  /*
+   * WHERE OUR SERVICES SIT IN THE PHONE'S GATT TABLE (Brad, 2026-10-05: "services
+   * must land in the same places as on a fresh start").
+   *
+   * Windows keeps one device entry per service AND start handle. Measured on the
+   * Pixel (HCI snoop + Windows' device list): after a Bluetooth off/on our
+   * services were re-registered before Google's (FCF1/FEF3), landed at other
+   * handles, and Windows - having read the complete new list - never finished
+   * swapping its entries; every discovery from the computer hung from then on.
+   * A fresh start registers ours after the system's, in the place Windows knows.
+   *
+   * fidoHandle(): where our FIDO service (0xFFFD) is now (its start handle), -1
+   * when not registered. fidoKnownHandle(): where it was the last time a
+   * computer actually READ one of its characteristics - proof that computer has
+   * enumerated that layout. The Bluetooth off/on sequence (App.tsx) restarts our
+   * services until the two match.
+   */
+  private fun currentFidoHandle(): Int =
+    runCatching { gattServer?.getService(FIDO_SERVICE_UUID)?.instanceId }.getOrNull() ?: -1
+
+  private fun layoutPrefs() = reactContext.getSharedPreferences(LAYOUT_PREFS, Context.MODE_PRIVATE)
+
+  private fun rememberLayoutAsKnown() {
+    val h = currentFidoHandle()
+    if (h > 0 && layoutPrefs().getInt(KEY_KNOWN_FIDO_HANDLE, -1) != h) {
+      layoutPrefs().edit().putInt(KEY_KNOWN_FIDO_HANDLE, h).apply()
+      Log.i(TAG, "a computer read our FIDO service at handle $h - remembered as the known layout")
+    }
+  }
+
+  override fun fidoHandle(): Double = currentFidoHandle().toDouble()
+
+  override fun fidoKnownHandle(): Double = layoutPrefs().getInt(KEY_KNOWN_FIDO_HANDLE, -1).toDouble()
+
   override fun isSupported(promise: Promise) {
     try {
       /*
@@ -1172,6 +1206,7 @@ class NativeFidoGattModule(
        * for is the whole diagnosis.
        */
       Log.d(TAG, "read request: ${characteristic.uuid}")
+      rememberLayoutAsKnown()
 
       val value = when (characteristic.uuid) {
         // Max Control Point write, big-endian, capped to the negotiated MTU.
@@ -2096,6 +2131,9 @@ class NativeFidoGattModule(
      */
     private const val WATCHDOG_ENABLED = true
     private const val WATCHDOG_MS = 6_000L
+    /* where our FIDO service was when a computer last read it (fidoKnownHandle) */
+    private const val LAYOUT_PREFS = "okrn.fido.layout"
+    private const val KEY_KNOWN_FIDO_HANDLE = "knownFidoHandle"
 
     const val STATE_IDLE = "idle"
     const val STATE_ADVERTISING = "advertising"

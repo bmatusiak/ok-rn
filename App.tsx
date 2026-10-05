@@ -65,6 +65,8 @@ import {LogScreen} from './src/screens/LogScreen';
 import {AdvancedScreen} from './src/screens/AdvancedScreen';
 import {TestingScreen} from './src/screens/TestingScreen';
 import {BT_SEQ_BASE, takeOpenedAlarm} from './src/edgeAlerts';
+import NativeFidoGatt from './specs/NativeFidoGatt';
+import {btTransit} from './src/btTransit';
 import {consentRefusal, testConsentActive} from './src/debugGuard';
 import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
@@ -208,6 +210,13 @@ function IoPolicySync({setTarget}: {setTarget: (address: string | null) => void}
  * keyboard session through the context that App WRAPS but is not inside -
  * calling the hook in App's own body throws.
  */
+
+
+/* while waiting for Bluetooth to be ready after the phone's Bluetooth came back: ask this often (RadioStatus) */
+const READY_ASK_MS = 1500;
+/* how many times the Bluetooth off/on sequence restarts ours to land where the computer knows it */
+const LAYOUT_MAX_TRIES = 5;
+
 function RadioStatus({
   on,
   setOn,
@@ -226,6 +235,147 @@ function RadioStatus({
   const published = btk.state !== 'unregistered' && btk.state !== 'unsupported';
   const linked = btk.state === 'connected';
   const advertising = fido.state === 'advertising' || fido.state === 'connected';
+
+  /*
+   * THE PHONE'S BLUETOOTH GOING OFF AND ON IS AN APP RESTART FOR OUR BLUETOOTH
+   * (Brad, 2026-10-04, from his own fix by hand on the Pixel).
+   *
+   * What went wrong: after a Bluetooth off/on the app still held the computer as
+   * connected, rebuilt its services before the fresh stack was ready, and a
+   * computer's discovery then hung until the app restarted; and the "not ready"
+   * empty list during the switch erased the saved target. His sequence fixed it:
+   *   radio off -> remember the target, switch to None (drop the connection);
+   *   radio on  -> once Bluetooth is READY, the in-app switch off; once ours has
+   *                STOPPED, on again (as on an app start); once the keyboard is
+   *                published, pick the remembered computer again.
+   * Every step waits on FEEDBACK from the native side, never a timer (Brad:
+   * "never use timers if we can get feedback"). Only while the in-app switch is on.
+   */
+  type Step = 'idle' | 'waitReady' | 'waitStopped' | 'waitPublished' | 'waitLanded';
+  const layoutTries = useRef(0);
+  const step = useRef<Step>('idle');
+  const lastRadio = useRef<boolean | null>(null);
+  const resumeHost = useRef<string | null>(null);
+  useEffect(() => {
+    const r = btk.radioOn;
+    const prev = lastRadio.current;
+    lastRadio.current = r;
+    if (r === null || prev === null || r === prev) return;
+    if (!r) {
+      step.current = 'idle';
+      /* no pairing mode while Bluetooth is off (Brad, 2026-10-05) */
+      btTransit.closePairWindow();
+      if (btk.chosenHost) resumeHost.current = btk.chosenHost;
+      if (btk.chosenHost) void btk.chooseHost(null).catch(() => {});
+      return;
+    }
+    if (!on) return;
+    /* ready = the native side got a real answer for the paired computers (an empty one counts) */
+    layoutTries.current = 0;
+    step.current = 'waitReady';
+    setAskingReady(true);
+    if (btk.ready === true) stopOurs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [btk.radioOn]);
+  useEffect(() => {
+    if (step.current === 'waitReady' && btk.ready === true) stopOurs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [btk.ready]);
+  /*
+   * A timer that LOOKS for that feedback, never one that replaces it (Brad: "timers
+   * are good for finding feedback"): while waiting, ask for the paired computers
+   * every READY_ASK_MS, in case the last status event came a moment too early.
+   * It stops as soon as the answer comes (or Bluetooth goes off again).
+   */
+  const [askingReady, setAskingReady] = useState(false);
+  useEffect(() => {
+    if (!askingReady) return undefined;
+    const t = setInterval(() => {
+      if (step.current !== 'waitReady') return setAskingReady(false);
+      void btk.refreshHosts().catch(() => {});
+    }, READY_ASK_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askingReady]);
+  /* our Bluetooth off, exactly like the in-app switch (the teardown follows the switch, below) */
+  function stopOurs() {
+    setAskingReady(false);
+    step.current = 'waitStopped';
+    setOn(false);
+  }
+  /* on again only when ours has really stopped: keyboard withdrawn and the GATT server down */
+  const stopped = !published && !advertising;
+  useEffect(() => {
+    if (step.current !== 'waitStopped' || on || !stopped) return;
+    step.current = 'waitPublished';
+    setOn(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [on, stopped]);
+  /*
+   * ...and once ours is on again, the remembered computer, like choosing it from
+   * None. NOT gated on the keyboard being published: when Bluetooth comes back
+   * the native side republishes the keyboard itself, the app's own publish then
+   * loses that race ("another app is registered") and the keyboard reads
+   * "unregistered" - and choosing the computer is what brings it back (Brad,
+   * 2026-10-05, round 3 on the Pixel). So choose as soon as the switch is on.
+   */
+  useEffect(() => {
+    if (step.current !== 'waitPublished' || !on) return;
+    step.current = 'waitLanded';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [on]);
+  /*
+   * ...but first: DID OUR SERVICES LAND WHERE THE COMPUTER KNOWS THEM? (the cause,
+   * measured 2026-10-05: Windows keys its entries by start handle and hung when
+   * ours moved). Checked once ours is advertising again (feedback). Not where the
+   * computer last read them -> ours went in before the system's services: restart
+   * ours again (a timer only gives the system's services a moment to go in first;
+   * the handle is the check), at most LAYOUT_MAX_TRIES times.
+   */
+  useEffect(() => {
+    if (step.current !== 'waitLanded' || !advertising) return;
+    const now = NativeFidoGatt.fidoHandle();
+    const known = NativeFidoGatt.fidoKnownHandle();
+    /*
+     * No known position yet (no computer has read us since the app was installed):
+     * restart ours ONCE anyway, so they land after the system's services like a
+     * fresh start. Without this the computer could not enumerate, so it never read
+     * us, so the position was never learned (the Pixel, 2026-10-05, test 2).
+     */
+    const unknownFirstTry = known <= 0 && layoutTries.current === 0;
+    if ((unknownFirstTry || (known > 0 && now !== known)) && layoutTries.current < LAYOUT_MAX_TRIES) {
+      layoutTries.current += 1;
+      console.log(`[bt] our FIDO service landed at ${now}, the computer knows it at ${known} - restarting ours (try ${layoutTries.current})`);
+      step.current = 'waitReady';
+      setTimeout(() => { if (step.current === 'waitReady') stopOurs(); }, READY_ASK_MS);
+      return;
+    }
+    console.log(`[bt] our FIDO service at ${now} (computer knows ${known}) - picking the computer again`);
+    step.current = 'idle';
+    const host = resumeHost.current;
+    resumeHost.current = null;
+    if (host) void btk.chooseHost(host).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [advertising]);
+
+  /*
+   * OFF MEANS THE NATIVE TEARDOWN, WHOEVER TURNED IT OFF (Brad, 2026-10-04). It
+   * lived only in the Bluetooth screen's switch handler, so any other path that
+   * set the switch off (this sequence's first try, the e2e runner) left the
+   * keyboard published and the GATT server running under a switch that said
+   * off. On the edge from on to off only: at app start or after a JS reload the
+   * switch reads off for a moment while the native server is still running,
+   * and must not be torn down for that.
+   */
+  const prevOn = useRef(on);
+  useEffect(() => {
+    const was = prevOn.current;
+    prevOn.current = on;
+    if (!(was && !on)) return;
+    if (published) void Promise.resolve(btk.withdraw()).catch(() => {});
+    if (advertising) void Promise.resolve(fido.stop()).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [on]);
 
   /* The radio, once storage has said so. */
   useEffect(() => {

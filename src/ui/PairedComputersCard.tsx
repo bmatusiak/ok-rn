@@ -54,6 +54,13 @@ export function PairedComputersCard({testing = false, gate = btTransit}: {testin
     return gate.subscribe(() => void refresh());
   }, [gate, refresh]);
 
+  /*
+   * THE PAIRING WINDOW LIVES ONLY WHILE THIS CARD IS ON SCREEN (Brad, 2026-10-05).
+   * When the card goes away - our Bluetooth switched off hides it, or another tab
+   * - an open window would keep answering pairing requests with nobody looking.
+   */
+  useEffect(() => () => gate.closePairWindow(), [gate]);
+
   /* the countdown while the window is open */
   const open = pairing.stage === 'waiting' || pairing.stage === 'code' || pairing.stage === 'approved';
   useEffect(() => {

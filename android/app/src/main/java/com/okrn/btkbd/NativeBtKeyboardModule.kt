@@ -372,9 +372,27 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
        * the pairing is what makes the link trusted. Anything not bonded cannot
        * be typed at, so scanning would only offer choices that cannot work.
        */
+      /*
+       * NOT READY IS NOT "NO COMPUTERS" (Brad, 2026-10-04). Right after the
+       * phone's Bluetooth comes back on, the service answers nothing (null) or
+       * the adapter is not fully ON yet, and `.orEmpty()` turned that into an
+       * empty list: JS took it for "every computer was unpaired", erased the
+       * saved target, and could not tell when Bluetooth was really ready. So
+       * that case is refused as not ready; a real answer - even an empty one,
+       * when nothing is paired - is the readiness signal.
+       */
+      if (a.state != android.bluetooth.BluetoothAdapter.STATE_ON) {
+        promise.reject(ERR_NOT_READY, "Bluetooth is not ready yet")
+        return
+      }
+      val bonded = a.bondedDevices
+      if (bonded == null) {
+        promise.reject(ERR_NOT_READY, "Bluetooth is not ready yet")
+        return
+      }
       val connected = proxy?.connectedDevices ?: emptyList()
       val out = Arguments.createArray()
-      for (device in a.bondedDevices.orEmpty()) {
+      for (device in bonded) {
         val row = Arguments.createMap()
         row.putString("address", device.address)
         row.putString("name", runCatching { device.name }.getOrNull() ?: "")
@@ -493,6 +511,8 @@ class NativeBtKeyboardModule(private val reactContext: ReactApplicationContext) 
 
   companion object {
     const val ERR = "E_BT_KEYBOARD"
+    /* hosts() before the Bluetooth service answers: JS waits and asks again; never read as "no computers" */
+    const val ERR_NOT_READY = "E_BT_NOT_READY"
     private const val PERMISSION_REQUEST_CODE = 8213
     internal const val PROXY_TIMEOUT_MS = 4000L
 

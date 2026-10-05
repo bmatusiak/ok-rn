@@ -146,6 +146,20 @@ export interface Spec extends TurboModule {
   getState(): string;
 
   /**
+   * Where our FIDO service (0xFFFD) sits in the phone's GATT table now (its
+   * start handle), -1 when not registered. Windows keys its device entries by
+   * that position; see fidoKnownHandle.
+   */
+  fidoHandle(): number;
+
+  /**
+   * Where it was the last time a computer read one of its characteristics (the
+   * layout that computer has enumerated), -1 if never. After a Bluetooth off/on
+   * the app restarts its services until fidoHandle() matches this.
+   */
+  fidoKnownHandle(): number;
+
+  /**
    * Answer a CtapRequestEvent. `hex` is the raw CTAP2 response
    * (status byte followed by CBOR), which the native side fragments
    * across the FIDO Status characteristic.

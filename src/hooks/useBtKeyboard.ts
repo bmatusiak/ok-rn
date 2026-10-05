@@ -80,6 +80,13 @@ export type BtKeyboard = {
   supported: boolean | null;
   /** Whether the radio is on right now. Null until asked. */
   radioOn: boolean | null;
+  /**
+   * Whether the Bluetooth service has ANSWERED since the radio came on: true
+   * once hosts() returned a real list (even an empty one), false while it is
+   * refused as not ready or the radio is off. Null until asked. The readiness
+   * signal for restarting our Bluetooth after the phone's Bluetooth came back.
+   */
+  ready: boolean | null;
   /** 'unregistered' | 'registering' | 'registered' | 'connecting' | 'connected' | ... */
   state: string;
   message: string;
@@ -149,6 +156,7 @@ export function useBtKeyboard(): BtKeyboard {
    * while the tab is open and the screen has to follow.
    */
   const [radioOn, setRadioOn] = useState<boolean | null>(null);
+  const [ready, setReady] = useState<boolean | null>(null);
 
   /*
    * A STALE REFUSAL OUTLIVES THE REASON FOR IT.
@@ -295,8 +303,18 @@ export function useBtKeyboard(): BtKeyboard {
        * a switch flipped in Android settings rather than waiting for a remount.
        */
       NativeBtKeyboard.isRadioOn()
-        .then(setRadioOn)
+        .then(on => {
+          setRadioOn(on);
+          if (!on) setReady(false);
+        })
         .catch(() => setRadioOn(false));
+      /*
+       * ...and the paired computers. Each status is FEEDBACK from the native
+       * side (the adapter coming back, the profile re-registering), so this is
+       * how `ready` turns true as soon as the Bluetooth service answers - no
+       * timer (Brad, 2026-10-04: "never use timers if we can get feedback").
+       */
+      void refreshHosts();
       setHost(event.name || event.address);
 
       const connected = event.state === 'connected';
@@ -348,6 +366,7 @@ export function useBtKeyboard(): BtKeyboard {
     try {
       const list = await NativeBtKeyboard.hosts();
       setHosts(list);
+      setReady(true);
 
       /*
        * A TARGET THAT NO LONGER EXISTS IS NOT A TARGET.
@@ -411,6 +430,16 @@ export function useBtKeyboard(): BtKeyboard {
       }
     } catch (e) {
       const message = String((e as Error)?.message ?? e);
+
+      /*
+       * NOT READY: the phone's Bluetooth is coming back and its service has not
+       * answered yet (NativeBtKeyboardModule hosts()). Not an error to show, and
+       * NOT "no computers": the list and the saved target are left alone.
+       */
+      if ((e as {code?: string})?.code === 'E_BT_NOT_READY' || /not ready/i.test(message)) {
+        setReady(false);
+        return;
+      }
 
       /*
        * THE PERMISSION IS ASKED FOR HERE, AND THIS IS THE ONLY PLACE IT CAN BE.
@@ -659,6 +688,7 @@ export function useBtKeyboard(): BtKeyboard {
   return {
     supported,
     radioOn,
+    ready,
     state,
     message,
     host,
