@@ -37,6 +37,7 @@
 #define OKEDGE_SIBLING_ADD 0x35    /* R29: two parts - {0, X 32} staged, then {1, Y 32, device id 16} and a press; a sibling link (op 17) */
 #define OKEDGE_SIBLING_REMOVE 0x36 /* R29: {index}, press; a sibling-remove link (op 18) */
 #define OKEDGE_SIBLING_LIST 0x37   /* R29: no press; count . max, then one report per slot: X || Y (zeros = empty) */
+#define OKEDGE_ANCHOR 0x38         /* R30: three parts - {0, sibling index, seq, head}, {1, sig r}, {2, sig s} - the key checks the sibling's checkpoint, then a press; an anchor link (op 19) */
 #define OKEDGE_PEER_LIST 0x32    /* R20: no press; count . k . max, then one report per slot: X || Y (zeros = empty) */
 #define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts; refused while restoring */
 #define OKEDGE_REPLAY_DONE 0x24  /* R26: {seq, tag, newest}, press; commits only a vouched replay; replies seq . head . tag or EDGE:11 */
@@ -70,7 +71,8 @@
 #define EDGE_NO_SUCH_PEER 0x16     /* PEER_REMOVE: no peer at that index */
 #define EDGE_SIBLING_KNOWN 0x18     /* SIBLING_ADD: that key is a sibling already (CHOSEN number) */
 #define EDGE_SIBLINGS_FULL 0x19     /* SIBLING_ADD: 4 siblings already (CHOSEN number) */
-#define EDGE_NO_SUCH_SIBLING 0x1A   /* SIBLING_REMOVE: no sibling at that index (CHOSEN number) */
+#define EDGE_NO_SUCH_SIBLING 0x1A   /* SIBLING_REMOVE / ANCHOR: no sibling at that index (CHOSEN number) */
+#define EDGE_BAD_CHECKPOINT 0x1B    /* ANCHOR: the checkpoint does not verify under that sibling's key (CHOSEN number) */
 #define EDGE_SYNC_ORDER 0x17       /* SYNC: a part out of order (CHOSEN number); EDGE:16 also answers a peer not on the list, EDGE:12 first > last */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */

@@ -32,6 +32,7 @@ const REFUSAL_TEXT: Record<string, string> = {
 /* a place that keeps copies is a computer, not an agent (Brad, 2026-10-05) */
 const refusalText = (refusal: string, kind: string) => {
   const t = REFUSAL_TEXT[refusal] ?? `Refused: ${refusal}`;
+  if (kind === 'anchor') return t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'Nothing could be anchored');
   if (kind === 'sibling') return t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The keys could not be paired');
   return kind === 'peer' || kind === 'sync' ? t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The computer could not be added') : t;
 };
@@ -147,6 +148,16 @@ export function EdgeRequestSheet() {
                   Links this phone's copy lacks, checked against the key before you see this, and the Key Chain lists merged both ways. A press records the sync in the chain. It brings history and public keys only - never budgets, debts, registrations or what is marked yours.
                 </Text>
               </>
+            ) : a.kind === 'anchor' ? (
+              <>
+                <Text style={[styles.title, {color: theme.warn}]}>Anchor another key's chain?</Text>
+                <Text style={[styles.code, styles.codeName]} numberOfLines={1} adjustsFontSizeToFit>{a.name}</Text>
+                <Text style={styles.op}>{`Its chain up to #${a.seq}, checked against its signed checkpoint${a.count ? ` · ${a.count} new link${a.count === 1 ? '' : 's'} to keep` : ''}`}</Text>
+                <Text style={styles.dim}>{`Its key ${requestLib.fingerprint(a.sibling)} · from the computer ${a.place}`}</Text>
+                <Text style={styles.dim}>
+                  A press records, in this key's chain, that this phone has seen that chain up to there. If the other key ever goes back or changes what it showed, this phone will say so. History only - never budgets, debts or registrations.
+                </Text>
+              </>
             ) : a.kind === 'sibling' ? (
               <>
                 <Text style={[styles.title, {color: theme.warn}]}>Pair with another key of yours?</Text>
@@ -212,14 +223,14 @@ export function EdgeRequestSheet() {
             ) : null}
             {/* the tap registered: say so at once - the phone syncs and checks its copy before the key asks for the press (the 'lag', Brad 2026-10-04) */}
             {s.phase === 'ask' && acting ? (
-              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : a.kind === 'peer' ? 'Adding - getting the key ready…' : a.kind === 'sync' ? 'Syncing - getting the key ready…' : a.kind === 'sibling' ? 'Pairing - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
+              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : a.kind === 'peer' ? 'Adding - getting the key ready…' : a.kind === 'sync' ? 'Syncing - getting the key ready…' : a.kind === 'sibling' ? 'Pairing - getting the key ready…' : a.kind === 'anchor' ? 'Anchoring - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
             ) : null}
             {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
             {s.phase === 'ask' && !confirming && !acting ? (
               <View style={styles.row}>
                 <Btn
                   large
-                  title={a.kind === 'register' ? 'Register' : a.kind === 'peer' ? 'Add' : a.kind === 'sync' ? 'Sync' : a.kind === 'sibling' ? 'Pair' : 'Approve'}
+                  title={a.kind === 'register' ? 'Register' : a.kind === 'peer' ? 'Add' : a.kind === 'sync' ? 'Sync' : a.kind === 'sibling' ? 'Pair' : a.kind === 'anchor' ? 'Anchor' : 'Approve'}
                   tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
                   disabled={off || refusal !== null || (a.kind === 'request' && !!a.blocked)}
                   onPress={consent(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}

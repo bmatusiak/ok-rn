@@ -58,6 +58,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_AGENT_ADD 15
 #define OP_SIBLING_ADD 17    /* R29 */
 #define OP_SIBLING_REMOVE 18 /* R29 */
+#define OP_ANCHOR 19         /* R30 */
 #define OP_SYNC 20     /* sync phase 2: every approved sync writes one (Brad, 2026-10-05) */
 #define OP_CONTINUE 16 /* R28: the first link of a device's own chain, carrying another chain's debts */
 #define DECISION_SELF_PRESS 4
@@ -268,7 +269,7 @@ static struct {
  * replaces it.
  */
 enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE, PRESS_LOSS, PRESS_AGENT_ADD,
-  PRESS_PEER_ADD, PRESS_PEER_REMOVE, PRESS_SYNC, PRESS_SIBLING_ADD, PRESS_SIBLING_REMOVE };
+  PRESS_PEER_ADD, PRESS_PEER_REMOVE, PRESS_SYNC, PRESS_SIBLING_ADD, PRESS_SIBLING_REMOVE, PRESS_ANCHOR };
 static struct {
   uint8_t what;
   unsigned long since;
@@ -1169,6 +1170,10 @@ static uint8_t sib_x_staged;
 /* SYNC's parts, until the third brings the last (RAM only): peer hash 32 . first 4 . last 4 . head 32 . Key Chain hash 32 */
 static uint8_t sync_fields[104];
 static uint8_t sync_parts;
+/* ANCHOR's parts (RAM only): the sibling index, then its device id 16 . seq 4 . head 32 . signature 64 - the subject's fields */
+static uint8_t anchor_index;
+static uint8_t anchor_fields[116];
+static uint8_t anchor_parts;
 
 /* double-buffered like the chain record: the newer copy whose check holds */
 static void pairs_load(void) {
@@ -1280,6 +1285,24 @@ static void sibling_remove_pressed(void) {
   reply_seq_head();
 }
 
+/*
+ * R30 ANCHOR (P2c): this key writes, with a press, that it has seen its
+ * sibling's chain up to a SIGNED checkpoint - a merge link: its own previous
+ * head and the sibling's signed head are both its parents. Layout (spec): op
+ * 19, decision approve, slot = the sibling's index, the press flag, grant_id =
+ * the sibling's seq, subject = SHA256("OKEDGE-ANCHOR-v1" || sibling device_id
+ * || seq (u32 LE) || head || checkpoint signature). The key already checked the
+ * signature against the sibling's key (it has uECC), so a fake anchor is never
+ * written; copies check it again from the sibling's own sibling link.
+ */
+static void anchor_pressed(void) {
+  pairs_load();
+  uint8_t index = (uint8_t)press.id;
+  if (index >= pairs.sib_n) { status(EDGE_NO_SUCH_SIBLING); return; }
+  append(OP_ANCHOR, OKEDGE_DECISION_APPROVE, index, FLAG_PRESS_OBSERVED, press.verified, press.vouch_seq, 0, NULL);
+  reply_seq_head();
+}
+
 static void peer_remove_pressed(void) {
   pairs_load();
   uint8_t index = (uint8_t)press.id;
@@ -1367,6 +1390,7 @@ void okplugin_edge_decision(int decision) {
     else if (what == PRESS_SYNC) sync_pressed();
     else if (what == PRESS_SIBLING_ADD) sibling_add_pressed();
     else if (what == PRESS_SIBLING_REMOVE) sibling_remove_pressed();
+    else if (what == PRESS_ANCHOR) anchor_pressed();
     press_drop();
     return;
   }
@@ -1864,6 +1888,56 @@ void okplugin_edge_recv(uint8_t *buffer) {
       press.verified_len = 32;
       H(what, "OKEDGE-SIBLING-REMOVE", press.verified, 32, st.head, 32, NULL, 0);
       press_wait(PRESS_SIBLING_REMOVE, what);
+      return;
+    }
+    case OKEDGE_ANCHOR: {
+      /*
+       * R30, three parts in order (the fields do not fit one request):
+       *   [6] = 0: sibling index [7] . seq u32 [8..11] . head 32 [12..43]  -> EDGE:00
+       *   [6] = 1: the checkpoint signature's r [7..38]                     -> EDGE:00
+       *   [6] = 2: its s [7..38] -> checked, then the press
+       * The checkpoint is the sibling's own: SHA256("OKEDGE-CKPT-v1" || its
+       * device id || seq || head), signed with the key in its sibling link. A
+       * bad one is EDGE:1B and nothing waits; no sibling there is EDGE:1A; a part
+       * out of order EDGE:17. Refused while restoring (R26).
+       */
+      uint8_t what[32];
+      uint8_t part = buffer[6];
+      press_drop();
+      if (st.restored) { anchor_parts = 0; status(EDGE_RESTORING); return; }
+      if (part == 0) {
+        pairs_load();
+        anchor_parts = 0;
+        if (buffer[7] >= pairs.sib_n) { status(EDGE_NO_SUCH_SIBLING); return; }
+        anchor_index = buffer[7];
+        memcpy(anchor_fields, pairs.sib[anchor_index] + 64, ID_BYTES);
+        memcpy(anchor_fields + 16, buffer + 8, 4 + 32);
+        anchor_parts = 1;
+        status(EDGE_OK);
+        return;
+      }
+      if (part == 1 && anchor_parts == 1) {
+        memcpy(anchor_fields + 52, buffer + 7, 32);
+        anchor_parts = 2;
+        status(EDGE_OK);
+        return;
+      }
+      if (part != 2 || anchor_parts != 2) { anchor_parts = 0; status(EDGE_SYNC_ORDER); return; }
+      memcpy(anchor_fields + 84, buffer + 7, 32);
+      anchor_parts = 0;
+      pairs_load();
+      if (anchor_index >= pairs.sib_n) { status(EDGE_NO_SUCH_SIBLING); return; }
+      {
+        uint8_t digest[32];
+        H(digest, "OKEDGE-CKPT-v1", anchor_fields, ID_BYTES, anchor_fields + 16, 4, anchor_fields + 20, 32);
+        if (!uECC_verify(pairs.sib[anchor_index], digest, 32, anchor_fields + 52, uECC_secp256r1())) { status(EDGE_BAD_CHECKPOINT); return; }
+      }
+      press.id = anchor_index;
+      press.vouch_seq = get32(anchor_fields + 16);
+      H(press.verified, "OKEDGE-ANCHOR-v1", anchor_fields, sizeof(anchor_fields), NULL, 0, NULL, 0);
+      press.verified_len = 32;
+      H(what, "OKEDGE-ANCHOR", press.verified, 32, st.head, 32, NULL, 0);
+      press_wait(PRESS_ANCHOR, what);
       return;
     }
     case OKEDGE_SIBLING_LIST: {

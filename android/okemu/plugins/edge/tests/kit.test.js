@@ -32,6 +32,7 @@ const PEER_LIST = 0x32;   /* R20: count . k . max, then one report per slot */
 const SIBLING_ADD = 0x35;    /* R29: {0, X} staged, then {1, Y, device id} and a press */
 const SIBLING_REMOVE = 0x36; /* R29: {index}, press */
 const SIBLING_LIST = 0x37;   /* R29: count . max, then one report per slot */
+const ANCHOR = 0x38;         /* R30: {0, index, seq, head}, {1, sig r}, {2, sig s}, then a press */
 const SYNC = 0x39;        /* sync phase 2: {subject 32}, press; a sync link (op 20), no ticket (number CHOSEN) */
 const GRANT_CREATE = 0x10;
 const GRANT_LABEL = 0x11; /* R11a: {scope index, label 32}, no press - a derived code's identity */
@@ -1135,6 +1136,58 @@ module.exports = function register({ it }, ctx) {
       assert.bytes(Buffer.from(fr.subject), sha(Buffer.from('OKEDGE-SIBLING-v1'), key, idOf(key)));
       assert.equal((await list()).length, 0);
       assert.equal(await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, text: true }), 'EDGE:1A');
+    });
+
+  /*
+   * R30 (P2c): an ANCHOR commits to a sibling's SIGNED checkpoint. The sibling
+   * here is a node:crypto P-256 key, paired with a press; its checkpoint is
+   * signed with node:crypto over SHA256("OKEDGE-CKPT-v1" || its id || seq ||
+   * head) - the same message the key signs its own. The key checks it (a bad
+   * one is EDGE:1B, nothing waits), then a press writes op 19, slot = the
+   * sibling's index, grant_id = its seq, subject = SHA256("OKEDGE-ANCHOR-v1" ||
+   * id || seq || head || signature). No sibling there is EDGE:1A, parts out of
+   * order EDGE:17.
+   */
+  it('edge: ANCHOR checks the sibling\'s signed checkpoint, takes a press and links op 19 (R30); a bad signature, no sibling, a part out of order are refused',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const sha = (...b) => crypto.createHash('sha256').update(Buffer.concat(b)).digest();
+      const idOf = (key) => sha(Buffer.from('OKEDGE-DEVICE-v1'), key).subarray(0, 16);
+      const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
+      const list = async () => {
+        const [h, ...slots] = await edge(device, SIBLING_LIST, null, { signal, reports: 5 });
+        return slots.slice(0, h[0]).map((r) => Buffer.from(r.subarray(0, 64)).toString('hex'));
+      };
+      for (let l = await list(); l.length; l = await list()) await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, press: true });
+      const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+      const key = publicKey.export({ format: 'der', type: 'spki' }).subarray(-64);
+      const id = idOf(key);
+      const add = (n, bytes, opts) => edge(device, SIBLING_ADD, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
+      assert.equal(await add(0, key.subarray(0, 32), { text: true }), 'EDGE:00');
+      await add(1, Buffer.concat([key.subarray(32), id]), { press: true });
+      assert.equal((await list()).length, 1, 'the sibling was not paired');
+      const seq = 41;
+      const ckHead = crypto.randomBytes(32);
+      const sig = crypto.sign('sha256', Buffer.concat([Buffer.from('OKEDGE-CKPT-v1'), id, u32(seq), ckHead]), { key: privateKey, dsaEncoding: 'ieee-p1363' });
+      const part = (n, bytes, opts) => edge(device, ANCHOR, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
+      const send = async (index, signature, opts) => {
+        assert.equal(await part(0, Buffer.concat([Buffer.of(index), u32(seq), ckHead]), { text: true }), 'EDGE:00', 'part 0 was not staged');
+        assert.equal(await part(1, signature.subarray(0, 32), { text: true }), 'EDGE:00', 'part 1 was not staged');
+        return part(2, signature.subarray(32), opts);
+      };
+      assert.equal(await part(0, Buffer.concat([Buffer.of(1), u32(seq), ckHead]), { text: true }), 'EDGE:1A', 'an index with no sibling was taken');
+      assert.equal(await part(2, sig.subarray(32), { text: true }), 'EDGE:17', 'a last part with nothing staged was taken');
+      const bad = Buffer.from(sig); bad[5] ^= 1;
+      const before = await head(device, { signal });
+      assert.equal(await send(0, bad, { text: true }), 'EDGE:1B', 'a bad checkpoint signature was taken');
+      assert.equal((await head(device, { signal })).seq, before.seq, 'a refused anchor wrote a link');
+      const [r] = await send(0, sig, { press: true });
+      const [l] = await pickup(device, r.readUInt32LE(0), 1, { signal });
+      const fl = chain.decodeLink(l.link);
+      assert.equal(JSON.stringify([fl.op, fl.decision, fl.slot, fl.flags & PRESS_OBSERVED, fl.grantId]), JSON.stringify([19, APPROVE, 0, PRESS_OBSERVED, seq]), 'the anchor link is not the R30 layout');
+      assert.bytes(Buffer.from(fl.subject), sha(Buffer.from('OKEDGE-ANCHOR-v1'), id, u32(seq), ckHead, sig));
+      await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, press: true });
+      assert.equal((await list()).length, 0);
     });
 
   it('edge: PEER_ADD / PEER_REMOVE take a press and link the peer; PEER_LIST survives a restart; no press, no peer (R20)',

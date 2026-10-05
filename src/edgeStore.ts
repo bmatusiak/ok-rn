@@ -34,6 +34,7 @@ type StoredMirror = {
   refusals?: {agent: string; seq: number; status: string; at: number}[];
   publicKey?: string;
   continued?: ContinueCheck | null;
+  anchors?: {seq: number; head: string; signature: string; mySeq: number; at: number}[];
 };
 
 /*
@@ -86,6 +87,13 @@ export type Mirror = {
    */
   publicKey?: Uint8Array | null;
   continued?: ContinueCheck | null;
+  /*
+   * R30 (P2c), on a SIBLING's copy: the signed checkpoints this phone's key
+   * anchored it at (and the anchor link's seq in this phone's own chain) - the
+   * spec's "every copy keeps the sibling's checkpoint beside the anchor", and
+   * what the next sync is checked against (a rollback or a changed head alarms).
+   */
+  anchors?: {seq: number; head: Uint8Array; signature: Uint8Array; mySeq: number; at: number}[];
 };
 
 export type Verdict =
@@ -146,6 +154,7 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
     refusals: s.refusals ?? [],
     publicKey: s.publicKey ? fromHex(s.publicKey) : null,
     continued: s.continued ?? null,
+    anchors: (s.anchors ?? []).map(a => ({seq: a.seq, head: fromHex(a.head), signature: fromHex(a.signature), mySeq: a.mySeq, at: a.at})),
   };
 }
 
@@ -163,6 +172,7 @@ export async function saveMirror(m: Mirror): Promise<void> {
     ...(m.setAside.length ? {setAside: m.setAside.map(x => ({link: toHex(x.link), head: toHex(x.head), at: x.at}))} : {}),
     ...(m.publicKey ? {publicKey: toHex(m.publicKey)} : {}),
     ...(m.continued ? {continued: m.continued} : {}),
+    ...(m.anchors?.length ? {anchors: m.anchors.map(a => ({seq: a.seq, head: toHex(a.head), signature: toHex(a.signature), mySeq: a.mySeq, at: a.at}))} : {}),
   };
   await AsyncStorage.setItem(storageKey(m.deviceId), JSON.stringify(s));
 }
@@ -339,6 +349,36 @@ export async function mergeOffered(source: EdgeSource, offered: EdgeLinkRecord[]
  * while the sheet was up and saved it after this, dropping the five links the
  * person had just approved. A link that now disagrees is a fork: nothing kept.
  */
+/**
+ * R30 (P2c): a SIBLING's links offered to this phone, merged with the copy of
+ * that sibling's chain it already holds (the same store, keyed by the sibling's
+ * device id - it never mixes with this phone's own chain). No I/O beyond the read.
+ */
+export async function mergeSibling(chainId: Uint8Array, offered: EdgeLinkRecord[]):
+  Promise<{mirror: Mirror; links: EdgeLinkRecord[]; added: EdgeLinkRecord[]; conflicts: number[]}> {
+  const mirror = await loadMirror(chainId);
+  const m = syncLib.merge(mirror.links, offered);
+  return {mirror, links: m.links, added: m.added, conflicts: m.conflicts};
+}
+
+/** R30: keep the sibling's links and the anchor - only after this key linked it. In the sync queue. */
+export function keepSibling(chainId: Uint8Array, publicKey: Uint8Array, added: EdgeLinkRecord[], anchor: NonNullable<Mirror['anchors']>[number], now = Date.now()): Promise<void> {
+  const run = syncing.then(() => keepSiblingNow(chainId, publicKey, added, anchor, now), () => keepSiblingNow(chainId, publicKey, added, anchor, now));
+  syncing = run.catch(() => undefined);
+  return run;
+}
+async function keepSiblingNow(chainId: Uint8Array, publicKey: Uint8Array, added: EdgeLinkRecord[], anchor: NonNullable<Mirror['anchors']>[number], now: number): Promise<void> {
+  const mirror = await loadMirror(chainId);
+  const m = syncLib.merge(mirror.links, added);
+  if (m.conflicts.length) throw new Error(`a fork at #${m.conflicts.join(', #')} - nothing kept`);
+  mirror.links = m.links;
+  for (const r of m.added) mirror.seen[seqOf(r)] = mirror.seen[seqOf(r)] ?? now;
+  mirror.publicKey = publicKey;
+  mirror.anchors = [...(mirror.anchors ?? []), anchor];
+  mirror.lastSync = now;
+  await saveMirror(mirror);
+}
+
 export function keepOffered(deviceId: Uint8Array, added: EdgeLinkRecord[], now = Date.now()): Promise<void> {
   const run = syncing.then(() => keepOfferedNow(deviceId, added, now), () => keepOfferedNow(deviceId, added, now));
   syncing = run.catch(() => undefined);

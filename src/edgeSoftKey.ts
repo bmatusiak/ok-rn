@@ -241,6 +241,21 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     this.pressWanted = null;
   }
 
+  /* R30 (P2c): anchor the sibling at `index` at its signed checkpoint - the sheet, Yes, a PHYSICAL press (approve.approveAnchor) */
+  async approveAnchor(o: {peer: string; name: string; index: number; chain: Uint8Array; checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array}; count: number; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
+    const r: any = await approveLib.approveAnchor({
+      ...o,
+      edge: this.edge,
+      onPress: () => {
+        this.pressWanted = () => undefined;
+        o.onPress?.();
+      },
+      timeoutMs: 30000,
+    });
+    this.pressWanted = null;
+    return r;
+  }
+
   /* R29: the other keys of yours this key is paired with - X || Y and device id, hex (no press) */
   async siblings(): Promise<{index: number; key: string; deviceId: string}[]> {
     const l = await this.edge.siblings();

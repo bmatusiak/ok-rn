@@ -19,7 +19,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {approve as approveLib, chain, note as noteLib, request as requestLib, sync as syncLib} from 'node-onlykey-lib/edge';
 import {SoftKeyEdge} from './edgeSoftKey';
 import {keepMergedKeyChain, readKeyChainList} from './keyChainRecorder';
-import {addNote, keepOffered, mergeOffered, sync as syncCopy} from './edgeStore';
+import {addNote, keepOffered, keepSibling, loadMirror, mergeOffered, mergeSibling, sync as syncCopy} from './edgeStore';
+import NativeEdgeAlert from '../specs/NativeEdgeAlert';
+import {siblingNames} from './edgeSiblingNames';
 import {rememberSiblingName} from './edgeSiblingNames';
 import {setTestIdentities} from './debugGuard';
 import NativeOkEmu from '../specs/NativeOkEmu';
@@ -148,6 +150,8 @@ export type SheetAsk =
   | {kind: 'sync'; peer: string; name: string; fingerprint: string; count: number; ranges: number[][]; keychainIn?: number; keychainOut?: number}
   /* R29 (P2b): a place on the key's list asks to pair the key with another key of yours; code = from both keys, the other phone shows it too */
   | {kind: 'sibling'; peer: string; place: string; name: string; sibling: string; siblingId: string; code: string}
+  /* R30 (P2c): a place offers a sibling's chain up to its signed checkpoint - anchor it */
+  | {kind: 'anchor'; peer: string; place: string; name: string; sibling: string; seq: number; count: number}
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
   | {kind: 'request'; agentName: string; view: any; blocked: string | null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
@@ -197,7 +201,7 @@ function show(s: SheetState | null) {
 function attention(s: SheetState | null) {
   try {
     if (s && s.phase === 'ask') {
-      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : s.ask.kind === 'sync' ? 'A computer offers to sync your copy' : s.ask.kind === 'sibling' ? 'A computer asks to pair another key of yours' : 'An agent asks for a budget';
+      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : s.ask.kind === 'sync' ? 'A computer offers to sync your copy' : s.ask.kind === 'sibling' ? 'A computer asks to pair another key of yours' : s.ask.kind === 'anchor' ? 'A computer offers another key\'s chain to anchor' : 'An agent asks for a budget';
       NativeOkEmu.setAttention(what, s.until);
     } else {
       NativeOkEmu.setAttention('', 0);
@@ -256,7 +260,7 @@ let inFlight = false;
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
   /* B7 stage 2: a note changes nothing, so it never waits behind a sheet */
   if (msg?.type === noteLib.TYPE) return handleNote(msg).catch(() => null);
-  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE || msg?.type === syncLib.COMMIT_TYPE || msg?.type === syncLib.SIBLING_TYPE;
+  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE || msg?.type === syncLib.COMMIT_TYPE || msg?.type === syncLib.SIBLING_TYPE || msg?.type === syncLib.ANCHOR_TYPE;
   if (asks && inFlight) {
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
   }
@@ -304,7 +308,7 @@ async function handleNote(msg: any): Promise<unknown | null> {
  */
 const syncNames = new Map<string, string>(); /* the name each place gave in its HAVE */
 /* one sync's parts, by sid, in memory only (nothing changes until the press) */
-const syncStaged = new Map<string, {peer: string; links: Map<number, any[]>; linkParts: number; keychain: Map<number, any[]>; keychainParts: number}>();
+const syncStaged = new Map<string, {peer: string; links: Map<number, any[]>; linkParts: number; keychain: Map<number, any[]>; keychainParts: number; chain: string | null}>();
 /* after an approved COMMIT: the merged Key Chain list the place may TAKE back, by sid */
 const syncTakes = new Map<string, {peer: string; parts: any[][]}>();
 async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> {
@@ -318,6 +322,26 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     return {ok: false, refusal: 'invalid', detail: "those links are another chain's, not this phone's key"};
   }
   const p = msg.payload;
+  if (msg.type === syncLib.GIVE_TYPE) {
+    /*
+     * R30 (P2c): this phone's copy of its OWN chain, to a place on the key's
+     * list - history only, no press (the place keeps copies anyway). From the
+     * copy as it is NOW (the key's newest included), BATCH at a time.
+     */
+    const {mirror} = await syncCopy(soft);
+    const from = mirror.links.filter((r: any) => seqOfLink(r) >= p.from);
+    const batch = from.slice(0, syncLib.BATCH);
+    const hex = (b: Uint8Array) => toHexId(b);
+    return {ok: true, links: batch.map((r: any) => [hex(r.link), hex(r.head), r.reveal ? hex(r.reveal) : null]), next: from.length > batch.length ? seqOfLink(from[batch.length]) : null};
+  }
+  /* R30: HAVE / LINKS / ANCHOR for a SIBLING's chain - only a key paired with this one */
+  const sibling = p.chain ? (await soft.siblings()).find(s => s.deviceId === String(p.chain).toLowerCase()) ?? null : null;
+  if (p.chain && !sibling) return {ok: false, refusal: 'invalid', detail: 'that chain is not a key paired with this one'};
+  if (msg.type === syncLib.HAVE_TYPE && sibling) {
+    syncNames.set(peer, p.name);
+    const held = await loadMirror(fromHexId(sibling.deviceId));
+    return {ok: true, ranges: syncLib.rangesOf(held.links.map((r: any) => seqOfLink(r)))};
+  }
   if (msg.type === syncLib.HAVE_TYPE) {
     syncNames.set(peer, p.name);
     const {mirror} = await syncCopy(soft); /* what this copy holds NOW, the key's newest included */
@@ -334,10 +358,12 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   }
   let st = syncStaged.get(p.sid);
   if (!st) {
-    st = {peer, links: new Map(), linkParts: 0, keychain: new Map(), keychainParts: 0};
+    st = {peer, links: new Map(), linkParts: 0, keychain: new Map(), keychainParts: 0, chain: null};
     syncStaged.set(p.sid, st);
   }
   if (st.peer !== peer) return {ok: false, refusal: 'invalid', detail: 'a part of another sync'};
+  if ((st.chain ?? null) !== (p.chain ?? null) && st.links.size) return {ok: false, refusal: 'invalid', detail: 'a part of another chain'};
+  st.chain = p.chain ?? null;
   if (msg.type === syncLib.LINKS_TYPE) {
     st.links.set(p.part, syncLib.recordsOf(msg));
     st.linkParts = p.parts;
@@ -348,6 +374,8 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     st.keychainParts = p.parts;
     return {ok: true, staged: st.keychain.size};
   }
+  if (msg.type === syncLib.ANCHOR_TYPE) return await handleAnchor(p, peer, st, sibling);
+  if (st.chain) return {ok: false, refusal: 'invalid', detail: "a sibling's links end with an anchor, not a commit"};
   /* COMMIT: every part here, then ONE sheet for links and list */
   syncStaged.delete(p.sid);
   if (st.links.size !== p.linkParts || st.keychain.size !== p.keychainParts) {
@@ -409,7 +437,54 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   }
   return r.ok ? {...r, keychainIn: plan.in, keychainOut: plan.out, takeParts} : r;
 }
+/*
+ * R30 (P2c): a place brings this phone a SIBLING's chain up to the sibling's
+ * signed checkpoint. Checked first, with no one asked (sync.anchorCheck): the
+ * sibling's key from the KEY's list, its checkpoint signature, the links up to
+ * it, and against every checkpoint this phone anchored it at before - a
+ * rollback or a changed head is the spec's ALARM (one device's tampering
+ * proven by the other): the phone posts it and nothing is anchored. Then one
+ * sheet, Yes, a press; the key checks the checkpoint again and links the anchor;
+ * only then are the sibling's links kept.
+ */
+async function handleAnchor(p: any, peer: string, st: any, sibling: {index: number; key: string; deviceId: string} | null): Promise<unknown> {
+  syncStaged.delete(p.sid);
+  if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
+  if (!sibling) return {ok: false, refusal: 'invalid', detail: 'that chain is not a key paired with this one'};
+  if (st.links.size !== p.linkParts) return {ok: false, refusal: 'invalid', detail: `parts missing (links ${st.links.size}/${p.linkParts}) - sync again`};
+  if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
+  const chainId = fromHexId(sibling.deviceId);
+  const publicKey = fromHexId(sibling.key);
+  const checkpoint = {seq: p.checkpoint.seq, head: fromHexId(p.checkpoint.head), signature: fromHexId(p.checkpoint.signature)};
+  const offered = [...st.links.entries()].sort((a: any, b: any) => a[0] - b[0]).flatMap(([, r]: any) => r);
+  const m = await mergeSibling(chainId, offered);
+  const name = (await siblingNames())[sibling.key] ?? p.name;
+  const alarm = (why: string) => {
+    NativeEdgeAlert?.post(checkpoint.seq, `Edge: ${name}'s chain does not hold up`, why, 'Nothing was anchored. Check the other phone.', false);
+    return {ok: false, refusal: 'invalid', detail: why};
+  };
+  if (m.conflicts.length) return alarm(`a fork: this phone holds other links of ${name}'s chain at #${m.conflicts.join(', #')}`);
+  const c = syncLib.anchorCheck({records: m.links, publicKey, checkpoint, anchors: m.mirror.anchors ?? []});
+  if (!c.ok) return alarm(`${c.alarm}${c.detail ? `: ${c.detail}` : ''}`);
+  let asked: SheetAsk | null = null;
+  const r: any = await soft.approveAnchor({
+    peer, name, index: sibling.index, chain: chainId, checkpoint, count: m.added.length,
+    ask: async (v: any) => {
+      asked = {kind: 'anchor', ...v, name};
+      return askPerson(asked as SheetAsk);
+    },
+    onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
+  });
+  if (r.ok) {
+    await keepSibling(chainId, publicKey, m.added, {seq: checkpoint.seq, head: checkpoint.head, signature: checkpoint.signature, mySeq: r.seq, at: Date.now()});
+    await syncCopy(soft).catch(() => undefined); /* the anchor link itself, into this phone's own copy */
+  }
+  if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `Anchored ${name} at #${checkpoint.seq} (the key linked it as #${r.seq})`} : r});
+  return r;
+}
+
 const toHexId = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+const fromHexId = (h: string) => Uint8Array.from((String(h).match(/../g) ?? []).map(x => parseInt(x, 16)));
 const seqOfLink = (r: any) => chain.decodeLink(r.link).seq;
 
 async function handle(msg: any, from: string): Promise<unknown | null> {
@@ -492,7 +567,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `Paired with ${(asked as any).name} (the key linked it as #${r.seq})`} : r});
       return r;
     }
-    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.KEYCHAIN_TYPE, syncLib.COMMIT_TYPE, syncLib.TAKE_TYPE].includes(msg?.type)) return await handleSync(msg, seen);
+    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.KEYCHAIN_TYPE, syncLib.COMMIT_TYPE, syncLib.TAKE_TYPE, syncLib.GIVE_TYPE, syncLib.ANCHOR_TYPE].includes(msg?.type)) return await handleSync(msg, seen);
     if (msg?.type !== requestLib.TYPE) return null;
     /* the Agents card's switch is off: refused unread, like an unregistered agent */
     if (!(await agentRequestsOn())) return null;
