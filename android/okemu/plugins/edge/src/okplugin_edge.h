@@ -31,6 +31,9 @@
 #define OKEDGE_ARM 0x22          /* R13a: ARM {head} */
 #define OKEDGE_REPLAY 0x23       /* R26: a link of the newest copy, while restoring */
 #define OKEDGE_AGENT_ADD 0x15    /* mcp-service 4.7a: {agent key 32}, press; an agent-add link, subject = SHA256("OKEDGE-AGENT-v1" || key) */
+#define OKEDGE_PEER_ADD 0x30     /* R20: two parts - {0, X 32} staged, then {1, Y 32} and a press; a peer-add link, subject = SHA256(X || Y) */
+#define OKEDGE_PEER_REMOVE 0x31  /* R20: {index}, press; a peer-remove link, subject = SHA256(X || Y) of that peer */
+#define OKEDGE_PEER_LIST 0x32    /* R20: no press; count . k . max, then one report per slot: X || Y (zeros = empty) */
 #define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts; refused while restoring */
 #define OKEDGE_REPLAY_DONE 0x24  /* R26: {seq, tag, newest}, press; commits only a vouched replay; replies seq . head . tag or EDGE:11 */
 
@@ -57,6 +60,10 @@
 #define EDGE_REPLAY_CLOSED 0x10     /* REPLAY: not restoring, or the key already wrote a link of its own */
 #define EDGE_BAD_RANGE 0x12         /* LOSS: from > to, or to past the key's head (CHOSEN, pending the spec) */
 #define EDGE_NOT_VOUCHED 0x11       /* REPLAY_DONE: the tag is not the key's for the replayed head - thrown away, LOSS since the backup */
+#define EDGE_PEERS_FULL 0x13       /* PEER_ADD: 4 peers already (R20) */
+#define EDGE_PEER_KNOWN 0x14       /* PEER_ADD: that key is a peer already */
+#define EDGE_BAD_KEY 0x15          /* PEER_ADD: not a P-256 point, or Y without its X */
+#define EDGE_NO_SUCH_PEER 0x16     /* PEER_REMOVE: no peer at that index */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */
 #define OKEDGE_DECISION_APPROVE 1

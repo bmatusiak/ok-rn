@@ -26,6 +26,9 @@ const PUBKEY = 0x04;
 const VOUCH = 0x05;
 const LOSS = 0x34;
 const AGENT_ADD = 0x15; /* mcp-service 4.7a: {agent key 32}, press */
+const PEER_ADD = 0x30;    /* R20: {P-256 key, compressed 33}, press */
+const PEER_REMOVE = 0x31; /* R20: {index}, press */
+const PEER_LIST = 0x32;   /* R20: count . k . max, then one report per slot */
 const GRANT_CREATE = 0x10;
 const GRANT_LABEL = 0x11; /* R11a: {scope index, label 32}, no press - a derived code's identity */
 const GRANT_REVOKE = 0x12;
@@ -1028,6 +1031,61 @@ module.exports = function register({ it }, ctx) {
       const f = chain.decodeLink(l.link);
       assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([15, APPROVE, 0, PRESS_OBSERVED, 0]), 'the agent-add link is not the spec layout');
       assert.bytes(Buffer.from(f.subject), Buffer.from(grants.agentSubject(key)));
+    });
+
+  /*
+   * R20 (okedge sync phase 2, P2a, Brad 2026-10-05): the places a sync may send
+   * copies to are the KEY's list, added and removed only with a press, each a
+   * link. The subject is checked against Node's own SHA-256 of X || Y, not the
+   * lib's, so the two sides are not checking themselves.
+   */
+  it('edge: PEER_ADD / PEER_REMOVE take a press and link the peer; PEER_LIST survives a restart; no press, no peer (R20)',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const list = async () => {
+        const [h, ...slots] = await edge(device, PEER_LIST, null, { signal, reports: 5 });
+        return { n: h[0], k: h[1], max: h[2], keys: slots.slice(0, h[0]).map((r) => Buffer.from(r.subarray(0, 64)).toString('hex')) };
+      };
+      /* start from no peers: a run before this one may have left some */
+      for (let l = await list(); l.n > 0; l = await list()) await edge(device, PEER_REMOVE, Buffer.of(0), { signal, press: true });
+      const ecdh = () => { const e = crypto.createECDH('prime256v1'); e.generateKeys(); return e; };
+      const a = ecdh(), b = ecdh();
+      const xy = (e) => e.getPublicKey().subarray(1);
+      /* two parts: X staged (no press), then Y and the press */
+      const part = (n, bytes, opts) => edge(device, PEER_ADD, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
+      const add = async (e, opts) => {
+        assert.equal(await part(0, xy(e).subarray(0, 32), { text: true }), 'EDGE:00', 'part 0 (X) was not staged');
+        return part(1, xy(e).subarray(32), opts);
+      };
+      const before = await head(device, { signal });
+      /* nobody presses: past the key's 25 s wait nothing is linked and nothing listed */
+      await add(a, { text: true }).catch(() => null);
+      await device.sleep(26000, { signal });
+      assert.equal((await head(device, { signal })).seq, before.seq, 'an unpressed PEER_ADD wrote a link');
+      assert.equal((await list()).n, 0, 'an unpressed PEER_ADD listed a peer');
+      const [r] = await add(a, { press: true });
+      const [l] = await pickup(device, r.readUInt32LE(0), 1, { signal });
+      const f = chain.decodeLink(l.link);
+      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([9, APPROVE, 0, PRESS_OBSERVED, 0]), 'the peer-add link is not the spec layout');
+      assert.bytes(Buffer.from(f.subject), crypto.createHash('sha256').update(xy(a)).digest());
+      assert.equal(await add(a, { text: true }), 'EDGE:14', 'the same peer twice was not refused');
+      assert.equal(await part(0, Buffer.alloc(32, 0xee), { text: true }), 'EDGE:00');
+      assert.equal(await part(1, Buffer.alloc(32, 0xee), { text: true }), 'EDGE:15', 'a point off the curve was not refused');
+      assert.equal(await part(1, xy(b).subarray(32), { text: true }), 'EDGE:15', 'a Y without its X was not refused');
+      await add(b, { press: true });
+      await device.restart({ signal });
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const kept = await list();
+      assert.equal(JSON.stringify([kept.n, kept.k, kept.max]), JSON.stringify([2, 0, 4]), 'the peer list did not survive a restart');
+      assert.equal(JSON.stringify(kept.keys), JSON.stringify([xy(a), xy(b)].map((k) => k.toString('hex'))));
+      const [rr] = await edge(device, PEER_REMOVE, Buffer.of(0), { signal, press: true });
+      const [lr] = await pickup(device, rr.readUInt32LE(0), 1, { signal });
+      const fr = chain.decodeLink(lr.link);
+      assert.equal(JSON.stringify([fr.op, fr.slot, fr.flags & PRESS_OBSERVED]), JSON.stringify([10, 0, PRESS_OBSERVED]), 'the peer-remove link is not the spec layout');
+      assert.bytes(Buffer.from(fr.subject), crypto.createHash('sha256').update(xy(a)).digest());
+      assert.equal(JSON.stringify((await list()).keys), JSON.stringify([xy(b).toString('hex')]), 'the later peer did not move down');
+      assert.equal(await edge(device, PEER_REMOVE, Buffer.of(3), { signal, text: true }), 'EDGE:16');
+      await edge(device, PEER_REMOVE, Buffer.of(0), { signal, press: true });
     });
 
   /*

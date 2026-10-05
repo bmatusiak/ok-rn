@@ -50,6 +50,8 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_GRANT_CREATE 6
 #define OP_GRANT_END 7
 #define OP_TICKET 8
+#define OP_PEER_ADD 9     /* R20 */
+#define OP_PEER_REMOVE 10 /* R20 */
 #define OP_LOSS 11
 #define OP_GRANT_HOLD 13
 #define OP_GRANT_RESUME 14
@@ -262,7 +264,8 @@ static struct {
  * resuming one (R15a) or waiving the debts (R18). One at a time; a new one
  * replaces it.
  */
-enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE, PRESS_LOSS, PRESS_AGENT_ADD };
+enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE, PRESS_LOSS, PRESS_AGENT_ADD,
+  PRESS_PEER_ADD, PRESS_PEER_REMOVE };
 static struct {
   uint8_t what;
   unsigned long since;
@@ -282,6 +285,7 @@ static struct {
   uint8_t scopes_len;
   uint16_t lifetime;          /* PRESS_GRANT: R15b minutes, 0 = DEFAULT_LIFETIME_MIN */
   uint8_t labels[MAX_SCOPES][32]; /* PRESS_GRANT: R11a, the FULL labels of derived-code scopes, for the subject */
+  uint8_t peer[64];           /* PRESS_PEER_ADD: the peer's key, X || Y (PEER_REMOVE: the index is in id) */
 } press;
 
 /* ------------------------------------------------------------ bytes and hashes */
@@ -1114,6 +1118,111 @@ static void agent_add_pressed(void) {
   reply_seq_head();
 }
 
+/* ------------------------------------------------------------ peers (R20) */
+
+/*
+ * R20 KNOWN PEERS: the places that keep copies of the chain (this PC's copy
+ * store now, the Worker at E5), each with its own P-256 key, added and removed
+ * only with a press after the person's Yes in ok-rn. A sync goes only to places
+ * added this way (mcp-service 4.2b), so the list is the key's, not the app's -
+ * unlike agents, a host that could edit it could send copies anywhere.
+ *
+ * Their own record, beside the chain's, because (Brad, 2026-10-05) peers and
+ * siblings are NOT in the backup: a restored key pairs again with a press. A
+ * peer list carried by a backup would let a backup restored elsewhere keep
+ * sending copies to the old places. Kept apart, the chain record's format (and
+ * the backup section) never changes for it, and the wipe drops it with K132.
+ *
+ * Receipts, backed_through and k are E5 (R21, R22); until then PEER_LIST says
+ * backed_through = none and k = 0. The PC's copy store never counts toward k
+ * for that PC's own budgets (R20) - a rule for E5's watermark, not for this list.
+ *
+ * magic 8 . gen 4 . peer count 1 . sibling count 1 (P2b, R29) . pad 2 .
+ * peers 4 x 64 (X || Y) . siblings 4 x 80 (key 64 . device id 16; reserved
+ * until P2b, so siblings need no new format) . check 4.
+ */
+#define MAX_PEERS 4
+#define MAX_SIBLINGS 4
+#define PAIRS_A (EDGE_REGION + 0x1000)
+#define PAIRS_B (EDGE_REGION + 0x1800)
+#define PAIRS_BYTES 600 /* a multiple of 4: flash takes words */
+#define PAIRS_CHECKED 596
+#define PEERS_AT 16
+static const uint8_t PAIRS_MAGIC[8] = {'O', 'K', 'E', 'P', 'A', 'I', 'R', '1'};
+static struct {
+  uint32_t gen;
+  uint8_t peer_n;
+  uint8_t peer[MAX_PEERS][64];
+} pairs;
+static uint8_t pairs_loaded;
+static uint8_t peer_x[32];     /* PEER_ADD part 0: X, until part 1 brings Y (RAM only) */
+static uint8_t peer_x_staged;
+
+/* double-buffered like the chain record: the newer copy whose check holds */
+static void pairs_load(void) {
+  if (pairs_loaded) return;
+  uint8_t rec[PAIRS_BYTES], check[32];
+  const uintptr_t at[2] = {PAIRS_A, PAIRS_B};
+  int found = 0;
+  memset(&pairs, 0, sizeof(pairs));
+  for (int c = 0; c < 2; c++) {
+    okcore_flashget_common(rec, (unsigned long *)at[c], PAIRS_BYTES);
+    if (memcmp(rec, PAIRS_MAGIC, 8) != 0) continue;
+    H(check, NULL, rec, PAIRS_CHECKED, NULL, 0, NULL, 0);
+    if (memcmp(rec + PAIRS_CHECKED, check, 4) != 0) continue; /* torn write: the other copy wins */
+    uint32_t gen = get32(rec + 8);
+    if (found && gen <= pairs.gen) continue;
+    found = 1;
+    pairs.gen = gen;
+    pairs.peer_n = rec[12] > MAX_PEERS ? MAX_PEERS : rec[12];
+    memcpy(pairs.peer, rec + PEERS_AT, sizeof(pairs.peer));
+  }
+  pairs_loaded = 1;
+}
+
+static void pairs_save(void) {
+  uint8_t rec[PAIRS_BYTES], check[32];
+  pairs.gen++;
+  memset(rec, 0, PAIRS_BYTES);
+  memcpy(rec, PAIRS_MAGIC, 8);
+  put32(rec + 8, pairs.gen);
+  rec[12] = pairs.peer_n;
+  memcpy(rec + PEERS_AT, pairs.peer, sizeof(pairs.peer));
+  H(check, NULL, rec, PAIRS_CHECKED, NULL, 0, NULL, 0);
+  memcpy(rec + PAIRS_CHECKED, check, 4);
+  okcore_flashsector(rec, (unsigned long *)((pairs.gen & 1) ? PAIRS_B : PAIRS_A), PAIRS_BYTES);
+}
+
+/*
+ * The link comes first, then the list: a crash between them leaves a peer-add
+ * in the chain with no peer on the key (re-add it, harmless), never a peer the
+ * chain has no record of - every place a copy goes must show in the history.
+ * slot = the peer's index (CHOSEN, pending the spec: R20 names only the subject).
+ */
+static void peer_add_pressed(void) {
+  pairs_load();
+  if (pairs.peer_n >= MAX_PEERS) { status(EDGE_PEERS_FULL); return; }
+  uint8_t index = pairs.peer_n;
+  append(OP_PEER_ADD, OKEDGE_DECISION_APPROVE, index, FLAG_PRESS_OBSERVED, press.verified, 0, 0, NULL);
+  memcpy(pairs.peer[index], press.peer, 64);
+  pairs.peer_n++;
+  pairs_save();
+  reply_seq_head();
+}
+
+/* the later peers move down one: indexes are positions in today's list, not ids */
+static void peer_remove_pressed(void) {
+  pairs_load();
+  uint8_t index = (uint8_t)press.id;
+  if (index >= pairs.peer_n) { status(EDGE_NO_SUCH_PEER); return; }
+  append(OP_PEER_REMOVE, OKEDGE_DECISION_APPROVE, index, FLAG_PRESS_OBSERVED, press.verified, 0, 0, NULL);
+  for (int i = index; i + 1 < pairs.peer_n; i++) memcpy(pairs.peer[i], pairs.peer[i + 1], 64);
+  pairs.peer_n--;
+  memset(pairs.peer[pairs.peer_n], 0, 64);
+  pairs_save();
+  reply_seq_head();
+}
+
 /*
  * R26 REPLAY: [6..52] the link's first REPLAY_BYTES (byte 46 is R3's scope;
  * bytes 47-63 of every link are reserved zeros), [53..60] the first 8 bytes of the head the copy stored
@@ -1184,6 +1293,8 @@ void okplugin_edge_decision(int decision) {
     else if (what == PRESS_REPLAY_DONE) replay_done_pressed();
     else if (what == PRESS_LOSS) loss_pressed();
     else if (what == PRESS_AGENT_ADD) agent_add_pressed();
+    else if (what == PRESS_PEER_ADD) peer_add_pressed();
+    else if (what == PRESS_PEER_REMOVE) peer_remove_pressed();
     press_drop();
     return;
   }
@@ -1230,6 +1341,11 @@ void okplugin_edge_wipe(void) {
   uint8_t blank[4] = {0xff, 0xff, 0xff, 0xff};
   okcore_flashsector(blank, (unsigned long *)EDGE_STATE_A, 4);
   okcore_flashsector(blank, (unsigned long *)EDGE_STATE_B, 4);
+  /* the peers go too: a wiped key is a new device and pairs again with a press (R20) */
+  okcore_flashsector(blank, (unsigned long *)PAIRS_A, 4);
+  okcore_flashsector(blank, (unsigned long *)PAIRS_B, 4);
+  memset(&pairs, 0, sizeof(pairs));
+  pairs_loaded = 1;
   memset(budgets, 0, sizeof(budgets));
   memset(held, 0, sizeof(held));
   memset(&ident, 0, sizeof(ident));
@@ -1525,6 +1641,77 @@ void okplugin_edge_recv(uint8_t *buffer) {
       press.verified_len = 32;
       H(what, "OKEDGE-AGENT-ADD", press.verified, 32, st.head, 32, NULL, 0);
       press_wait(PRESS_AGENT_ADD, what);
+      return;
+    }
+    case OKEDGE_PEER_ADD: {
+      /*
+       * Two parts (CHOSEN, pending the spec): X || Y does not fit beside the
+       * header, and the firmware's micro-ecc is built without point
+       * compression (uECC_SUPPORT_COMPRESSED_POINT 0) - turning it on would
+       * change the base build, which a plugin never does. So, like GRANT_LABEL
+       * staging a label for the next GRANT_CREATE:
+       *   [6] = 0, X at [7..38]: staged, no press, EDGE:00;
+       *   [6] = 1, Y at [7..38]: the staged X with it is the key - checked on
+       *   the curve, then the press. A part 1 without a part 0 is 'bad-key'.
+       * Refused while restoring, like every new link (R26).
+       */
+      uint8_t what[32];
+      press_drop();
+      if (st.restored) { status(EDGE_RESTORING); return; }
+      if (buffer[6] == 0) {
+        memcpy(peer_x, buffer + 7, 32);
+        peer_x_staged = 1;
+        status(EDGE_OK);
+        return;
+      }
+      if (buffer[6] != 1 || !peer_x_staged) { status(EDGE_BAD_KEY); return; }
+      peer_x_staged = 0;
+      memcpy(press.peer, peer_x, 32);
+      memcpy(press.peer + 32, buffer + 7, 32);
+      if (!uECC_valid_public_key(press.peer, uECC_secp256r1())) { press_drop(); status(EDGE_BAD_KEY); return; }
+      pairs_load();
+      for (int i = 0; i < pairs.peer_n; i++)
+        if (memcmp(pairs.peer[i], press.peer, 64) == 0) { press_drop(); status(EDGE_PEER_KNOWN); return; }
+      if (pairs.peer_n >= MAX_PEERS) { press_drop(); status(EDGE_PEERS_FULL); return; }
+      /* R20's subject: SHA256 of the key, X || Y - the same 64 bytes PUBKEY answers for the Edge key */
+      H(press.verified, NULL, press.peer, 64, NULL, 0, NULL, 0);
+      press.verified_len = 32;
+      H(what, "OKEDGE-PEER-ADD", press.verified, 32, st.head, 32, NULL, 0);
+      press_wait(PRESS_PEER_ADD, what);
+      return;
+    }
+    case OKEDGE_PEER_REMOVE: {
+      /* {index} at [6], a press; refused while restoring */
+      uint8_t what[32];
+      press_drop();
+      if (st.restored) { status(EDGE_RESTORING); return; }
+      pairs_load();
+      if (buffer[6] >= pairs.peer_n) { status(EDGE_NO_SUCH_PEER); return; }
+      press.id = buffer[6];
+      H(press.verified, NULL, pairs.peer[buffer[6]], 64, NULL, 0, NULL, 0);
+      press.verified_len = 32;
+      H(what, "OKEDGE-PEER-REMOVE", press.verified, 32, st.head, 32, NULL, 0);
+      press_wait(PRESS_PEER_REMOVE, what);
+      return;
+    }
+    case OKEDGE_PEER_LIST: {
+      /*
+       * count . k . max, then one report per SLOT (always max of them, so a
+       * host knows how many to wait for): the key X || Y, its index = its
+       * place; an empty slot is all zeros (not a point). k = 0 and no
+       * backed_through until E5's receipts (R21, R22) - they get their own
+       * reports then. No press: public keys only (R8). (CHOSEN, pending the spec.)
+       */
+      pairs_load();
+      r[0] = pairs.peer_n;
+      r[1] = 0;
+      r[2] = MAX_PEERS;
+      reply(r, 3);
+      for (int i = 0; i < MAX_PEERS; i++) {
+        memset(r, 0, sizeof(r));
+        if (i < pairs.peer_n) memcpy(r, pairs.peer[i], 64);
+        reply(r, 64);
+      }
       return;
     }
     case OKEDGE_REPLAY_DONE: {
