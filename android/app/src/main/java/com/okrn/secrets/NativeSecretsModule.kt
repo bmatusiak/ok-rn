@@ -249,6 +249,46 @@ class NativeSecretsModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  /* ---- Keystore box: no prompt (KeystoreBox.kt says why) ---------------- */
+
+  private val box by lazy { KeystoreBox() }
+
+  private fun fromHex(s: String): ByteArray {
+    require(s.length % 2 == 0) { "odd hex length" }
+    return ByteArray(s.length / 2) { i -> s.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+  }
+  private fun toHex(b: ByteArray): String = b.joinToString("") { "%02x".format(it) }
+
+  /*
+   * Errors name the class only: a message could carry bytes, and these are the
+   * pairing secrets (the log audit's rule - LogSafe).
+   */
+  override fun boxSeal(alias: String, hex: String, promise: Promise) {
+    try {
+      val plain = fromHex(hex)
+      try { promise.resolve(toHex(box.seal(alias, plain))) } finally { plain.fill(0) }
+    } catch (e: Exception) {
+      promise.reject(ERR, "boxSeal failed: ${e.javaClass.simpleName}")
+    }
+  }
+
+  override fun boxOpen(alias: String, hex: String, promise: Promise) {
+    try {
+      val plain = box.open(alias, fromHex(hex))
+      try { promise.resolve(toHex(plain)) } finally { plain.fill(0) }
+    } catch (e: Exception) {
+      promise.reject(ERR, "boxOpen failed: ${e.javaClass.simpleName}")
+    }
+  }
+
+  override fun boxForget(alias: String, promise: Promise) {
+    try {
+      promise.resolve(box.forget(alias))
+    } catch (e: Exception) {
+      promise.reject(ERR, "boxForget failed: ${e.javaClass.simpleName}")
+    }
+  }
+
   override fun invalidate() {
     clearTask?.let { main.removeCallbacks(it) }
     clearTask = null

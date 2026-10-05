@@ -1427,32 +1427,20 @@ class NativeFidoGattModule(
   }
 
   /**
-   * Turn away a vendor (API) write from a central the gate refused.
+   * Turn away a vendor (API) write from a central the gate refused: SILENCE.
    *
-   * The same BLE ERROR frame refuseFido sends, on the vendor RESPONSE
-   * characteristic, to THAT central only. The vendor protocol itself has no
-   * refusal report (a real key that will not act simply stays silent), so the
-   * refusal is made one layer down, in the framing the pipe already uses:
-   * CMD_ERROR is not a command any key ever sends, so a host cannot mistake it
-   * for a firmware reply. node-onlykey-lib's cli/transport-ble.js turns it
-   * into an error that says the phone refused.
-   *
-   * Best effort like refuseFido: when a reply to the target is going out, the
-   * refusal is dropped - logged - and the host's timeout answers.
+   * This used to answer with a BLE ERROR frame (CMD_ERROR) so onlykey-js --ble
+   * could say "the phone refused". Part T (BLUETOOTH-PAIRING-SPEC, proposal
+   * section 5) removes it: the vendor link now answers only a paired computer,
+   * and an answer of any kind to anyone else tells them a phone is there and
+   * which door is shut. A key that will not act stays silent; so does the
+   * phone. The CLI's own timeout says what to check (paired, switched on,
+   * the target). Logged here, so the refusal is still visible on the phone.
+   * FIDO's refusal (refuseFido) stays: that is WebAuthn's own framing, and
+   * Windows needs it to move on to the next authenticator.
    */
   private fun refuseVendor(device: BluetoothDevice, reason: String) {
-    val key = addressKey(device.address)
-    report("refused an API request from $key - $reason")
-    val response = gattServer?.getService(VendorGatt.SERVICE_UUID)
-      ?.getCharacteristic(VendorGatt.RESPONSE_UUID) ?: return
-    val fragments = CtapBle.fragment(
-      CtapBle.CMD_ERROR,
-      byteArrayOf(BLE_ERR_REFUSED.toByte()),
-      maxFragmentSize(device),
-    )
-    if (!enqueueNotifications(fragments, null, response, device)) {
-      report("the refusal to $key was not sent - a reply to the target was in flight")
-    }
+    report("refused an API request from ${addressKey(device.address)} - $reason (no answer)")
   }
 
   private fun refuseFido(device: BluetoothDevice, value: ByteArray, reason: String) {
@@ -1632,9 +1620,21 @@ class NativeFidoGattModule(
    * the promise says why - this is the last gate on the way OUT, behind the
    * one vendorBridge applies before it ever calls here.
    */
+  override fun sendVendorReport(hex: String, promise: Promise) =
+    sendVendorFrame(VendorGatt.CMD_REPORT.toDouble(), hex, promise)
+
+  /**
+   * The same send with the command byte chosen by the caller (Part T): 0x84
+   * for a sealed frame, 0x85 for the pairing and handshake messages, 0x83 for
+   * a plaintext report (only while testing mode has transit switched off).
+   * The radio layer still interprets nothing: vendorBridge decides what goes
+   * out, this frames it and sends it to the target only.
+   */
   @SuppressLint("MissingPermission")
-  override fun sendVendorReport(hex: String, promise: Promise) {
+  override fun sendVendorFrame(command: Double, hex: String, promise: Promise) {
     try {
+      val cmd = command.toInt()
+      require(cmd in 0x80..0xff) { "not a frame command: $cmd" }
       val policy = Held.policy
       if (!policy.api) throw IllegalStateException("API is off - the report was not sent")
       val device = approvedDevice(policy.target ?: "")
@@ -1651,13 +1651,13 @@ class NativeFidoGattModule(
         ?: throw IllegalStateException("Vendor response characteristic is not registered")
 
       val fragments = CtapBle.fragment(
-        VendorGatt.CMD_REPORT,
+        cmd,
         hex.hexToByteArray(),
         maxFragmentSize(device),
       )
       enqueueNotifications(fragments, promise, target, device)
     } catch (e: Exception) {
-      promise.reject(ERR_RESPOND, e.message ?: "sendVendorReport failed", e)
+      promise.reject(ERR_RESPOND, e.message ?: "sendVendorFrame failed", e)
     }
   }
 

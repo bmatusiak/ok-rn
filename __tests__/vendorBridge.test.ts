@@ -22,13 +22,38 @@
 import {transport as oktransport} from 'node-onlykey-lib';
 
 const mockSendVendorReport = jest.fn((_hex: string) => Promise.resolve());
+/* every frame the bridge sends, with its command (Part T: 0x84 sealed, 0x85 pairing) */
+const mockFrames: Array<{cmd: number; hex: string}> = [];
 
 jest.mock('../specs/NativeFidoGatt', () => ({
   __esModule: true,
   default: {
     sendVendorReport: (hex: string) => mockSendVendorReport(hex),
+    /* a plaintext report (0x83) is what the tests below have always asserted on */
+    sendVendorFrame: (cmd: number, hex: string) => {
+      mockFrames.push({cmd, hex});
+      return cmd === 0x83 ? mockSendVendorReport(hex) : Promise.resolve();
+    },
   },
 }));
+
+/*
+ * The tests below are about the bridge's OTHER gates - the target, API, who
+ * owns the conversation, the lane - and send plaintext reports. They run
+ * through a gate in testing mode with transit switched off, the one setting
+ * where plaintext passes. The pairing gate itself has its own tests at the end
+ * (and in btTransit.test.ts).
+ */
+jest.mock('../src/btTransit', () => {
+  const actual = jest.requireActual('../src/btTransit');
+  const m = new Map<string, string>();
+  const gate = actual.createBtTransit({
+    isTestingMode: () => true,
+    storage: {getItem: async (k: string) => m.get(k) ?? null, setItem: async (k: string, v: string) => void m.set(k, v), removeItem: async (k: string) => void m.delete(k)},
+    box: {boxSeal: async (_a: string, h: string) => h, boxOpen: async (_a: string, h: string) => h},
+  });
+  return {...actual, btTransit: gate};
+});
 
 type RequestListener = (event: Record<string, unknown>) => void;
 type ReportListener = (event: {iface: number; data: Uint8Array}) => void;
@@ -42,7 +67,8 @@ jest.mock('../src/transport/FidoGatt', () => ({
     jest.requireActual('../src/transport/FidoGatt').isFromTarget(address, target),
   default: {
     on: (event: string, listener: RequestListener) => {
-      if (event === 'request') mockRequestListener = listener;
+      /* a plaintext vendor message unless the test says otherwise */
+      if (event === 'request') mockRequestListener = e => listener({command: 0x03, ...e});
       return () => {
         mockRequestListener = null;
       };
@@ -116,7 +142,12 @@ function start(opts: {api?: () => boolean; target?: () => string | null} = {}) {
 /** Let the bridge's own promise chain settle. */
 const settle = () => new Promise<void>(resolve => setImmediate(() => resolve()));
 
+beforeAll(async () => {
+  await jest.requireMock<typeof import('../src/btTransit')>('../src/btTransit').btTransit.setTransitOff(true);
+});
+
 beforeEach(() => {
+  mockFrames.length = 0;
   mockSendVendorReport.mockClear();
   mockSendVendorReport.mockImplementation((_hex: string) => Promise.resolve());
   mockRequestListener = null;
@@ -464,6 +495,91 @@ describe('an agent\'s budget request', () => {
     await settle();
     expect(got).toHaveLength(0);
     expect(fake.writes).toHaveLength(0);
+    off();
+  });
+});
+
+/*
+ * PART T THROUGH THE BRIDGE: the real gate, transit ON (every build outside
+ * testing mode). Vendor interface only - the same bridge, the same gates
+ * (target, API), with the pairing gate in front of the key.
+ */
+describe('the pairing gate (Part T)', () => {
+  const bt = jest.requireActual('node-onlykey-lib/btpair');
+  const {createBtTransit} = jest.requireActual('../src/btTransit');
+  const fromHex = (h: string) => Uint8Array.from(h.match(/../g)!.map(x => parseInt(x, 16)));
+  const hexOf = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+
+  function startGated() {
+    const fake = fakeTransport();
+    const m = new Map<string, string>();
+    const gate = createBtTransit({
+      isTestingMode: () => false,
+      storage: {getItem: async (k: string) => m.get(k) ?? null, setItem: async (k: string, v: string) => void m.set(k, v), removeItem: async (k: string) => void m.delete(k)},
+      box: {boxSeal: async (_a: string, h: string) => h, boxOpen: async (_a: string, h: string) => h},
+    });
+    const off = startVendorBridge({
+      log: () => undefined,
+      getKey: async () => ({transport: fake.transport} as never),
+      getTarget: () => TARGET,
+      transit: gate,
+    });
+    return {fake, gate, off};
+  }
+  const send = async (command: number, bytes: Uint8Array, address = TARGET) => {
+    await mockRequestListener!({iface: 'vendor', command, hex: hexOf(bytes), requestId: '', address});
+    await settle();
+  };
+  const lastFrame = (cmd: number) => {
+    const f = [...mockFrames].reverse().find(x => x.cmd === cmd);
+    return f ? fromHex(f.hex) : null;
+  };
+
+  test('plaintext gets nothing: not written to the key, nothing sent back', async () => {
+    const {fake, off} = startGated();
+    await send(0x03, Uint8Array.from([0xff, 0xff, 0xff, 0xff, 0xe4]));
+    expect(fake.writes).toHaveLength(0);
+    expect(mockFrames).toHaveLength(0);
+    off();
+  });
+
+  test('pair, connect, and a report goes to the key and back sealed', async () => {
+    const {fake, gate, off} = startGated();
+    const cli = bt.generateIdentity();
+    gate.openPairWindow();
+    const s1 = bt.cliPairStart({identity: cli, name: 'NITRO16'});
+    await send(0x05, s1.msg);
+    const s2 = bt.cliPairOnKeys(s1.state, lastFrame(0x85));
+    await send(0x05, s2.msg);
+    expect(gate.pairing()).toMatchObject({stage: 'code', code: s2.code});
+    gate.approvePairing();
+    await settle();
+    const s3 = bt.cliPairOnDone(s2.state, lastFrame(0x85), Date.now());
+    await send(0x05, s3.msg);
+    expect(bt.cliPairOnAck(s3.record, lastFrame(0x85))).toBe(true);
+
+    const h = bt.cliHello(s3.record, {name: 'NITRO16'});
+    await send(0x05, h.msg);
+    const session = bt.cliOnHelloOk(h.state, lastFrame(0x85));
+    const req = Uint8Array.from([0x01, 0xff, 0xff, 0xff, 0xff, 0xe4]);
+    await send(0x04, bt.seal(session, req));
+    expect(fake.writes).toHaveLength(1);
+    expect(Array.from(fake.writes[0].data)).toEqual([0xff, 0xff, 0xff, 0xff, 0xe4]);
+
+    fake.emitReport(IFACE.VENDOR, padded(Uint8Array.from([0xff, 0xff, 0xff, 0xff, 0x99])));
+    await settle();
+    const back = bt.open(session, lastFrame(0x84));
+    expect(back[0]).toBe(0x01);
+    expect(Array.from(back.slice(1, 6))).toEqual([0xff, 0xff, 0xff, 0xff, 0x99]);
+    expect(mockSendVendorReport).not.toHaveBeenCalled(); /* nothing went out in plaintext */
+    off();
+  });
+
+  test('a pairing request from a computer that is not the target never reaches the gate', async () => {
+    const {gate, off} = startGated();
+    gate.openPairWindow();
+    await send(0x05, bt.cliPairStart({identity: bt.generateIdentity(), name: 'X'}).msg, OTHER);
+    expect(mockFrames).toHaveLength(0);
     off();
   });
 });

@@ -38,6 +38,7 @@ import {bytes as okbytes, protocol, transport as oktransport} from 'node-onlykey
 import {wire as edgeWire} from 'node-onlykey-lib/edge';
 import NativeFidoGatt from '../specs/NativeFidoGatt';
 import FidoGatt, {isFromTarget, type CtapRequestEvent} from './transport/FidoGatt';
+import {btTransit, type BtTransit} from './btTransit';
 import type {OnlyKeyApp} from './onlykey';
 import type {LogLevel} from './hooks/useLog';
 
@@ -107,6 +108,12 @@ type Options = {
    * back, or null to answer nothing. See "THE ONE MESSAGE THIS BRIDGE KEEPS".
    */
   onEdgeRequest?: (message: unknown, from: string) => Promise<unknown | null>;
+  /**
+   * Part T, the pairing gate (btTransit.ts): opens sealed frames into reports,
+   * answers pairing and handshakes, seals what goes back. Injected for tests;
+   * the app uses its one gate.
+   */
+  transit?: BtTransit;
 };
 
 /* a computer's conversation holds the key's lane until it has been quiet this long (and nothing waits for a press) */
@@ -155,7 +162,7 @@ function isEdgeRequest(data: Uint8Array): boolean {
   return edgeWire.isEdgeRequestFrame(data);
 }
 
-export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, onEdgeRequest}: Options): () => void {
+export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, onEdgeRequest, transit = btTransit}: Options): () => void {
   /* EDGE_REQUEST pieces, by the computer sending them */
   const gathering = new Map<string, ReturnType<typeof edgeWire.createAssembler>>();
   /* Which transport the report subscription is attached to, so a key change
@@ -276,10 +283,25 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     return true;
   }
 
-  function push(data: Uint8Array) {
+  /*
+   * A report from the key (or an Edge answer) for the computer `to`: sealed
+   * for its session by the gate, or plaintext only while testing mode has
+   * transit off. Nothing goes out to a computer without a session.
+   */
+  function push(data: Uint8Array, to: string | null = owner) {
+    const out = transit.outgoing(to, data);
+    if (!out) {
+      log('info', '[vendor] a report was not sent - that computer has no paired session');
+      return;
+    }
+    sendFrame(out.cmd, out.bytes);
+  }
+
+  /* every frame leaves through this chain, in order (see `sending`) */
+  function sendFrame(cmd: number, bytes: Uint8Array) {
     lastHostActivity = Date.now();
     sending = sending
-      .then(() => NativeFidoGatt.sendVendorReport(okbytes.toHex(data)))
+      .then(() => NativeFidoGatt.sendVendorFrame(cmd, okbytes.toHex(bytes)))
       .catch((err: unknown) => {
         /*
          * Swallowed, and the chain continues. A failed notify is usually the
@@ -349,7 +371,13 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     }
 
     try {
-      const data = okbytes.fromHex(event.hex);
+      /*
+       * THE PAIRING GATE (Part T). Pairing and handshake messages are answered
+       * by the gate; a sealed frame becomes the report inside it; plaintext
+       * only while testing mode has transit off. Anything else: silence.
+       */
+      const data = await transit.handle(event.command, okbytes.fromHex(event.hex), event.address);
+      if (!data) return;
 
       /*
        * Before ensureSubscribed(), so a refused write never so much as boots
@@ -412,15 +440,19 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
           log('info', '[edge] the answer was not sent - API off or another target now');
           return;
         }
-        for (const frame of edgeWire.encode(edgeWire.KIND.ANSWER, answer)) push(frame);
+        for (const frame of edgeWire.encode(edgeWire.KIND.ANSWER, answer)) push(frame, from);
       })
       .catch((err: unknown) => log('error', `[edge] the request failed: ${String(err)}`));
   }
 
   const off = FidoGatt.on('request', onRequest);
+  transit.setSender(sendFrame);
+  void transit.load().catch((err: unknown) => log('error', `[bt] the pairing store did not load: ${String(err)}`));
 
   return () => {
     off();
+    transit.setSender(null);
+    transit.endSessions();
     if (offReport) offReport();
     if (offWrite) offWrite();
     offReport = null;

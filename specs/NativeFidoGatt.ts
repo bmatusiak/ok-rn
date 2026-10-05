@@ -178,6 +178,13 @@ export interface Spec extends TurboModule {
    */
   sendVendorReport(hex: string): Promise<void>;
 
+  /**
+   * sendVendorReport with the frame command chosen by the caller (Part T):
+   * 0x84 a sealed frame, 0x85 pairing / handshake, 0x83 a plaintext report.
+   * Same rules: target only, API on, one send at a time.
+   */
+  sendVendorFrame(command: number, hex: string): Promise<void>;
+
   /** Generate a P-256 credential key in the TEE/StrongBox. Returns credentialId hex. */
   createCredential(rpId: string, userHandleHex: string): Promise<string>;
 

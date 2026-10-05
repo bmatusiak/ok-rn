@@ -99,6 +99,23 @@ export interface Spec extends TurboModule {
 
   /** Forget it, and destroy the key that opened it. */
   biometricForget(alias: string): Promise<boolean>;
+
+  /* ---- Keystore box: sealed without a prompt ----------------------------- */
+
+  /**
+   * Seal bytes (hex) under a Keystore key for `alias`, made on first use;
+   * returns hex [iv 12][ct + tag]. NO prompt: Bluetooth pairing secrets are
+   * needed whenever a computer connects, with the phone in a pocket
+   * (KeystoreBox.kt). The caller stores the result; the key never leaves the
+   * Keystore, so a copy of the app's data holds only ciphertext.
+   */
+  boxSeal(alias: string, hex: string): Promise<string>;
+
+  /** Open what boxSeal made. Rejects if the key is gone or the blob was changed. */
+  boxOpen(alias: string, hex: string): Promise<string>;
+
+  /** Destroy the alias's key: everything sealed under it becomes unreadable. */
+  boxForget(alias: string): Promise<boolean>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('NativeSecrets');

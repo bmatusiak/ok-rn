@@ -52,6 +52,7 @@ jest.mock('./specs/NativeFidoGatt', () => ({
     respondToRequest: jest.fn(() => Promise.resolve()),
     sendKeepAlive: jest.fn(() => Promise.resolve()),
     sendVendorReport: jest.fn(() => Promise.resolve()),
+    sendVendorFrame: jest.fn(() => Promise.resolve()),
     setIoPolicy: jest.fn(),
     createCredential: jest.fn(() => Promise.resolve('aabb')),
     signWithCredential: jest.fn(() => Promise.resolve('ccdd')),
@@ -157,6 +158,12 @@ jest.mock('./specs/NativeSecrets', () => ({
     biometricStore: jest.fn(() => Promise.resolve(true)),
     biometricLoad: jest.fn(() => Promise.reject(new Error('nothing is stored'))),
     biometricForget: jest.fn(() => Promise.resolve(true)),
+    /* a box that only reverses the hex: enough to prove nothing reaches storage in the clear */
+    boxSeal: jest.fn((alias, hex) => Promise.resolve('b0' + hex.split('').reverse().join(''))),
+    boxOpen: jest.fn((alias, hex) => hex.startsWith('b0')
+      ? Promise.resolve(hex.slice(2).split('').reverse().join(''))
+      : Promise.reject(new Error('boxOpen failed'))),
+    boxForget: jest.fn(() => Promise.resolve(true)),
   },
 }));
 
