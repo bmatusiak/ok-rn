@@ -586,6 +586,35 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return r;
   }
 
+  /** R20: the key's own list of places that keep copies (no press) - X || Y hex. */
+  async peerKeys(): Promise<string[]> {
+    const l = await this.edge.peers();
+    return l.peers.map((p: any) => toHex(p.publicKey));
+  }
+
+  /**
+   * okedge sync phase 2: links a place on the key's list offers for this
+   * phone's copy, already merged and checked by the caller - the sheet, Yes,
+   * a PHYSICAL press, and the key's `sync` link (approve.approveSync).
+   */
+  async approveSync(o: {peer: string; name: string; added: any[]; head: Uint8Array; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
+    const r: any = await approveLib.approveSync({
+      peer: o.peer,
+      name: o.name,
+      added: o.added,
+      head: o.head, /* the copy's head after the merge - part of the sync's subject (spec, 2026-10-05) */
+      edge: this.edge,
+      ask: o.ask,
+      onPress: () => {
+        this.pressWanted = () => undefined;
+        o.onPress?.();
+      },
+      timeoutMs: 30000,
+    });
+    this.pressWanted = null;
+    return r;
+  }
+
   /* the agent budgets this phone opened, for a continue: {agent, scopes} by id (loaded by loadAgentBudgets) */
   private keptSync = new Map<number, {agent: string; scopes: any[]}>();
   async loadAgentBudgets() {

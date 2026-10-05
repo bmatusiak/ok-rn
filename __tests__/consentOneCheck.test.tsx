@@ -51,6 +51,7 @@ const KINDS: Record<string, {ask: any; button: string}> = {
   },
   register: {button: 'Register', ask: {kind: 'register', agent: 'bb'.repeat(32), name: 'claude', fingerprint: 'bbbbbbbb…bbbbbbbb'}},
   peer: {button: 'Add', ask: {kind: 'peer', peer: 'cc'.repeat(64), name: 'TEST: copies', fingerprint: 'cccccccc…cccccccc'}},
+  sync: {button: 'Sync', ask: {kind: 'sync', peer: 'dd'.repeat(64), name: 'TEST: copies', fingerprint: 'dddddddd…dddddddd', count: 3, ranges: [[4, 6]]}},
 };
 
 test('the kinds list names every SheetAsk kind (a new kind - a sibling - must be added here)', () => {

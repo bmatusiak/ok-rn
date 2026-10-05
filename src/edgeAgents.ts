@@ -16,9 +16,9 @@
  *   ssh://bmatusiak@localhost.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {approve as approveLib, note as noteLib, request as requestLib} from 'node-onlykey-lib/edge';
+import {approve as approveLib, chain, note as noteLib, request as requestLib, sync as syncLib} from 'node-onlykey-lib/edge';
 import {SoftKeyEdge} from './edgeSoftKey';
-import {addNote, sync as syncCopy} from './edgeStore';
+import {addNote, keepOffered, mergeOffered, sync as syncCopy} from './edgeStore';
 import {setTestIdentities} from './debugGuard';
 import NativeOkEmu from '../specs/NativeOkEmu';
 
@@ -142,6 +142,8 @@ export type SheetAsk =
   | {kind: 'register'; agent: string; name: string; fingerprint: string}
   /* R20 (sync phase 2, P2a): a place that keeps copies asks to be on the key's list */
   | {kind: 'peer'; peer: string; name: string; fingerprint: string}
+  /* okedge sync phase 2: a place on the key's list offers links this phone's copy lacks */
+  | {kind: 'sync'; peer: string; name: string; fingerprint: string; count: number; ranges: number[][]}
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
   | {kind: 'request'; agentName: string; view: any; blocked: string | null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
@@ -191,7 +193,7 @@ function show(s: SheetState | null) {
 function attention(s: SheetState | null) {
   try {
     if (s && s.phase === 'ask') {
-      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : 'An agent asks for a budget';
+      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : s.ask.kind === 'sync' ? 'A computer offers links for your copy' : 'An agent asks for a budget';
       NativeOkEmu.setAttention(what, s.until);
     } else {
       NativeOkEmu.setAttention('', 0);
@@ -250,7 +252,7 @@ let inFlight = false;
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
   /* B7 stage 2: a note changes nothing, so it never waits behind a sheet */
   if (msg?.type === noteLib.TYPE) return handleNote(msg).catch(() => null);
-  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE;
+  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE || msg?.type === syncLib.LINKS_TYPE;
   if (asks && inFlight) {
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
   }
@@ -287,6 +289,71 @@ async function handleNote(msg: any): Promise<unknown | null> {
   await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, armRefused: msg.armRefused});
   return {ok: true};
 }
+
+/*
+ * okedge sync phase 2 (Brad, 2026-10-05): a place that keeps copies fills this
+ * phone's copy. Only a place on the KEY's list (R20) is answered at all - the
+ * rest is silence, like an unregistered agent. HAVE is a read (what this copy
+ * holds); LINKS parts are staged in memory, changing nothing; after the last
+ * part the links are merged into a candidate and checked (R27), then the sheet,
+ * Yes, the press, and the key's sync link - and only then is the copy kept.
+ */
+const syncNames = new Map<string, string>(); /* the name each place gave in its HAVE */
+const syncStaged = new Map<string, {peer: string; parts: number; got: Map<number, any[]>}>();
+async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> {
+  if (!syncLib.verify(msg, {seen}).ok) return null;
+  seen.add(String(msg.nonce).toLowerCase());
+  soft = soft ?? (await SoftKeyEdge.open());
+  if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
+  const peer = String(msg.peer).toLowerCase();
+  if (!(await soft.peerKeys()).includes(peer)) return null;
+  if (String(msg.payload.deviceId).toLowerCase() !== toHexId(soft.deviceId)) {
+    return {ok: false, refusal: 'invalid', detail: "those links are another chain's, not this phone's key"};
+  }
+  if (msg.type === syncLib.HAVE_TYPE) {
+    syncNames.set(peer, msg.payload.name);
+    const {mirror} = await syncCopy(soft); /* what this copy holds NOW, the key's newest included */
+    return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r)))};
+  }
+  const p = msg.payload;
+  let st = syncStaged.get(p.sid);
+  if (!st) {
+    st = {peer, parts: p.parts, got: new Map()};
+    syncStaged.set(p.sid, st);
+  }
+  if (st.peer !== peer || st.parts !== p.parts) return {ok: false, refusal: 'invalid', detail: 'a part of another sync'};
+  st.got.set(p.part, syncLib.recordsOf(msg));
+  if (st.got.size < st.parts) return {ok: true, staged: st.got.size};
+  syncStaged.delete(p.sid);
+  const offered = [...st.got.entries()].sort((a, b) => a[0] - b[0]).flatMap(([, r]) => r);
+  if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
+  const m = await mergeOffered(soft, offered);
+  if (m.conflicts.length) {
+    return {ok: false, refusal: 'invalid', detail: `a fork: this phone's copy holds different links at #${m.conflicts.join(', #')} - nothing taken; settle it on the phone`};
+  }
+  if (!m.added.length) return {ok: true, count: 0, seq: null};
+  if (m.view.verdict.kind !== 'verified' && m.view.verdict.kind !== 'gap') {
+    return {ok: false, refusal: 'copy_unverified', detail: `with those links this phone's copy would not verify (${m.view.verdict.kind}) - nothing taken`};
+  }
+  const name = syncNames.get(peer) ?? 'a place that keeps copies';
+  let asked: SheetAsk | null = null;
+  const r: any = await soft.approveSync({
+    peer, name, added: m.added, head: m.candidate.links[m.candidate.links.length - 1].head,
+    ask: async (v: {peer: string; name: string; fingerprint: string; count: number; ranges: number[][]}) => {
+      asked = {kind: 'sync', ...v};
+      return askPerson(asked);
+    },
+    onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
+  });
+  if (r.ok && r.count) {
+    await keepOffered(soft.deviceId, m.added);
+    await syncCopy(soft).catch(() => undefined); /* the sync link itself, into the copy */
+  }
+  if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `This phone's copy took ${r.count} link${r.count === 1 ? '' : 's'} from ${name} (the key linked the sync as #${r.seq})`} : r});
+  return r;
+}
+const toHexId = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+const seqOfLink = (r: any) => chain.decodeLink(r.link).seq;
 
 async function handle(msg: any, from: string): Promise<unknown | null> {
   const seen = await loadSeen();
@@ -342,6 +409,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `${r.name} keeps copies now (the key linked it as #${r.seq})`} : r});
       return r;
     }
+    if (msg?.type === syncLib.HAVE_TYPE || msg?.type === syncLib.LINKS_TYPE) return await handleSync(msg, seen);
     if (msg?.type !== requestLib.TYPE) return null;
     /* the Agents card's switch is off: refused unread, like an unregistered agent */
     if (!(await agentRequestsOn())) return null;

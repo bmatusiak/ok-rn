@@ -32,7 +32,7 @@ const REFUSAL_TEXT: Record<string, string> = {
 /* a place that keeps copies is a computer, not an agent (Brad, 2026-10-05) */
 const refusalText = (refusal: string, kind: string) => {
   const t = REFUSAL_TEXT[refusal] ?? `Refused: ${refusal}`;
-  return kind === 'peer' ? t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The computer could not be added') : t;
+  return kind === 'peer' || kind === 'sync' ? t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The computer could not be added') : t;
 };
 
 const opName = (op: string) => (op === 'sign' ? 'Sign' : op === 'decrypt' ? 'Decrypt' : op);
@@ -127,6 +127,18 @@ export function EdgeRequestSheet() {
                   Check the computer prints the same key. Registering takes a press on the key, which records it in the chain. Once registered it may ask for budgets; each budget still shows here and needs your press. Until then its requests are refused unread.
                 </Text>
               </>
+            ) : a.kind === 'sync' ? (
+              <>
+                <Text style={[styles.title, {color: theme.warn}]}>Sync this phone's copy?</Text>
+                <Text style={styles.op}>{`From ${a.name}`}</Text>
+                <Text style={styles.op}>{`Key ${a.fingerprint}`}</Text>
+                <Text style={styles.op}>
+                  {`${a.count} link${a.count === 1 ? '' : 's'}: ${a.ranges.map(([x, y]) => (x === y ? `#${x}` : `#${x}-#${y}`)).join(', ')}`}
+                </Text>
+                <Text style={styles.dim}>
+                  Links this phone's copy lacks, checked against the key before you see this. A press records the sync in the chain. It brings history only - never budgets, debts or registrations.
+                </Text>
+              </>
             ) : a.kind === 'peer' ? (
               <>
                 <Text style={[styles.title, {color: theme.warn}]}>Keep copies on this computer?</Text>
@@ -181,14 +193,14 @@ export function EdgeRequestSheet() {
             ) : null}
             {/* the tap registered: say so at once - the phone syncs and checks its copy before the key asks for the press (the 'lag', Brad 2026-10-04) */}
             {s.phase === 'ask' && acting ? (
-              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : a.kind === 'peer' ? 'Adding - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
+              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : a.kind === 'peer' ? 'Adding - getting the key ready…' : a.kind === 'sync' ? 'Syncing - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
             ) : null}
             {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
             {s.phase === 'ask' && !confirming && !acting ? (
               <View style={styles.row}>
                 <Btn
                   large
-                  title={a.kind === 'register' ? 'Register' : a.kind === 'peer' ? 'Add' : 'Approve'}
+                  title={a.kind === 'register' ? 'Register' : a.kind === 'peer' ? 'Add' : a.kind === 'sync' ? 'Sync' : 'Approve'}
                   tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
                   disabled={off || refusal !== null || (a.kind === 'request' && !!a.blocked)}
                   onPress={consent(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}

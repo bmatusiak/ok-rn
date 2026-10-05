@@ -4,7 +4,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {FakeEdgeKey} from '../src/edgeFake';
-import {addNote, evaluate, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
+import {addNote, evaluate, keepOffered, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
 
 beforeEach(async () => {
   await AsyncStorage.clear();
@@ -192,4 +192,33 @@ test('a note\'s reason lands on its row; its ticket message shows only when it h
   await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, ticketMsg: 'pushed ok-rn'});
   row = (await sync(k)).view.rows.find(r => r.seq === seq)!;
   expect(row.ticket).toMatchObject({messageStatus: 'match', message: 'pushed ok-rn'});
+});
+
+/*
+ * okedge sync phase 2, found on the Pixel (2026-10-05): links a place offered and
+ * the person approved were saved OUTSIDE the sync queue; the background copy sync,
+ * which had loaded the copy while the sheet was up, saved it afterwards and the
+ * approved links were gone. Kept through the queue, they survive a sync that is
+ * already running.
+ */
+test('links kept from a sync offer survive a copy sync already running (one queue)', async () => {
+  const k = new FakeEdgeKey();
+  k.use('commit 1');
+  k.use('commit 2');
+  k.use('commit 3');
+  await sync(k);
+  const full = await loadMirror(k.deviceId);
+  const offered = full.links.slice(1, 3);
+  /* this phone's copy lost #1-#2; the key's ring holds only its newest, so a sync cannot refill them */
+  await saveMirror({...full, links: [full.links[0], ...full.links.slice(3)]});
+  let release: () => void = () => {};
+  const gate = new Promise<void>(r => { release = r; });
+  const slow: any = Object.create(k);
+  slow.head = async () => { await gate; const h = await k.head(); return {...h, ringFrom: h.seq}; };
+  const running = sync(slow);
+  const kept = keepOffered(k.deviceId, offered);
+  release();
+  await Promise.all([running, kept]);
+  const seqs = (await loadMirror(k.deviceId)).links.map(r => r.link[0] | (r.link[1] << 8));
+  expect(seqs).toEqual(full.links.map(r => r.link[0] | (r.link[1] << 8)));
 });

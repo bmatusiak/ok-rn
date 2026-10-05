@@ -35,8 +35,12 @@ function verdictLine(v: Verdict): {text: string; color: string} {
         text: v.through < 0 ? 'Verified: nothing recorded yet' : `Verified through #${v.through}${v.lost?.length ? ` (${v.lost.map(l => (l.from === l.to ? `#${l.from}` : `#${l.from}–#${l.to}`)).join(', ')} accepted as lost)` : ''}`,
         color: theme.ok,
       };
-    case 'gap':
-      return {text: v.from === v.to ? `Gap #${v.from} unverifiable` : `Gap #${v.from}–#${v.to} unverifiable`, color: theme.warn};
+    case 'gap': {
+      /* say what IS checked, then what is not (spec, 2026-10-05) - not "Gap #0–#268 unverifiable" */
+      const range = v.from === v.to ? `#${v.from}` : `#${v.from}–#${v.to}`;
+      const checked = v.from === 0 ? `Checked from #${v.to + 1} on` : `Checked through #${v.from - 1} and from #${v.to + 1} on`;
+      return {text: `${checked}. ${range} can't be checked on this phone.`, color: theme.warn};
+    }
     case 'tampered':
       return {text: `Tampered at #${v.seq}: ${v.reason}`, color: theme.error};
     case 'not-synced':

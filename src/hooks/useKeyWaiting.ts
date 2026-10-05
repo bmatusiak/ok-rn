@@ -63,7 +63,7 @@ export function describeWaiting(w: KeyWaiting): string {
     case 'sign': return `A program on the computer is asking the key to sign with ${slot}.`;
     case 'decrypt': return `A program on the computer is asking the key to decrypt with ${slot}.`;
     case 'hmac': return 'A program on the computer is asking the key for an HMAC challenge-response.';
-    case 'edge': return 'Edge is waiting for your approval (a budget, a resume, a waive, a restore, a loss, the registration of an agent or a place that keeps copies).';
+    case 'edge': return 'Edge is waiting for your approval (a budget, a resume, a waive, a restore, a loss, the registration of an agent, a place that keeps copies, or a sync).';
     default: return 'A program on the computer is waiting for the key.';
   }
 }

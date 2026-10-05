@@ -13,7 +13,7 @@
  *     hashes to its ticket link.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {chain, copy, tickets} from 'node-onlykey-lib/edge';
+import {chain, copy, sync as syncLib, tickets} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
@@ -312,6 +312,45 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   const live = await source.budgets().then(bs => bs.map(b => b.grantId)).catch(() => [] as number[]);
   await raiseAlarms(mirror, view, live).catch(() => {});
   return {mirror, view};
+}
+
+/**
+ * okedge sync phase 2 (Brad, 2026-10-05): a place that keeps copies offers
+ * links for this phone's copy. Merged into a CANDIDATE, checked the same way
+ * every sync is (liveView: the key's head, its ring, its checkpoint - R27),
+ * and NOT saved: the caller saves only after the sheet, Yes, the press and
+ * the key's `sync` link. A link that disagrees with one this copy already holds
+ * is a fork - reported, never chosen between (the copy stays as it is).
+ */
+export async function mergeOffered(source: EdgeSource, offered: EdgeLinkRecord[], now = Date.now()):
+  Promise<{candidate: Mirror; added: EdgeLinkRecord[]; conflicts: number[]; view: EdgeView}> {
+  const mirror = await loadMirror(source.deviceId);
+  const m = syncLib.merge(mirror.links, offered);
+  const candidate: Mirror = {...mirror, links: m.links, seen: {...mirror.seen}};
+  for (const r of m.added) candidate.seen[seqOf(r)] = candidate.seen[seqOf(r)] ?? now;
+  const view = await liveView(source, candidate);
+  return {candidate, added: m.added, conflicts: m.conflicts, view};
+}
+
+/**
+ * Keep the offered links - only after the key linked the sync. IN THE SYNC QUEUE,
+ * and merged into the copy as it is NOW, not saved from mergeOffered's candidate:
+ * found on the Pixel (2026-10-05), the background copy sync loaded the mirror
+ * while the sheet was up and saved it after this, dropping the five links the
+ * person had just approved. A link that now disagrees is a fork: nothing kept.
+ */
+export function keepOffered(deviceId: Uint8Array, added: EdgeLinkRecord[], now = Date.now()): Promise<void> {
+  const run = syncing.then(() => keepOfferedNow(deviceId, added, now), () => keepOfferedNow(deviceId, added, now));
+  syncing = run.catch(() => undefined);
+  return run;
+}
+async function keepOfferedNow(deviceId: Uint8Array, added: EdgeLinkRecord[], now: number): Promise<void> {
+  const mirror = await loadMirror(deviceId);
+  const m = syncLib.merge(mirror.links, added);
+  if (m.conflicts.length) throw new Error(`a fork at #${m.conflicts.join(', #')} - nothing kept`);
+  mirror.links = m.links;
+  for (const r of m.added) mirror.seen[seqOf(r)] = mirror.seen[seqOf(r)] ?? now;
+  await saveMirror(mirror);
 }
 
 /**
