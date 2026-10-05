@@ -4,7 +4,7 @@
  * is stored once (last seen after that), and never carries "yours".
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {decodeDerive, deriveEntry, recordDerive, KEYCHAIN_LIST_KEY} from '../src/keyChainRecorder';
+import {decodeDerive, deriveEntry, keepMergedKeyChain, readKeyChainList, recordDerive, KEYCHAIN_LIST_KEY} from '../src/keyChainRecorder';
 
 const keychain = require('node-onlykey-lib/keychain');
 
@@ -66,4 +66,33 @@ test('a FIDO derive is named by the rpId its request carried (the firmware repor
   const r = decodeDerive(hex);
   r.rpIdHash = Array.from(h as Uint8Array, (x: number) => x.toString(16).padStart(2, '0')).join('');
   expect(deriveEntry(r, 'now').rpId).toBe('apps.onlykey.io');
+});
+
+/*
+ * okedge sync (the A13, 2026-10-05): the phone kept the merged list by merging
+ * it INTO its old one, so a joined twin kept the phone's old version, the PC
+ * (which takes the merged list as it is) held a different list, and every sync
+ * moved the same entries again - with a press each time.
+ */
+test('a sync\'s merged list is kept AS IT IS - the next sync plan finds nothing to move; an entry recorded since survives', async () => {
+  const {sync} = require('node-onlykey-lib/edge');
+  const {ed25519} = require('node-onlykey-lib/vendor/@noble/curves/ed25519.js');
+  const pub = (n: number) => ed25519.getPublicKey(new Uint8Array(32).fill(n));
+  const entry = (label: string, n: number) => keychain.list.createEntry({kind: 'derived', type: 'ed25519', scheme: 'ssh', label, publicKey: pub(n), created: '2026-10-05T00:00:00.000Z'});
+  /* the phone has a hash-derive; the computer has the same key by name, and one more */
+  const phoneHash = entry('hash:' + 'cd'.repeat(32), 7);
+  await AsyncStorage.setItem(KEYCHAIN_LIST_KEY, keychain.list.serialize([phoneHash]));
+  const pc = [entry('ssh://agent@nitro16', 7), entry('ssh://pc@x', 8)];
+  const plan = sync.keychainPlan(await readKeyChainList(), pc);
+  /* a derive recorded while the sheet was up */
+  const since = entry('ssh://new@phone', 9);
+  const raw = await AsyncStorage.getItem(KEYCHAIN_LIST_KEY);
+  await AsyncStorage.setItem(KEYCHAIN_LIST_KEY, keychain.list.serialize([...keychain.list.parse(raw!), since]));
+  await keepMergedKeyChain(plan.merged);
+  const kept = await readKeyChainList();
+  expect(kept.map((e: any) => e.id).sort()).toEqual([...plan.merged.map((e: any) => e.id), since.id].sort());
+  /* the computer took plan.merged as it is: the next plan moves only the entry recorded since */
+  const next = sync.keychainPlan(kept, plan.merged);
+  expect(next.in).toBe(0);
+  expect(next.out).toBe(1);
 });

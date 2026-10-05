@@ -150,9 +150,17 @@ export async function readKeyChainList(): Promise<any[]> {
  */
 export function keepMergedKeyChain(merged: any[]): Promise<void> {
   const run = queue.then(async () => {
+    /*
+     * The MERGED list as it is - the place takes exactly this back - plus only
+     * entries recorded since (none of its ids, no twin in it). Merging it INTO
+     * the old list kept the old version of every joined entry, so the phone and
+     * the computer held different lists and every sync moved the same entries
+     * again (the A13, 2026-10-05: a second sync, a second press, nothing new).
+     */
     const now = await readKeyChainList();
-    const m = keychain.list.merge(now, merged);
-    await AsyncStorage.setItem(KEYCHAIN_LIST_KEY, keychain.list.serialize(m.entries));
+    const ids = new Set(merged.map((e: any) => e.id));
+    const since = now.filter((e: any) => !ids.has(e.id) && !keychain.list.findTwin(merged, e));
+    await AsyncStorage.setItem(KEYCHAIN_LIST_KEY, keychain.list.serialize([...merged, ...since]));
     for (const l of listeners) l();
   });
   queue = run.catch(() => {});
