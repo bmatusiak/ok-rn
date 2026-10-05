@@ -21,6 +21,7 @@ import {SoftKeyEdge} from './edgeSoftKey';
 import {keepMergedKeyChain, readKeyChainList} from './keyChainRecorder';
 import {addNote, keepOffered, keepSibling, loadMirror, mergeOffered, mergeSibling, sync as syncCopy} from './edgeStore';
 import NativeEdgeAlert from '../specs/NativeEdgeAlert';
+import NativeBtKeyboard from '../specs/NativeBtKeyboard';
 import {siblingNames} from './edgeSiblingNames';
 import {rememberSiblingName} from './edgeSiblingNames';
 import {setTestIdentities} from './debugGuard';
@@ -347,7 +348,9 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     const {mirror} = await syncCopy(soft); /* what this copy holds NOW, the key's newest included */
     /* the Key Chain list's digest too: a place whose list matches sends nothing (an empty sync took ~50 s with the whole list both ways) */
     const keychainDigest = Array.from(syncLib.keychainDigest(await readKeyChainList()) as Uint8Array, (x: number) => x.toString(16).padStart(2, '0')).join('');
-    return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r))), keychainDigest};
+    /* the phone's own (Bluetooth) name: the default label on another phone's pairing and anchor sheets - renamable there, never trusted */
+    const deviceName = await NativeBtKeyboard.localName().catch(() => '');
+    return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r))), keychainDigest, ...(deviceName ? {deviceName} : {})};
   }
   if (msg.type === syncLib.TAKE_TYPE) {
     /* only after THIS place's commit was approved with a press */
