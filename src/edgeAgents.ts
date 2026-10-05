@@ -140,6 +140,8 @@ async function saveSeen(seen: Set<string>) {
 
 export type SheetAsk =
   | {kind: 'register'; agent: string; name: string; fingerprint: string}
+  /* R20 (sync phase 2, P2a): a place that keeps copies asks to be on the key's list */
+  | {kind: 'peer'; peer: string; name: string; fingerprint: string}
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
   | {kind: 'request'; agentName: string; view: any; blocked: string | null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
@@ -189,7 +191,8 @@ function show(s: SheetState | null) {
 function attention(s: SheetState | null) {
   try {
     if (s && s.phase === 'ask') {
-      NativeOkEmu.setAttention(s.ask.kind === 'register' ? 'An agent asks to register' : 'An agent asks for a budget', s.until);
+      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : 'An agent asks for a budget';
+      NativeOkEmu.setAttention(what, s.until);
     } else {
       NativeOkEmu.setAttention('', 0);
     }
@@ -247,7 +250,7 @@ let inFlight = false;
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
   /* B7 stage 2: a note changes nothing, so it never waits behind a sheet */
   if (msg?.type === noteLib.TYPE) return handleNote(msg).catch(() => null);
-  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE;
+  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE;
   if (asks && inFlight) {
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
   }
@@ -312,6 +315,31 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
         await AsyncStorage.setItem(AGENTS, JSON.stringify([...others, {key: r.agent, name: r.name, registered: Date.now(), seq: r.seq}]));
       }
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `${r.name} is registered (the key linked it as #${r.seq})`} : r});
+      return r;
+    }
+    if (msg?.type === requestLib.PEER_TYPE) {
+      /*
+       * R20 (okedge sync phase 2, P2a): a place that keeps copies asks to be on
+       * the KEY's list - a sync goes only there. Not gated on a registered
+       * agent or the Agents switch: the copy store is not the agent. The
+       * computer must still be paired (Part T) for its message to get here.
+       */
+      if (!requestLib.verifyPeerAdd(msg, {seen}).ok) return null;
+      if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
+      soft = soft ?? (await SoftKeyEdge.open());
+      if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
+      let asked: SheetAsk | null = null;
+      const r: any = await soft.addPeer(msg, {
+        seen,
+        ask: async (v: {peer: string; name: string; fingerprint: string}) => {
+          asked = {kind: 'peer', ...v};
+          return askPerson(asked);
+        },
+        onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
+      });
+      if (r.dropped) return null;
+      if (r.ok && !r.already) await syncCopy(soft).catch(() => undefined); /* the peer-add link, into the tab's copy */
+      if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `${r.name} keeps copies now (the key linked it as #${r.seq})`} : r});
       return r;
     }
     if (msg?.type !== requestLib.TYPE) return null;

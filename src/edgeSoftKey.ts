@@ -565,6 +565,27 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return r;
   }
 
+  /**
+   * R20 (okedge sync phase 2, P2a): a place that keeps copies asks to be on the
+   * KEY's list (EDGE_PEER_ADD) - the person's Yes on the sheet, then a PHYSICAL
+   * press; the key adds it and links it (peer-add). The list is the key's, not
+   * this phone's: a sync goes only to places on it.
+   */
+  async addPeer(msg: any, o: {seen: Set<string>; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
+    const r: any = await approveLib.approvePeerAdd(msg, {
+      edge: this.edge,
+      seen: o.seen,
+      ask: o.ask,
+      onPress: () => {
+        this.pressWanted = () => undefined;
+        o.onPress?.();
+      },
+      timeoutMs: 30000,
+    });
+    this.pressWanted = null;
+    return r;
+  }
+
   /* the agent budgets this phone opened, for a continue: {agent, scopes} by id (loaded by loadAgentBudgets) */
   private keptSync = new Map<number, {agent: string; scopes: any[]}>();
   async loadAgentBudgets() {

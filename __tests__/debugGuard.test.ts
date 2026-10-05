@@ -1,22 +1,20 @@
 /**
- * Spec rule 10, the app's lock: with debugging on, consent only for things marked TEST:.
+ * Spec rule 10, the app's lock: with debugging on, no consent outside testing mode.
  */
 import NativeOkEmu from '../specs/NativeOkEmu';
-import {consentRefusal, DEBUG_REFUSAL, isTestLabel, markTestConsent, testConsentActive} from '../src/debugGuard';
+import {consentRefusal, DEBUG_REFUSAL, isTestLabel} from '../src/debugGuard';
 
 const debugging = (on: boolean) => (NativeOkEmu.debuggingOn as jest.Mock).mockReturnValue(on);
 
-test('debugging off: every consent goes ahead, test or not', () => {
+test('debugging off: every consent goes ahead', () => {
   debugging(false);
-  expect(consentRefusal(false)).toBeNull();
-  expect(consentRefusal(true)).toBeNull();
+  expect(consentRefusal()).toBeNull();
 });
 
-test('debugging on: a real consent is refused with "turn off debugging to approve this"; a TEST one goes ahead', () => {
+test('debugging on, outside testing mode: every consent is refused with "turn off debugging to approve this"', () => {
   debugging(true);
-  expect(consentRefusal(false)).toBe(DEBUG_REFUSAL);
+  expect(consentRefusal()).toBe(DEBUG_REFUSAL);
   expect(DEBUG_REFUSAL).toMatch(/turn off debugging to approve this/);
-  expect(consentRefusal(true)).toBeNull();
   debugging(false);
 });
 
@@ -26,15 +24,6 @@ test('only a leading TEST: marks a test', () => {
   expect(isTestLabel('Test B7 watcher')).toBe(false);
   expect(isTestLabel('Push the session\'s own work: TEST: not leading')).toBe(false);
   expect(isTestLabel(undefined)).toBe(false);
-});
-
-test('a test consent opens the Confirm panel for a minute, then closes', () => {
-  jest.useFakeTimers();
-  markTestConsent(60_000);
-  expect(testConsentActive()).toBe(true);
-  jest.advanceTimersByTime(61_000);
-  expect(testConsentActive()).toBe(false);
-  jest.useRealTimers();
 });
 
 test('a request is a test only if EVERY identity it names is marked test on the phone - not by its reason', () => {
@@ -62,9 +51,9 @@ test('debug build in testing mode: debugging on, the lock lets every consent thr
   const g = require('../src/debugGuard');
   debugging(true);
   g.setTestingMode(true);
-  expect(g.consentRefusal(false)).toBeNull();
+  expect(g.consentRefusal()).toBeNull();
   g.setTestingMode(false);
-  expect(g.consentRefusal(false)).toBe(g.DEBUG_REFUSAL);
+  expect(g.consentRefusal()).toBe(g.DEBUG_REFUSAL);
   debugging(false);
 });
 
@@ -78,7 +67,7 @@ test('release build: setTestingMode(true) does nothing - the lock stays on with 
       const g = require('../src/debugGuard');
       g.setTestingMode(true);
       expect(g.testingModeOn()).toBe(false);
-      expect(g.consentRefusal(false)).toBe(g.DEBUG_REFUSAL);
+      expect(g.consentRefusal()).toBe(g.DEBUG_REFUSAL);
     });
   } finally {
     (globalThis as any).__DEV__ = was;

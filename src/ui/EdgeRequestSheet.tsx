@@ -16,7 +16,7 @@ import {answerSheet, closeSheet, onSheet, pressFromSheet, type SheetState} from 
 import {request as requestLib} from 'node-onlykey-lib/edge';
 import {Btn} from './components';
 import {theme} from './theme';
-import {consentRefusal, markTestConsent, scopesAreTest} from '../debugGuard';
+import {consentRefusal} from '../debugGuard';
 
 /* what each typed refusal means, in the person's words (the agent gets the code) */
 const REFUSAL_TEXT: Record<string, string> = {
@@ -27,6 +27,12 @@ const REFUSAL_TEXT: Record<string, string> = {
   restoring: 'The key is finishing a restore. The agent was told "restoring".',
   invalid: 'The request could not be a budget. The agent was told "invalid".',
   busy: 'Another request was on the phone. The agent was told "busy" and may ask again.',
+};
+
+/* a place that keeps copies is a computer, not an agent (Brad, 2026-10-05) */
+const refusalText = (refusal: string, kind: string) => {
+  const t = REFUSAL_TEXT[refusal] ?? `Refused: ${refusal}`;
+  return kind === 'peer' ? t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The computer could not be added') : t;
 };
 
 const opName = (op: string) => (op === 'sign' ? 'Sign' : op === 'decrypt' ? 'Decrypt' : op);
@@ -96,17 +102,14 @@ export function EdgeRequestSheet() {
   if (!s) return null;
   const a = s.ask;
   /*
-   * Spec rule 10, the app's lock: with debugging on, only a request whose every
-   * identity Brad marked as test (Agents drawer) can be approved or pressed here.
-   * The TEST: reason is a label the agent writes, not a key.
-   * Asked at render and again on the tap (debugging can be turned on in between).
+   * Spec rule 10, the app's lock: the ONE shared check (debugGuard.consentRefusal) for
+   * every kind this sheet shows - a budget, a registration, a place that keeps copies.
+   * Off only in testing mode (option 1, Brad 2026-10-04); a production build always
+   * has it. Asked at render and again on the tap (debugging can be turned on in between).
    */
-  /* a registration names no identity: never a test. A request: every identity it names marked test on this phone */
-  const isTest = a.kind === 'register' ? false : scopesAreTest(a.view?.scopes);
-  const refusal = s.phase === 'ask' || s.phase === 'press' ? consentRefusal(isTest) : null;
+  const refusal = s.phase === 'ask' || s.phase === 'press' ? consentRefusal() : null;
   const consent = (fn: () => void) => act(() => {
-    if (consentRefusal(isTest)) return;
-    if (isTest) markTestConsent();
+    if (consentRefusal()) return;
     fn();
   });
 
@@ -122,6 +125,15 @@ export function EdgeRequestSheet() {
                 <Text style={styles.op}>{`Key ${a.fingerprint}`}</Text>
                 <Text style={styles.dim}>
                   Check the computer prints the same key. Registering takes a press on the key, which records it in the chain. Once registered it may ask for budgets; each budget still shows here and needs your press. Until then its requests are refused unread.
+                </Text>
+              </>
+            ) : a.kind === 'peer' ? (
+              <>
+                <Text style={[styles.title, {color: theme.warn}]}>Keep copies on this computer?</Text>
+                <Text style={styles.op}>{a.name}</Text>
+                <Text style={styles.op}>{`Key ${a.fingerprint}`}</Text>
+                <Text style={styles.dim}>
+                  Check the computer prints the same key. Adding it takes a press on the key, which records it in the chain. From then on a sync may send copies of the chain there - only to places added this way. A copy never carries budgets, debts or registrations.
                 </Text>
               </>
             ) : (
@@ -169,14 +181,14 @@ export function EdgeRequestSheet() {
             ) : null}
             {/* the tap registered: say so at once - the phone syncs and checks its copy before the key asks for the press (the 'lag', Brad 2026-10-04) */}
             {s.phase === 'ask' && acting ? (
-              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
+              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : a.kind === 'peer' ? 'Adding - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
             ) : null}
             {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
             {s.phase === 'ask' && !confirming && !acting ? (
               <View style={styles.row}>
                 <Btn
                   large
-                  title={a.kind === 'register' ? 'Register' : 'Approve'}
+                  title={a.kind === 'register' ? 'Register' : a.kind === 'peer' ? 'Add' : 'Approve'}
                   tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
                   disabled={off || refusal !== null || (a.kind === 'request' && !!a.blocked)}
                   onPress={consent(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}
@@ -212,7 +224,7 @@ export function EdgeRequestSheet() {
             {s.phase === 'done' ? (
               <>
                 <Text style={[styles.op, {color: s.result.ok ? theme.ok : theme.error}]}>
-                  {s.result.ok ? s.result.text : REFUSAL_TEXT[s.result.refusal] ?? `Refused: ${s.result.refusal}`}
+                  {s.result.ok ? s.result.text : refusalText(s.result.refusal, a.kind)}
                 </Text>
                 {!s.result.ok && s.result.detail ? <Text style={styles.dim}>{s.result.detail}</Text> : null}
                 <View style={styles.row}>

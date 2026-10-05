@@ -67,7 +67,7 @@ import {TestingScreen} from './src/screens/TestingScreen';
 import {BT_SEQ_BASE, takeOpenedAlarm} from './src/edgeAlerts';
 import NativeFidoGatt from './specs/NativeFidoGatt';
 import {btTransit} from './src/btTransit';
-import {consentRefusal, testConsentActive} from './src/debugGuard';
+import {consentRefusal} from './src/debugGuard';
 import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
 import {hasSoftKeyPlugin} from './src/buildInfo';
@@ -1053,10 +1053,10 @@ function Shell() {
               * restore, registration) cannot be pressed here while debugging is on,
               * unless a TEST consent started it (src/debugGuard.ts).
               */}
-            {keyWaiting.what === 'edge' && consentRefusal(testConsentActive()) ? (
+            {keyWaiting.what === 'edge' && consentRefusal() ? (
               <Text style={[styles.promptBody, {color: theme.error, flexShrink: 1}]}>Turn off debugging to approve this.</Text>
             ) : keyWaiting.mode === 'press' ? (
-              <Btn title="Confirm" tone="primary" onPress={() => { if (keyWaiting.what === 'edge' && consentRefusal(testConsentActive())) return; void OkEmu.pressQueue('1'); }} />
+              <Btn title="Confirm" tone="primary" onPress={() => { if (keyWaiting.what === 'edge' && consentRefusal()) return; void OkEmu.pressQueue('1'); }} />
             ) : tab !== 'This Key' ? (
               <Btn title="Keypad" tone="primary" onPress={() => setTab('This Key')} />
             ) : null}

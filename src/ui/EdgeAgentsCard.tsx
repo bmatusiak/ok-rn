@@ -25,7 +25,7 @@ import {
 import type {EdgeBudget} from '../edgeFake';
 import {Btn, Section} from './components';
 import {theme} from './theme';
-import {debuggingOn, testingModeOn} from '../debugGuard';
+import {consentRefusal} from '../debugGuard';
 import {DrawerArea} from './BottomDrawer';
 
 const clock = (ms: number) => {
@@ -237,7 +237,7 @@ export function EdgeAgentsCard({onChanged, changed, inDrawer = false, testingMod
           title="Mark as test"
           onPress={() => {
             /* the lock is off only in testing mode (option 1, Brad 2026-10-04) - and this section exists only there */
-            if (debuggingOn() && !testingModeOn()) { setTestRefused(true); return; }
+            if (consentRefusal()) { setTestRefused(true); return; }
             const n = addingTest.trim();
             if (n && !testIds.includes(n)) void saveTest([...testIds, n]);
             setAddingTest('');

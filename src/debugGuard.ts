@@ -43,9 +43,17 @@ export function setTestingMode(on: boolean): void {
 }
 export const testingModeOn = () => testingMode;
 
-/** The refusal text, or null when this consent may go ahead. Ask at render AND on the tap. */
-export function consentRefusal(isTest: boolean): string | null {
-  return !isTest && !testingMode && debuggingOn() ? DEBUG_REFUSAL : null;
+/**
+ * THE ONE CHECK (Brad, 2026-10-05: "one shared check, not a per-sheet rule").
+ * Every approve / press / waive / accept-loss / mark-test path in the app asks
+ * this, with no argument: a budget, a registration, a place that keeps copies, a
+ * sibling, a waive, a loss, the key's own Confirm panel. Nothing a path knows
+ * about its request can loosen it - only testing mode does, and a production
+ * build has none. __tests__/consentOneCheck.test.ts fails if a path asks
+ * anything else. The refusal text, or null. Ask at render AND on the tap.
+ */
+export function consentRefusal(): string | null {
+  return !testingMode && debuggingOn() ? DEBUG_REFUSAL : null;
 }
 
 /*
@@ -76,15 +84,3 @@ export function scopesAreTest(scopes: {identity?: string}[] | null | undefined):
   return !!scopes && scopes.length > 0 && scopes.every(sc => isTestIdentity(sc.identity));
 }
 
-/*
- * The key's own Confirm panel cannot see what it is confirming. A test consent
- * (a TEST: budget approved, a test waive) marks itself here for a minute; the
- * panel lets an Edge press through while debugging is on only inside that window.
- */
-let testConsentUntil = 0;
-export function markTestConsent(ms = 60_000): void {
-  testConsentUntil = Date.now() + ms;
-}
-export function testConsentActive(): boolean {
-  return Date.now() < testConsentUntil;
-}
