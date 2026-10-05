@@ -14,7 +14,8 @@ import {request as requestLib} from 'node-onlykey-lib/edge';
 import type {useEdge} from '../hooks/useEdge';
 import {rememberSiblingName, siblingNames} from '../edgeSiblingNames';
 import {consentRefusal} from '../debugGuard';
-import {Btn, Section} from './components';
+import {Btn, Section, Segmented} from './components';
+import {ALARM_HOURS, alarmHours, lastAnchoredAt, reminderHours, setAlarmHours, stageOf} from '../edgeSiblingAlarm';
 import {theme} from './theme';
 
 type Row = {index: number; key: string; deviceId: string};
@@ -25,6 +26,9 @@ export function EdgeSiblingsCard({edge}: {edge: ReturnType<typeof useEdge>}) {
   const [names, setNames] = useState<Record<string, string>>({});
   const [confirming, setConfirming] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /* R30: when each key last synced here (its newest anchor), and the alarm setting */
+  const [synced, setSynced] = useState<Record<string, number | null>>({});
+  const [hours, setHours] = useState<number>(24);
   /* (a) the person names each key on THIS phone (Brad, 2026-10-05) - a label, kept here only */
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -32,8 +36,13 @@ export function EdgeSiblingsCard({edge}: {edge: ReturnType<typeof useEdge>}) {
 
   const load = useCallback(async () => {
     try {
-      setRows(await siblings());
+      const list = await siblings();
+      setRows(list);
       setNames(await siblingNames());
+      setHours(await alarmHours());
+      const at: Record<string, number | null> = {};
+      for (const r of list) at[r.key] = await lastAnchoredAt(r.deviceId).catch(() => null);
+      setSynced(at);
       setError(null);
     } catch (e: any) {
       setError(`The key did not list them: ${e?.message ?? e}`);
@@ -52,11 +61,30 @@ export function EdgeSiblingsCard({edge}: {edge: ReturnType<typeof useEdge>}) {
       </Text>
       {error ? <Text style={[styles.op, {color: theme.error}]}>{error}</Text> : null}
       {rows && !rows.length ? <Text style={styles.dim}>None paired yet.</Text> : null}
+      {rows && rows.length ? (
+        <>
+          <Text style={[styles.dim, {marginTop: 8}]}>{`Alarm when a key has not synced for ${hours} h (a reminder at ${reminderHours(hours)} h). Nothing syncs on its own: a sync is your Yes and press on each phone.`}</Text>
+          <Segmented
+            options={ALARM_HOURS.map(h => `${h} h`) as unknown as readonly string[]}
+            value={`${hours} h`}
+            onChange={(v: string) => { const h = parseInt(v, 10); setHours(h); void setAlarmHours(h); }}
+          />
+        </>
+      ) : null}
       {(rows ?? []).map(r => (
         <View key={r.key} style={styles.item}>
           <Text style={styles.op}>{nameOf(r) ?? `Key ${requestLib.fingerprint(r.key)}`}</Text>
           {nameOf(r) ? <Text style={styles.dim}>{`Key ${requestLib.fingerprint(r.key)}`}</Text> : null}
           <Text style={styles.dim}>{`Device ${r.deviceId.slice(0, 8)}…${r.deviceId.slice(-8)}`}</Text>
+          {(() => {
+            const at = synced[r.key];
+            if (at === undefined) return null;
+            if (at === null) return <Text style={styles.dim}>Not synced with this key yet</Text>;
+            const age = Date.now() - at;
+            const stage = stageOf(age, hours);
+            const h = Math.floor(age / 3600_000);
+            return <Text style={[styles.dim, stage === 2 ? {color: theme.error} : stage === 1 ? {color: theme.warn} : null]}>{`Last synced ${h ? `${h} h` : `${Math.max(1, Math.round(age / 60_000))} min`} ago${stage === 2 ? ' - sync now' : stage === 1 ? ' - a sync is due' : ''}`}</Text>;
+          })()}
           {pressing && pressing.index === r.index ? (
             <>
               <Text style={[styles.op, {color: theme.warn}]}>Press the key to unpair</Text>

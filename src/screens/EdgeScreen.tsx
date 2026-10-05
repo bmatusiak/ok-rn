@@ -23,6 +23,7 @@ import NativeEdgeAlert from '../../specs/NativeEdgeAlert';
 import {onSheet} from '../edgeAgents';
 import {consentRefusal} from '../debugGuard';
 import {EdgeSiblingsCard} from '../ui/EdgeSiblingsCard';
+import {linksForAnchor, useSiblingChains, type SiblingChain, type SiblingLink} from '../hooks/useSiblingChains';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
 import type {EdgeRow, EdgeView, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
@@ -75,6 +76,11 @@ function copyProblem(c: EdgeCopyCheck | null): string | null {
 }
 
 /* the phone's clock when it first stored the link (links carry no time) */
+/* R30: the other key's rings - a colour of its own (yours to change) */
+const SIBLING_RING = '#c4a1ff';
+/* the newest of an anchor's group shown at first */
+const SIBLING_FIRST = 5;
+
 const seenText = (ms?: number) => (ms ? `seen ${new Date(ms).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'})} · ` : '');
 const elapsed = (ms: number) => {
   const sec = Math.max(0, Math.floor(ms / 1000));
@@ -179,6 +185,27 @@ function WaitingRow({seq, since}: {seq: number; since?: number}) {
 
 /* R28: how many debts a continue link carried, in words */
 const debtsLine = (n: number) => (n === 0 ? 'No debts carried over.' : `${n} debt${n === 1 ? '' : 's'} carried over - still owed here.`);
+
+const siblingName = (c: SiblingChain) => c.name ?? `Key ${c.key.slice(0, 8)}…`;
+
+/* R30: one of a paired key's presses, as this phone holds it - its own ring colour, its name, when this phone got it */
+function SiblingRow({chain: c, link: l}: {chain: SiblingChain; link: SiblingLink}) {
+  return (
+    <View style={[styles.historyRow, styles.siblingRow]}>
+      <View style={styles.link}>
+        <View style={styles.linkHead}>
+          <View style={[styles.seq, {borderColor: SIBLING_RING}]}>
+            <Text style={styles.seqText}>{l.seq}</Text>
+          </View>
+          <View style={styles.linkText}>
+            <Text style={styles.op}>{`${siblingName(c)} · ${opName(l.op)}${l.op === OP.SIGN || l.op === OP.DECRYPT ? ` · slot ${l.slot}` : ''}`}</Text>
+            <Text style={styles.dim}>{`${l.seenAt ? `seen here ${new Date(l.seenAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'})} via sync` : 'via sync'}${l.flags & FLAG.PRESS_OBSERVED ? ' · pressed' : ''}`}</Text>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+}
 
 function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued}: {row: EdgeRow; continued?: EdgeView['continued']; ticketVerified: boolean; budgetUses?: Map<number, number>; agentOf?: Map<number, string>; notesFrom?: Map<string, number>}) {
   const dim = !row.verified;
@@ -666,6 +693,10 @@ function RestoreCard({edge}: {edge: ReturnType<typeof useEdge>}) {
  */
 export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {testingMode?: boolean; focusSeq?: number | null; onFocused?: () => void}) {
   const edge = useEdge();
+  /* R30: the paired keys' chains this phone holds - the one timeline (above every early return) */
+  const siblingChains = useSiblingChains(edge.siblings, edge.view?.headSeq);
+  /* anchor groups opened in full (a first anchor brings the other key's whole history) */
+  const [allOf, setAllOf] = useState<Set<number>>(new Set());
   const [open, setOpen] = useState<EdgeBudget | null>(null);
   /* two views (Brad, 2026-10-04): the budgets - live, then past as blocks - and the history, the whole chain */
   const [pane, setPane] = useState<'Budgets' | 'Presses'>('Budgets');
@@ -945,6 +976,35 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
         <Pressable onPress={() => setOpen(forBudget)} accessibilityRole="button" accessibilityLabel={`Open budget ${forBudget.grantId}`}>{body}</Pressable>
       ) : body;
     }});
+    /*
+     * R30, ONE TIMELINE (spec: the siblings' chains "ordered by their anchors"):
+     * under this key's anchor link, the other key's presses it brought - after
+     * the previous anchor of that key, up to the one anchored here. Their time
+     * is when THIS phone received them in the sync, said so on each row.
+     */
+    if (r.fields.op === OP.ANCHOR) {
+      const g = linksForAnchor(siblingChains, r.seq);
+      if (g) {
+        items.push({key: `h${r.seq}-anchor`, kind: 'node', bare: true, render: () => (
+          <View style={styles.historyRow}>
+            <Text style={[styles.dim, styles.siblingHead]}>{`${siblingName(g.chain)} up to #${g.upTo} · ${g.links.length} of its link${g.links.length === 1 ? '' : 's'} came with this anchor`}</Text>
+          </View>
+        )});
+        const shown = allOf.has(r.seq) ? g.links : g.links.slice(0, SIBLING_FIRST);
+        for (const l of shown) {
+          items.push({key: `h${r.seq}-s${l.seq}`, kind: 'node', bare: true, render: () => <SiblingRow chain={g.chain} link={l} />});
+        }
+        if (g.links.length > SIBLING_FIRST) {
+          const open = allOf.has(r.seq);
+          items.push({key: `h${r.seq}-more`, kind: 'node', bare: true, render: () => (
+            <Pressable style={[styles.historyRow, styles.siblingRow]} accessibilityRole="button"
+              onPress={() => setAllOf(prev => { const n = new Set(prev); if (open) n.delete(r.seq); else n.add(r.seq); return n; })}>
+              <Text style={[styles.op, {color: SIBLING_RING, paddingVertical: 8}]}>{open ? 'Show fewer' : `Show all ${g.links.length}`}</Text>
+            </Pressable>
+          )});
+        }
+      }
+    }
   }
 
   return (
@@ -1059,6 +1119,8 @@ const styles = StyleSheet.create({
   screen: {flex: 1},
   statusStack: {gap: 12},
   historyRow: {paddingHorizontal: 16},
+  siblingRow: {paddingLeft: 40},
+  siblingHead: {paddingLeft: 24, paddingTop: 4, color: SIBLING_RING},
   marked: {borderLeftWidth: 4, borderLeftColor: theme.error},
   paneBar: {paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.border},
   verdict: {fontSize: 20, fontWeight: '700', marginBottom: 4},

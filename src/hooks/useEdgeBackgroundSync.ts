@@ -28,6 +28,7 @@ import {detail, errText} from '../logSafe';
 import {useEffect, useRef} from 'react';
 import {sync} from '../edgeStore';
 import {beat, onHoldRequested, onWatchTick, raiseWatchAlarms, takeHoldRequest, watching} from '../edgeAlerts';
+import {raiseSiblingAlarms} from '../edgeSiblingAlarm';
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {vendorQuietForMs} from '../vendorBridge';
@@ -87,6 +88,8 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
           const {mirror, view} = await sync(source);
           const [st, live, past] = await Promise.all([source.state(), source.budgets(), source.pastBudgets()]);
           await raiseWatchAlarms(mirror, view, {refusedArms: st.refusedArms, live: live.map(b => b.grantId), past});
+          /* R30: a paired key that stopped syncing (reminder, then the alarm) */
+          await raiseSiblingAlarms((await source.siblings?.()) ?? []).catch(() => undefined);
         }
       } catch (e) {
         console.log(`[edge-watch] sync failed: ${errText(e)}`);

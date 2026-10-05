@@ -24,6 +24,7 @@ import NativeEdgeAlert from '../specs/NativeEdgeAlert';
 import NativeBtKeyboard from '../specs/NativeBtKeyboard';
 import {siblingNames} from './edgeSiblingNames';
 import {rememberSiblingName} from './edgeSiblingNames';
+import {markPaired} from './edgeSiblingAlarm';
 import {setTestIdentities} from './debugGuard';
 import NativeOkEmu from '../specs/NativeOkEmu';
 
@@ -566,6 +567,8 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       if (r.dropped) return null;
       /* the name the sheet showed, for "Your other keys" - the key keeps no names */
       if (r.ok && asked) await rememberSiblingName((asked as any).sibling, (asked as any).name).catch(() => undefined);
+      /* R30: the stopped-anchoring clock starts at the pairing */
+      if (r.ok && !r.already && asked) await markPaired((asked as any).sibling).catch(() => undefined);
       if (r.ok && !r.already) await syncCopy(soft).catch(() => undefined); /* the sibling-add link, into the tab's copy */
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `Paired with ${(asked as any).name} (the key linked it as #${r.seq})`} : r});
       return r;
