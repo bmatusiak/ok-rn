@@ -29,6 +29,7 @@ const AGENT_ADD = 0x15; /* mcp-service 4.7a: {agent key 32}, press */
 const PEER_ADD = 0x30;    /* R20: {P-256 key, compressed 33}, press */
 const PEER_REMOVE = 0x31; /* R20: {index}, press */
 const PEER_LIST = 0x32;   /* R20: count . k . max, then one report per slot */
+const SYNC = 0x39;        /* sync phase 2: {subject 32}, press; a sync link (op 20), no ticket (number CHOSEN) */
 const GRANT_CREATE = 0x10;
 const GRANT_LABEL = 0x11; /* R11a: {scope index, label 32}, no press - a derived code's identity */
 const GRANT_REVOKE = 0x12;
@@ -1039,6 +1040,53 @@ module.exports = function register({ it }, ctx) {
    * link. The subject is checked against Node's own SHA-256 of X || Y, not the
    * lib's, so the two sides are not checking themselves.
    */
+  /*
+   * Sync phase 2 (spec, 2026-10-05): every approved sync writes a sync link -
+   * op 20, the press flag, no ticket owed - and the KEY computes its subject
+   * from three parts: SHA256("OKEDGE-SYNC-v1" || SHA256(peer pubkey) || first
+   * || last || the copy's head after the merge || SHA256(Key Chain list) or
+   * zeros), checking the peer is on its own list. THE SAME VECTOR the lib pins
+   * (node-onlykey-lib test/edge-sync-phase2.test.js): peer = the P-256
+   * generator, #268..#269, head 0xab x 32, no Key Chain list ->
+   * b3966f6a90ea2c6ed3ba38af8614de19e54c322bbbbd30dbfa161dcbc3cb2470.
+   */
+  it('edge: SYNC computes the spec subject from its three parts (the shared vector), takes a press, owes no ticket; a stranger or a part out of order is refused',
+    async ({ device, assert, signal }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const G = Buffer.from('6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5', 'hex');
+      const sha = (b) => crypto.createHash('sha256').update(b).digest();
+      const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
+      const part = (n, bytes, opts) => edge(device, SYNC, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
+      const list = async () => { const [h, ...slots] = await edge(device, PEER_LIST, null, { signal, reports: 5 }); return slots.slice(0, h[0]).map((r) => Buffer.from(r.subarray(0, 64)).toString('hex')); };
+      /* the vector's place on the list (removed again at the end) */
+      if (!(await list()).includes(G.toString('hex'))) {
+        assert.equal(await edge(device, PEER_ADD, Buffer.concat([Buffer.of(0), G.subarray(0, 32)]), { signal, text: true }), 'EDGE:00');
+        await edge(device, PEER_ADD, Buffer.concat([Buffer.of(1), G.subarray(32)]), { signal, press: true });
+      }
+      /* a place NOT on the list, a part out of order, first > last: refused, nothing staged */
+      assert.equal(await part(0, Buffer.concat([sha(Buffer.alloc(64, 7)), u32(268), u32(269)]), { text: true }), 'EDGE:16', 'a stranger was not refused');
+      assert.equal(await part(1, Buffer.alloc(32, 0xab), { text: true }), 'EDGE:17', 'a part out of order was not refused');
+      assert.equal(await part(0, Buffer.concat([sha(G), u32(269), u32(268)]), { text: true }), 'EDGE:12', 'first > last was not refused');
+      const before = await head(device, { signal });
+      /* unpressed: nothing linked */
+      assert.equal(await part(0, Buffer.concat([sha(G), u32(268), u32(269)]), { text: true }), 'EDGE:00');
+      assert.equal(await part(1, Buffer.alloc(32, 0xab), { text: true }), 'EDGE:00');
+      await part(2, Buffer.alloc(32), { text: true }).catch(() => null);
+      await device.sleep(26000, { signal });
+      assert.equal((await head(device, { signal })).seq, before.seq, 'an unpressed SYNC wrote a link');
+      /* pressed: the link carries the vector */
+      assert.equal(await part(0, Buffer.concat([sha(G), u32(268), u32(269)]), { text: true }), 'EDGE:00');
+      assert.equal(await part(1, Buffer.alloc(32, 0xab), { text: true }), 'EDGE:00');
+      const [r] = await part(2, Buffer.alloc(32), { press: true });
+      const [l] = await pickup(device, r.readUInt32LE(0), 1, { signal });
+      const f = chain.decodeLink(l.link);
+      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([20, APPROVE, 0, PRESS_OBSERVED, 0]), 'the sync link is not the spec layout');
+      assert.equal(Buffer.from(f.subject).toString('hex'), 'b3966f6a90ea2c6ed3ba38af8614de19e54c322bbbbd30dbfa161dcbc3cb2470', 'the key subject is not the shared vector');
+      assert.equal((await head(device, { signal })).owed, before.owed, 'a sync link made the key owe a ticket');
+      const at = (await list()).indexOf(G.toString('hex'));
+      await edge(device, PEER_REMOVE, Buffer.of(at), { signal, press: true });
+    });
+
   it('edge: PEER_ADD / PEER_REMOVE take a press and link the peer; PEER_LIST survives a restart; no press, no peer (R20)',
     async ({ device, assert, signal }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });

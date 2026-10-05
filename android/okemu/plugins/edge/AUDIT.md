@@ -49,6 +49,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 | `30 PEER_ADD` two parts: `0` · X (32), then `1` · Y (32) (CHOSEN: X ‖ Y does not fit one request and the base build's micro-ecc has no point compression) | R20 (sync phase 2, P2a): part 0 stages X, `EDGE:00`; part 1 checks X ‖ Y is on P-256 (`EDGE:15` if not, or with no X staged), refuses a known key (`EDGE:14`) or a fifth (`EDGE:13`), then after a **press** a `peer-add` link - op 9, decision approve, slot = its index (CHOSEN), the press flag, subject = SHA256(X ‖ Y) - and the key keeps it; `seq` · `head` · vouch tag. Refused while restoring (`EDGE:0E`) |
 | `31 PEER_REMOVE` index | R20: after a **press**, a `peer-remove` link - op 10, slot = the index, subject = SHA256 of that peer's X ‖ Y; the later peers move down. `EDGE:16` for no peer there; refused while restoring |
 | `32 PEER_LIST` | R20, no press (public keys, R8): count · k · max, then one report per slot (always 4): X ‖ Y, zeros for an empty slot. k = 0 and no backed_through until E5 (R21, R22) (CHOSEN) |
+| `39 SYNC` three parts: `0` · SHA256(peer pubkey) 32 · first u32 · last u32, then `1` · the copy's head after the merge 32, then `2` · SHA256(Key Chain list) 32 or zeros | sync phase 2 (spec, 2026-10-05): part 0 is refused unless the peer hash is one of the key's peers (`EDGE:16`) or when first > last (`EDGE:12`); a part out of order is `EDGE:17`; after part 2 the KEY computes SHA256("OKEDGE-SYNC-v1" ‖ the five fields) and, after a **press**, writes a `sync` link - op 20, decision approve, slot 0, the press flag, that subject - owing no ticket; `seq` · `head` · vouch tag. Refused while restoring |
 
 ## What it stores
 | Where | What |
@@ -86,7 +87,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - hold: nothing to arm; a pressed resume; then it arms again;
 - revoke.
 
-`tests/kit.test.js` (the emulator), 17 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
+`tests/kit.test.js` (the emulator), 18 tests, each checked with the library or `node:crypto` (firmware.md verification row 5):
 - `HEAD` and the Edge key;
 - a direct press on an uncovered slot owes nothing and the library says "no ticket owed" (R16); under a held budget for that slot a pressed sign owes (bit 4 set, bit 5 clear); a timeout does not clear it; a late ticket pays it; a second is refused; R17's empty hook;
 - a budget is signed through the chain; a sign without ARM is pressed; ARM -> use -> ticket -> ARM -> use -> ticket; ARM and GRANT_CREATE refused while owed; a stale head refused; nothing to arm when used up; R16's bits: a use primed while an arm waited carries bits 4 and 5 whether its token matched or not (the stale and the slipped-in request), an unarmed use on the covered slot bit 4 only, a self-press both;
@@ -95,6 +96,7 @@ The minimal firmware half of OnlyKey Edge: **the key is a notary** (`DESIGN.md` 
 - a hold/resume or GRANT_CREATE on a head the host did not verify is refused (R27);
 - AGENT_ADD takes a press and links the agent key (op 15, the press flag, grant id 0, the lib's agentSubject); unpressed, nothing is linked (4.7a);
 - PEER_ADD / PEER_REMOVE take a press and link the peer (op 9 / 10, slot = the index, subject = node:crypto's SHA-256 of X ‖ Y); unpressed, nothing is linked or listed; a known key (`EDGE:14`), a point off the curve and a Y without its X (`EDGE:15`) are refused; PEER_LIST survives a restart; a removed peer's later ones move down; no peer at an index is `EDGE:16` (R20);
+- SYNC computes the spec subject from its three parts - the shared vector `b3966f6a…` the lib also pins - takes a press, owes no ticket; a place not on the list, a part out of order and first > last are refused (sync phase 2);
 - a standalone LOSS takes a press and links the spec layout; a backwards range or one past the head is refused (`EDGE:12`); it is refused while restoring (R24);
 - **the subject proof (R13a):** per op type - RSA sign (slot 2), ECC sign (slot 101), RSA decrypt (slot 1, five packets), a three-packet agent sign - a self-press goes through on a token the LIBRARY computed (`grants.requestSubject`), and the link's subject, which the firmware writes from `pend.subject`, equals the library's. An ARM for one request does not pay for another: that one is pressed, the arm is spent, and the agent's own request is pressed too; a stale head shows at the sign;
 - a budget with a 1-minute lifetime: its opening link carries the lifetime; after it, HEAD drops it and nothing arms (R15b);

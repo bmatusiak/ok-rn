@@ -56,6 +56,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_GRANT_HOLD 13
 #define OP_GRANT_RESUME 14
 #define OP_AGENT_ADD 15
+#define OP_SYNC 20     /* sync phase 2: every approved sync writes one (Brad, 2026-10-05) */
 #define OP_CONTINUE 16 /* R28: the first link of a device's own chain, carrying another chain's debts */
 #define DECISION_SELF_PRESS 4
 #define CODE_NEEDS_REVIEW 0x8F /* a WAIVE is linked as this ticket code, with the press flag (R18) */
@@ -265,7 +266,7 @@ static struct {
  * replaces it.
  */
 enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_REPLAY_DONE, PRESS_LOSS, PRESS_AGENT_ADD,
-  PRESS_PEER_ADD, PRESS_PEER_REMOVE };
+  PRESS_PEER_ADD, PRESS_PEER_REMOVE, PRESS_SYNC };
 static struct {
   uint8_t what;
   unsigned long since;
@@ -1157,6 +1158,9 @@ static struct {
 static uint8_t pairs_loaded;
 static uint8_t peer_x[32];     /* PEER_ADD part 0: X, until part 1 brings Y (RAM only) */
 static uint8_t peer_x_staged;
+/* SYNC's parts, until the third brings the last (RAM only): peer hash 32 . first 4 . last 4 . head 32 . Key Chain hash 32 */
+static uint8_t sync_fields[104];
+static uint8_t sync_parts;
 
 /* double-buffered like the chain record: the newer copy whose check holds */
 static void pairs_load(void) {
@@ -1211,6 +1215,20 @@ static void peer_add_pressed(void) {
 }
 
 /* the later peers move down one: indexes are positions in today's list, not ids */
+/*
+ * SYNC (okedge sync phase 2; Brad, 2026-10-05: "every approved sync writes a
+ * sync link, subject = SHA256 of what moved; owes no ticket"). The key computes
+ * the subject from SYNC's three parts (the case below) - it cannot see what a
+ * phone or the Worker holds, but it does check the place is on its own list -
+ * and the person reads what moved on the sheet before the press; the link makes
+ * "a sync was approved here, of exactly this" part of the history. Op 20,
+ * decision approve, slot 0, the press flag; no budget, so no ticket is owed.
+ */
+static void sync_pressed(void) {
+  append(OP_SYNC, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, press.verified, 0, 0, NULL);
+  reply_seq_head();
+}
+
 static void peer_remove_pressed(void) {
   pairs_load();
   uint8_t index = (uint8_t)press.id;
@@ -1295,6 +1313,7 @@ void okplugin_edge_decision(int decision) {
     else if (what == PRESS_AGENT_ADD) agent_add_pressed();
     else if (what == PRESS_PEER_ADD) peer_add_pressed();
     else if (what == PRESS_PEER_REMOVE) peer_remove_pressed();
+    else if (what == PRESS_SYNC) sync_pressed();
     press_drop();
     return;
   }
@@ -1692,6 +1711,54 @@ void okplugin_edge_recv(uint8_t *buffer) {
       press.verified_len = 32;
       H(what, "OKEDGE-PEER-REMOVE", press.verified, 32, st.head, 32, NULL, 0);
       press_wait(PRESS_PEER_REMOVE, what);
+      return;
+    }
+    case OKEDGE_SYNC: {
+      /*
+       * The subject (spec, 2026-10-05): SHA256("OKEDGE-SYNC-v1" || SHA256(peer
+       * pubkey) || first seq moved || last seq moved || the phone copy's head
+       * after the merge || SHA256(the merged Key Chain list, or 32 zero bytes)),
+       * seqs u32 LE. The KEY computes it from the parts - and checks the first
+       * part names a place on ITS list (R20): no sync is recorded from anywhere
+       * else. 104 bytes do not fit one request, so three parts, in order:
+       *   [6] = 0: SHA256(peer pubkey) 32 . first u32 . last u32  -> EDGE:00
+       *   [6] = 1: the copy's head after the merge 32               -> EDGE:00
+       *   [6] = 2: SHA256(Key Chain list) 32 (zeros: none)         -> the press
+       * Refused while restoring, like every new link (R26).
+       */
+      uint8_t what[32];
+      uint8_t part = buffer[6];
+      press_drop();
+      if (st.restored) { sync_parts = 0; status(EDGE_RESTORING); return; }
+      if (part == 0) {
+        pairs_load();
+        uint8_t h[32];
+        int known = 0;
+        for (int i = 0; i < pairs.peer_n && !known; i++) {
+          H(h, NULL, pairs.peer[i], 64, NULL, 0, NULL, 0);
+          known = memcmp(h, buffer + 7, 32) == 0;
+        }
+        sync_parts = 0;
+        if (!known) { status(EDGE_NO_SUCH_PEER); return; }
+        if (get32(buffer + 39) > get32(buffer + 43)) { status(EDGE_BAD_RANGE); return; }
+        memcpy(sync_fields, buffer + 7, 40);
+        sync_parts = 1;
+        status(EDGE_OK);
+        return;
+      }
+      if (part == 1 && sync_parts == 1) {
+        memcpy(sync_fields + 40, buffer + 7, 32);
+        sync_parts = 2;
+        status(EDGE_OK);
+        return;
+      }
+      if (part != 2 || sync_parts != 2) { sync_parts = 0; status(EDGE_SYNC_ORDER); return; }
+      memcpy(sync_fields + 72, buffer + 7, 32);
+      sync_parts = 0;
+      H(press.verified, "OKEDGE-SYNC-v1", sync_fields, sizeof(sync_fields), NULL, 0, NULL, 0);
+      press.verified_len = 32;
+      H(what, "OKEDGE-SYNC", press.verified, 32, st.head, 32, NULL, 0);
+      press_wait(PRESS_SYNC, what);
       return;
     }
     case OKEDGE_PEER_LIST: {

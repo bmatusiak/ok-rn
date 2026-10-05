@@ -33,6 +33,7 @@
 #define OKEDGE_AGENT_ADD 0x15    /* mcp-service 4.7a: {agent key 32}, press; an agent-add link, subject = SHA256("OKEDGE-AGENT-v1" || key) */
 #define OKEDGE_PEER_ADD 0x30     /* R20: two parts - {0, X 32} staged, then {1, Y 32} and a press; a peer-add link, subject = SHA256(X || Y) */
 #define OKEDGE_PEER_REMOVE 0x31  /* R20: {index}, press; a peer-remove link, subject = SHA256(X || Y) of that peer */
+#define OKEDGE_SYNC 0x39         /* sync phase 2 (spec, 2026-10-05): three parts - {0, SHA256(peer), first, last}, {1, head}, {2, Key Chain hash} - then a press; the key computes the subject; a sync link (op 20), owes no ticket */
 #define OKEDGE_PEER_LIST 0x32    /* R20: no press; count . k . max, then one report per slot: X || Y (zeros = empty) */
 #define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts; refused while restoring */
 #define OKEDGE_REPLAY_DONE 0x24  /* R26: {seq, tag, newest}, press; commits only a vouched replay; replies seq . head . tag or EDGE:11 */
@@ -64,6 +65,7 @@
 #define EDGE_PEER_KNOWN 0x14       /* PEER_ADD: that key is a peer already */
 #define EDGE_BAD_KEY 0x15          /* PEER_ADD: not a P-256 point, or Y without its X */
 #define EDGE_NO_SUCH_PEER 0x16     /* PEER_REMOVE: no peer at that index */
+#define EDGE_SYNC_ORDER 0x17       /* SYNC: a part out of order (CHOSEN number); EDGE:16 also answers a peer not on the list, EDGE:12 first > last */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */
 #define OKEDGE_DECISION_APPROVE 1
