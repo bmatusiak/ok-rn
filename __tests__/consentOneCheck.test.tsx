@@ -28,6 +28,8 @@ const fs = require('fs') as {
 const path = require('path') as {join(...parts: string[]): string};
 
 let mockSheetState: any = null;
+/* the lock as every non-TEST build has it - never whatever the last build staged in src/generated */
+jest.mock('../src/buildInfo', () => ({...jest.requireActual('../src/buildInfo'), buildInfo: {...jest.requireActual('../src/buildInfo').buildInfo, debugLock: true}}));
 jest.mock('../src/edgeAgents', () => ({
   onSheet: (l: (s: any) => void) => { l(mockSheetState); return () => undefined; },
   answerSheet: jest.fn(),

@@ -419,7 +419,29 @@ if (signer.startsWith('fac61745')) {
  * says why). Only for what could ship: a --keep build is not a release, and
  * an apk the OnlyKey did not sign is not the one that goes out.
  */
-if (KEEP || !signed) {
+/*
+ * THE DEBUGGING LOCK (Brad, 2026-10-05: "disable that check, and turn it back
+ * before we sign a pre-release"). OKRN_DEBUG_LOCK=off makes a TEST build for a
+ * phone left on adb: it goes to dist/test/ under a TEST name, and NO pre-release
+ * is packaged from it. Checked against what was actually staged (the app reads
+ * src/generated/firmware.json), so a stray environment variable can never ship
+ * an unlocked pre-release - and a test build that came out locked says so.
+ */
+const NOLOCK = process.env.OKRN_DEBUG_LOCK === 'off';
+const stagedLock = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'src', 'generated', 'firmware.json'), 'utf8')).debugLock !== false; } catch { return null; }
+})();
+if (stagedLock === null) { say('release: cannot read src/generated/firmware.json - is the debugging lock on? Not packaging.'); process.exit(1); }
+if (NOLOCK !== !stagedLock) { say(`release: asked for the debugging lock ${NOLOCK ? 'OFF' : 'ON'}, but the build staged it ${stagedLock ? 'ON' : 'OFF'} - not packaging.`); process.exit(1); }
+say(`release: debug lock ${stagedLock ? 'ON (the app refuses approve / press while adb is on)' : 'OFF - TEST BUILD, never a pre-release'}`);
+if (NOLOCK) {
+  const ver = require(path.join(ROOT, 'package.json')).version;
+  const testDir = path.join(ROOT, 'dist', 'test');
+  fs.mkdirSync(testDir, {recursive: true});
+  const name = `ok-rn-${ver}-TEST-nolock.${head.slice(0, 7)}.apk`;
+  fs.copyFileSync(apk, path.join(testDir, name));
+  say(`release: test apk   dist/test/${name} (debugging lock OFF - no pre-release packaged)`);
+} else if (KEEP || !signed) {
   say(`release: dist       skipped (${KEEP ? '--keep is not a release' : 'not signed by the OnlyKey'})`);
 } else {
   require('./release-dist').makeDist({

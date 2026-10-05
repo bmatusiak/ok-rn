@@ -13,6 +13,7 @@
  * Hold is never refused - it only makes the key stricter.
  */
 import NativeOkEmu from '../specs/NativeOkEmu';
+import {buildInfo} from './buildInfo';
 
 export const TEST_LABEL = /^TEST:/;
 export const isTestLabel = (text: string | null | undefined) => TEST_LABEL.test(String(text ?? '').trim());
@@ -53,7 +54,8 @@ export const testingModeOn = () => testingMode;
  * anything else. The refusal text, or null. Ask at render AND on the tap.
  */
 export function consentRefusal(): string | null {
-  return !testingMode && debuggingOn() ? DEBUG_REFUSAL : null;
+  /* a TEST build made with OKRN_DEBUG_LOCK=off has no lock - shown by a red banner, never in a pre-release (buildInfo.debugLock) */
+  return !testingMode && buildInfo.debugLock && debuggingOn() ? DEBUG_REFUSAL : null;
 }
 
 /*

@@ -1760,6 +1760,15 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, pluginNam
      * compiled at all.
      */
     enforcingOrigins,
+    /**
+     * The app's debugging lock (debugGuard.consentRefusal: no approve or press
+     * while adb is on). OFF only when the build asks for it -
+     * OKRN_DEBUG_LOCK=off - for a TEST build Brad uses with adb left on
+     * (2026-10-05: "disable that check, and turn it back before we sign a
+     * pre-release"). The app shows a red banner then, and release.js will not
+     * package a pre-release from such a build. Anything else: the lock is on.
+     */
+    debugLock: process.env.OKRN_DEBUG_LOCK !== 'off',
     stagedAt: new Date().toISOString(),
   };
   fs.writeFileSync(

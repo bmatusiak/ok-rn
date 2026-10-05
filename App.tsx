@@ -70,7 +70,7 @@ import {btTransit} from './src/btTransit';
 import {consentRefusal} from './src/debugGuard';
 import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
-import {hasSoftKeyPlugin} from './src/buildInfo';
+import {buildInfo, hasSoftKeyPlugin} from './src/buildInfo';
 import {setFirmwareConsoleToLogcat} from './src/hooks/useOkEmu';
 import {startKeyChainRecorder} from './src/keyChainRecorder';
 
@@ -946,6 +946,20 @@ function Shell() {
                 dotColor={keys.backend === 'embedded' ? ledColor(emu.led) : null}
               />
             </Pressable>
+          </View>
+        ) : null}
+
+        {/*
+          A TEST build made with OKRN_DEBUG_LOCK=off (Brad, 2026-10-05): the debugging
+          lock is off, so a computer with adb could approve and press. Said in red on
+          every screen, so this build can never pass for a pre-release - release.js
+          will not package one from it anyway.
+        */}
+        {!buildInfo.debugLock ? (
+          <View style={[styles.testing, {borderColor: theme.error}]}>
+            <Text style={[styles.testingText, {color: theme.error}]}>
+              TEST BUILD - debugging lock OFF: with adb on, a computer could approve and press
+            </Text>
           </View>
         ) : null}
 

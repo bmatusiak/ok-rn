@@ -4,6 +4,8 @@
 import NativeOkEmu from '../specs/NativeOkEmu';
 import {consentRefusal, DEBUG_REFUSAL, isTestLabel} from '../src/debugGuard';
 
+/* the lock as every non-TEST build has it - never whatever the last build staged in src/generated */
+jest.mock('../src/buildInfo', () => ({...jest.requireActual('../src/buildInfo'), buildInfo: {...jest.requireActual('../src/buildInfo').buildInfo, debugLock: true}}));
 const debugging = (on: boolean) => (NativeOkEmu.debuggingOn as jest.Mock).mockReturnValue(on);
 
 test('debugging off: every consent goes ahead', () => {
@@ -93,5 +95,25 @@ test('release build: useTestingMode cannot be switched on - not by setEnabled, n
     });
   } finally {
     (globalThis as any).__DEV__ = was;
+  }
+});
+
+/*
+ * The TEST build switch (Brad, 2026-10-05): OKRN_DEBUG_LOCK=off stages
+ * debugLock: false, and then - only then - debugging on does not refuse.
+ * release.js packages no pre-release from such a build.
+ */
+test('a TEST build with the debugging lock OFF lets consent through with debugging on; any other build refuses', () => {
+  /* the same buildInfo object debugGuard reads (mocked above, lock on) - flipped per case, put back after */
+  const bi = require('../src/buildInfo').buildInfo;
+  try {
+    for (const [debugLock, want] of [[false, null], [true, 'refused']] as const) {
+      bi.debugLock = debugLock;
+      debugging(true);
+      expect(consentRefusal() === null ? null : 'refused').toBe(want);
+    }
+  } finally {
+    bi.debugLock = true;
+    debugging(false);
   }
 });

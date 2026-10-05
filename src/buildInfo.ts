@@ -25,6 +25,8 @@ type Staged = {
   /** What onlykey.h's version macros say, e.g. 'v3.0.5'. */
   declaredVersion?: string | null;
   production?: boolean;
+  /** False only on a TEST build made with OKRN_DEBUG_LOCK=off - see stage.js. */
+  debugLock?: boolean;
   /** True when the debug trust-all return was cut - see stage.js. */
   enforcingOrigins?: boolean;
   edition?: string | null;
@@ -65,6 +67,12 @@ export type BuildInfo = {
   version: string | null;
   /** True when the DEBUG gate was off, as the firmware ships. */
   production: boolean;
+  /**
+   * The app's debugging lock (debugGuard.consentRefusal). False only on a TEST
+   * build made with OKRN_DEBUG_LOCK=off (Brad, 2026-10-05) - a red banner says
+   * so, and release.js packages no pre-release from it. Missing = on.
+   */
+  debugLock: boolean;
   /**
    * Whether webcryptcheck() consults the trusted-origin table and the field 31
    * webcrypt policy, instead of returning 2 for everything.
@@ -132,6 +140,7 @@ export const buildInfo: BuildInfo = {
   version: staged.version ?? null,
   declaredVersion: staged.declaredVersion ?? null,
   production: staged.production === true,
+  debugLock: staged.debugLock !== false,
   /*
    * Defaults FALSE on a checkout that has never staged, which is the safe
    * direction: a test that gates a refusal on this then skips rather than
