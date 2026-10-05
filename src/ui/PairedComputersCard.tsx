@@ -129,7 +129,10 @@ export function PairedComputersCard({testing = false, gate = btTransit}: {testin
 
       {pairing.stage === 'closed' || pairing.stage === 'paired' || pairing.stage === 'failed' ? (
         <>
-          {pairing.stage === 'paired' ? <Text style={styles.on}>{pairing.name} is paired.</Text> : null}
+          {/* only while that pairing still exists: a revoke or an alarm right after must not leave it saying "paired" */}
+          {pairing.stage === 'paired' && list.some(c => c.name === pairing.name) ? (
+            <Text style={styles.on}>{pairing.name} is paired.</Text>
+          ) : null}
           {pairing.stage === 'failed' ? <Text style={styles.error}>Not paired: {pairing.reason}.</Text> : null}
           <Btn title="Pair a computer" tone="primary" onPress={() => gate.openPairWindow()} />
         </>
