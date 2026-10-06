@@ -184,6 +184,8 @@ export interface Spec extends TurboModule {
    * firmware waits for takes precedence.
    */
   setAttention(text: string, untilMs: number): void;
+  /** the person pressed: no more sound for the wait now on (a new wait sounds again) */
+  hushPress(): void;
   /*
    * THE SPLASH PLAYS ONCE PER PROCESS (Brad, 2026-10-04). A JS reload (Metro's
    * hot reload) starts App again in the SAME process: the soft key cannot

@@ -40,8 +40,15 @@ export const DEFAULT_OWN_IDENTITIES = ['ssh://bmatusiak@localhost'];
 /* how long the sheet waits for the person before the agent is told 'timeout' -
  * two minutes to read the request and say Yes (Brad, 2026-10-03; was 90 s) */
 const SHEET_WAIT_MS = 120000;
-/* the firmware's own press window: the key stops waiting after 25 s */
-export const PRESS_WAIT_MS = 25000;
+/*
+ * The key's press window is 20 s, not the Edge plugin's 25: the core firmware
+ * closes every wait at 20 s (okcore.cpp Usertimeout) and clears what it waited
+ * for, so a press after that is refused ("Error button press was not
+ * accepted"). MEASURED ON THE PIXEL (2026-10-05, the firmware console): a
+ * press at 20.5 s, with this sheet still showing time left, was refused - the
+ * A13's "invalid" registration of 2026-10-04.
+ */
+export const PRESS_WAIT_MS = 20000;
 
 /* seq: the key's AGENT_ADD link for it - registered with a press */
 export type Agent = {key: string; name: string; registered: number; seq?: number};
@@ -160,6 +167,8 @@ export type SheetAsk =
 export type SheetState =
   | {phase: 'ask'; ask: SheetAsk; until: number}
   | {phase: 'press'; ask: SheetAsk; until: number}
+  /* the press is in: no more countdown, the key's answer is on its way (Brad: "when i press the button, the timer still counts down") */
+  | {phase: 'pressed'; ask: SheetAsk}
   | {phase: 'done'; ask: SheetAsk; result: {ok: true; text: string} | {ok: false; refusal: string; detail?: string}};
 
 type Listener = (s: SheetState | null) => void;
@@ -228,7 +237,13 @@ export function closeSheet() {
 }
 /** the soft key's press, from the sheet's own button */
 export async function pressFromSheet() {
+  try {
+    NativeOkEmu.hushPress();
+  } catch {
+    /* no native side (jest, an old build) */
+  }
   await soft?.press();
+  if (current?.phase === 'press') show({phase: 'pressed', ask: current.ask});
 }
 
 function askPerson(a: SheetAsk): Promise<'approve' | 'decline' | 'timeout'> {

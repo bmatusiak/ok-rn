@@ -121,12 +121,27 @@ object PressAlert {
     if (started) handler.post { try { check() } catch (_: Throwable) {} }
   }
 
+  /*
+   * THE PRESS IS IN, THE SOUND STOPS (Brad, 2026-10-05: "if i press the button,,
+   * the button disables,, but timers still counts and the sounds still
+   * continues,, untill its done processing"). The firmware's own state ends the
+   * wait only when it has finished; the sheet hushes the wait it pressed for at
+   * once. Only THAT wait: a new one (another opcode, slot or question) sounds.
+   */
+  @Volatile private var hushed: Int? = null
+
+  fun hushPress() {
+    hushed = current
+    if (started) handler.post { try { check() } catch (_: Throwable) {} }
+  }
+
   private fun asking(now: Long): Int? = if (askUntil > now) ASK else null
 
   private fun check() {
     val w = waitingFor() ?: asking(System.currentTimeMillis())
     val now = System.currentTimeMillis()
     if (w == null) {
+      hushed = null
       if (current != null) {
         current = null
         manager().cancel(NOTIFICATION_ID)
@@ -137,8 +152,10 @@ object PressAlert {
       current = w
       since = now
       nextSound = now
+      hushed = null
       post(w)
     }
+    if (w == hushed) return
     if (now >= nextSound) {
       val loud = now - since >= if (w == ASK) ASK_LOUD_AFTER_MS else LOUD_AFTER_MS
       pool?.play(if (loud) loudId else softId, 1f, 1f, 1, 0, 1f)
@@ -164,7 +181,7 @@ object PressAlert {
     val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(app, CHANNEL) else Notification.Builder(app)
     val title = if (w == ASK) "Answer on the phone" else "Press needed"
     val text = if (w == ASK) "$askText. Open ok-rn to approve or decline before it times out."
-      else "Confirm on your key: ${what(w)}. It stops waiting after 25 s."
+      else "Confirm on your key: ${what(w)}. It stops waiting after 20 s."
     val n = builder
       .setSmallIcon(R.drawable.ic_stat_o)
       .setContentTitle(title)

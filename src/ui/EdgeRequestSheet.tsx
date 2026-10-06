@@ -80,7 +80,7 @@ export function EdgeRequestSheet() {
     setS(next);
     if (!next || next.phase !== 'ask') setConfirming(false);
   }), []);
-  const left = useSecondsLeft(s && s.phase !== 'done' ? s.until : null);
+  const left = useSecondsLeft(s && (s.phase === 'ask' || s.phase === 'press') ? s.until : null);
   /*
    * NO DOUBLE TAPS (Brad, 2026-10-04: a tap on Approve took a moment to register, the
    * timer ticked, a second tap landed on the next step by accident). The buttons start
@@ -262,6 +262,9 @@ export function EdgeRequestSheet() {
                   <Btn large title="Press the soft key" tone="primary" disabled={off || refusal !== null} onPress={consent(() => void pressFromSheet())} />
                 </View>
               </>
+            ) : null}
+            {s.phase === 'pressed' ? (
+              <Text style={[styles.op, {color: theme.warn}]}>Processing...</Text>
             ) : null}
             {s.phase === 'done' ? (
               <>

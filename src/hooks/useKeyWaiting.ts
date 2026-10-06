@@ -16,6 +16,37 @@ import OkEmu, {type KeyWaiting} from '../transport/OkEmu';
 
 const POLL_MS = 400;
 
+/*
+ * A WAIT THAT OUTLIVES THE FIRMWARE'S OWN WINDOW IS WRITTEN DOWN. The A13
+ * (2026-10-04) kept "Confirm on your key" for an ssh sign after the computer
+ * was gone; a press did nothing and only an app restart cleared it. The Pixel
+ * could not reproduce it (dropped link, held link: both cleared at the 20 s
+ * window, 2026-10-05). The firmware closes every wait after 20 s
+ * (okcore.cpp Usertimeout), so one still open at 30 s is that bug: the log says
+ * what it waited for and how long, so the next time leaves data. Nothing here is
+ * sensitive - an opcode, a slot, a mode - so a production build logs it too.
+ */
+export const STUCK_MS = 30_000;
+
+export function createStuckWatch(log: (line: string) => void, stuckMs = STUCK_MS) {
+  let current: KeyWaiting | null = null;
+  let since = 0;
+  let reported = false;
+  return (w: KeyWaiting | null, now: number) => {
+    if (!same(current, w)) {
+      if (reported && current) log(`[keyWaiting] the stuck wait ended after ${Math.round((now - since) / 1000)} s`);
+      current = w;
+      since = now;
+      reported = false;
+      return;
+    }
+    if (w && !reported && now - since >= stuckMs) {
+      reported = true;
+      log(`[keyWaiting] still waiting after ${Math.round((now - since) / 1000)} s (the firmware's window is 20 s): ${w.what} opcode 0x${w.opcode.toString(16)} slot ${w.slot} mode ${w.mode} entered ${w.entered}`);
+    }
+  };
+}
+
 export function useKeyWaiting(enabled: boolean): KeyWaiting | null {
   const [waiting, setWaiting] = useState<KeyWaiting | null>(null);
   useEffect(() => {
@@ -25,11 +56,13 @@ export function useKeyWaiting(enabled: boolean): KeyWaiting | null {
     }
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const watch = createStuckWatch(line => console.warn(line));
     const tick = async () => {
       if (!alive) return;
       if (AppState.currentState === 'active') {
         try {
           const w = await OkEmu.waiting();
+          watch(w, Date.now());
           if (alive) setWaiting(prev => (same(prev, w) ? prev : w));
         } catch {
           if (alive) setWaiting(null);

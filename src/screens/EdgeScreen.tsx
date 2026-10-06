@@ -496,7 +496,7 @@ function PendingCard({r, busy, waiting, fake, blocked, onApprove, onPress, onDec
           <Text style={styles.dim}>
             {fake
               ? 'The fake key stands in for the keypad.'
-              : 'This phone is also the key, so its press proves less than a hard key\'s. The key stops waiting after 25 s.'}
+              : 'This phone is also the key, so its press proves less than a hard key\'s. The key stops waiting after 20 s.'}
           </Text>
           <View style={styles.row}>
             {/* not disabled while busy: the request IS what is in flight, waiting for this */}

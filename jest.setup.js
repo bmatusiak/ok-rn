@@ -111,6 +111,7 @@ jest.mock('./specs/NativeOkEmu', () => ({
     confirmState: jest.fn(() => Promise.resolve(0)),
     /* the app's own "answer me" for PressAlert (the Edge approval sheet) */
     setAttention: jest.fn(),
+    hushPress: jest.fn(),
     markSplashDone: jest.fn(),
     splashDoneThisProcess: jest.fn(() => false),
     debuggingOn: jest.fn(() => false),

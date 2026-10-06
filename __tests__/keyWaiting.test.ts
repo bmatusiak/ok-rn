@@ -4,7 +4,7 @@
  * 16-23 slot, 24-26 input mode, 27 isfade.
  */
 import {decodeConfirmState} from '../src/transport/OkEmu';
-import {describeWaiting} from '../src/hooks/useKeyWaiting';
+import {createStuckWatch, describeWaiting} from '../src/hooks/useKeyWaiting';
 
 const pack = (auth: number, opcode: number, slot: number, mode: number, open = 1) =>
   auth | (opcode << 8) | (slot << 16) | (mode << 24) | (open << 27);
@@ -33,4 +33,28 @@ test('HMAC and Edge always want a single press; an older firmware with no input 
   expect(decodeConfirmState(pack(3, 0xf5, 0, 0))!.mode).toBe('press');
   expect(decodeConfirmState(pack(1, 0xf8, 0, 1))!.what).toBe('edge');
   expect(decodeConfirmState(pack(1, 0xed, 2, 7))!.mode).toBe('unknown');
+});
+
+test('a wait still open past 30 s is logged once, and its end is logged', () => {
+  const lines: string[] = [];
+  const see = createStuckWatch(l => lines.push(l));
+  const w = decodeConfirmState(pack(1, 0xed, 201, 1));
+  see(w, 0);
+  see(w, 20_000);
+  expect(lines).toEqual([]); /* inside the firmware's own window */
+  see(w, 31_000);
+  see(w, 40_000);
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toMatch(/still waiting after 31 s .*sign opcode 0xed slot 201 mode press/);
+  see(null, 45_000);
+  expect(lines[1]).toMatch(/the stuck wait ended after 45 s/);
+});
+
+test('a wait that ends inside its window logs nothing', () => {
+  const lines: string[] = [];
+  const see = createStuckWatch(l => lines.push(l));
+  see(decodeConfirmState(pack(1, 0xed, 201, 1)), 0);
+  see(null, 19_000);
+  see(null, 60_000);
+  expect(lines).toEqual([]);
 });

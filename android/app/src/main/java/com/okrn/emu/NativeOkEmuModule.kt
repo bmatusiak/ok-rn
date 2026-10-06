@@ -450,6 +450,11 @@ class NativeOkEmuModule(
     PressAlert.setAttention(text, untilMs.toLong())
   }
 
+  /* the sheet's press went in: the wait is the key's to finish, not the person's - silence it */
+  override fun hushPress() {
+    PressAlert.hushPress()
+  }
+
   /* the splash plays once per process: a JS reload keeps this (see specs/NativeOkEmu.ts) */
   override fun markSplashDone() { splashDone = true }
 
