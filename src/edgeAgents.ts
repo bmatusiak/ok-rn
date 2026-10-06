@@ -69,8 +69,16 @@ export async function verifiedAgents(): Promise<(Agent & {inCopy: number | null}
   if (!soft) return stored.map(a => ({...a, inCopy: null}));
   const view = await syncCopy(soft).then(r => r.view).catch(() => null);
   const rows = view?.rows ?? [];
-  return stored.map(a => ({...a, inCopy: approveLib.agentInCopy(rows, a.key)}));
+  const out = stored.map(a => ({...a, inCopy: approveLib.agentInCopy(rows, a.key)}));
+  /* what this check found, for a note's quick answer (handleNote) - only when the copy was read */
+  if (view) {
+    knownAgents.clear();
+    for (const a of out) if (a.inCopy !== null) knownAgents.add(String(a.key).toLowerCase());
+  }
+  return out;
 }
+/* agent keys this session's verified copy showed registered with a press - memory only, refreshed by every full check */
+const knownAgents = new Set<string>();
 async function pressedAgents(): Promise<Agent[]> {
   return (await verifiedAgents()).filter(a => a.inCopy !== null);
 }
@@ -326,6 +334,31 @@ export function handleEdgeMessage(msg: any, from: string): Promise<unknown | nul
  */
 const notesSeen = new Set<string>();
 async function handleNote(msg: any): Promise<unknown | null> {
+  /*
+   * A NOTE'S ANSWER DOES NOT WAIT FOR A SYNC (Brad, 2026-10-06): the agent holds
+   * its key lane until the phone answers, and the full agents check synced the
+   * copy first (~1.6 s on the Pixel, per note, twice per commit). A key this
+   * session's verified copy already showed registered is answered after the
+   * note's signature checks; the note is kept and the copy synced right after, in
+   * the background, so alarms still come within seconds. Any other key gets the
+   * full check (and an unregistered one is still refused). Only notes: ARMs,
+   * budget requests and anything that spends keep their full check.
+   */
+  const agentKey = String(msg?.agent ?? '').toLowerCase();
+  if (knownAgents.has(agentKey)) {
+    const quick = noteLib.verify(msg, {registered: [...knownAgents], seen: notesSeen});
+    if (!quick.ok) return null;
+    notesSeen.add(String(msg.nonce).toLowerCase());
+    if (notesSeen.size > 1000) notesSeen.delete(notesSeen.values().next().value as string);
+    soft = soft ?? (await SoftKeyEdge.open());
+    const s = soft;
+    if (!s) return null;
+    void (async () => {
+      await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, armRefused: msg.armRefused}).catch(() => undefined);
+      await pressedAgents().catch(() => undefined); /* the sync (and its alarms), and the known keys refreshed */
+    })();
+    return {ok: true};
+  }
   const agents = await pressedAgents();
   const v = noteLib.verify(msg, {registered: agents.map(a => a.key), seen: notesSeen});
   if (!v.ok) return null;
