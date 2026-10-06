@@ -4,7 +4,7 @@
  * computer. Vendor interface only: nothing here touches FIDO or the keyboard.
  */
 import * as bt from 'node-onlykey-lib/btpair';
-import {createBtTransit, CMD, KIND, CTRL_BATCH} from '../src/btTransit';
+import {createBtTransit, CMD, KIND, CTRL_BATCH, CTRL_BYE} from '../src/btTransit';
 
 const PC = 'AA:BB:CC:00:11:22';
 const DAY = 24 * 60 * 60 * 1000;
@@ -33,12 +33,14 @@ function phone(opts: {testing?: boolean; storage?: ReturnType<typeof memory>} = 
   const storage = opts.storage ?? memory();
   const sent: {cmd: number; bytes: Uint8Array}[] = [];
   const alarms: string[] = [];
-  const gate = createBtTransit({storage, box, now: () => t, isTestingMode: () => !!opts.testing, alarm: (_id, text) => alarms.push(text)});
+  const dropped: string[] = [];
+  const gate = createBtTransit({storage, box, now: () => t, isTestingMode: () => !!opts.testing, alarm: (_id, text) => alarms.push(text), disconnect: a => dropped.push(a)});
   gate.setSender((cmd, bytes) => sent.push({cmd, bytes}));
   return {
     gate,
     sent,
     alarms,
+    dropped,
     storage,
     tick: (ms: number) => {
       t += ms;
@@ -304,4 +306,43 @@ test('several reports in one write: the phone says it reads them, and hands each
   expect(await p.gate.handle(0x04, seal(KIND.REPORTS, body.slice(0, 64)), PC)).toBeNull();
   /* a single report still comes alone, as before */
   expect(await p.gate.handle(0x04, seal(KIND.REPORT, report(0x44)), PC)).toEqual(report(0x44));
+});
+
+test('no session, no link: a sealed request with no session gets no answer and its link goes; so does every session ended (Brad, 2026-10-06)', async () => {
+  const p = phone();
+  const {record} = await pair(p);
+  const session = (await connect(p, record))!;
+  /* the phone loses its sessions (the app's screen re-created on the A13, 09:46) */
+  p.gate.endSessions();
+  expect(p.dropped).toEqual([PC]);
+  p.sent.length = 0;
+  /* the computer, unaware, sends a sealed request: silence - and the link goes */
+  expect(await p.gate.handle(0x04, sealedReport(session, report(0x66)), PC)).toBeNull();
+  expect(p.sent).toHaveLength(0);
+  expect(p.dropped).toEqual([PC, PC]);
+  /* a fresh hello makes a new session, and requests are answered again */
+  const again = (await connect(p, record))!;
+  expect(await p.gate.handle(0x04, sealedReport(again, report(0x77)), PC)).toEqual(report(0x77));
+  /* switched off on the Bluetooth tab: the session and the link go */
+  await p.gate.setOn(record.id, false);
+  expect(p.dropped).toEqual([PC, PC, PC]);
+});
+
+test('a plaintext request with no session (transit on): no answer, and the link goes', async () => {
+  const p = phone();
+  expect(await p.gate.handle(0x03, report(0x66), PC)).toBeNull();
+  expect(p.sent).toHaveLength(0);
+  expect(p.dropped).toEqual([PC]);
+});
+
+test('the computer says goodbye (idle): its session ends and its link goes; its next request needs a new hello', async () => {
+  const p = phone();
+  const {record} = await pair(p);
+  const session = (await connect(p, record))!;
+  const bye = new Uint8Array([KIND.CONTROL, CTRL_BYE]);
+  expect(await p.gate.handle(0x04, bt.seal(session, bye), PC)).toBeNull();
+  expect(p.dropped).toEqual([PC]);
+  expect(await p.gate.handle(0x04, sealedReport(session, report(0x66)), PC)).toBeNull(); /* that session is gone */
+  const again = (await connect(p, record))!;
+  expect(await p.gate.handle(0x04, sealedReport(again, report(0x67)), PC)).toEqual(report(0x67));
 });

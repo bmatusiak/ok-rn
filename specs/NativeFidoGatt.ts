@@ -198,6 +198,12 @@ export interface Spec extends TurboModule {
    * Same rules: target only, API on, one send at a time.
    */
   sendVendorFrame(command: number, hex: string): Promise<void>;
+  /**
+   * Drop one computer's Bluetooth link (cancelConnection) - ok-rn holds no
+   * session for it (Brad, 2026-10-06: never keep a link with no session). The
+   * phone advertises again once no computer is connected. True when it was.
+   */
+  disconnectCentral(address: string): Promise<boolean>;
 
   /** Generate a P-256 credential key in the TEE/StrongBox. Returns credentialId hex. */
   createCredential(rpId: string, userHandleHex: string): Promise<string>;

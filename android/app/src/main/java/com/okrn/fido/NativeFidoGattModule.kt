@@ -509,6 +509,17 @@ class NativeFidoGattModule(
       if (inFlightTo != null && addressKey(inFlightTo) != next.target) {
         clearNotifications("the target changed mid-response")
       }
+      /*
+       * NO SESSION, NO LINK (Brad, 2026-10-06): a computer that is not the target
+       * any more is let go, so the phone advertises again and that computer's next
+       * request connects fresh (and says hello first). On the A13 the app's
+       * screen was re-created (09:46:06: target none, then the same computer):
+       * the JS side had lost its session, the link stayed up, and every sealed
+       * request after it was dropped in silence for good.
+       */
+      for ((key, device) in centrals) {
+        if (key != next.target) dropCentral(device, "no longer the target")
+      }
     }
     if (previous != next) {
       val connected = next.target?.let { centrals.containsKey(it) } ?: false
@@ -1664,6 +1675,27 @@ class NativeFidoGattModule(
    * the promise says why - this is the last gate on the way OUT, behind the
    * one vendorBridge applies before it ever calls here.
    */
+  /** Let one computer's link go (no session for it - btTransit); true when it was connected. */
+  override fun disconnectCentral(address: String, promise: Promise) {
+    val device = centrals[addressKey(address)]
+    if (device == null || gattServer == null) {
+      promise.resolve(false)
+      return
+    }
+    dropCentral(device, "ok-rn let its session go")
+    promise.resolve(true)
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun dropCentral(device: BluetoothDevice, why: String) {
+    try {
+      gattServer?.cancelConnection(device)
+      report("disconnected a computer: $why")
+    } catch (e: SecurityException) {
+      report("could not disconnect a computer ($why): ${e.message}")
+    }
+  }
+
   override fun sendVendorReport(hex: String, promise: Promise) =
     sendVendorFrame(VendorGatt.CMD_REPORT.toDouble(), hex, promise)
 

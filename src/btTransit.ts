@@ -37,6 +37,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {bytes as okbytes} from 'node-onlykey-lib';
 import * as bt from 'node-onlykey-lib/btpair';
 import NativeSecrets from '../specs/NativeSecrets';
+import NativeFidoGatt from '../specs/NativeFidoGatt';
 import {testingModeOn} from './debugGuard';
 import {postBluetoothAlarm} from './edgeAlerts';
 
@@ -51,6 +52,8 @@ export const KIND = {REPORT: 0x01, CONTROL: 0x02, REPORTS: 0x03} as const;
  * the bridge checks it exactly as if it had come alone.
  */
 export const CTRL_BATCH = 0x30;
+/* the computer is done for now (lib release()): this session ends and its link goes */
+export const CTRL_BYE = 0x31;
 const REPORT_BYTES = 64;
 
 const STORE_KEY = 'okt.btpair.v1';
@@ -127,6 +130,8 @@ export type Deps = {
   log?: Log;
   /** How a notice reaches the person outside the app: a phone notification (T5). */
   alarm?: (id: number, text: string) => void;
+  /** Let one computer's Bluetooth link go (NativeFidoGatt.disconnectCentral). */
+  disconnect?: (address: string) => void;
 };
 
 const asHex = (s: string) => okbytes.toHex(okbytes.utf8ToBytes(s));
@@ -146,6 +151,10 @@ export function createBtTransit(deps: Deps = {}) {
   /* the app's log, given by the bridge (setLog); a gate with no log failed silently in production (2026-10-05) */
   let log: Log = deps.log ?? (() => {});
   const alarm = deps.alarm ?? postBluetoothAlarm;
+  const disconnect = deps.disconnect ?? ((address: string) => {
+    const f = (NativeFidoGatt as unknown as {disconnectCentral?: (a: string) => Promise<boolean>} | null)?.disconnectCentral;
+    if (typeof f === 'function') void Promise.resolve(f.call(NativeFidoGatt, address)).catch(() => undefined);
+  });
   let alarmIds = 0;
 
   let state: Stored | null = null;
@@ -223,9 +232,23 @@ export function createBtTransit(deps: Deps = {}) {
     }
   }
 
+  /*
+   * NO SESSION, NO LINK (Brad, 2026-10-06): whenever this phone stops holding a
+   * computer's session, that computer's Bluetooth link goes too - the phone
+   * advertises again and the computer's next request connects fresh, hello
+   * first. On the A13 a link outlived its session (the app's screen
+   * re-created): every sealed request was dropped in silence and nothing ever
+   * dropped the link. Silence stays the answer - nothing goes out in the clear.
+   */
+  function dropSession(address: string, why: string) {
+    sessions.delete(address);
+    disconnect(address);
+    log('info', `[bt] let a computer's link go: ${why}`);
+  }
+
   function drop(s: Stored, id: string) {
     s.records = s.records.filter(r => r.id !== id);
-    for (const [addr, x] of sessions) if (x.id === id) sessions.delete(addr);
+    for (const [addr, x] of [...sessions]) if (x.id === id) dropSession(addr, 'its pairing was dropped');
   }
 
   /* ------------------------------------------------------------ pairing */
@@ -341,6 +364,10 @@ export function createBtTransit(deps: Deps = {}) {
 
   async function onControl(address: string, payload: Uint8Array) {
     const x = sessions.get(address);
+    if (x && payload[0] === CTRL_BYE) {
+      dropSession(address, 'the computer said goodbye');
+      return;
+    }
     if (!x || !x.renew) return;
     const s = await load();
     const rec = s.records.find(r => r.id === x.id);
@@ -374,7 +401,11 @@ export function createBtTransit(deps: Deps = {}) {
         }
         if (cmd === CMD.SEALED) {
           const x = sessions.get(address);
-          if (!x) return null;
+          if (!x) {
+            /* a sealed request with no session here (lost, or never made): no answer, and the link goes */
+            dropSession(address, 'a sealed request with no session');
+            return null;
+          }
           const pt = bt.open(x.session, bytes);
           if (pt[0] === KIND.REPORT) return pt.slice(1);
           if (pt[0] === KIND.REPORTS) {
@@ -395,6 +426,7 @@ export function createBtTransit(deps: Deps = {}) {
           await load();
           if (transitOff()) return bytes;
           log('info', `[bt] a plaintext report from ${address} - no answer (transit is on)`);
+          if (!sessions.has(address)) dropSession(address, 'a plaintext request with no session');
           return null;
         }
       } catch (e) {
@@ -444,7 +476,7 @@ export function createBtTransit(deps: Deps = {}) {
 
     /** Forget every live session (the bridge stopped, Bluetooth went off). */
     endSessions() {
-      sessions.clear();
+      for (const addr of [...sessions.keys()]) dropSession(addr, 'the bridge stopped');
     },
 
     /* ---- for the Bluetooth tab ---- */
@@ -497,7 +529,7 @@ export function createBtTransit(deps: Deps = {}) {
     async setOn(id: string, on: boolean) {
       const s = await load();
       s.records = s.records.map(r => (r.id === id ? {...r, on} : r));
-      if (!on) for (const [addr, x] of sessions) if (x.id === id) sessions.delete(addr);
+      if (!on) for (const [addr, x] of [...sessions]) if (x.id === id) dropSession(addr, 'switched off');
       await save();
       changed();
     },

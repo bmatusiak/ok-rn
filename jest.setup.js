@@ -53,6 +53,7 @@ jest.mock('./specs/NativeFidoGatt', () => ({
     sendKeepAlive: jest.fn(() => Promise.resolve()),
     sendVendorReport: jest.fn(() => Promise.resolve()),
     sendVendorFrame: jest.fn(() => Promise.resolve()),
+    disconnectCentral: jest.fn(() => Promise.resolve(false)),
     fidoHandle: jest.fn(() => -1),
     fidoKnownHandle: jest.fn(() => -1),
     setIoPolicy: jest.fn(),
