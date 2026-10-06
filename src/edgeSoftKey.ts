@@ -564,9 +564,15 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return {publicKey, openings: (await this.copy()).openings, checkpoint};
   }
 
-  /** R27: the library's verdict on this phone's copy, against the key's live head. */
+  /**
+   * R27: the library's verdict on this phone's copy, against the key's live head.
+   * A DISPLAY: keyTail lets the key's newest links (an agent's ticket written
+   * after the last sync) be checked from the key in memory instead of read as a
+   * gap - on the A13 that gap sent every check to the full 13-16 s one. The
+   * approval (answerAgent verifyCopy) and the library's create/resume stay strict.
+   */
   async check(): Promise<EdgeCopyCheck> {
-    const v = await this.edge.grants.check(await this.copy());
+    const v = await this.edge.grants.check(await this.copy(), {keyTail: true});
     return v.ok ? {ok: true} : {ok: false, reason: v.reason, seq: v.seq ?? undefined, to: v.detail?.gaps?.[0]?.to};
   }
 
