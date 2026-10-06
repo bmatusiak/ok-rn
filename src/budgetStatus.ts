@@ -17,7 +17,7 @@ import type {EdgeView} from './edgeStore';
 
 export type BudgetStatus =
   | {kind: 'active'; owed: number; live: boolean; noUsesLeft: boolean}
-  | {kind: 'validated'}
+  | {kind: 'validated'; unused?: boolean}
   /* ended, nothing owed, but this session's check has not verified it (not read yet, or a gap) */
   | {kind: 'unchecked'}
   | {kind: 'failed'; seq?: number; reason?: string};
@@ -42,12 +42,12 @@ export function budgetStatus(b: EdgeBudget, live: boolean, view: EdgeView | null
     const t = answered(r);
     return r.verified && t !== null && bySeq.get(t.seq)?.verified === true;
   });
-  return view?.verdict.kind === 'verified' && allChecked ? {kind: 'validated'} : {kind: 'unchecked'};
+  return view?.verdict.kind === 'verified' && allChecked ? {kind: 'validated', unused: b.used === 0} : {kind: 'unchecked'};
 }
 
 /** the words the cards show */
 export function budgetStatusText(s: BudgetStatus): string {
-  if (s.kind === 'validated') return 'Validated';
+  if (s.kind === 'validated') return s.unused ? 'Validated · unused' : 'Validated';
   if (s.kind === 'failed') return s.seq !== undefined ? `Copy failed its check at #${s.seq}` : 'Copy failed its check';
   if (s.kind === 'unchecked') return 'Not checked yet';
   const parts = ['Active'];

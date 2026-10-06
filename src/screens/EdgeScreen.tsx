@@ -753,9 +753,17 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
    * testing panels are in the drawer at the bottom (src/ui/BottomDrawer.tsx).
    */
   const items: EdgeListItem[] = [];
-  /* not live on the key: still Active while a use owes a ticket (shown with the live ones), else past */
-  const owing = edge.past.filter(b => budgetStatus(b, false, edge.view).kind === 'active');
-  const done = edge.past.filter(b => budgetStatus(b, false, edge.view).kind !== 'active');
+  /*
+   * PAST ITS LIFETIME = NOT LIVE, whatever the key still lists (Brad, 2026-10-06:
+   * budget 313 expired on hold and kept Resume and Revoke). Its status follows its
+   * tickets: still Active while one is owed (shown with the live ones), else past.
+   */
+  const nowMs = Date.now();
+  const expiredIds = new Set(edge.budgets.filter(b => b.endsAt !== undefined && nowMs > b.endsAt).map(b => b.grantId));
+  const liveCards = edge.budgets.filter(b => !expiredIds.has(b.grantId));
+  const notLive = [...edge.past, ...edge.budgets.filter(b => expiredIds.has(b.grantId))];
+  const owing = notLive.filter(b => budgetStatus(b, false, edge.view).kind === 'active');
+  const done = notLive.filter(b => budgetStatus(b, false, edge.view).kind !== 'active');
   if (ks?.restoring || broken || (ks && !ks.restoring && (ks.owed > 0 || ks.overflow))) {
     items.push({key: 'status', kind: 'node', render: () => (
       <View style={styles.statusStack}>
@@ -865,7 +873,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
               onDecline={() => edge.decline(r.id)}
             />
           ))}
-          {edge.budgets.map(b => (
+          {liveCards.map(b => (
             <BudgetCard
               key={b.grantId}
               b={b}
@@ -914,7 +922,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
           {edge.view?.verdict.kind === 'locked' ? (
             <Text style={[styles.dim, {color: theme.warn}]}>Unlock the key to sync. A locked key answers nothing, so its budgets cannot be read.</Text>
           ) : null}
-          {edge.view?.verdict.kind !== 'locked' && edge.budgets.length === 0 && owing.length === 0 && edge.requests.length === 0 && edge.ended.length === 0 ? (
+          {edge.view?.verdict.kind !== 'locked' && liveCards.length === 0 && owing.length === 0 && edge.requests.length === 0 && edge.ended.length === 0 ? (
             <Text style={styles.dim}>
               No budget. A budget lets an agent use the key a set number of times without a press; you approve it once.
             </Text>

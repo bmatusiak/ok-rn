@@ -52,6 +52,11 @@ type Kept = {
 };
 const DEFAULT_LIFETIME_MINUTES = 12 * 60;
 
+type SameHead = {key: string; raw: any; checkpoint?: any; vouch?: any};
+/* per key: the answers the key gave for its current head, and its Edge public key - this session's memory only */
+const sameHeads = new Map<string, SameHead>();
+const publicKeys = new Map<string, Uint8Array>();
+
 export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   readonly deviceId: Uint8Array;
   private edge: any;
@@ -65,6 +70,12 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   /** null when the soft key does not answer Edge (no plugin, or locked). */
+  /* this session's memory, per key (device id hex) - never stored */
+  static forgetSession() {
+    sameHeads.clear();
+    publicKeys.clear();
+  }
+
   static async open(): Promise<SoftKeyEdge | null> {
     const app = await getOnlyKey('embedded');
     /* 4 s: right after start the background sync's chain reads go first (lib client.js deviceIdentity, 2026-10-04) */
@@ -73,8 +84,27 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return new SoftKeyEdge(app.edge, deviceId);
   }
 
+  /*
+   * THE KEY'S ANSWERS FOR ONE HEAD (Brad, 2026-10-06): its checkpoint (a signature
+   * the key makes, ~0.6 s) and its vouch tag are reused only while the head the
+   * key last gave is unchanged. Every sync still reads the head from the key
+   * first; a new head drops them. Memory only - a restart clears them.
+   */
+  /* shared by every SoftKeyEdge for this key (the tab, the background sync, the agent sheet each open one) */
+  private get sameHead(): SameHead | null {
+    return sameHeads.get(toHex(this.deviceId)) ?? null;
+  }
+  private noteHead(h: any) {
+    const key = `${h.seq}:${h.head ? toHex(h.head) : ''}:${h.owed ?? ''}`;
+    const id = toHex(this.deviceId);
+    const was = sameHeads.get(id);
+    if (!was || was.key !== key) sameHeads.set(id, {key, raw: h});
+    else was.raw = h;
+  }
+
   async head() {
     const h = await this.edge.head();
+    this.noteHead(h);
     /*
      * no link yet: seq -1 against the genesis head verifies as "nothing recorded".
      * No oldest with a seq: the ring is EMPTY (right after a restore the key holds
@@ -115,8 +145,6 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * fresh, as before. Memory only, for the length of one refresh.
    */
   private snap: {head?: any; mirror?: Awaited<ReturnType<typeof loadMirror>>; keys?: readonly string[]; checkpoint?: any} | null = null;
-  /* the key's Edge public key never changes for this device: read once a session */
-  private pub: Uint8Array | null = null;
   beginRun() {
     this.snap = {};
   }
@@ -124,8 +152,9 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     this.snap = null;
   }
   private async keyHead(): Promise<any> {
-    if (!this.snap) return this.edge.head();
-    return (this.snap.head ??= await this.edge.head());
+    if (!this.snap) { const h = await this.edge.head(); this.noteHead(h); return h; }
+    if (!this.snap.head) { this.snap.head = await this.edge.head(); this.noteHead(this.snap.head); }
+    return this.snap.head;
   }
   private async mirrorNow() {
     if (!this.snap) return loadMirror(this.deviceId);
@@ -178,8 +207,9 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     };
   }
 
-  async budgets(): Promise<EdgeBudget[]> {
-    const h = await this.keyHead();
+  /* useLastHead: the head this sync just read from the key (edgeStore.syncNow's alarms) - not a second read */
+  async budgets(useLastHead = false): Promise<EdgeBudget[]> {
+    const h = useLastHead && this.sameHead ? this.sameHead.raw : await this.keyHead();
     const mirror = await this.mirrorNow();
     const out: EdgeBudget[] = [];
     /* a budget that was live at the last look and is not now: stamp when it was seen gone (the log's 'lasted') */
@@ -314,9 +344,12 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   async vouch() {
+    if (this.sameHead && this.sameHead.vouch) return this.sameHead.vouch;
     try {
       const v = await this.edge.vouch();
-      return {seq: v.seq, head: v.head, tag: v.tag};
+      const out = {seq: v.seq, head: v.head, tag: v.tag};
+      if (this.sameHead) this.sameHead.vouch = out;
+      return out;
     } catch (e: any) {
       if (e && e.status === 'restoring') return null;
       throw e;
@@ -519,10 +552,15 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   /* R27 anchors for the banner: the KEY's public key (PUBKEY this session) and its checkpoints */
   async copyKey(): Promise<EdgeCopyKey> {
-    const publicKey = (this.pub ??= (await this.edge.publicKey()).publicKey);
+    /* the key's Edge public key never changes for this device: read once a session */
+    const id = toHex(this.deviceId);
+    const publicKey = publicKeys.get(id) ?? (await this.edge.publicKey()).publicKey;
+    publicKeys.set(id, publicKey);
     /* the key's latest checkpoint; a restoring key refuses CHECKPOINT (R26), so then none - once per action */
-    const checkpoint = this.snap && 'checkpoint' in this.snap ? this.snap.checkpoint : await this.edge.checkpoint().catch(() => null);
+    const cached = this.sameHead && 'checkpoint' in this.sameHead ? this.sameHead.checkpoint : undefined;
+    const checkpoint = this.snap && 'checkpoint' in this.snap ? this.snap.checkpoint : cached !== undefined ? cached : await this.edge.checkpoint().catch(() => null);
     if (this.snap) this.snap.checkpoint = checkpoint;
+    if (this.sameHead && checkpoint) this.sameHead.checkpoint = checkpoint;
     return {publicKey, openings: (await this.copy()).openings, checkpoint};
   }
 

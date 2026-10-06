@@ -337,7 +337,7 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   await saveMirror(mirror);
   lap('save');
   /* B7: new alarms become phone notifications - every sync, the tab's and the background copy's */
-  const live = await source.budgets().then(bs => bs.map(b => b.grantId)).catch(() => [] as number[]);
+  const live = await source.budgets(true).then(bs => bs.map(b => b.grantId)).catch(() => [] as number[]);
   await raiseAlarms(mirror, view, live).catch(() => {});
   lap('alarms');
   console.log(`[edge] sync ${Date.now() - t0} ms: ${laps.join(', ')}`);

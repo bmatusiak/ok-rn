@@ -54,7 +54,8 @@ export interface EdgeSource {
   /** The key's live head; ringFrom = the oldest seq it can still READ. */
   head(): Promise<{seq: number; head: Uint8Array; ringFrom: number}>;
   read(fromSeq: number, count: number): Promise<EdgeLinkRecord[]>;
-  budgets(): Promise<EdgeBudget[]>;
+  /* useLastHead: the head the caller just read (a sync) may be reused */
+  budgets(useLastHead?: boolean): Promise<EdgeBudget[]>;
   /** Ticket messages by the seq they answer - they come by sync, never from the key. */
   messages(): Promise<Record<number, string>>;
   /** End a live budget now (a grant-end link). */

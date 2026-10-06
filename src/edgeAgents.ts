@@ -331,7 +331,9 @@ async function handleNote(msg: any): Promise<unknown | null> {
   if (!v.ok) return null;
   notesSeen.add(String(msg.nonce).toLowerCase());
   if (notesSeen.size > 1000) notesSeen.delete(notesSeen.values().next().value as string);
-  const s = await SoftKeyEdge.open();
+  /* the shared one, not a fresh open per note (each open probes the key and reads its public key) */
+  soft = soft ?? (await SoftKeyEdge.open());
+  const s = soft;
   if (!s) return null; /* locked, or no Edge: nothing to keep it with */
   await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, armRefused: msg.armRefused});
   return {ok: true};
@@ -632,7 +634,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
      * still answers, and the agent is told copy_unverified - the reason.
      */
     /* the copy first brought up to the key's head: links made since the last sync (a register, a direct ssh use) are not a gap */
-    await syncCopy(soft).catch(() => undefined);
+    /* the copy is already at the key's head: pressedAgents() above just synced it (Brad, 2026-10-06: it synced twice before the sheet) */
     step('sync');
     const copy: any = await soft.check().catch((e: unknown) => ({ok: false, reason: String(e)}));
     step('check');

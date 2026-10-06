@@ -54,3 +54,7 @@ test('a copy that failed its check is red, never Validated', () => {
 test('nothing checked yet (no view): not Validated', () => {
   expect(budgetStatus(budget(4, 4), false, null)).toEqual({kind: 'unchecked'});
 });
+
+test('an unused budget that ended reads "Validated · unused"', () => {
+  expect(budgetStatusText(budgetStatus(budget(0, 0), false, view(0, 0)))).toBe('Validated · unused');
+});
