@@ -17,6 +17,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {approve as approveLib, chain, note as noteLib, request as requestLib, sync as syncLib} from 'node-onlykey-lib/edge';
+import {noteIntentText} from './edgeIntent';
 import {SoftKeyEdge} from './edgeSoftKey';
 import {keepMergedKeyChain, readKeyChainList} from './keyChainRecorder';
 import {addNote, keepOffered, keepSibling, loadMirror, mergeOffered, mergeSibling, sync as syncCopy} from './edgeStore';
@@ -354,6 +355,7 @@ async function handleNote(msg: any): Promise<unknown | null> {
     const s = soft;
     if (!s) return null;
     void (async () => {
+      noteIntentText(msg.reason); /* R13b: for the press prompt (shown only if it hashes to the armed intent) */
       await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, armRefused: msg.armRefused}).catch(() => undefined);
       await pressedAgents().catch(() => undefined); /* the sync (and its alarms), and the known keys refreshed */
     })();
@@ -368,6 +370,7 @@ async function handleNote(msg: any): Promise<unknown | null> {
   soft = soft ?? (await SoftKeyEdge.open());
   const s = soft;
   if (!s) return null; /* locked, or no Edge: nothing to keep it with */
+  noteIntentText(msg.reason);
   await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, armRefused: msg.armRefused});
   return {ok: true};
 }

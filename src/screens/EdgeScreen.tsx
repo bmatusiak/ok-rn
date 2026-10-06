@@ -11,8 +11,9 @@
  * plain text, never links or markdown.
  */
 import React, {useEffect, useState} from 'react';
+import {bytes as okbytes} from 'node-onlykey-lib';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {codes, live} from 'node-onlykey-lib/edge';
+import {grants, codes, live} from 'node-onlykey-lib/edge';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
 import {EdgeList, type EdgeListItem} from '../ui/EdgeList';
@@ -99,6 +100,8 @@ function approval(row: EdgeRow): string {
   /* B7: the key wrote which press this was (flags ARMED / OWES_TICKET) - lib live.classifyUse, as okedge watch */
   const k = live.classifyUse(f)?.kind;
   if (k === live.KIND.MISMATCHED_ARM) return 'pressed · its ARM did not match';
+  /* R13b: the ARM matched (its intent is in the link) but nothing could pay - okedge exec --press */
+  if (k === live.KIND.ARMED_PRESS) return 'pressed · the agent asked, no budget paid';
   if (k === live.KIND.PRESS_UNDER_BUDGET) return 'pressed while a budget was live';
   if (f.flags & FLAG.PRESS_OBSERVED) return 'pressed';
   return 'approved';
@@ -243,10 +246,23 @@ function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued
         * text; only from the agent whose budget paid it (EDGE_NOTE, spec 2026-10-04)
         */}
       {(() => {
+        if (row.fields.op !== OP.SIGN && row.fields.op !== OP.DECRYPT) return null;
+        /*
+         * R13b (Brad, 2026-10-06): the intent is welded into the link (bytes 47-62).
+         * The agent's text shows as the intent only when it hashes to those bytes;
+         * text that does not is red; no text is "intent unknown". The audit reads
+         * top-down: the budget's reason (task), each use's intent (step), its ticket (result).
+         */
+        const intent = (row.fields as {intent?: Uint8Array | null}).intent ?? null;
+        if (intent) {
+          if (!row.note) return <Text style={[styles.reason, {color: theme.warn}]}>intent unknown</Text>;
+          if (okbytes.toHex(grants.intentOf(row.note.text)) === okbytes.toHex(intent)) return <Text style={styles.reason}>{`intent: “${row.note.text}”`}</Text>;
+          return <Text style={[styles.reason, {color: theme.error}]}>{`the agent says “${row.note.text}” - it does not match the intent in the chain`}</Text>;
+        }
         const agent = row.fields.grantId ? agentOf?.get(row.fields.grantId) : undefined;
-        if (!agent || (row.fields.op !== OP.SIGN && row.fields.op !== OP.DECRYPT)) return null;
+        if (!agent) return null;
         if (row.note && row.note.agent === agent) {
-          return <Text style={styles.reason}>{`the agent says: “${row.note.text}”`}</Text>;
+          return <Text style={styles.reason}>{`no intent · the agent says: “${row.note.text}”`}</Text>;
         }
         /* only once this agent sends notes at all: uses from before EDGE_NOTE are not "no reason" */
         const since = notesFrom?.get(agent);
@@ -540,8 +556,10 @@ function PendingCard({r, busy, waiting, fake, blocked, onApprove, onPress, onDec
 function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof useEdge>; onBack: () => void}) {
   const v = edge.view;
   const line = v ? verdictLine(v.verdict) : {text: 'Reading…', color: theme.textDim};
-  const mine = budgetRows(v?.rows ?? [], b.grantId);
-  const steps = mine.filter(r => r.fields.decision === DECISION.SELF_PRESS).map(r => r.fields.grantStep).reverse();
+  /* oldest first here (spec okrn-edge-tab.md): task -> each step's intent -> its ticket, read top
+     down like a log; the main chain view stays newest at the top */
+  const mine = budgetRows(v?.rows ?? [], b.grantId).slice().reverse();
+  const steps = mine.filter(r => r.fields.decision === DECISION.SELF_PRESS).map(r => r.fields.grantStep);
   const inOrder = steps.every((st, i) => st === i + 1);
   const ended = mine.some(r => r.fields.op === OP.GRANT_END);
   return (

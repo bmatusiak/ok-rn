@@ -229,6 +229,22 @@ static uint8_t armed;
  * and its sign gets a press, never a free signature - and uses the arm up.
  */
 static uint8_t arm_token[32];
+/*
+ * R13b (Brad, 2026-10-06): the use says what it's for BEFORE it happens.
+ * ARM {token, intent}: intent = the first 16 bytes of SHA256("OKEDGE-INTENT-v1" ||
+ * intent text), token = SHA256("OKEDGE-ARM-v2" || head || subject || intent); the
+ * self-press link then carries the intent in bytes 47-62 (63 stays zero), so the
+ * reason is welded into the chain before the signature exists. An ARM with an
+ * all-zero intent is the older v1 (token over head || subject only) and writes
+ * none - an agent that predates R13b keeps working until the chain reset (R31).
+ */
+static uint8_t arm_intent[16];
+static uint8_t arm_v2;
+/* the intent the next append_scoped writes into bytes 47-62 (a self-press of a v2 arm), then cleared */
+static const uint8_t *next_intent;
+/* R13b + R26: the intent the next REPLAY of a self-press link welds in (REPLAY_INTENT), while restoring */
+static uint8_t replay_intent[16];
+static uint8_t replay_intent_set;
 
 /*
  * B7 stage 2 (spec, 2026-10-04): ARMs this key refused since power-up, in HEAD
@@ -256,6 +272,8 @@ static struct held_link {
 static struct {
   uint8_t active, opcode, slot, press;
   uint8_t armed; /* R16: an arm was waiting when this was primed (matched or not) */
+  uint8_t has_intent; /* R13b: a v2 arm matched - its intent goes into the self-press link */
+  uint8_t intent[16];
   int8_t budget;
   uint8_t subject[32];
   /* R11a: on a derived code, the identity's label prefix - the request's last 32 bytes are its label */
@@ -753,6 +771,8 @@ static void append_scoped(uint8_t op, uint8_t decision, uint8_t slot, uint8_t fl
   uint8_t link[LINK_BYTES];
   memset(link, 0, sizeof(link));
   link[46] = scope;
+  if (next_intent) { memcpy(link + 47, next_intent, 16); next_intent = NULL; } /* R13b */
+  link[63] = OKEDGE_LINK_VERSION; /* R3: future format changes are version 2 in the same chain */
   put32(link, st.seq == SEQ_NONE ? 0 : st.seq + 1);
   link[4] = op;
   link[5] = decision;
@@ -1333,6 +1353,11 @@ static void replay(const uint8_t *buffer) {
   if (!tent_active) { tent = st; tent_active = 1; } /* tentative: the record keeps the backup's state */
   memset(link, 0, sizeof(link));
   memcpy(link, buffer + 6, REPLAY_BYTES);
+  /* R13b: a sign/decrypt link's intent, staged by REPLAY_INTENT just before (and only for it) */
+  if (replay_intent_set && (link[4] == OP_SIGN || link[4] == OP_DECRYPT)) memcpy(link + 47, replay_intent, 16);
+  replay_intent_set = 0;
+  /* R3: the link's version byte (0 = before versions) - after the head check bytes */
+  link[63] = buffer[6 + REPLAY_BYTES + REPLAY_HEAD_BYTES];
   uint32_t seq = get32(link);
   if (seq != (tent.seq == SEQ_NONE ? 0 : tent.seq + 1)) { status(EDGE_REPLAY_MISMATCH); return; }
   if (!weld_in(&tent, link, NULL, buffer + 6 + REPLAY_BYTES)) { status(EDGE_REPLAY_MISMATCH); return; }
@@ -1351,6 +1376,7 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   if (opcode != OKSIGN && opcode != OKDECRYPT) return;
   pend.active = 1;
   pend.armed = armed; /* R16: taken before the token check below can spend the arm */
+  pend.has_intent = 0;
   pend.opcode = opcode;
   pend.slot = slot;
   H(pend.subject, NULL, msg, msg_len, NULL, 0, NULL, 0); /* SHA-256 of exactly what was submitted */
@@ -1361,8 +1387,10 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   if (armed) {
     /* R13a: this request, after THIS head, is the one the arm was for - or the arm is spent */
     uint8_t t[32];
-    H(t, "OKEDGE-ARM-v1", st.head, 32, pend.subject, 32, NULL, 0);
+    if (arm_v2) H(t, "OKEDGE-ARM-v2", st.head, 32, pend.subject, 32, arm_intent, 16); /* R13b */
+    else H(t, "OKEDGE-ARM-v1", st.head, 32, pend.subject, 32, NULL, 0);
     if (memcmp(t, arm_token, 32) != 0) armed = 0;
+    else if (arm_v2) { pend.has_intent = 1; memcpy(pend.intent, arm_intent, 16); }
   }
   struct scope *sc;
   int i = budget_for(opcode == OKSIGN ? OP_SIGN : OP_DECRYPT, slot, pend.has_label ? pend.label : NULL, &sc);
@@ -1422,6 +1450,7 @@ void okplugin_edge_decision(int decision) {
       b->used++;
       sc->used++;
       hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
+      if (pend.has_intent) next_intent = pend.intent; /* R13b: the reason, welded in with the use */
       append_scoped(op, DECISION_SELF_PRESS, pend.slot, flags | FLAG_BUDGET_SPENT, pend.subject, b->id, b->used,
                     (uint8_t)(sc - b->scopes + 1), reveal); /* R3: byte 46, which scope paid */
       memset(reveal, 0, 32);
@@ -1429,6 +1458,7 @@ void okplugin_edge_decision(int decision) {
     }
   }
   if (decision == OKEDGE_DECISION_APPROVE && pend.press) flags |= FLAG_PRESS_OBSERVED;
+  if (pend.has_intent) next_intent = pend.intent; /* R13b: a pressed use records the agent's intent too */
   append(op, (uint8_t)decision, pend.slot, flags, pend.subject, 0, 0, NULL);
 }
 
@@ -1575,7 +1605,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       r[58] = st.overflow;
       r[59] = st.restored;
       r[60] = refused_arms; /* B7: refused ARMs since power-up (RAM only) */
-      reply(r, 61);
+      r[61] = OKEDGE_CAP_INTENT; /* R13b: this build takes ARM {token, intent} */
+      reply(r, 62);
       return;
     }
     case OKEDGE_PICKUP: {
@@ -1699,16 +1730,33 @@ void okplugin_edge_recv(uint8_t *buffer) {
        * fits - this head, this request - is decided when the request is primed
        * (okplugin_edge_primed); a stale head shows there, as a press.
        */
+      /*
+       * R13b (extended 2026-10-06): an ARM WITH an intent is taken even when no
+       * budget can pay - the next sign is pressed as usual and records the
+       * intent. Still refused while restoring or while a ticket is owed, intent
+       * or not (R13a): the agent tickets first.
+       */
+      uint8_t v2 = 0;
+      for (int k = 0; k < 16; k++) v2 |= buffer[38 + k];
       if (st.restored) { refuse_arm(EDGE_RESTORING); return; }
       if (owes()) { refuse_arm(EDGE_TICKET_OWED); return; }
-      if (!any_budget_payable()) { refuse_arm(EDGE_NOTHING_TO_ARM); return; }
+      if (!v2 && !any_budget_payable()) { refuse_arm(EDGE_NOTHING_TO_ARM); return; }
       memcpy(arm_token, buffer + 6, 32);
+      memcpy(arm_intent, buffer + 38, 16); /* R13b: zeros = a v1 arm */
+      arm_v2 = v2;
       armed = 1;
       status(EDGE_OK);
       return;
     }
     case OKEDGE_REPLAY:
       replay(buffer);
+      return;
+    case OKEDGE_REPLAY_INTENT:
+      /* R13b + R26: the intent of the self-press link the next REPLAY brings back */
+      if (!st.restored || st.replay_closed) { status(EDGE_REPLAY_CLOSED); return; }
+      memcpy(replay_intent, buffer + 6, 16);
+      replay_intent_set = 1;
+      status(EDGE_OK);
       return;
     case OKEDGE_LOSS: {
       /*

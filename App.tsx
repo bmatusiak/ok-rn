@@ -7,6 +7,14 @@ import {Btn, StatusPill} from './src/ui/components';
 import {WANTED, OFF, PRE, ON, type ConfigState} from './src/ui/configModeNotes';
 import OkEmu from './src/transport/OkEmu';
 import {describeWaiting, useKeyWaiting} from './src/hooks/useKeyWaiting';
+import {intentForPrompt} from './src/edgeIntent';
+
+/* R13b: the agent's claim, labelled as such - shown only when it hashes to the armed intent */
+function intentLine(i: ReturnType<typeof intentForPrompt>): string {
+  if (i.kind === 'says') return `The agent says: “${i.text}” `;
+  if (i.kind === 'unknown') return 'Intent unknown. ';
+  return '';
+}
 import {useEdgeBackgroundSync} from './src/hooks/useEdgeBackgroundSync';
 import {rememberTab, takeResumeTab} from './src/resumeTab';
 import {Drawer} from './src/ui/Drawer';
@@ -1079,6 +1087,7 @@ function Shell() {
               <Text style={styles.promptTitle}>Confirm on your key</Text>
               <Text style={styles.promptBody}>
                 {describeWaiting(keyWaiting) + ' '}
+                {keyWaiting.what === 'sign' || keyWaiting.what === 'decrypt' ? intentLine(intentForPrompt()) : ''}
                 {keyWaiting.mode === 'press'
                   ? 'This is the press it wants.'
                   : keyWaiting.mode === 'code'
