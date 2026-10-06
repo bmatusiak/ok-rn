@@ -236,7 +236,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
    * COMPUTER_QUIET_MS AND is not waiting for a press. The computer's later
    * writes (a chunked request) go straight in while it holds it.
    */
-  let held: {release: () => void; timer: ReturnType<typeof setTimeout> | null} | null = null;
+  let held: {release: () => void; timer: ReturnType<typeof setTimeout> | null; since: number} | null = null;
   let holding: Promise<void> | null = null;
   function armRelease() {
     if (!held) return;
@@ -250,6 +250,8 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
         held = null;
         holding = null;
         h.release();
+        /* how long the app's own key reads (the Edge tab's sync) could not get in */
+        console.log(`[vendor] the key is free again: the computer held it ${Date.now() - h.since} ms`);
       })();
     }, COMPUTER_QUIET_MS);
   }
@@ -257,7 +259,8 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     if (holding) return holding;
     holding = new Promise<void>(ready => {
       const conversation = () => new Promise<void>(release => {
-        held = {release, timer: null};
+        held = {release, timer: null, since: Date.now()};
+        console.log('[vendor] the computer holds the key');
         ready();
         armRelease();
       });
@@ -376,9 +379,18 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
        * by the gate; a sealed frame becomes the report inside it; plaintext
        * only while testing mode has transit off. Anything else: silence.
        */
-      const data = await transit.handle(event.command, okbytes.fromHex(event.hex), event.address);
-      if (!data) return;
+      const got = await transit.handle(event.command, okbytes.fromHex(event.hex), event.address);
+      if (!got) return;
+      /* several reports in one write (btTransit KIND.REPORTS): each on its own, in order, as if it came alone */
+      for (const data of Array.isArray(got) ? got : [got]) await forward(data, event.address);
+    } catch (err) {
+      log('error', `[vendor] write failed: ${String(err)}`);
+    }
+  }
 
+  /** One report from the computer to the key - the checks every report gets, alone or packed. */
+  async function forward(data: Uint8Array, address: string) {
+    try {
       /*
        * Before ensureSubscribed(), so a refused write never so much as boots
        * the key. Silence rather than a reply, for the same reason as any other
@@ -392,7 +404,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       }
 
       if (isEdgeRequest(data)) {
-        keepForApp(data, event.address);
+        keepForApp(data, address);
         return;
       }
 
@@ -402,7 +414,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       armRelease();
       log('rx', `[vendor] ${data.length} bytes -> the key`);
       /* Before the write: a fast key answers before write() resolves. */
-      owner = event.address;
+      owner = address;
       lastHostActivity = Date.now();
       ours.push(data);
       if (ours.length > 8) ours.shift();

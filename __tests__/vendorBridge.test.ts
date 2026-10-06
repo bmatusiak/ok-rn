@@ -575,6 +575,34 @@ describe('the pairing gate (Part T)', () => {
     off();
   });
 
+  test('several reports in one write: each reaches the key alone, in order, through the same checks (Brad, 2026-10-06)', async () => {
+    const {fake, gate, off} = startGated();
+    const cli = bt.generateIdentity();
+    gate.openPairWindow();
+    const s1 = bt.cliPairStart({identity: cli, name: 'NITRO16'});
+    await send(0x05, s1.msg);
+    const s2 = bt.cliPairOnKeys(s1.state, lastFrame(0x85));
+    await send(0x05, s2.msg);
+    gate.approvePairing();
+    await settle();
+    const s3 = bt.cliPairOnDone(s2.state, lastFrame(0x85), Date.now());
+    await send(0x05, s3.msg);
+    const h = bt.cliHello(s3.record, {name: 'NITRO16'});
+    await send(0x05, h.msg);
+    const session = bt.cliOnHelloOk(h.state, lastFrame(0x85));
+
+    const one = padded(Uint8Array.from([0xff, 0xff, 0xff, 0xff, 0xe4, 1]));
+    const fw = padded(Uint8Array.from([0xff, 0xff, 0xff, 0xff, 0xf4]));
+    const three = padded(Uint8Array.from([0xff, 0xff, 0xff, 0xff, 0xe4, 3]));
+    const pt = new Uint8Array(1 + 192);
+    pt[0] = 0x03;
+    [one, fw, three].forEach((r, i) => pt.set(r, 1 + i * 64));
+    await send(0x04, bt.seal(session, pt));
+    /* the firmware update refused on its own; the two around it written, in order */
+    expect(fake.writes.map(w => Array.from(w.data.slice(0, 6)))).toEqual([Array.from(one.slice(0, 6)), Array.from(three.slice(0, 6))]);
+    off();
+  });
+
   test('a pairing request from a computer that is not the target never reaches the gate', async () => {
     const {gate, off} = startGated();
     gate.openPairWindow();

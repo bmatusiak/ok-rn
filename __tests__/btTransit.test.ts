@@ -4,7 +4,7 @@
  * computer. Vendor interface only: nothing here touches FIDO or the keyboard.
  */
 import * as bt from 'node-onlykey-lib/btpair';
-import {createBtTransit, CMD, KIND} from '../src/btTransit';
+import {createBtTransit, CMD, KIND, CTRL_BATCH} from '../src/btTransit';
 
 const PC = 'AA:BB:CC:00:11:22';
 const DAY = 24 * 60 * 60 * 1000;
@@ -85,8 +85,16 @@ async function connect(p: ReturnType<typeof phone>, record: any, name = 'NITRO16
   const ok = p.sent.find(f => f.cmd === CMD.PAIR);
   if (!ok) return null;
   p.sent.splice(p.sent.indexOf(ok), 1);
-  return bt.cliOnHelloOk(h.state, ok.bytes);
+  const session = bt.cliOnHelloOk(h.state, ok.bytes);
+  /* the phone's first sealed message: "I read several reports per write" - kept for the test that checks it */
+  const ann = p.sent.find(f => f.cmd === CMD.SEALED);
+  if (session && ann) {
+    lastAnnounce = bt.open(session, ann.bytes);
+    p.sent.splice(p.sent.indexOf(ann), 1);
+  }
+  return session;
 }
+let lastAnnounce: Uint8Array | null = null;
 
 const sealedReport = (session: any, r: Uint8Array) => {
   const pt = new Uint8Array(65);
@@ -272,4 +280,28 @@ test('a second bridge that takes over keeps the sender when the first one stops 
   const h = bt.cliHello(record, {name: 'NITRO16'});
   await p.gate.handle(0x05, h.msg, PC);
   expect(second.some(f => f.cmd === CMD.PAIR)).toBe(true); /* the answer went out */
+});
+
+test('several reports in one write: the phone says it reads them, and hands each on alone, in order (Brad, 2026-10-06)', async () => {
+  const p = phone();
+  const {record} = await pair(p);
+  const session = (await connect(p, record))!;
+  /* right after the hello: a sealed control message - "this phone reads KIND.REPORTS, version 1" */
+  expect(Array.from(lastAnnounce!)).toEqual([KIND.CONTROL, CTRL_BATCH, 1]);
+
+  const seal = (kind: number, body: Uint8Array) => {
+    const pt = new Uint8Array(1 + body.length);
+    pt[0] = kind;
+    pt.set(body, 1);
+    return bt.seal(session, pt);
+  };
+  const three = [report(0x11), report(0x22), report(0x33)];
+  const body = new Uint8Array(192);
+  three.forEach((r, i) => body.set(r, i * 64));
+  expect(await p.gate.handle(0x04, seal(KIND.REPORTS, body), PC)).toEqual(three);
+  /* not whole reports, or only one: dropped, never half-handed on */
+  expect(await p.gate.handle(0x04, seal(KIND.REPORTS, body.slice(0, 100)), PC)).toBeNull();
+  expect(await p.gate.handle(0x04, seal(KIND.REPORTS, body.slice(0, 64)), PC)).toBeNull();
+  /* a single report still comes alone, as before */
+  expect(await p.gate.handle(0x04, seal(KIND.REPORT, report(0x44)), PC)).toEqual(report(0x44));
 });

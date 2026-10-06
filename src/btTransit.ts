@@ -41,7 +41,17 @@ import {testingModeOn} from './debugGuard';
 import {postBluetoothAlarm} from './edgeAlerts';
 
 export const CMD = {PLAIN: 0x83, SEALED: 0x84, PAIR: 0x85} as const;
-export const KIND = {REPORT: 0x01, CONTROL: 0x02} as const;
+export const KIND = {REPORT: 0x01, CONTROL: 0x02, REPORTS: 0x03} as const;
+/*
+ * SEVERAL REPORTS IN ONE WRITE (Brad, 2026-10-06; lib cli/transport-ble.js
+ * KIND_REPORTS): each write the computer makes is acknowledged (~0.3 s), so it
+ * may put whole 64-byte reports back to back in one sealed message. Told it may
+ * by CTRL_BATCH, sent sealed right after the hello; a computer that never reads
+ * it keeps sending one report per write. Each report is handed on on its own -
+ * the bridge checks it exactly as if it had come alone.
+ */
+export const CTRL_BATCH = 0x30;
+const REPORT_BYTES = 64;
 
 const STORE_KEY = 'okt.btpair.v1';
 const BOX_ALIAS = 'btpair';
@@ -313,6 +323,8 @@ export function createBtTransit(deps: Deps = {}) {
     await save();
     sessions.set(address, {session: r.session, id: r.record.id});
     send(CMD.PAIR, r.msg);
+    /* this phone reads several reports per write (KIND.REPORTS), version 1 */
+    send(CMD.SEALED, bt.seal(r.session, cat(Uint8Array.of(KIND.CONTROL), Uint8Array.of(CTRL_BATCH, 1))));
     log('info', `[bt] ${r.record.name} connected (encrypted)`);
     changed();
     /* day 6 of 7: the renewal rides inside this session */
@@ -353,7 +365,7 @@ export function createBtTransit(deps: Deps = {}) {
      * to the key, or null - handled here (pairing, handshake, control) or
      * silence. `command` is the frame command, high bit stripped or not.
      */
-    async handle(command: number, bytes: Uint8Array, address: string): Promise<Uint8Array | null> {
+    async handle(command: number, bytes: Uint8Array, address: string): Promise<Uint8Array | Uint8Array[] | null> {
       const cmd = command | 0x80;
       try {
         if (cmd === CMD.PAIR) {
@@ -365,6 +377,17 @@ export function createBtTransit(deps: Deps = {}) {
           if (!x) return null;
           const pt = bt.open(x.session, bytes);
           if (pt[0] === KIND.REPORT) return pt.slice(1);
+          if (pt[0] === KIND.REPORTS) {
+            /* whole reports only, at least two: anything else is not a message this phone sends on */
+            const body = pt.slice(1);
+            if (body.length < 2 * REPORT_BYTES || body.length % REPORT_BYTES) {
+              log('info', `[bt] a packed message of ${body.length} bytes from ${address} - not whole reports, dropped`);
+              return null;
+            }
+            const out: Uint8Array[] = [];
+            for (let i = 0; i < body.length; i += REPORT_BYTES) out.push(body.slice(i, i + REPORT_BYTES));
+            return out;
+          }
           if (pt[0] === KIND.CONTROL) await onControl(address, pt.slice(1));
           return null;
         }
