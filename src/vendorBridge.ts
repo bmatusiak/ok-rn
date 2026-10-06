@@ -48,9 +48,10 @@ import {testingModeOn} from './debugGuard';
  * production build too - still only inside the encrypted session (Part T). The
  * echo returns only what that same paired computer just sent (at most 8 KB),
  * touches no key, budget or storage, and logs counts, times and random ids
- * only. Set back to false after the A13 is measured: testing mode only.
+ * only. Measured 2026-10-06 (A13: 20 of 20 exact, ~2.2 s per 1 KB); set back to
+ * false the same day - testing mode only.
  */
-const PING_IN_PRODUCTION = true;
+const PING_IN_PRODUCTION = false;
 
 const IFACE_VENDOR = oktransport.IFACE.VENDOR;
 

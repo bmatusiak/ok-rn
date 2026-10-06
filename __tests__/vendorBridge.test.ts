@@ -664,8 +664,9 @@ describe('the pairing gate (Part T)', () => {
     off();
   });
 
-  test('ping: a sealed ping comes straight back, exact, naming the ping it answers (Brad, 2026-10-06)', async () => {
+  test('ping: testing mode only - a sealed ping gets silence in production; in testing mode it comes straight back, exact, naming the ping it answers (Brad, 2026-10-06)', async () => {
     const {ping, wire} = jest.requireActual('node-onlykey-lib/edge');
+    const {setTestingMode} = jest.requireActual('../src/debugGuard');
     const {fake, gate, off} = startGated();
     const cli = bt.generateIdentity();
     gate.openPairWindow();
@@ -680,11 +681,20 @@ describe('the pairing gate (Part T)', () => {
     const h = bt.cliHello(s3.record, {name: 'NITRO16'});
     await send(0x05, h.msg);
     const session = bt.cliOnHelloOk(h.state, lastFrame(0x85));
-    mockFrames.length = 0;
     const data = Uint8Array.from({length: 500}, (_, i) => i & 255);
     const msg = {...ping.buildPing(data), wire: {dev: 'pc-1', id: 'abcdef0123456789', ts: 1}};
+    /* production (testing mode off): silence */
+    setTestingMode(false);
+    mockFrames.length = 0;
     for (const frame of wire.encode(wire.KIND.REQUEST, msg)) await send(0x04, bt.seal(session, Uint8Array.from([0x01, ...frame])));
     await settle();
+    expect(mockFrames.filter(x => x.cmd === 0x84)).toHaveLength(0);
+    /* testing mode: the echo */
+    setTestingMode(true);
+    mockFrames.length = 0;
+    for (const frame of wire.encode(wire.KIND.REQUEST, msg)) await send(0x04, bt.seal(session, Uint8Array.from([0x01, ...frame])));
+    await settle();
+    setTestingMode(false);
     const asm = wire.createAssembler();
     let got: any = null;
     for (const f of mockFrames.filter(x => x.cmd === 0x84)) {
