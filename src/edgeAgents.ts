@@ -191,6 +191,10 @@ function unattended(): boolean {
 }
 
 function show(s: SheetState | null) {
+  if (s?.phase === 'press' && approvedAt) {
+    console.log(`[edge] approve -> press asked ${Date.now() - approvedAt} ms`);
+    approvedAt = 0;
+  }
   current = s;
   if (declinedTimer) { clearTimeout(declinedTimer); declinedTimer = null; }
   if (s?.phase === 'done' && !s.result.ok && s.result.refusal === 'declined') {
@@ -227,7 +231,10 @@ export function onSheet(l: Listener): () => void {
   return () => listeners.delete(l);
 }
 /** the person's answer on the sheet */
+/* when Approve was tapped: the log times Approve -> the key asked for the press (Brad, 2026-10-06: presses lag) */
+let approvedAt = 0;
 export function answerSheet(a: 'approve' | 'decline') {
+  if (a === 'approve') approvedAt = Date.now();
   const f = answer;
   answer = null;
   f?.(a);
@@ -269,6 +276,18 @@ let queue: Promise<unknown> = Promise.resolve();
  * unseen and a stack of sheets would follow.
  */
 let inFlight = false;
+let stepLog: {t0: number; at: number; parts: string[]} | null = null;
+function step(name: string) {
+  if (!stepLog) return;
+  const n = Date.now();
+  stepLog.parts.push(`${name} ${n - stepLog.at}`);
+  stepLog.at = n;
+}
+function stepsDone(what: string) {
+  if (!stepLog) return;
+  console.log(`[edge] ${what} ${Date.now() - stepLog.t0} ms after it arrived: ${stepLog.parts.join(', ')}`);
+  stepLog = null;
+}
 
 /**
  * The vendor bridge's hand-off: an assembled message from computer `from`.
@@ -282,7 +301,10 @@ export function handleEdgeMessage(msg: any, from: string): Promise<unknown | nul
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
   }
   if (asks) inFlight = true;
-  const run = queue.then(() => handle(msg, from)).catch((e: unknown) => {
+  /* the time a request spends on the phone, step by step (Brad, 2026-10-06: the A13's slow answers) - times only */
+  const arrived = Date.now();
+  stepLog = {t0: arrived, at: arrived, parts: []};
+  const run = queue.then(() => { step('queue'); return handle(msg, from); }).catch((e: unknown) => {
     /*
      * Never leave the sheet stuck (it sat on "Press" for good when a press
      * timeout came back as a garbled answer, 2026-10-03): end it with the
@@ -594,6 +616,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
     if (!(await agentRequestsOn())) return null;
 
     const agents = await pressedAgents();
+    step('agents');
     /* not registered: refused before anything in it is read - no sheet, no answer */
     if (!agents.some(a => a.key === String(msg.agent).toLowerCase())) return null;
     /* a timed-out sheet nobody has closed: nobody is there to press - refused at once, no new sheet */
@@ -601,6 +624,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
     soft = soft ?? (await SoftKeyEdge.open());
     if (!soft) return {ok: false, refusal: 'invalid', detail: 'this phone\'s key has no Edge'};
     await soft.loadAgentBudgets();
+    step('budgets');
     const agentName = agents.find(a => a.key === String(msg.agent).toLowerCase())?.name ?? 'an agent';
     /*
      * R27 BEFORE the sheet: a copy that does not verify cannot open a budget,
@@ -609,7 +633,9 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
      */
     /* the copy first brought up to the key's head: links made since the last sync (a register, a direct ssh use) are not a gap */
     await syncCopy(soft).catch(() => undefined);
+    step('sync');
     const copy: any = await soft.check().catch((e: unknown) => ({ok: false, reason: String(e)}));
+    step('check');
     const blocked = copy.ok
       ? null
       : `this phone's copy of the chain does not verify (${copy.reason}${copy.seq !== undefined ? ` at #${copy.seq}` : ''}). Sync or settle it on the Edge tab.`;
@@ -621,6 +647,8 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       from: agentName,
       ask: async view => {
         asked = {kind: 'request', agentName, view, blocked, at: Date.now()};
+        step('answerAgent');
+        stepsDone('sheet shown');
         const a = await askPerson(asked);
         return blocked ? 'copy_unverified' : a;
       },

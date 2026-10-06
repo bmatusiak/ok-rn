@@ -115,9 +115,10 @@ function Progress({used, total, thick}: {used: number; total: number; thick?: bo
   );
 }
 
-function TicketHook({t, verified}: {t: NonNullable<EdgeRow['ticket']>; verified: boolean}) {
-  /* waiting is drawn as its own row above the request, not as a hook */
-  if (t.status === 'no-ticket-owed' || t.status === 'waiting') return null;
+function TicketHook({t, verified, seq, since, edge}: {t: NonNullable<EdgeRow['ticket']>; verified: boolean; seq: number; since?: number; edge?: ReturnType<typeof useEdge>}) {
+  if (t.status === 'no-ticket-owed') return null;
+  /* WHERE THE TICKET WILL HANG (Brad, 2026-10-06): under the use it waits for, not a box above it; Waive is here in the budget's view */
+  if (t.status === 'waiting') return <WaitingTicket seq={seq} since={since} edge={edge} />;
   if (t.status === 'missing') {
     return (
       <View style={[styles.ticket, styles.ticketMissing]}>
@@ -167,7 +168,7 @@ const OWED_RED_MS = 10 * 60 * 1000;
 const NO_REASON_MS = 60 * 1000;
 
 /** The latest use has no ticket yet - the key still takes one for it (R16). B7: how long it has been owed. */
-function WaitingRow({seq, since}: {seq: number; since?: number}) {
+function WaitingTicket({seq, since, edge}: {seq: number; since?: number; edge?: ReturnType<typeof useEdge>}) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!since) return;
@@ -175,11 +176,13 @@ function WaitingRow({seq, since}: {seq: number; since?: number}) {
     return () => clearInterval(t);
   }, [since]);
   return (
-    <View style={[styles.link, styles.waiting]}>
+    <View style={[styles.ticket, {borderLeftColor: since && now - since > OWED_RED_MS ? theme.error : theme.warn}]}>
       <Text style={[styles.ticketTitle, {color: since && now - since > OWED_RED_MS ? theme.error : theme.warn}]}>
         {since ? `${now - since > OWED_RED_MS ? '⚠ ' : ''}Waiting for ticket · owed ${elapsed(now - since)}` : 'Waiting for ticket'}
       </Text>
       <Text style={styles.dim}>{`The agent has not yet said what it did with #${seq}.`}</Text>
+      {/* the waive lives here, at the use that owes (Brad, 2026-10-06: "move the waive button there") - not as a banner on the budgets list */}
+      {edge ? <WaiveControls edge={edge} /> : null}
     </View>
   );
 }
@@ -208,7 +211,7 @@ function SiblingRow({chain: c, link: l}: {chain: SiblingChain; link: SiblingLink
   );
 }
 
-function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued}: {row: EdgeRow; continued?: EdgeView['continued']; ticketVerified: boolean; budgetUses?: Map<number, number>; agentOf?: Map<number, string>; notesFrom?: Map<string, number>}) {
+function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued, edge}: {row: EdgeRow; continued?: EdgeView['continued']; ticketVerified: boolean; budgetUses?: Map<number, number>; agentOf?: Map<number, string>; notesFrom?: Map<string, number>; edge?: ReturnType<typeof useEdge>}) {
   const dim = !row.verified;
   return (
     <View style={[styles.link, dim && styles.unverified]}>
@@ -252,7 +255,7 @@ function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued
         }
         return null;
       })()}
-      {row.ticket ? <TicketHook t={row.ticket} verified={ticketVerified} /> : null}
+      {row.ticket ? <TicketHook t={row.ticket} verified={ticketVerified} seq={row.seq} since={row.seenAt} edge={edge} /> : null}
       {/* the press that opened a budget: a blue receipt, like a ticket (Brad, 2026-10-04) */}
       {row.fields.op === OP.GRANT_CREATE ? (
         <View style={[styles.ticket, {borderLeftColor: theme.link}]}>
@@ -347,7 +350,7 @@ function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued
  * request (owner, 2026-10-02); a ticket that answers no request keeps a row of
  * its own, since there is nothing to hang it from.
  */
-function ChainList({rows, budgetUses}: {rows: EdgeRow[]; budgetUses?: Map<number, number>}) {
+function ChainList({rows, budgetUses, edge}: {rows: EdgeRow[]; budgetUses?: Map<number, number>; edge?: ReturnType<typeof useEdge>}) {
   const verified = new Map(rows.map(r => [r.seq, r.verified]));
   const attached = new Set<number>();
   for (const r of rows) if (r.ticket?.ticket) attached.add(r.ticket.ticket.seq);
@@ -357,12 +360,19 @@ function ChainList({rows, budgetUses}: {rows: EdgeRow[]; budgetUses?: Map<number
         .filter(r => !(r.fields.op === OP.TICKET && attached.has(r.seq)))
         .map(r => (
           <React.Fragment key={r.seq}>
-            {r.ticket?.status === 'waiting' ? <WaitingRow seq={r.seq} /> : null}
-            <LinkRow row={r} budgetUses={budgetUses} ticketVerified={r.ticket?.ticket ? verified.get(r.ticket.ticket.seq) !== false : true} />
+            <LinkRow row={r} edge={edge} budgetUses={budgetUses} ticketVerified={r.ticket?.ticket ? verified.get(r.ticket.ticket.seq) !== false : true} />
           </React.Fragment>
         ))}
     </>
   );
+}
+
+/* the status word's colour: green done or live, yellow a ticket owed, red a failed check */
+export function statusColor(s: BudgetStatus): string {
+  if (s.kind === 'failed') return theme.error;
+  if (s.kind === 'unchecked') return theme.textDim;
+  if (s.kind === 'active' && s.owed > 0) return theme.warn;
+  return theme.ok;
 }
 
 function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, status}: {
@@ -401,18 +411,12 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
         session; red when the copy fails. Every use spent: no timer (2026-10-04);
         ended: no countdown either - budget 191 on the A13 kept "55 min left" (2026-10-05).
       */}
-      {status.kind === 'active' ? (
-        <>
-          <Text style={[styles.ticketTitle, {color: theme.ok}]}>Active</Text>
-          {!complete && b.endsAt ? <TimeLeft endsAt={b.endsAt} /> : null}
-        </>
-      ) : (
-        <Text style={[styles.ticketTitle, {color: status.kind === 'validated' ? theme.ok : status.kind === 'failed' ? theme.error : status.owed ? theme.warn : theme.textDim}]}>
-          {budgetStatusText(status)}
-        </Text>
-      )}
+      <Text style={[styles.ticketTitle, {color: statusColor(status)}]}>{budgetStatusText(status)}</Text>
+      {status.kind === 'active' && status.live && !complete && b.endsAt ? <TimeLeft endsAt={b.endsAt} /> : null}
       <Text style={styles.dim}>
-        {status.kind !== 'active'
+        {status.kind === 'active' && !status.live
+          ? `Budget ${b.grantId} · nothing more can spend from it - it stays active until its last ticket is filed.`
+          : status.kind !== 'active'
           ? `Budget ${b.grantId} · ended - nothing more can spend from it.`
           : complete
           ? `Budget ${b.grantId} · every use spent - it pays for nothing more, but covers its identities until it ends.`
@@ -551,7 +555,7 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
         </Text>
         {edge.error ? <Text style={[styles.dim, {color: theme.error}]}>{edge.error}</Text> : null}
         <View style={styles.row}>
-          <Btn title="Sync" tone="primary" onPress={edge.sync} disabled={edge.busy} />
+          <Btn title="Sync" tone="primary" onPress={edge.fullSync} disabled={edge.busy} />
           <Btn title="Verify" onPress={edge.verify} disabled={edge.busy} />
         </View>
       </Section>
@@ -565,7 +569,7 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
               : `Steps out of order: ${steps.join(', ')}`}
         </Text>
         {mine.length ? (
-          <ChainList rows={mine} budgetUses={new Map([[b.grantId, b.uses]])} />
+          <ChainList rows={mine} budgetUses={new Map([[b.grantId, b.uses]])} edge={edge} />
         ) : (
           <Text style={styles.dim}>Its links are not on this phone yet - Sync.</Text>
         )}
@@ -595,42 +599,33 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
  * no budget, no resume, no self-press. Waive is the way out for uses nobody
  * will ticket: the person's Yes here first, then a press on the key.
  */
-function OwedBanner({owed, overflow, edge, confirming, setConfirming}: {
-  /* spec rule 10: every owed use belongs to a budget marked TEST: */
-  owed: number;
-  overflow: boolean;
-  edge: ReturnType<typeof useEdge>;
-  confirming: boolean;
-  setConfirming: (on: boolean) => void;
-}) {
-  const what = `${owed} use${owed === 1 ? '' : 's'} owe${owed === 1 ? 's' : ''} a ticket${overflow ? ', and older ones fell off the key\'s list' : ''}`;
-  return (
-    <View style={[styles.budget, styles.pending]}>
-      <Text style={[styles.ticketTitle, {color: theme.warn}]}>Tickets owed</Text>
-      <Text style={styles.op}>{what}</Text>
-      <Text style={styles.dim}>No budget, resume or self-press until each is ticketed by its agent, or you waive them here.</Text>
-      {edge.pressFor === 'waive' ? (
-        <>
-          <Text style={[styles.op, {color: theme.warn}]}>Press the key to waive</Text>
-          {consentRefusal() ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal()}</Text> : null}
-          <View style={styles.row}>
-            <Btn title="Press the soft key" tone="primary" disabled={consentRefusal() !== null} onPress={() => { if (!consentRefusal()) edge.press(); }} />
-          </View>
-        </>
-      ) : confirming ? (
-        <>
-          <Text style={styles.dim}>Waive records, in the chain, that you accept these uses without their tickets. It needs a press on the key.</Text>
-          <View style={styles.row}>
-            {consentRefusal() ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal()}</Text> : null}
-            <Btn title="Yes, waive" tone="danger" onPress={() => { if (consentRefusal()) return; setConfirming(false); void edge.waive(); }} disabled={edge.busy || consentRefusal() !== null} />
-            <Btn title="Cancel" onPress={() => setConfirming(false)} disabled={edge.busy} />
-          </View>
-        </>
-      ) : (
-        <View style={styles.row}>
-          <Btn title="Waive…" onPress={() => setConfirming(true)} disabled={edge.busy} />
-        </View>
-      )}
+/*
+ * WAIVE (R18): the person accepts every owed use without its ticket - a press,
+ * linked in the chain. In the budget's detail view, under the use that is
+ * waiting for its ticket (Brad, 2026-10-06), no longer a banner on the list.
+ */
+function WaiveControls({edge}: {edge: ReturnType<typeof useEdge>}) {
+  const [confirming, setConfirming] = useState(false);
+  return edge.pressFor === 'waive' ? (
+    <>
+      <Text style={[styles.op, {color: theme.warn}]}>Press the key to waive</Text>
+      {consentRefusal() ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal()}</Text> : null}
+      <View style={styles.row}>
+        <Btn title="Press the soft key" tone="primary" disabled={consentRefusal() !== null} onPress={() => { if (!consentRefusal()) edge.press(); }} />
+      </View>
+    </>
+  ) : confirming ? (
+    <>
+      <Text style={styles.dim}>Waive records, in the chain, that you accept every owed use without its ticket. It needs a press on the key.</Text>
+      <View style={styles.row}>
+        {consentRefusal() ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal()}</Text> : null}
+        <Btn title="Yes, waive" tone="danger" onPress={() => { if (consentRefusal()) return; setConfirming(false); void edge.waive(); }} disabled={edge.busy || consentRefusal() !== null} />
+        <Btn title="Cancel" onPress={() => setConfirming(false)} disabled={edge.busy} />
+      </View>
+    </>
+  ) : (
+    <View style={styles.row}>
+      <Btn title="Waive…" onPress={() => setConfirming(true)} disabled={edge.busy} />
     </View>
   );
 }
@@ -717,7 +712,6 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
     setMarked(focusSeq);
     onFocused?.();
   }, [focusSeq, onFocused]);
-  const [confirmWaive, setConfirmWaive] = useState(false);
   const [confirmLoss, setConfirmLoss] = useState(false);
   /*
    * An agent's sheet ended (a budget opened, an agent registered): the budgets
@@ -759,6 +753,9 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
    * testing panels are in the drawer at the bottom (src/ui/BottomDrawer.tsx).
    */
   const items: EdgeListItem[] = [];
+  /* not live on the key: still Active while a use owes a ticket (shown with the live ones), else past */
+  const owing = edge.past.filter(b => budgetStatus(b, false, edge.view).kind === 'active');
+  const done = edge.past.filter(b => budgetStatus(b, false, edge.view).kind !== 'active');
   if (ks?.restoring || broken || (ks && !ks.restoring && (ks.owed > 0 || ks.overflow))) {
     items.push({key: 'status', kind: 'node', render: () => (
       <View style={styles.statusStack}>
@@ -794,14 +791,11 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
                 </>
               ) : (
                 <View style={styles.row}>
-                  <Btn title="Sync" tone="primary" onPress={edge.sync} disabled={edge.busy} />
+                  <Btn title="Sync" tone="primary" onPress={edge.fullSync} disabled={edge.busy} />
                   {gap ? <Btn title={`Accept loss of ${range}…`} onPress={() => setConfirmLoss(true)} disabled={edge.busy} /> : null}
                 </View>
               )}
             </View>
-          ) : null}
-          {ks && !ks.restoring && (ks.owed > 0 || ks.overflow) ? (
-            <OwedBanner owed={ks.owed} overflow={ks.overflow} edge={edge} confirming={confirmWaive} setConfirming={setConfirmWaive} />
           ) : null}
       </View>
     )});
@@ -876,7 +870,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
               key={b.grantId}
               b={b}
               busy={edge.busy}
-              status={{kind: 'active'}}
+              status={budgetStatus(b, true, edge.view)}
               onOpen={() => setOpen(b)}
               onRevoke={() => edge.revoke(b.grantId)}
               held={edge.keyState?.held.includes(b.grantId)}
@@ -885,6 +879,10 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
               waitingResume={edge.pressFor === `resume:${b.grantId}`}
               onPress={edge.press}
             />
+          ))}
+          {/* ACTIVE BUDGETS ARE NOT PAST BUDGETS (Brad, 2026-10-06): one the key no longer lists but that still owes a ticket is Active - it stays up here, with no Hold or Revoke (nothing is left to hold) */}
+          {owing.map(b => (
+            <BudgetCard key={`o${b.grantId}`} b={b} busy={edge.busy} status={budgetStatus(b, false, edge.view)} onOpen={() => setOpen(b)} />
           ))}
           {edge.ended.map(e => (
             <View key={`e${e.grantId}`} style={[styles.budget, styles.ended]}>
@@ -916,7 +914,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
           {edge.view?.verdict.kind === 'locked' ? (
             <Text style={[styles.dim, {color: theme.warn}]}>Unlock the key to sync. A locked key answers nothing, so its budgets cannot be read.</Text>
           ) : null}
-          {edge.view?.verdict.kind !== 'locked' && edge.budgets.length === 0 && edge.requests.length === 0 && edge.ended.length === 0 ? (
+          {edge.view?.verdict.kind !== 'locked' && edge.budgets.length === 0 && owing.length === 0 && edge.requests.length === 0 && edge.ended.length === 0 ? (
             <Text style={styles.dim}>
               No budget. A budget lets an agent use the key a set number of times without a press; you approve it once.
             </Text>
@@ -924,9 +922,9 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
     </>
   )});
   /* BUDGET HISTORY (Brad, 2026-10-04): every budget this phone opened that is not live now - tap one for its chain */
-  if (edge.past.length) {
-    items.push({key: 's-past', kind: 'section', title: 'Past budgets', right: `${edge.past.length}`});
-    for (const b of edge.past) {
+  if (done.length) {
+    items.push({key: 's-past', kind: 'section', title: 'Past budgets', right: `${done.length}`});
+    for (const b of done) {
       items.push({key: `p${b.grantId}`, kind: 'node', bare: true, render: () => <BudgetBlock b={b} status={budgetStatus(b, false, edge.view)} onPress={() => setOpen(b)} />});
     }
   }
@@ -982,7 +980,6 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
     items.push({key: `h${r.seq}`, kind: 'node', bare: true, render: () => {
       const body = (
         <View style={[styles.historyRow, r.seq === marked && styles.marked]}>
-          {r.ticket?.status === 'waiting' ? <WaitingRow seq={r.seq} since={r.seenAt} /> : null}
           <LinkRow row={r} continued={edge.view?.continued} budgetUses={liveUses} agentOf={agentOf} notesFrom={notesFrom} ticketVerified={r.ticket?.ticket ? verifiedAt.get(r.ticket.ticket.seq) !== false : true} />
         </View>
       );

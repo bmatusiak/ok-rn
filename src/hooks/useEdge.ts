@@ -13,7 +13,7 @@ import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type E
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {useBackend} from './KeyContext';
-import {evaluate, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
+import {evaluate, forgetVerifiedFor, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
 
 type Source = EdgeSource & EdgeInbox;
 
@@ -56,6 +56,11 @@ export function useEdge() {
   const run = useCallback(async (work: (s: Source) => Promise<EdgeView>) => {
     setBusy(true);
     setError(null);
+    /* how long each part of an action takes, for the log (Brad, 2026-10-06: presses lag) - times only, nothing sensitive */
+    const t0 = Date.now();
+    const parts: string[] = [];
+    let tp = t0;
+    const lap = (name: string) => { const n = Date.now(); parts.push(`${name} ${n - tp}`); tp = n; };
     try {
       const s = await source();
       if (!s) {
@@ -63,25 +68,46 @@ export function useEdge() {
         return;
       }
       setView(await work(s));
+      lap('work');
+      /* one head read, one copy load for the rest of this refresh (SoftKeyEdge.beginRun) */
+      (s as unknown as {beginRun?: () => void}).beginRun?.();
       setBudgets(await s.budgets());
+      lap('budgets');
       /* budget history: what this phone opened that is not live now (soft key only) */
       const src = s as unknown as {pastBudgets?: () => Promise<EdgeBudget[]>};
       setPast(src.pastBudgets ? await src.pastBudgets().catch(() => []) : []);
+      lap('past');
       setKeyState(s.state ? await s.state() : null);
       setEnded(s.ended ? await s.ended() : []);
+      lap('state+ended');
       const pending = await s.pending();
       setRequests(pending);
+      lap('pending');
       /* every sync, not only with a request waiting: a copy that fails the budget rules (R3) must show on the tab, not only on the sheet (2026-10-04) */
       setCopyCheck(await s.check().catch(() => null));
+      lap('check');
+      const path = (s as unknown as {edge?: {grants?: {lastPath?: string | null}}}).edge?.grants?.lastPath;
+      console.log(`[edge] run ${Date.now() - t0} ms: ${parts.join(', ')}${path ? ` (copy check: ${path})` : ''}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      const s = real ?? fake;
+      (s as unknown as {endRun?: () => void} | null)?.endRun?.();
       setBusy(false);
     }
   }, [source]);
 
   /** B1: HEAD, READ what is new, store, verify everything. */
   const sync = useCallback(() => run(async s => (await syncMirror(s)).view), [run]);
+  /**
+   * The Sync button: a full check from the root (Brad, 2026-10-06) - this session's
+   * remembered results are dropped first. Pull-down, presses and the 4 s poll use sync.
+   */
+  const fullSync = useCallback(() => run(async s => {
+    forgetVerifiedFor(s.deviceId);
+    (s as unknown as {edge?: {grants?: {forget?: () => void}}}).edge?.grants?.forget?.();
+    return (await syncMirror(s)).view;
+  }), [run]);
   /** Verify the stored copy against the live head WITHOUT reading - shows an edited copy as it is. */
   const verify = useCallback(() => run(async s => liveView(s, await loadMirror(s.deviceId))), [run]);
   const tamper = useCallback(
@@ -242,7 +268,7 @@ export function useEdge() {
   }, [wantReal, source, sync]);
 
   return {
-    view, budgets, past, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal,
+    view, budgets, past, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal, fullSync,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
     hold, resume, waive, siblings, removeSibling, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss,
   };

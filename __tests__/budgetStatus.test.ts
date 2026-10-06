@@ -1,7 +1,8 @@
 /**
- * The budget's status word (Brad, 2026-10-06): Active; Ended · N tickets owed;
- * Validated only when ended and every use's ticket verified in this session's
- * check; red when the copy fails. Never read from storage.
+ * The budget's status word (spec okrn-edge-tab.md, Budgets, 2026-10-06): Active
+ * while live or while any use owes a ticket ("Active · 1 ticket owed · no uses
+ * left"); Validated only when ended and every use's ticket verified in this
+ * session's check; red when the copy fails. No "Ended". Never read from storage.
  */
 import {codes} from 'node-onlykey-lib/edge';
 import {budgetStatus, budgetStatusText} from '../src/budgetStatus';
@@ -24,12 +25,16 @@ function view(used: number, ticketed: number, opts: {verdict?: EdgeView['verdict
   return {verdict: opts.verdict ?? {kind: 'verified', through: 30}, headSeq: 30, lastSync: null, rows: rows as EdgeView['rows'], setAside: [], refusals: [], continued: null} as unknown as EdgeView;
 }
 
-test('a live budget is Active, whatever it spent', () => {
-  expect(budgetStatusText(budgetStatus(budget(4, 2), true, view(4, 2)))).toBe('Active');
+test('a live budget with uses left is Active', () => {
+  expect(budgetStatusText(budgetStatus(budget(2, 2), true, view(2, 2)))).toBe('Active');
 });
 
-test('an ended budget with 2 of 4 spent and no tickets: Ended · 2 tickets owed', () => {
-  expect(budgetStatusText(budgetStatus(budget(2, 0), false, view(2, 0)))).toBe('Ended · 2 tickets owed');
+test('a live budget with every use spent says no uses left', () => {
+  expect(budgetStatusText(budgetStatus(budget(4, 4), true, view(4, 4)))).toBe('Active · no uses left');
+});
+
+test('a budget that ended owing a ticket stays Active - "it is still active if a ticket is owed"', () => {
+  expect(budgetStatusText(budgetStatus(budget(2, 1), false, view(2, 1)))).toBe('Active · 1 ticket owed · no uses left');
 });
 
 test('every use ticketed in a verified copy: Validated', () => {
@@ -37,7 +42,7 @@ test('every use ticketed in a verified copy: Validated', () => {
 });
 
 test('a ticket link the check did not verify: not Validated', () => {
-  expect(budgetStatus(budget(4, 4), false, view(4, 4, {unverified: [17]}))).toEqual({kind: 'ended', owed: 0});
+  expect(budgetStatus(budget(4, 4), false, view(4, 4, {unverified: [17]}))).toEqual({kind: 'unchecked'});
 });
 
 test('a copy that failed its check is red, never Validated', () => {
@@ -47,5 +52,5 @@ test('a copy that failed its check is red, never Validated', () => {
 });
 
 test('nothing checked yet (no view): not Validated', () => {
-  expect(budgetStatus(budget(4, 4), false, null)).toEqual({kind: 'ended', owed: 0});
+  expect(budgetStatus(budget(4, 4), false, null)).toEqual({kind: 'unchecked'});
 });

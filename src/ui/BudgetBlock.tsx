@@ -49,7 +49,7 @@ export function BudgetBlock({b, status, onPress}: {b: EdgeBudget; status?: Budge
       <View style={styles.head}>
         <Text style={styles.id}>{`Budget ${b.grantId}`}</Text>
         {status ? (
-          <Text style={[styles.status, {color: status.kind === 'validated' || status.kind === 'active' ? theme.ok : status.kind === 'failed' ? theme.error : status.owed ? theme.warn : theme.textDim}]}>{budgetStatusText(status)}</Text>
+          <Text style={[styles.status, {color: status.kind === 'failed' ? theme.error : status.kind === 'unchecked' ? theme.textDim : status.kind === 'active' && status.owed > 0 ? theme.warn : theme.ok}]}>{budgetStatusText(status)}</Text>
         ) : (
           <Text style={[styles.status, ended === 'live' && {color: theme.ok}]}>{ended}</Text>
         )}

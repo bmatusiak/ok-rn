@@ -286,8 +286,15 @@ const OP_CONTINUE = 16;
 const OP_TICKET = codes.OP.TICKET;
 
 async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror; view: EdgeView}> {
+  /* where a sync's time goes, for the log (Brad, 2026-10-06) - times only */
+  const t0 = Date.now();
+  let tp = t0;
+  const laps: string[] = [];
+  const lap = (n: string) => { const x = Date.now(); laps.push(`${n} ${x - tp}`); tp = x; };
   const mirror = await loadMirror(source.deviceId);
+  lap('load');
   const head = await source.head();
+  lap('head');
   setAsideStrays(mirror, head.seq, now);
   const have = mirror.links.length ? seqOf(mirror.links[mirror.links.length - 1]) : -1;
   /*
@@ -309,22 +316,31 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
     if (!welded) break;
     from = seqOf(got[got.length - 1]) + 1;
   }
+  lap('read');
   mirror.messages = {...mirror.messages, ...(await source.messages())};
+  lap('messages');
   const ownKey = source.copyKey ? await source.copyKey().catch(() => null) : null;
+  lap('copyKey');
   if (ownKey?.publicKey) mirror.publicKey = ownKey.publicKey;
   if (!mirror.continued) mirror.continued = await continuedFrom(mirror);
   /* R26: keep the key's newest vouch with the copy (a restoring key gives none) */
+  lap('continued');
   const v = source.vouch ? await source.vouch() : null;
   if (v) mirror.vouch = v;
+  lap('vouch');
   mirror.lastSync = now;
-  const view = await liveView(source, mirror, head);
+  const view = await liveView(source, mirror, head, ownKey ?? undefined);
+  lap('verify');
   if (view.verdict.kind === 'verified' || view.verdict.kind === 'gap') {
     mirror.lastSeen = {seq: head.seq, head: head.head};
   }
   await saveMirror(mirror);
+  lap('save');
   /* B7: new alarms become phone notifications - every sync, the tab's and the background copy's */
   const live = await source.budgets().then(bs => bs.map(b => b.grantId)).catch(() => [] as number[]);
   await raiseAlarms(mirror, view, live).catch(() => {});
+  lap('alarms');
+  console.log(`[edge] sync ${Date.now() - t0} ms: ${laps.join(', ')}`);
   return {mirror, view};
 }
 
@@ -403,11 +419,38 @@ async function keepOfferedNow(deviceId: Uint8Array, added: EdgeLinkRecord[], now
  * copy can weld) and, from a key that signs, its public key and checkpoints
  * (R27 anchors). Every verdict the tab shows comes through here.
  */
-export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq: number; head: Uint8Array; ringFrom: number}): Promise<EdgeView> {
+export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq: number; head: Uint8Array; ringFrom: number}, knownKey?: EdgeCopyKey | null): Promise<EdgeView> {
   const head = known ?? (await source.head());
-  const held = head.seq >= 0 ? await source.read(head.ringFrom, head.seq - head.ringFrom + 1) : [];
-  const key = source.copyKey ? await source.copyKey() : null;
-  return evaluate(mirror, head, held, key);
+  /* the key's public key and checkpoint: the caller's, when it has just read them (syncNow) - not a second read */
+  const key = knownKey !== undefined ? knownKey : source.copyKey ? await source.copyKey() : null;
+  const ring = async () => (head.seq >= 0 ? source.read(head.ringFrom, head.seq - head.ringFrom + 1) : []);
+  /*
+   * The key's ring is for the FULL check (its links count as held). When this
+   * session's check can reuse its result or check only the new links, the ring
+   * is not read; if that turns out to need the full check after all, the ring is
+   * read and it runs again from nothing.
+   */
+  if (shortPath(mirror, head)) {
+    const view = evaluate(mirror, head, [], key);
+    if (lastCheck !== 'full') return view;
+    verifiedNow.delete(toHex(mirror.deviceId));
+  }
+  return evaluate(mirror, head, await ring(), key);
+}
+
+/* would evaluate() reuse this session's result, or check only the new links? (no I/O, no verification) */
+function shortPath(mirror: Mirror, head: {seq: number; head: Uint8Array}): boolean {
+  const was = verifiedNow.get(toHex(mirror.deviceId));
+  if (!was) return false;
+  const hash = copyHash(mirror.links);
+  if (was.seq === head.seq && was.head === toHex(head.head) && was.copyHash === hash) return true;
+  return was.verdict.kind === 'verified' && was.count > 0 && was.count <= mirror.links.length &&
+    (mirror.links.length > was.count || head.seq > was.seq) && copyHash(mirror.links, was.count) === was.copyHash;
+}
+
+/** The Sync button: the next check of this key's copy is a full one, from the root. */
+export function forgetVerifiedFor(deviceId: Uint8Array) {
+  verifiedNow.delete(toHex(deviceId));
 }
 
 /** Verify a mirror against a live head (no I/O): the verdict and the rows to draw. */

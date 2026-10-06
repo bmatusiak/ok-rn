@@ -107,6 +107,35 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   /* the live budget ids at the last budgets() - to stamp when one goes */
   private lastLive: number[] = [];
 
+  /*
+   * ONE READ PER ACTION (Brad, 2026-10-06: every press re-read the key and the
+   * copy five times over). Between beginRun() and endRun() - after an action's
+   * own work, while the tab refreshes - the key's head, this phone's copy and
+   * the storage keys are read once and shared. Outside a run, each call reads
+   * fresh, as before. Memory only, for the length of one refresh.
+   */
+  private snap: {head?: any; mirror?: Awaited<ReturnType<typeof loadMirror>>; keys?: readonly string[]; checkpoint?: any} | null = null;
+  /* the key's Edge public key never changes for this device: read once a session */
+  private pub: Uint8Array | null = null;
+  beginRun() {
+    this.snap = {};
+  }
+  endRun() {
+    this.snap = null;
+  }
+  private async keyHead(): Promise<any> {
+    if (!this.snap) return this.edge.head();
+    return (this.snap.head ??= await this.edge.head());
+  }
+  private async mirrorNow() {
+    if (!this.snap) return loadMirror(this.deviceId);
+    return (this.snap.mirror ??= await loadMirror(this.deviceId));
+  }
+  private async storageKeys(): Promise<readonly string[]> {
+    if (!this.snap) return AsyncStorage.getAllKeys();
+    return (this.snap.keys ??= await AsyncStorage.getAllKeys());
+  }
+
   private budgetFrom(id: number, kept: Kept | null, mirror: Awaited<ReturnType<typeof loadMirror>>): EdgeBudget {
     const spentRows = mirror.links
       .map(r => ({f: chain.decodeLink(r.link), scope: (r.link as Uint8Array)[46] || 0}))
@@ -150,8 +179,8 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   async budgets(): Promise<EdgeBudget[]> {
-    const h = await this.edge.head();
-    const mirror = await loadMirror(this.deviceId);
+    const h = await this.keyHead();
+    const mirror = await this.mirrorNow();
     const out: EdgeBudget[] = [];
     /* a budget that was live at the last look and is not now: stamp when it was seen gone (the log's 'lasted') */
     for (const gone of this.lastLive.filter(id => !(h.live as number[]).includes(id))) {
@@ -177,10 +206,10 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * else the key lost it with a lock or restart (budgets live in RAM).
    */
   async pastBudgets(): Promise<EdgeBudget[]> {
-    const h = await this.edge.head();
-    const mirror = await loadMirror(this.deviceId);
+    const h = await this.keyHead();
+    const mirror = await this.mirrorNow();
     const prefix = REGISTRY + toHex(this.deviceId) + '.';
-    const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith(prefix));
+    const keys = (await this.storageKeys()).filter(k => k.startsWith(prefix));
     const live = new Set(h.live as number[]);
     const ends = new Set(mirror.links.map(r => chain.decodeLink(r.link)).filter(f => f.op === OP.GRANT_END).map(f => f.grantId));
     const out: EdgeBudget[] = [];
@@ -222,7 +251,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   async state(): Promise<EdgeKeyState> {
-    const h = await this.edge.head();
+    const h = await this.keyHead();
     return {owed: h.owed, overflow: h.overflow, held: h.held, restoring: h.restoring, refusedArms: h.refusedArms ?? 0};
   }
 
@@ -370,12 +399,12 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * stepping away never extends the day.
    */
   async ended(): Promise<EdgeEnded[]> {
-    const h = await this.edge.head();
-    const mirror = await loadMirror(this.deviceId);
+    const h = await this.keyHead();
+    const mirror = await this.mirrorNow();
     const fields = mirror.links.map(r => chain.decodeLink(r.link));
     const prefix = REGISTRY + toHex(this.deviceId) + '.';
     const out: EdgeEnded[] = [];
-    for (const k of await AsyncStorage.getAllKeys()) {
+    for (const k of await this.storageKeys()) {
       if (!k.startsWith(prefix)) continue;
       const grantId = Number(k.slice(prefix.length));
       const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
@@ -473,10 +502,10 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * fail closed, and the reason says which budget.
    */
   private async copy() {
-    const mirror = await loadMirror(this.deviceId);
+    const mirror = await this.mirrorNow();
     const openings: Record<number, unknown> = {};
     const prefix = REGISTRY + toHex(this.deviceId) + '.';
-    for (const k of await AsyncStorage.getAllKeys()) {
+    for (const k of await this.storageKeys()) {
       if (!k.startsWith(prefix)) continue;
       const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
       if (!kept || !kept.signature) continue;
@@ -490,9 +519,10 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   /* R27 anchors for the banner: the KEY's public key (PUBKEY this session) and its checkpoints */
   async copyKey(): Promise<EdgeCopyKey> {
-    const {publicKey} = await this.edge.publicKey();
-    /* the key's latest checkpoint; a restoring key refuses CHECKPOINT (R26), so then none */
-    const checkpoint = await this.edge.checkpoint().catch(() => null);
+    const publicKey = (this.pub ??= (await this.edge.publicKey()).publicKey);
+    /* the key's latest checkpoint; a restoring key refuses CHECKPOINT (R26), so then none - once per action */
+    const checkpoint = this.snap && 'checkpoint' in this.snap ? this.snap.checkpoint : await this.edge.checkpoint().catch(() => null);
+    if (this.snap) this.snap.checkpoint = checkpoint;
     return {publicKey, openings: (await this.copy()).openings, checkpoint};
   }
 
