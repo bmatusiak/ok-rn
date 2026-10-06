@@ -17,6 +17,7 @@ import React from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
 import type {EdgeBudget} from '../edgeFake';
 import {theme} from './theme';
+import {budgetStatusText, type BudgetStatus} from '../budgetStatus';
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
 const day = (ms: number) => new Date(ms).toLocaleDateString([], {month: 'short', day: 'numeric'});
@@ -38,7 +39,7 @@ function Bar({used, total}: {used: number; total: number}) {
   );
 }
 
-export function BudgetBlock({b, onPress}: {b: EdgeBudget; onPress?: () => void}) {
+export function BudgetBlock({b, status, onPress}: {b: EdgeBudget; status?: BudgetStatus; onPress?: () => void}) {
   const pct = b.uses ? Math.round((100 * b.used) / b.uses) : 0;
   const lasted = b.openedAt && b.endedAt ? span((b.endedAt - b.openedAt) / 60000) : null;
   const owed = Math.max(0, b.used - (b.ticketsFiled ?? 0));
@@ -47,7 +48,11 @@ export function BudgetBlock({b, onPress}: {b: EdgeBudget; onPress?: () => void})
     <View style={styles.block}>
       <View style={styles.head}>
         <Text style={styles.id}>{`Budget ${b.grantId}`}</Text>
-        <Text style={[styles.status, ended === 'live' && {color: theme.ok}]}>{ended}</Text>
+        {status ? (
+          <Text style={[styles.status, {color: status.kind === 'validated' || status.kind === 'active' ? theme.ok : status.kind === 'failed' ? theme.error : status.owed ? theme.warn : theme.textDim}]}>{budgetStatusText(status)}</Text>
+        ) : (
+          <Text style={[styles.status, ended === 'live' && {color: theme.ok}]}>{ended}</Text>
+        )}
       </View>
       <Text style={styles.reason}>{b.reason}</Text>
       {b.agent ? <Text style={styles.dim}>{`for ${b.agent}`}</Text> : null}

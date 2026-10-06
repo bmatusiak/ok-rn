@@ -13,7 +13,7 @@
  *     hashes to its ticket link.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {chain, copy, sync as syncLib, tickets} from 'node-onlykey-lib/edge';
+import {chain, codes, copy, sync as syncLib, tickets} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
@@ -283,6 +283,7 @@ async function continuedFrom(mirror: Mirror): Promise<ContinueCheck | null> {
   return unverifiable ?? {ok: false, oldSeq: f.seq - 1, reason: keys.length ? 'no-match' : 'no-old-copy'};
 }
 const OP_CONTINUE = 16;
+const OP_TICKET = codes.OP.TICKET;
 
 async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror; view: EdgeView}> {
   const mirror = await loadMirror(source.deviceId);
@@ -532,8 +533,18 @@ function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLi
  * every red and amber verdict can be seen against a key that is telling the
  * truth. Each returns the edited mirror, already saved.
  */
-export type Tamper = 'flip' | 'delete' | 'swap' | 'truncate' | 'forget' | 'stray';
-export async function tamper(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
+export type Tamper = 'flip' | 'delete' | 'swap' | 'truncate' | 'forget' | 'stray' | 'ticket';
+/*
+ * IN THE SYNC QUEUE, like every other write to the copy: found on the Pixel
+ * (2026-10-06), a background sync that had loaded the copy before "Flip a
+ * ticket" was undone saved it back, and the restart found the flip still there.
+ */
+export function tamper(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
+  const run = syncing.then(() => tamperNow(deviceId, how), () => tamperNow(deviceId, how));
+  syncing = run.catch(() => undefined);
+  return run;
+}
+async function tamperNow(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
   const m = await loadMirror(deviceId);
   const mid = Math.floor(m.links.length / 2);
   if (how === 'forget') {
@@ -551,6 +562,11 @@ export async function tamper(deviceId: Uint8Array, how: Tamper): Promise<Mirror>
   }
   if (m.links.length < 3) return m;
   if (how === 'flip') m.links[mid].link[20] ^= 0x01;
+  /* the newest TICKET link (Brad, 2026-10-06: "edit a stored ticket and it shows red"); a second flip restores it */
+  if (how === 'ticket') {
+    const at = m.links.map(r => chain.decodeLink(r.link).op).lastIndexOf(OP_TICKET);
+    if (at >= 0) m.links[at].link[20] ^= 0x01;
+  }
   if (how === 'delete') m.links.splice(mid, 1);
   if (how === 'swap') [m.links[mid], m.links[mid + 1]] = [m.links[mid + 1], m.links[mid]];
   if (how === 'truncate') m.links.splice(m.links.length - 2, 2);

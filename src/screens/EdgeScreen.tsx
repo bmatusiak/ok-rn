@@ -18,6 +18,7 @@ import {theme} from '../ui/theme';
 import {EdgeList, type EdgeListItem} from '../ui/EdgeList';
 import {BottomDrawer, DRAWER_HANDLE} from '../ui/BottomDrawer';
 import {BudgetBlock} from '../ui/BudgetBlock';
+import {budgetStatus, budgetStatusText, type BudgetStatus} from '../budgetStatus';
 import {useEdge} from '../hooks/useEdge';
 import NativeEdgeAlert from '../../specs/NativeEdgeAlert';
 import {onSheet} from '../edgeAgents';
@@ -364,11 +365,11 @@ function ChainList({rows, budgetUses}: {rows: EdgeRow[]; budgetUses?: Map<number
   );
 }
 
-function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, ended = false}: {
+function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, status}: {
   b: EdgeBudget;
   busy: boolean;
-  /* its grant-end link is in the chain (ended by hand, revoked): no countdown any more */
-  ended?: boolean;
+  /* Active / Ended · N owed / Validated / red (budgetStatus - never stored): an ended one has no countdown */
+  status: BudgetStatus;
   onOpen?: () => void;
   onRevoke?: () => void;
   /* R15a: on hold, it pays for nothing; Hold needs no press, Resume needs one */
@@ -394,17 +395,24 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
           <Progress used={s.used} total={s.cap} />
         </View>
       ))}
-      {/* every use spent: the timer means nothing any more (Brad, 2026-10-04: "replace timer with complete") */}
-      {/* ended (its grant-end link): no countdown either - budget 191 on the A13 kept "55 min left" after it ended (Brad, 2026-10-05) */}
-      {ended ? (
-        <Text style={[styles.ticketTitle, {color: theme.textDim}]}>Ended</Text>
-      ) : complete ? (
-        <Text style={[styles.ticketTitle, {color: theme.ok}]}>Complete</Text>
-      ) : b.endsAt ? (
-        <TimeLeft endsAt={b.endsAt} />
-      ) : null}
+      {/*
+        THE STATUS WORD (Brad, 2026-10-06): Active; Ended · N tickets owed; Validated
+        only when ended and every use's ticket verified in the copy checked this
+        session; red when the copy fails. Every use spent: no timer (2026-10-04);
+        ended: no countdown either - budget 191 on the A13 kept "55 min left" (2026-10-05).
+      */}
+      {status.kind === 'active' ? (
+        <>
+          <Text style={[styles.ticketTitle, {color: theme.ok}]}>Active</Text>
+          {!complete && b.endsAt ? <TimeLeft endsAt={b.endsAt} /> : null}
+        </>
+      ) : (
+        <Text style={[styles.ticketTitle, {color: status.kind === 'validated' ? theme.ok : status.kind === 'failed' ? theme.error : status.owed ? theme.warn : theme.textDim}]}>
+          {budgetStatusText(status)}
+        </Text>
+      )}
       <Text style={styles.dim}>
-        {ended
+        {status.kind !== 'active'
           ? `Budget ${b.grantId} · ended - nothing more can spend from it.`
           : complete
           ? `Budget ${b.grantId} · every use spent - it pays for nothing more, but covers its identities until it ends.`
@@ -548,7 +556,7 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
         </View>
       </Section>
       <Section title={`Budget ${b.grantId}`}>
-        <BudgetCard b={b} busy={false} ended={ended} />
+        <BudgetCard b={b} busy={false} status={budgetStatus(b, edge.budgets.some(x => x.grantId === b.grantId), v)} />
         <Text style={[styles.dim, {color: inOrder ? theme.textDim : theme.error}]}>
           {steps.length === 0
             ? 'Nothing spent from it yet.'
@@ -569,6 +577,7 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
         </Text>
         <View style={styles.row}>
           <Btn title="Flip a byte" tone="danger" onPress={() => edge.tamper('flip')} disabled={edge.busy} />
+          <Btn title="Flip a ticket" tone="danger" onPress={() => edge.tamper('ticket')} disabled={edge.busy} />
           <Btn title="Delete a link" tone="danger" onPress={() => edge.tamper('delete')} disabled={edge.busy} />
           <Btn title="Swap two" tone="danger" onPress={() => edge.tamper('swap')} disabled={edge.busy} />
           <Btn title="Cut the tail" tone="danger" onPress={() => edge.tamper('truncate')} disabled={edge.busy} />
@@ -721,8 +730,12 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
   }), [edge.sync]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (open) {
-    /* the live numbers if the budget is still live; the snapshot taken when it was opened if it ended */
-    const b = edge.budgets.find(x => x.grantId === open.grantId) ?? open;
+    /*
+     * The numbers from the copy, live or ended. It fell back to the snapshot taken
+     * when the budget was opened: budget 351 on the A13, opened with nothing spent,
+     * read "0 of 4 uses spent" after its four uses and its end (Brad, 2026-10-06).
+     */
+    const b = edge.budgets.find(x => x.grantId === open.grantId) ?? edge.past.find(x => x.grantId === open.grantId) ?? open;
     return <BudgetView b={b} edge={edge} onBack={() => setOpen(null)} />;
   }
   /*
@@ -863,6 +876,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
               key={b.grantId}
               b={b}
               busy={edge.busy}
+              status={{kind: 'active'}}
               onOpen={() => setOpen(b)}
               onRevoke={() => edge.revoke(b.grantId)}
               held={edge.keyState?.held.includes(b.grantId)}
@@ -913,7 +927,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
   if (edge.past.length) {
     items.push({key: 's-past', kind: 'section', title: 'Past budgets', right: `${edge.past.length}`});
     for (const b of edge.past) {
-      items.push({key: `p${b.grantId}`, kind: 'node', bare: true, render: () => <BudgetBlock b={b} onPress={() => setOpen(b)} />});
+      items.push({key: `p${b.grantId}`, kind: 'node', bare: true, render: () => <BudgetBlock b={b} status={budgetStatus(b, false, edge.view)} onPress={() => setOpen(b)} />});
     }
   }
   const rows = edge.view?.rows ?? [];
