@@ -18,6 +18,9 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
+
 const KEY_PREFIX = 'okrn.edge.mirror.';
 const READ_BATCH = 16;
 
@@ -407,11 +410,90 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
 }
 
 /** Verify a mirror against a live head (no I/O): the verdict and the rows to draw. */
+/*
+ * WHAT THIS SESSION ALREADY VERIFIED - IN MEMORY ONLY (Brad, 2026-10-05: a
+ * pull-down re-checked the whole chain every time). Keyed by the key's head AND
+ * the SHA-256 of the stored copy: the copy on disk is untrusted (S3), and an
+ * edit to it that leaves the head where it was must not stay green. Never
+ * saved - a restart checks in full.
+ *   nothing here (app start)        -> full check
+ *   same head, same copy            -> skip: the result from memory
+ *   head moved, older part the same -> only the new links, from the verified head
+ *   anything else (copy changed)    -> full check (red if it fails)
+ */
+/* seq/head: the key's head then; count/lastSeq/lastHead: the copy's links then, and its last one (whose stored head the full check confirmed) */
+type Verified = {seq: number; head: string; count: number; lastSeq: number; lastHead: string; copyHash: string; verdict: Verdict; unverified: number[]};
+const verifiedNow = new Map<string, Verified>();
+/** for tests: forget what this session verified, as a restart does */
+export function forgetVerified() {
+  verifiedNow.clear();
+}
+function copyHash(links: EdgeLinkRecord[], count = links.length): string {
+  const h = sha256.create();
+  for (let i = 0; i < count; i++) {
+    const r = links[i];
+    h.update(r.link);
+    h.update(r.head);
+    h.update(r.reveal ?? new Uint8Array(0));
+    h.update(Uint8Array.of(r.reveal ? 1 : 0));
+  }
+  return toHex(h.digest());
+}
+/* the path each verdict took, for the log and the tests: not saved, nothing sensitive */
+let lastCheck: 'full' | 'new-links' | 'skipped' | null = null;
+export function lastCheckPath() {
+  return lastCheck;
+}
+
 export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[] = [], key: EdgeCopyKey | null = null): EdgeView {
   const decoded = mirror.links.map(r => ({r, f: chain.decodeLink(r.link)}));
   if (!head) {
     return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null};
   }
+  const id = toHex(mirror.deviceId);
+  const headHex = toHex(head.head);
+  const hash = copyHash(mirror.links);
+  const viewOf = (verdict: Verdict, unverified: Set<number>): EdgeView =>
+    ({verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null});
+  const was = verifiedNow.get(id);
+  const remember = (verdict: Verdict, unverified: number[]) => {
+    const last = decoded[decoded.length - 1];
+    verifiedNow.set(id, {seq: head.seq, head: headHex, count: mirror.links.length, lastSeq: last ? last.f.seq : -1, lastHead: last ? toHex(last.r.head) : '', copyHash: hash, verdict, unverified});
+  };
+  if (was && was.seq === head.seq && was.head === headHex && was.copyHash === hash) {
+    lastCheck = 'skipped';
+    console.log(`[edge] verify ${id.slice(0, 8)}: skipped (same head #${head.seq}, same copy)`);
+    return viewOf(was.verdict, new Set(was.unverified));
+  }
+  /*
+   * A verified copy may carry losses the person accepted (R24) - older history,
+   * unchanged while its hash is: they and the seqs they leave unverified carry
+   * over, and only the links after the copy's last verified one are new - the
+   * key's head moved, or the copy caught up with links the key's ring held
+   * (seen on the Pixel: a restart checked the copy, then the sync appended
+   * #292 and checked it all again). A gap or a red verdict always goes to the
+   * full check.
+   */
+  const grew = was && (mirror.links.length > was.count || head.seq > was.seq);
+  if (was && grew && was.verdict.kind === 'verified' && was.count > 0 && was.count <= mirror.links.length &&
+      copyHash(mirror.links, was.count) === was.copyHash) {
+    const a = copy.assess(
+      {links: mirror.links, openings: key?.openings ?? {}},
+      {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: key?.checkpoint ?? null},
+      {from: {seq: was.lastSeq, head: fromHex(was.lastHead)}, ringFrom: head.ringFrom},
+    );
+    if (a.chain.ok && !a.chain.gaps.length && !a.open.length && !a.missing.length) {
+      const lost = was.verdict.kind === 'verified' ? was.verdict.lost : undefined;
+      const verdict: Verdict = lost ? {kind: 'verified', through: head.seq, lost} : {kind: 'verified', through: head.seq};
+      remember(verdict, was.unverified);
+      lastCheck = 'new-links';
+      console.log(`[edge] verify ${id.slice(0, 8)}: new links #${was.lastSeq + 1}..#${head.seq} only`);
+      return viewOf(verdict, new Set(was.unverified));
+    }
+    /* anything but a clean pass: the full check decides (and names what failed) */
+  }
+  lastCheck = 'full';
+  console.log(`[edge] verify ${id.slice(0, 8)}: full check through #${head.seq}${was && was.seq === head.seq && was.copyHash !== hash ? ' (the stored copy changed under the same head)' : ''}`);
   /*
    * R27 "what counts as verified": the library's one answer, the same Approve
    * reads - anchors (genesis, HEAD, every checkpoint the key's own public key
@@ -433,7 +515,8 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
   else if (open.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: open[0].from, to: open[0].to};
   else if (lost.length) verdict = {kind: 'verified', through: head.seq, lost};
   else verdict = {kind: 'verified', through: result.verifiedThrough};
-  return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null};
+  remember(verdict, [...unverified]);
+  return viewOf(verdict, unverified);
 }
 
 function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLink>}[], unverified: Set<number>, mirror: Mirror): EdgeRow[] {

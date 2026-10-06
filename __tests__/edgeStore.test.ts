@@ -4,10 +4,11 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {FakeEdgeKey} from '../src/edgeFake';
-import {addNote, evaluate, keepOffered, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
+import {addNote, evaluate, forgetVerified, keepOffered, lastCheckPath, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
 
 beforeEach(async () => {
   await AsyncStorage.clear();
+  forgetVerified(); /* as a restart: nothing verified carries over */
 });
 
 const verifyOnly = async (k: FakeEdgeKey) => evaluate(await loadMirror(k.deviceId), await k.head());
@@ -221,4 +222,49 @@ test('links kept from a sync offer survive a copy sync already running (one queu
   await Promise.all([running, kept]);
   const seqs = (await loadMirror(k.deviceId)).links.map(r => r.link[0] | (r.link[1] << 8));
   expect(seqs).toEqual(full.links.map(r => r.link[0] | (r.link[1] << 8)));
+});
+
+/*
+ * WHAT THIS SESSION VERIFIED STAYS IN MEMORY (Brad, 2026-10-05): a pull-down with
+ * nothing new does no check; new links are checked from the verified head; an
+ * edit to the stored copy under the same head is a full check, and red; a
+ * restart checks in full.
+ */
+test('verification: start is full, a pull-down with no change skips, new links only, a restart is full again', async () => {
+  const k = FakeEdgeKey.demo();
+  await sync(k);
+  expect(lastCheckPath()).toBe('full');
+  const again = await sync(k);
+  expect(lastCheckPath()).toBe('skipped');
+  expect(again.view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
+  k.use('commit 1000');
+  k.ticket(0x00, 'done');
+  const grown = await sync(k);
+  expect(lastCheckPath()).toBe('new-links');
+  expect(grown.view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
+  forgetVerified();
+  await sync(k);
+  expect(lastCheckPath()).toBe('full');
+});
+
+test('verification: an edited stored link under the same head is a full check and red', async () => {
+  const k = FakeEdgeKey.demo();
+  await sync(k);
+  await sync(k);
+  expect(lastCheckPath()).toBe('skipped');
+  await tamper(k.deviceId, 'flip');
+  const v = await verifyOnly(k);
+  expect(lastCheckPath()).toBe('full');
+  expect(v.verdict).toMatchObject({kind: 'tampered'});
+});
+
+test('verification: an edited OLD link is caught even when the head moved', async () => {
+  const k = FakeEdgeKey.demo();
+  await sync(k);
+  await tamper(k.deviceId, 'flip');
+  k.use('commit 1001');
+  k.ticket(0x00, 'done');
+  const {view} = await sync(k);
+  expect(lastCheckPath()).toBe('full');
+  expect(view.verdict.kind).not.toBe('verified');
 });
