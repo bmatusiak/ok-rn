@@ -83,19 +83,26 @@ export function EdgeList({
       contentContainerStyle={{paddingBottom: bottomInset}}
       refreshControl={onRefresh ? <RefreshControl refreshing={!!refreshing} onRefresh={onRefresh} /> : undefined}
       ListEmptyComponent={empty ? <Text style={[styles.subtitle, {padding: 16}]}>{empty}</Text> : undefined}
-      renderItem={({item}) =>
-        item.kind === 'section' ? (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>{item.title}</Text>
-            {item.right ? <Text style={styles.sectionRight}>{item.right}</Text> : null}
-          </View>
-        ) : item.kind === 'row' ? (
-          <Row item={item} />
-        ) : (
-          item.bare ? <>{item.render()}</> : <View style={styles.node}>{item.render()}</View>
-        )
-      }
+      renderItem={({item}) => <EdgeListEntry item={item} />}
     />
+  );
+}
+
+/*
+ * One item, drawn as the list draws it - for a screen that already scrolls (a
+ * budget's view, Brad 2026-10-06): a list inside a ScrollView warns, and the
+ * warning's toast sat over the sheet's buttons.
+ */
+export function EdgeListEntry({item}: {item: EdgeListItem}) {
+  return item.kind === 'section' ? (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{item.title}</Text>
+      {item.right ? <Text style={styles.sectionRight}>{item.right}</Text> : null}
+    </View>
+  ) : item.kind === 'row' ? (
+    <Row item={item} />
+  ) : (
+    item.bare ? <>{item.render()}</> : <View style={styles.node}>{item.render()}</View>
   );
 }
 

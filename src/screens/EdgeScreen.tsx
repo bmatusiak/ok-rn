@@ -12,11 +12,11 @@
  */
 import React, {useEffect, useState} from 'react';
 import {bytes as okbytes} from 'node-onlykey-lib';
-import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {grants, codes, live} from 'node-onlykey-lib/edge';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
-import {EdgeList, type EdgeListItem} from '../ui/EdgeList';
+import {EdgeList, EdgeListEntry, type EdgeListItem} from '../ui/EdgeList';
 import {BottomDrawer, DRAWER_HANDLE} from '../ui/BottomDrawer';
 import {BudgetBlock} from '../ui/BudgetBlock';
 import {budgetStatus, budgetStatusText, type BudgetStatus} from '../budgetStatus';
@@ -391,8 +391,12 @@ export function statusColor(s: BudgetStatus): string {
   return theme.ok;
 }
 
-function BudgetCard({b, busy, stopping = false, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, status}: {
+function BudgetCard({b, busy, stopping = false, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, status, heading, footer}: {
   b: EdgeBudget;
+  /* the budget view's "Budget N", inside the card (Brad, 2026-10-06) */
+  heading?: string;
+  /* the budget view's steps line, at the card's bottom (Brad, 2026-10-06) */
+  footer?: React.ReactNode;
   busy: boolean;
   /* rule 8: Hold / Revoke / End wait only for one of themselves in flight - never for the tab's background work (busy) */
   stopping?: boolean;
@@ -410,6 +414,7 @@ function BudgetCard({b, busy, stopping = false, onOpen, onRevoke, held, onHold, 
   const complete = b.uses > 0 && b.used >= b.uses;
   const body = (
     <>
+      {heading ? <Text style={{color: theme.text, fontSize: 15, fontWeight: '700'}}>{heading}</Text> : null}
       <Text style={styles.op}>{b.reason}</Text>
       {b.agent ? <Text style={styles.dim}>{`for ${b.agent}`}</Text> : null}
       {held ? <Text style={[styles.ticketTitle, {color: theme.warn}]}>On hold – it pays for nothing until you resume it</Text> : null}
@@ -442,6 +447,7 @@ function BudgetCard({b, busy, stopping = false, onOpen, onRevoke, held, onHold, 
             ? `Budget ${b.grantId} · ends at ${new Date(b.endsAt).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})}, or when you lock the key.`
             : `Budget ${b.grantId} · ends when you lock the key.`}
       </Text>
+      {footer}
     </>
   );
   return (
@@ -556,31 +562,41 @@ function PendingCard({r, busy, waiting, fake, blocked, onApprove, onPress, onDec
 function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof useEdge>; onBack: () => void}) {
   const v = edge.view;
   const line = v ? verdictLine(v.verdict) : {text: 'Reading…', color: theme.textDim};
-  /* oldest first here (spec okrn-edge-tab.md): task -> each step's intent -> its ticket, read top
-     down like a log; the main chain view stays newest at the top */
+  /* oldest first, only to check its steps ran 1, 2, 3; the view lists its presses newest first,
+     like the Presses tab, so a pending ticket shows at once (Brad, 2026-10-06) */
   const mine = budgetRows(v?.rows ?? [], b.grantId).slice().reverse();
   const steps = mine.filter(r => r.fields.decision === DECISION.SELF_PRESS).map(r => r.fields.grantStep);
   const inOrder = steps.every((st, i) => st === i + 1);
   const ended = mine.some(r => r.fields.op === OP.GRANT_END);
+  /* the Presses tab's rows for this budget, drawn as that tab draws them (Brad, 2026-10-06) */
+  const all = v?.rows ?? [];
+  const verifiedAt = new Map(all.map(r => [r.seq, r.verified]));
+  const attached = new Set<number>();
+  for (const r of all) if (r.ticket?.ticket) attached.add(r.ticket.ticket.seq);
+  const liveUses = new Map(edge.budgets.map(x => [x.grantId, x.uses]));
+  const notesFrom = new Map<string, number>();
+  for (const r of all) {
+    if (r.note && !(notesFrom.get(r.note.agent)! <= r.note.at)) notesFrom.set(r.note.agent, Math.min(r.note.at, r.seenAt ?? r.note.at));
+  }
+  const agentOf = new Map([...edge.past, ...edge.budgets].filter(x => x.agentKey).map(x => [x.grantId, String(x.agentKey).toLowerCase()]));
+  const presses: EdgeListItem[] = [{key: 's-presses', kind: 'section', title: 'Presses'}];
+  for (const r of all) {
+    if (r.fields.grantId !== b.grantId) continue;
+    if (r.fields.op === OP.TICKET && attached.has(r.seq)) continue; /* it hangs under its use */
+    presses.push({key: `h${r.seq}`, kind: 'node', bare: true, render: () => (
+      <View style={styles.historyRow}>
+        {/* edge: an owed ticket shows the Waive controls under it, as the old list did */}
+        <LinkRow row={r} edge={edge} continued={v?.continued} budgetUses={liveUses} agentOf={agentOf} notesFrom={notesFrom} ticketVerified={r.ticket?.ticket ? verifiedAt.get(r.ticket.ticket.seq) !== false : true} />
+      </View>
+    )});
+  }
   return (
-    <ScrollView contentContainerStyle={styles.page}>
+    /* pull = the old chain panel's Sync (Brad, 2026-10-06): read what is new and validate the whole copy from the root */
+    <ScrollView contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={edge.busy} onRefresh={edge.fullSync} />}>
       <View style={styles.row}>
         <Btn title="‹ Back" onPress={onBack} />
       </View>
-      <Section title="The chain">
-        <Text style={[styles.verdict, {color: line.color}]}>{line.text}</Text>
-        <Text style={styles.dim}>
-          {v?.headSeq !== null && v?.headSeq !== undefined ? `Key's head: #${v.headSeq}` : 'Key not read yet'}
-          {v?.lastSync ? ` · last sync ${new Date(v.lastSync).toLocaleTimeString()} (phone clock)` : ''}
-        </Text>
-        {edge.error ? <Text style={[styles.dim, {color: theme.error}]}>{edge.error}</Text> : null}
-        <View style={styles.row}>
-          <Btn title="Sync" tone="primary" onPress={edge.fullSync} disabled={edge.busy} />
-          <Btn title="Verify" onPress={edge.verify} disabled={edge.busy} />
-        </View>
-      </Section>
-      <Section title={`Budget ${b.grantId}`}>
-        <BudgetCard b={b} busy={false} status={budgetStatus(b, edge.budgets.some(x => x.grantId === b.grantId), v)} />
+      <BudgetCard b={b} busy={false} heading={`Budget ${b.grantId}`} status={budgetStatus(b, edge.budgets.some(x => x.grantId === b.grantId), v)} footer={
         <Text style={[styles.dim, {color: inOrder ? theme.textDim : theme.error}]}>
           {steps.length === 0
             ? 'Nothing spent from it yet.'
@@ -588,18 +604,22 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
               ? `${steps.length === 1 ? 'Step 1' : `Steps 1–${steps.length}`} spent in order${ended ? '; ended' : ''}.`
               : `Steps out of order: ${steps.join(', ')}`}
         </Text>
-        {mine.length ? (
-          <ChainList rows={mine} budgetUses={new Map([[b.grantId, b.uses]])} edge={edge} />
-        ) : (
-          <Text style={styles.dim}>Its links are not on this phone yet - Sync.</Text>
-        )}
-      </Section>
+      } />
+      {/* the whole chain's verdict, the key's head, the last sync - under the card (Brad, 2026-10-06) */}
+      <Text style={[styles.verdict, {color: line.color}]}>{line.text}</Text>
+      <Text style={styles.dim}>
+        {v?.headSeq !== null && v?.headSeq !== undefined ? `Key's head: #${v.headSeq}` : 'Key not read yet'}
+        {v?.lastSync ? ` · last sync ${new Date(v.lastSync).toLocaleTimeString()} (phone clock)` : ''}
+      </Text>
+      {edge.error ? <Text style={[styles.dim, {color: theme.error}]}>{edge.error}</Text> : null}
+      {presses.map(it => <EdgeListEntry key={it.key} item={it} />)}
       <Section title="This phone's copy (testing)">
         <Text style={styles.dim}>
           Edits change only this phone's copy of the chain, the way an attacker could. Verify shows what they break; Sync heals
           what the key still holds.
         </Text>
         <View style={styles.row}>
+          <Btn title="Verify" onPress={edge.verify} disabled={edge.busy} />
           <Btn title="Flip a byte" tone="danger" onPress={() => edge.tamper('flip')} disabled={edge.busy} />
           <Btn title="Flip a ticket" tone="danger" onPress={() => edge.tamper('ticket')} disabled={edge.busy} />
           <Btn title="Delete a link" tone="danger" onPress={() => edge.tamper('delete')} disabled={edge.busy} />

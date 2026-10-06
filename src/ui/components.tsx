@@ -189,10 +189,12 @@ export function Section({
         (faded || unavailable) && styles.sectionFaded,
         style,
       ]}>
-      <View style={styles.sectionHead}>
-        <Text style={styles.sectionTitle}>{title}</Text>
-        {right}
-      </View>
+      {title || right ? (
+        <View style={styles.sectionHead}>
+          <Text style={styles.sectionTitle}>{title}</Text>
+          {right}
+        </View>
+      ) : null}
       {unavailable ? (
         <Text style={styles.sectionUnavailable}>{unavailable}</Text>
       ) : null}
