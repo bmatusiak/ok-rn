@@ -36,6 +36,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {bytes as okbytes} from 'node-onlykey-lib';
 import * as bt from 'node-onlykey-lib/btpair';
+import {sha256} from 'node-onlykey-lib/vendor/@noble/hashes/sha2.js';
 import NativeSecrets from '../specs/NativeSecrets';
 import NativeFidoGatt from '../specs/NativeFidoGatt';
 import {testingModeOn} from './debugGuard';
@@ -382,6 +383,15 @@ export function createBtTransit(deps: Deps = {}) {
   }
 
   return {
+    /**
+     * This phone's id on the Edge wire (the envelope's dev): the first 16 bytes of
+     * SHA-256 of its Part T identity - stable, short, nothing secret.
+     */
+    async deviceId(): Promise<string> {
+      const s = await load();
+      return okbytes.toHex(sha256(okbytes.fromHex(s.identity.publicKey)).slice(0, 16));
+    },
+
     /** Read the sealed store (makes the phone's identity on first use). */
     load: async () => {
       await load();

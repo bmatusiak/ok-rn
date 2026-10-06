@@ -664,6 +664,41 @@ describe('the pairing gate (Part T)', () => {
     off();
   });
 
+  test('ping: a sealed ping comes straight back, exact, naming the ping it answers (Brad, 2026-10-06)', async () => {
+    const {ping, wire} = jest.requireActual('node-onlykey-lib/edge');
+    const {fake, gate, off} = startGated();
+    const cli = bt.generateIdentity();
+    gate.openPairWindow();
+    const s1 = bt.cliPairStart({identity: cli, name: 'NITRO16'});
+    await send(0x05, s1.msg);
+    const s2 = bt.cliPairOnKeys(s1.state, lastFrame(0x85));
+    await send(0x05, s2.msg);
+    gate.approvePairing();
+    await settle();
+    const s3 = bt.cliPairOnDone(s2.state, lastFrame(0x85), Date.now());
+    await send(0x05, s3.msg);
+    const h = bt.cliHello(s3.record, {name: 'NITRO16'});
+    await send(0x05, h.msg);
+    const session = bt.cliOnHelloOk(h.state, lastFrame(0x85));
+    mockFrames.length = 0;
+    const data = Uint8Array.from({length: 500}, (_, i) => i & 255);
+    const msg = {...ping.buildPing(data), wire: {dev: 'pc-1', id: 'abcdef0123456789', ts: 1}};
+    for (const frame of wire.encode(wire.KIND.REQUEST, msg)) await send(0x04, bt.seal(session, Uint8Array.from([0x01, ...frame])));
+    await settle();
+    const asm = wire.createAssembler();
+    let got: any = null;
+    for (const f of mockFrames.filter(x => x.cmd === 0x84)) {
+      const pt = bt.open(session, fromHex(f.hex));
+      if (pt[0] === 0x01) got = asm.push(pt.slice(1)) || got;
+    }
+    expect(got && got.kind).toBe(wire.KIND.ANSWER);
+    expect(ping.checkPong(msg, got.message).ok).toBe(true);
+    expect(got.message.wire.re).toEqual({dev: 'pc-1', id: 'abcdef0123456789'});
+    expect(typeof got.message.rxAt).toBe('number');
+    expect(fake.writes).toHaveLength(0); /* nothing reached the key */
+    off();
+  });
+
   test('a pairing request from a computer that is not the target never reaches the gate', async () => {
     const {gate, off} = startGated();
     gate.openPairWindow();

@@ -35,12 +35,22 @@
  * that is not its own.
  */
 import {bytes as okbytes, protocol, transport as oktransport} from 'node-onlykey-lib';
-import {wire as edgeWire} from 'node-onlykey-lib/edge';
+import {wire as edgeWire, ping as edgePing} from 'node-onlykey-lib/edge';
 import NativeFidoGatt from '../specs/NativeFidoGatt';
 import FidoGatt, {isFromTarget, type CtapRequestEvent} from './transport/FidoGatt';
 import {btTransit, type BtTransit} from './btTransit';
 import type {OnlyKeyApp} from './onlykey';
 import type {LogLevel} from './hooks/useLog';
+import {testingModeOn} from './debugGuard';
+
+/*
+ * ONE MEASURING ROUND ON THE A13 (Brad, 2026-10-06): pings are answered in a
+ * production build too - still only inside the encrypted session (Part T). The
+ * echo returns only what that same paired computer just sent (at most 8 KB),
+ * touches no key, budget or storage, and logs counts, times and random ids
+ * only. Set back to false after the A13 is measured: testing mode only.
+ */
+const PING_IN_PRODUCTION = true;
 
 const IFACE_VENDOR = oktransport.IFACE.VENDOR;
 
@@ -183,6 +193,15 @@ export function onKeyFree(listener: () => void): () => void {
 export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, onEdgeRequest, transit = btTransit}: Options): () => void {
   /* EDGE_REQUEST pieces, by the computer sending them */
   const gathering = new Map<string, ReturnType<typeof edgeWire.createAssembler>>();
+  /* whether every piece of the message being gathered from that computer came sealed (Part T) */
+  const allSealed = new Map<string, boolean>();
+  /* when the message being gathered from that computer began (ping timing) */
+  const firstPiece = new Map<string, {at: number; pieces: number}>();
+  /* pings echoed whose verdict (the computer's receipt) has not come yet */
+  const waitingVerdict = new Map<string, ReturnType<typeof setTimeout>>();
+  /* this phone's id on the Edge wire (btTransit.deviceId) - read once */
+  let myDev = '';
+  void Promise.resolve(transit.deviceId?.()).then(d => { myDev = d ?? ''; }).catch(() => undefined);
   /* Which transport the report subscription is attached to, so a key change
    * moves it rather than leaving it listening to the previous device. */
   let boundTo: unknown = null;
@@ -408,14 +427,15 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       const got = await transit.handle(event.command, okbytes.fromHex(event.hex), event.address);
       if (!got) return;
       /* several reports in one write (btTransit KIND.REPORTS): each on its own, in order, as if it came alone */
-      for (const data of Array.isArray(got) ? got : [got]) await forward(data, event.address);
+      const sealed = (event.command | 0x80) === 0x84; /* came inside the encrypted session (Part T) */
+      for (const data of Array.isArray(got) ? got : [got]) await forward(data, event.address, sealed);
     } catch (err) {
       log('error', `[vendor] write failed: ${String(err)}`);
     }
   }
 
   /** One report from the computer to the key - the checks every report gets, alone or packed. */
-  async function forward(data: Uint8Array, address: string) {
+  async function forward(data: Uint8Array, address: string, sealed = false) {
     try {
       /*
        * Before ensureSubscribed(), so a refused write never so much as boots
@@ -430,7 +450,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       }
 
       if (isEdgeRequest(data)) {
-        keepForApp(data, address);
+        keepForApp(data, address, sealed);
         return;
       }
 
@@ -464,16 +484,62 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     }
   }
 
-  function keepForApp(data: Uint8Array, from: string) {
+  function keepForApp(data: Uint8Array, from: string, sealed = false) {
     const asm = gathering.get(from) ?? edgeWire.createAssembler();
     gathering.set(from, asm);
+    allSealed.set(from, (allSealed.get(from) ?? true) && sealed);
+    const fp = firstPiece.get(from) ?? {at: Date.now(), pieces: 0};
+    fp.pieces += 1;
+    firstPiece.set(from, fp);
     const got = asm.push(data);
     if (!got) return;
+    firstPiece.delete(from);
+    const wasSealed = allSealed.get(from) === true;
+    allSealed.delete(from);
     if ('error' in got) {
       log('info', `[edge] a request from ${from} came in broken (${got.error}); dropped`);
       return;
     }
-    if (got.kind !== edgeWire.KIND.REQUEST || !onEdgeRequest) return;
+    if (got.kind !== edgeWire.KIND.REQUEST) return;
+    /*
+     * PING-PONG (Brad, 2026-10-06): a pure Bluetooth link test - the same id
+     * and data straight back, nothing else done. TESTING MODE ONLY, and only
+     * inside the encrypted session: otherwise silence, like anything unknown.
+     */
+    const pingAllowed = wasSealed && (testingModeOn() || PING_IN_PRODUCTION);
+    const msgType = (got.message as {type?: unknown} | null)?.type;
+    if (msgType === edgePing.RECEIPT_TYPE) {
+      /* the computer's verdict on a ping (one-way, nothing goes back) */
+      const r = got.message as {re?: string; exact?: boolean; why?: string | null; ms?: number};
+      if (pingAllowed && typeof r.re === 'string') {
+        const t = waitingVerdict.get(r.re);
+        if (t) clearTimeout(t);
+        waitingVerdict.delete(r.re);
+        console.log(`[edge] ping ${r.re.slice(0, 8)}: ${r.exact ? 'exact' : `FAILED (${r.why ?? '?'})`}, round trip ${r.ms} ms on the computer`);
+      }
+      return;
+    }
+    if (msgType === edgePing.PING_TYPE) {
+      const rxAt = Date.now();
+      const pong = pingAllowed ? edgePing.answerPing(got.message, {firstAt: fp.at, rxAt}) : null;
+      if (pong) {
+        /* times and counts only: how long the ping took to arrive, and its echo to go out */
+        const frames = edgeWire.encode(edgeWire.KIND.ANSWER, edgeWire.answerEnvelope(got.message, pong, {dev: myDev}));
+        const t0 = Date.now();
+        console.log(`[edge] ping in: ${fp.pieces} pieces in ${t0 - fp.at} ms`);
+        for (const frame of frames) push(frame, from);
+        void sending.then(() => console.log(`[edge] pong out: ${frames.length} reports in ${Date.now() - t0} ms`));
+        /* the computer's receipt should follow; say so if it never does */
+        const pid = pong.id;
+        waitingVerdict.set(pid, setTimeout(() => {
+          waitingVerdict.delete(pid);
+          console.log(`[edge] ping ${pid.slice(0, 8)}: no verdict from the computer after 10 s`);
+        }, 10000));
+      }
+      else log('info', `[edge] a ping from ${from} - no answer (${wasSealed ? 'not allowed in this build' : 'not encrypted'})`);
+      return;
+    }
+    if (!onEdgeRequest) return;
     log('rx', `[edge] a request from ${from} - kept for the app, not sent to the key`);
     void onEdgeRequest(got.message, from)
       .then(answer => {
@@ -486,7 +552,8 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
           log('info', '[edge] the answer was not sent - API off or another target now');
           return;
         }
-        for (const frame of edgeWire.encode(edgeWire.KIND.ANSWER, answer)) push(frame, from);
+        /* the envelope (Brad, 2026-10-06): this answer names the request it answers */
+        for (const frame of edgeWire.encode(edgeWire.KIND.ANSWER, edgeWire.answerEnvelope(got.message, answer, {dev: myDev}))) push(frame, from);
       })
       .catch((err: unknown) => log('error', `[edge] the request failed: ${String(err)}`));
   }
@@ -508,5 +575,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     owner = null;
     boundTo = null;
     releaseHold(' (the bridge stopped)');
+    for (const t of waitingVerdict.values()) clearTimeout(t);
+    waitingVerdict.clear();
   };
 }
