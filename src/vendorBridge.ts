@@ -162,6 +162,24 @@ function isEdgeRequest(data: Uint8Array): boolean {
   return edgeWire.isEdgeRequestFrame(data);
 }
 
+/*
+ * Whether a computer's conversation holds the key right now, and a call when it
+ * lets go - for the Edge tab, which skips its sync while a computer holds the
+ * key and syncs once it is free (Brad, 2026-10-06: its reads only queued behind
+ * the agent, 6-7 s each).
+ */
+let computerHolding = false;
+const freeListeners = new Set<() => void>();
+export function computerHoldsKey(): boolean {
+  return computerHolding;
+}
+export function onKeyFree(listener: () => void): () => void {
+  freeListeners.add(listener);
+  return () => {
+    freeListeners.delete(listener);
+  };
+}
+
 export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, onEdgeRequest, transit = btTransit}: Options): () => void {
   /* EDGE_REQUEST pieces, by the computer sending them */
   const gathering = new Map<string, ReturnType<typeof edgeWire.createAssembler>>();
@@ -246,20 +264,28 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
         if (!held) return;
         const waiting = isKeyWaiting ? await isKeyWaiting().catch(() => false) : false;
         if (waiting) return armRelease(); /* a press is pending: the conversation is not over */
-        const h = held;
-        held = null;
-        holding = null;
-        h.release();
-        /* how long the app's own key reads (the Edge tab's sync) could not get in */
-        console.log(`[vendor] the key is free again: the computer held it ${Date.now() - h.since} ms`);
+        releaseHold('');
       })();
     }, COMPUTER_QUIET_MS);
+  }
+  function releaseHold(why: string) {
+    if (!held) return;
+    if (held.timer) clearTimeout(held.timer);
+    const h = held;
+    held = null;
+    holding = null;
+    computerHolding = false;
+    h.release();
+    /* how long the app's own key reads (the Edge tab's sync) could not get in */
+    console.log(`[vendor] the key is free again: the computer held it ${Date.now() - h.since} ms${why}`);
+    for (const l of [...freeListeners]) l();
   }
   function holdForComputer(transport: any): Promise<void> {
     if (holding) return holding;
     holding = new Promise<void>(ready => {
       const conversation = () => new Promise<void>(release => {
         held = {release, timer: null, since: Date.now()};
+        computerHolding = true;
         console.log('[vendor] the computer holds the key');
         ready();
         armRelease();
@@ -409,6 +435,14 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       }
 
       const transport = await ensureSubscribed();
+      /*
+       * RULE 8 (Brad, 2026-10-06): a Hold or Revoke the person tapped is waiting
+       * at the front of the key's lane (lib lane.js, urgent). This request is the
+       * boundary - the computer has its last answer, or it would not be asking
+       * again: its hold ends here, the Hold runs, and this request waits behind
+       * it (and the key refuses it, if it was the budget's next use).
+       */
+      if (held && typeof transport.urgentWaiting === 'function' && transport.urgentWaiting()) releaseHold(' (a Hold or Revoke went first)');
       /* the computer's turn on the key: after any app conversation in flight, then held (holdForComputer) */
       await holdForComputer(transport);
       armRelease();
@@ -473,12 +507,6 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     offWrite = null;
     owner = null;
     boundTo = null;
-    if (held) {
-      if (held.timer) clearTimeout(held.timer);
-      const h = held;
-      held = null;
-      holding = null;
-      h.release();
-    }
+    releaseHold(' (the bridge stopped)');
   };
 }

@@ -152,9 +152,17 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     this.snap = null;
   }
   private async keyHead(): Promise<any> {
-    if (!this.snap) { const h = await this.edge.head(); this.noteHead(h); return h; }
-    if (!this.snap.head) { this.snap.head = await this.edge.head(); this.noteHead(this.snap.head); }
-    return this.snap.head;
+    /*
+     * The snapshot is held in a local across the await: runs overlap (a sync
+     * queued behind a computer's hold, then another), and one run's endRun()
+     * cleared it while this one waited for the key - "Cannot read property
+     * 'head' of null" on the tab (Pixel, 2026-10-06). A cleared snapshot
+     * only means this read is a fresh one.
+     */
+    const snap = this.snap;
+    if (!snap) { const h = await this.edge.head(); this.noteHead(h); return h; }
+    if (!snap.head) { snap.head = await this.edge.head(); this.noteHead(snap.head); }
+    return snap.head;
   }
   private async mirrorNow() {
     if (!this.snap) return loadMirror(this.deviceId);
@@ -276,8 +284,9 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return {}; /* ticket messages arrive by sync (the Worker, E5); none from the key */
   }
 
+  /* rule 8 (Brad, 2026-10-06): the person's Revoke and Hold go to the front of the key's lane (urgent) - never behind an agent */
   async revoke(grantId: number) {
-    await this.edge.revoke(grantId);
+    await this.edge.revoke(grantId, {urgent: true});
   }
 
   async state(): Promise<EdgeKeyState> {
@@ -286,7 +295,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   async hold(grantId: number) {
-    await this.edge.hold(grantId);
+    await this.edge.hold(grantId, {urgent: true});
   }
 
   /* R15a + R27: like Approve, only from a copy that verifies, then the press */

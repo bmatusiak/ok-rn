@@ -76,7 +76,7 @@ jest.mock('../src/transport/FidoGatt', () => ({
   },
 }));
 
-import {startVendorBridge} from '../src/vendorBridge';
+import {startVendorBridge, computerHoldsKey} from '../src/vendorBridge';
 
 const IFACE = oktransport.IFACE;
 
@@ -425,6 +425,67 @@ test('a computer conversation holds the key: an app request waits for quiet and 
   expect(appRan).toBe(true);
   off();
 }, 10000);
+
+test('rule 8: a Hold waiting at the front goes in at the next computer request - not after its quiet', async () => {
+  const {lane} = jest.requireActual('node-onlykey-lib/transport');
+  const fake = fakeTransport();
+  const t = fake.transport as unknown as {exclusive: unknown; urgentWaiting: unknown};
+  t.exclusive = (fn: () => Promise<unknown>, opts?: {urgent?: boolean}) => lane.laneOf(fake.transport)(fn, opts);
+  t.urgentWaiting = () => lane.laneOf(fake.transport).urgentWaiting();
+  const off = startVendorBridge({log: () => {}, getKey: async () => ({transport: fake.transport} as never), getTarget: () => TARGET});
+  await mockRequestListener!({iface: 'vendor', hex: 'ffffffffe401', requestId: '', address: TARGET});
+  expect(fake.writes).toHaveLength(1);
+  expect(computerHoldsKey()).toBe(true);
+  /* the person taps Hold: urgent, at the front */
+  let writesWhenHeld = -1;
+  const hold = lane.inLane(fake.transport, async () => {
+    writesWhenHeld = fake.writes.length;
+  }, {urgent: true});
+  await settle();
+  expect(writesWhenHeld).toBe(-1); /* not into the computer's conversation */
+  /* the computer's next request is the boundary: the Hold first, then this request */
+  const t0 = Date.now();
+  await mockRequestListener!({iface: 'vendor', hex: 'ffffffffe402', requestId: '', address: TARGET});
+  await hold;
+  await settle();
+  expect(writesWhenHeld).toBe(1);
+  expect(fake.writes).toHaveLength(2);
+  expect(Date.now() - t0).toBeLessThan(1000); /* not after the 1.5 s quiet */
+  off();
+  expect(computerHoldsKey()).toBe(false);
+});
+
+test('rule 8: only the phone taps are urgent - a computer Hold (OKEDGE GRANT_HOLD) queues as normal, behind the app', async () => {
+  const {lane} = jest.requireActual('node-onlykey-lib/transport');
+  const fake = fakeTransport();
+  const asked: Array<{urgent?: boolean} | undefined> = [];
+  const t = fake.transport as unknown as {exclusive: unknown; urgentWaiting: unknown};
+  t.exclusive = (fn: () => Promise<unknown>, opts?: {urgent?: boolean}) => {
+    asked.push(opts);
+    return lane.laneOf(fake.transport)(fn, opts);
+  };
+  t.urgentWaiting = () => lane.laneOf(fake.transport).urgentWaiting();
+  const off = startVendorBridge({log: () => {}, getKey: async () => ({transport: fake.transport} as never), getTarget: () => TARGET});
+  /* the app is in a conversation with the key, and another app request waits */
+  const order: string[] = [];
+  let endApp: () => void = () => undefined;
+  const app = lane.inLane(fake.transport, () => new Promise<void>(r => { order.push('app'); endApp = () => r(); }));
+  const appNext = lane.inLane(fake.transport, async () => { order.push('app next'); });
+  /* a computer sends a Hold of budget 7 - the very message the phone's own Hold sends */
+  const req = mockRequestListener!({iface: 'vendor', hex: 'fffffffff813' + '00000007', requestId: '', address: TARGET});
+  await settle();
+  expect(t.urgentWaiting && (t.urgentWaiting as () => boolean)()).toBe(false);
+  expect(fake.writes).toHaveLength(0); /* not into the app's conversation */
+  endApp();
+  await app;
+  await appNext;
+  await req;
+  await settle();
+  expect(order).toEqual(['app', 'app next']);
+  expect(fake.writes).toHaveLength(1); /* written after both app conversations: in line, not at the front */
+  expect(asked.every(o => !o || !o.urgent)).toBe(true); /* the bridge never asks for urgent */
+  off();
+});
 
 /*
  * EDGE_REQUEST (OKEDGE_REQUEST 0xF7, mcp-service.md 4.7a): the bridge KEEPS it

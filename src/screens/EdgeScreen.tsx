@@ -375,9 +375,11 @@ export function statusColor(s: BudgetStatus): string {
   return theme.ok;
 }
 
-function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, status}: {
+function BudgetCard({b, busy, stopping = false, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, status}: {
   b: EdgeBudget;
   busy: boolean;
+  /* rule 8: Hold / Revoke / End wait only for one of themselves in flight - never for the tab's background work (busy) */
+  stopping?: boolean;
   /* Active / Ended · N owed / Validated / red (budgetStatus - never stored): an ended one has no countdown */
   status: BudgetStatus;
   onOpen?: () => void;
@@ -452,13 +454,13 @@ function BudgetCard({b, busy, onOpen, onRevoke, held, onHold, onResume, waitingR
          * ticketed (spec 2026-10-04).
          */
         <View style={styles.row}>
-          <Btn title="End" tone="danger" onPress={onRevoke} disabled={busy} />
+          <Btn title="End" tone="danger" onPress={onRevoke} disabled={stopping} />
         </View>
       ) : onRevoke ? (
         <View style={styles.row}>
           {held && onResume ? <Btn title="Resume" tone="primary" onPress={() => { if (!consentRefusal()) onResume(); }} disabled={busy || consentRefusal() !== null} /> : null}
-          {!held && onHold ? <Btn title="Hold" onPress={onHold} disabled={busy} /> : null}
-          <Btn title="Revoke" tone="danger" onPress={onRevoke} disabled={busy} />
+          {!held && onHold ? <Btn title="Hold" onPress={onHold} disabled={stopping} /> : null}
+          <Btn title="Revoke" tone="danger" onPress={onRevoke} disabled={stopping} />
         </View>
       ) : null}
     </View>
@@ -878,6 +880,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
               key={b.grantId}
               b={b}
               busy={edge.busy}
+              stopping={edge.stopping}
               status={budgetStatus(b, true, edge.view)}
               onOpen={() => setOpen(b)}
               onRevoke={() => edge.revoke(b.grantId)}
@@ -974,7 +977,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
         {liveNow.map(b => (
           <View key={b.grantId} style={styles.row}>
             <Text style={[styles.op, {flex: 1}]}>{`Budget ${b.grantId} live · ${Math.max(0, b.uses - b.used)} of ${b.uses} left`}</Text>
-            <Btn title="Hold" tone="danger" onPress={() => edge.hold(b.grantId)} disabled={edge.busy} />
+            <Btn title="Hold" tone="danger" onPress={() => edge.hold(b.grantId)} disabled={edge.stopping} />
           </View>
         ))}
       </View>

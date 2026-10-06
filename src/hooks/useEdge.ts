@@ -11,6 +11,7 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type EdgeInbox, type EdgeKeyState, type EdgeReplay, type EdgeRequest, type EdgeSource} from '../edgeFake';
 import {SoftKeyEdge} from '../edgeSoftKey';
+import {computerHoldsKey, onKeyFree} from '../vendorBridge';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {useBackend} from './KeyContext';
 import {evaluate, forgetVerifiedFor, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
@@ -131,10 +132,30 @@ export function useEdge() {
     setRequests(await s.pending());
     setCopyCheck(await s.check());
   }, [source]);
-  const revoke = useCallback((grantId: number) => run(async s => {
-    await s.revoke(grantId);
-    return (await syncMirror(s)).view;
-  }), [run]);
+  /*
+   * RULE 8 (Brad, 2026-10-06): a Hold or Revoke the person taps is never kept
+   * waiting by the tab's own background work - its buttons follow `stopping`
+   * (one of these in flight), not `busy` - and it goes to the front of the
+   * key's lane (SoftKeyEdge: urgent). The log says how long it took, from the tap.
+   */
+  const [stopping, setStopping] = useState(false);
+  const stoppingRef = useRef(false);
+  const stop = useCallback((what: 'hold' | 'revoke', grantId: number, act: (s: Source) => Promise<void>) => {
+    if (stoppingRef.current) return Promise.resolve(); /* a second tap while one is on its way */
+    stoppingRef.current = true;
+    setStopping(true);
+    const t = Date.now();
+    console.log(`[edge] ${what} tapped (budget ${grantId})`);
+    return run(async s => {
+      await act(s);
+      console.log(`[edge] ${what} on the key ${Date.now() - t} ms after the tap`);
+      return (await syncMirror(s)).view;
+    }).finally(() => {
+      stoppingRef.current = false;
+      setStopping(false);
+    });
+  }, [run]);
+  const revoke = useCallback((grantId: number) => stop('revoke', grantId, async s => { await s.revoke(grantId); }), [stop]);
   /* the clasp: Yes sends the request; the key waits for the press; then it is live */
   const approve = useCallback((id: number) => run(async s => {
     try {
@@ -145,10 +166,7 @@ export function useEdge() {
     return (await syncMirror(s)).view;
   }), [run]);
   /* R15a: hold needs no press; resume runs the copy check, then waits for one */
-  const hold = useCallback((grantId: number) => run(async s => {
-    await s.hold?.(grantId);
-    return (await syncMirror(s)).view;
-  }), [run]);
+  const hold = useCallback((grantId: number) => stop('hold', grantId, async s => { await s.hold?.(grantId); }), [stop]);
   const resume = useCallback((grantId: number) => run(async s => {
     try {
       await s.resume?.(grantId, () => setPressFor(`resume:${grantId}`));
@@ -247,11 +265,29 @@ export function useEdge() {
    * (vendorBridge), and this read waits its turn.
    */
   const lastSeq = useRef<number | null>(null);
+  const syncWhenFree = useRef(false);
+  useEffect(() => {
+    if (!wantReal) return;
+    return onKeyFree(() => {
+      if (!syncWhenFree.current) return;
+      syncWhenFree.current = false;
+      void sync();
+    });
+  }, [wantReal, sync]);
   useEffect(() => {
     if (!wantReal) return;
     let stopped = false;
     const t = setInterval(async () => {
       try {
+        /*
+         * A COMPUTER HOLDS THE KEY (Brad, 2026-10-06): the tab's reads would only
+         * queue behind the agent (6-7 s each, measured) - skip, and sync once the
+         * key is free (the effect below).
+         */
+        if (computerHoldsKey()) {
+          syncWhenFree.current = true;
+          return;
+        }
         const s = await source();
         if (!s || stopped) return;
         const {seq} = await s.head();
@@ -268,7 +304,7 @@ export function useEdge() {
   }, [wantReal, source, sync]);
 
   return {
-    view, budgets, past, requests, busy, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal, fullSync,
+    view, budgets, past, requests, busy, stopping, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal, fullSync,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
     hold, resume, waive, siblings, removeSibling, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss,
   };
