@@ -38,6 +38,7 @@ type StoredMirror = {
   publicKey?: string;
   continued?: ContinueCheck | null;
   anchors?: {seq: number; head: string; signature: string; mySeq: number; at: number}[];
+  seals?: {seq: number; head: string; signature: string; ended: number[]}[];
 };
 
 /*
@@ -48,6 +49,8 @@ type StoredMirror = {
  * or 'no-match' (no copy here has that head - shown as an alarm).
  */
 export type ContinueCheck = {ok: boolean; fromDeviceId?: string; oldSeq: number; debtsChecked?: boolean; reason?: string};
+
+export type Seal = {seq: number; head: Uint8Array; signature: Uint8Array; ended: number[]};
 
 export type Mirror = {
   deviceId: Uint8Array;
@@ -97,6 +100,16 @@ export type Mirror = {
    * what the next sync is checked against (a rollback or a changed head alarms).
    */
   anchors?: {seq: number; head: Uint8Array; signature: Uint8Array; mySeq: number; at: number}[];
+  /*
+   * SEALED BLOCKS (BLOCKS.md §2, §2a; Brad, 2026-10-07: "checkpoints can happen on a
+   * budget grant end, like it's the end of the block of transactions"; "we only need
+   * to verify the new stuff"). A checkpoint the key signed over a head this phone had
+   * just verified, taken when a budget had ended since the last seal. NOT a
+   * "verified" mark: the next session checks the signature again, with the public
+   * key the key gives that session, and re-welds the stored links up to it.
+   * ended: the grant ids not live when the seal was taken (to see a new end).
+   */
+  seals?: Seal[];
 };
 
 export type Verdict =
@@ -158,6 +171,7 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
     publicKey: s.publicKey ? fromHex(s.publicKey) : null,
     continued: s.continued ?? null,
     anchors: (s.anchors ?? []).map(a => ({seq: a.seq, head: fromHex(a.head), signature: fromHex(a.signature), mySeq: a.mySeq, at: a.at})),
+    seals: (s.seals ?? []).map(x => ({seq: x.seq, head: fromHex(x.head), signature: fromHex(x.signature), ended: x.ended ?? []})),
   };
 }
 
@@ -176,6 +190,7 @@ export async function saveMirror(m: Mirror): Promise<void> {
     ...(m.publicKey ? {publicKey: toHex(m.publicKey)} : {}),
     ...(m.continued ? {continued: m.continued} : {}),
     ...(m.anchors?.length ? {anchors: m.anchors.map(a => ({seq: a.seq, head: toHex(a.head), signature: toHex(a.signature), mySeq: a.mySeq, at: a.at}))} : {}),
+    ...(m.seals?.length ? {seals: m.seals.map(x => ({seq: x.seq, head: toHex(x.head), signature: toHex(x.signature), ended: x.ended}))} : {}),
   };
   await AsyncStorage.setItem(storageKey(m.deviceId), JSON.stringify(s));
 }
@@ -334,11 +349,13 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   if (view.verdict.kind === 'verified' || view.verdict.kind === 'gap') {
     mirror.lastSeen = {seq: head.seq, head: head.head};
   }
+  const live = await source.budgets(true).then(bs => bs.map(b => b.grantId)).catch(() => null as number[] | null);
+  /* a budget ended since the last seal: its block is closed - seal it (BLOCKS.md §2, stage a) */
+  if (live && view.verdict.kind === 'verified' && ownKey?.checkpoint) takeSeal(mirror, head, ownKey.checkpoint, live);
   await saveMirror(mirror);
   lap('save');
   /* B7: new alarms become phone notifications - every sync, the tab's and the background copy's */
-  const live = await source.budgets(true).then(bs => bs.map(b => b.grantId)).catch(() => [] as number[]);
-  await raiseAlarms(mirror, view, live).catch(() => {});
+  await raiseAlarms(mirror, view, live ?? []).catch(() => {});
   lap('alarms');
   console.log(`[edge] sync ${Date.now() - t0} ms: ${laps.join(', ')}`);
   return {mirror, view};
@@ -448,6 +465,60 @@ function shortPath(mirror: Mirror, head: {seq: number; head: Uint8Array}): boole
     (mirror.links.length > was.count || head.seq > was.seq) && copyHash(mirror.links, was.count) === was.copyHash;
 }
 
+/* the grant ids the copy has seen opened (grant-create links) */
+function grantIdsIn(mirror: Mirror): number[] {
+  const ids = new Set<number>();
+  for (const r of mirror.links) {
+    try { const f = chain.decodeLink(r.link); if (f.op === codes.OP.GRANT_CREATE) ids.add(f.grantId); } catch { /* not a link: the check reports it */ }
+  }
+  return [...ids];
+}
+
+/*
+ * TAKE A SEAL (BLOCKS.md §2, stage a): only over the head this sync just verified,
+ * with the key's checkpoint for exactly that head, and only when a budget ended
+ * since the last seal - its block of transactions is closed. Stage (b) moves this
+ * into the key (R15: grant-end and the checkpoint in one step).
+ */
+function takeSeal(mirror: Mirror, head: {seq: number; head: Uint8Array}, cp: {seq: number; head: Uint8Array; signature: Uint8Array}, live: number[]) {
+  if (cp.seq !== head.seq || toHex(cp.head) !== toHex(head.head)) return;
+  const seals = mirror.seals ?? [];
+  const last = seals[seals.length - 1];
+  if (last && cp.seq <= last.seq) return;
+  const ended = grantIdsIn(mirror).filter(id => !live.includes(id));
+  const before = new Set(last ? last.ended : []);
+  if (!ended.some(id => !before.has(id))) return;
+  mirror.seals = [...seals, {seq: cp.seq, head: cp.head, signature: cp.signature, ended}].slice(-8);
+  console.log(`[edge] sealed #${cp.seq}: budget ${ended.filter(id => !before.has(id)).join(', ')} ended - its block is closed`);
+}
+
+/*
+ * THE SEALED START (BLOCKS.md §2a). With nothing verified this session: the newest
+ * seal at or below the copy's end, its signature checked with the public key the
+ * key gave THIS session (whose device id must be this copy's). copy.assess then
+ * welds the stored links to it like any anchor. Anything that does not fit -> null,
+ * and the caller checks in full.
+ */
+/* why the last sealed start was not used, said once per reason (a fallback is never silent) */
+let sealNoSaid = '';
+function sealedStart(mirror: Mirror, head: {seq: number}, key: EdgeCopyKey | null): {seq: number; head: Uint8Array} | null {
+  const no = (why: string) => {
+    if (mirror.seals?.length && sealNoSaid !== why) { sealNoSaid = why; console.log(`[edge] sealed start not used: ${why}`); }
+    return null;
+  };
+  if (!mirror.seals?.length || !mirror.links.length) return null;
+  if (!key?.publicKey) return no('the key gave no public key this session');
+  let deviceId: Uint8Array;
+  try { deviceId = chain.deviceIdOf(key.publicKey); } catch { return no('the public key is not an Edge key'); }
+  if (toHex(deviceId) !== toHex(mirror.deviceId)) return no(`the public key is another device's (${toHex(deviceId).slice(0, 8)} vs ${toHex(mirror.deviceId).slice(0, 8)})`);
+  const lastSeq = seqOf(mirror.links[mirror.links.length - 1]);
+  const seal = [...mirror.seals].reverse().find(x => x.seq <= lastSeq && x.seq <= head.seq);
+  if (!seal) return no('no seal at or below the end of the copy');
+  if (!chain.verifyCheckpoint({deviceId, seq: seal.seq, head: seal.head}, seal.signature, key.publicKey)) return no(`the seal at #${seal.seq} does not verify`);
+  /* the stored links are welded to it by copy.assess, as every anchor is - a copy that starts late (the Pixel's, at #268) works as in the full check */
+  return {seq: seal.seq, head: seal.head};
+}
+
 /** The Sync button: the next check of this key's copy is a full one, from the root. */
 export function forgetVerifiedFor(deviceId: Uint8Array) {
   verifiedNow.delete(toHex(deviceId));
@@ -484,7 +555,7 @@ function copyHash(links: EdgeLinkRecord[], count = links.length): string {
   return toHex(h.digest());
 }
 /* the path each verdict took, for the log and the tests: not saved, nothing sensitive */
-let lastCheck: 'full' | 'new-links' | 'skipped' | null = null;
+let lastCheck: 'full' | 'new-links' | 'sealed' | 'skipped' | null = null;
 export function lastCheckPath() {
   return lastCheck;
 }
@@ -536,19 +607,37 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
     }
     /* anything but a clean pass: the full check decides (and names what failed) */
   }
-  lastCheck = 'full';
-  console.log(`[edge] verify ${id.slice(0, 8)}: full check through #${head.seq}${was && was.seq === head.seq && was.copyHash !== hash ? ' (the stored copy changed under the same head)' : ''}`);
   /*
    * R27 "what counts as verified": the library's one answer, the same Approve
    * reads - anchors (genesis, HEAD, every checkpoint the key's own public key
    * verifies), the gap only what no anchor reaches, minus the key's own links,
    * and only a verified LOSS later than a gap covers it.
+   *
+   * SEALED (BLOCKS.md §2a; Brad, 2026-10-07: "we only need to verify the new
+   * stuff"). With nothing from this session, the check starts from the newest seal
+   * the key signed - its signature checked against the public key the key gave
+   * THIS session - which stands in for every signature at or below it (one per
+   * budget ever opened: the cost that grew with the chain). The stored links are
+   * still welded to it and the verdict is computed as in the full check. A clean
+   * result is the answer; anything else runs again without the seal, and that
+   * full check decides.
    */
-  const a = copy.assess(
+  const sealed = was ? null : sealedStart(mirror, head, key);
+  const assessWith = (seal: {seq: number; head: Uint8Array} | null) => copy.assess(
     {links: mirror.links, openings: key?.openings ?? {}},
     {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: key?.checkpoint ?? null},
-    {ringFrom: head.ringFrom, lastSeen: mirror.lastSeen ?? undefined},
+    {ringFrom: head.ringFrom, lastSeen: mirror.lastSeen ?? undefined, ...(seal ? {sealed: seal} : {})},
   );
+  let a = sealed ? assessWith(sealed) : null;
+  if (a && sealed && !a.chain.failure && !a.open.length) {
+    lastCheck = 'sealed';
+    console.log(`[edge] verify ${id.slice(0, 8)}: sealed through #${sealed.seq} (its signature checked this session), full checks after it through #${head.seq}`);
+  } else {
+    if (a) console.log(`[edge] verify ${id.slice(0, 8)}: the sealed start was not clean - full check`);
+    lastCheck = 'full';
+    console.log(`[edge] verify ${id.slice(0, 8)}: full check through #${head.seq}${was && was.seq === head.seq && was.copyHash !== hash ? ' (the stored copy changed under the same head)' : ''}`);
+    a = assessWith(null);
+  }
   const result = a.chain;
   const unverified = new Set<number>();
   for (const g of result.gaps) for (let s = g.from; s <= g.to; s++) unverified.add(s);

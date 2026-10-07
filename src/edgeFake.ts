@@ -317,8 +317,8 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
     this.requests = this.requests.filter(x => x.id !== id); // nothing reaches the key
   }
 
-  static demo(): FakeEdgeKey {
-    const k = new FakeEdgeKey();
+  /* k: a subclass to fill (a test key that signs checkpoints) */
+  static demo(k: FakeEdgeKey = new FakeEdgeKey()): FakeEdgeKey {
     k.clasp('Sign release commits for ok-rn 0.0.6', [{op: OP.SIGN, slot: 101, cap: 3}]);
     k.clasp('Decrypt the CI deploy secrets', [{op: OP.DECRYPT, slot: 1, cap: 5}]);
     k.clasp('Publish the docs site', [{op: OP.SIGN, slot: 102, cap: 2}, {op: OP.DECRYPT, slot: 2, cap: 2}]);

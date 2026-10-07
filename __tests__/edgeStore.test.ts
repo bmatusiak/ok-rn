@@ -268,3 +268,81 @@ test('verification: an edited OLD link is caught even when the head moved', asyn
   expect(lastCheckPath()).toBe('full');
   expect(view.verdict.kind).not.toBe('verified');
 });
+
+/*
+ * SEALED BLOCKS (BLOCKS.md §2a; Brad, 2026-10-07: "we only need to verify the new
+ * stuff", "checkpoints can happen on a budget grant end"). A key that SIGNS: its
+ * device id comes from its public key, as a real key's does, and copyKey() gives a
+ * checkpoint over its live head each session.
+ */
+import {chain as edgeChain} from 'node-onlykey-lib/edge';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const {p256} = require('node-onlykey-lib/vendor/@noble/curves/nist.js');
+
+class SignedFake extends FakeEdgeKey {
+  private readonly sk: Uint8Array = (p256.utils.randomSecretKey ?? p256.utils.randomPrivateKey)();
+  readonly pub: Uint8Array = p256.getPublicKey(this.sk, false).subarray(1);
+  constructor() {
+    super();
+    (this as unknown as {deviceId: Uint8Array}).deviceId = edgeChain.deviceIdOf(this.pub);
+  }
+  async copyKey() {
+    const h = await this.head();
+    return {publicKey: this.pub, openings: {}, checkpoint: {seq: h.seq, head: h.head, signature: edgeChain.signCheckpoint({deviceId: this.deviceId, seq: h.seq, head: h.head}, this.sk)}};
+  }
+}
+const signedDemo = () => FakeEdgeKey.demo(new SignedFake()) as SignedFake;
+const endOne = async (k: FakeEdgeKey) => { const b = (await k.budgets())[0]; if (b) await k.revoke(b.grantId); };
+
+test('sealed: a budget end seals the block, and a restart starts from the seal, not from genesis', async () => {
+  const k = signedDemo();
+  await sync(k);
+  expect(lastCheckPath()).toBe('full');
+  await endOne(k);
+  const sealedAt = await sync(k);
+  expect(sealedAt.mirror.seals?.length).toBe(1);
+  expect(sealedAt.mirror.seals![0].seq).toBe((await k.head()).seq);
+  k.use('commit 2000');
+  k.ticket(0x00, 'done');
+  forgetVerified(); /* a restart */
+  const {view} = await sync(k);
+  expect(lastCheckPath()).toBe('sealed');
+  expect(view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
+});
+
+test('sealed: an edited link inside a sealed block is still caught after a restart', async () => {
+  const k = signedDemo();
+  await sync(k);
+  await endOne(k);
+  await sync(k);
+  await tamper(k.deviceId, 'flip');
+  forgetVerified();
+  const {view} = await sync(k);
+  expect(lastCheckPath()).toBe('full');
+  expect(view.verdict.kind).not.toBe('verified');
+});
+
+test('sealed: a seal whose signature does not verify is ignored - the full check runs', async () => {
+  const k = signedDemo();
+  await sync(k);
+  await endOne(k);
+  await sync(k);
+  const m = await loadMirror(k.deviceId);
+  m.seals![0].signature = m.seals![0].signature.map((b, i) => (i === 3 ? b ^ 1 : b));
+  await saveMirror(m);
+  forgetVerified();
+  const {view} = await sync(k);
+  expect(lastCheckPath()).toBe('full');
+  expect(view.verdict.kind).toBe('verified');
+});
+
+test('sealed: no budget ended since the last seal -> no new seal', async () => {
+  const k = signedDemo();
+  await sync(k);
+  await endOne(k);
+  await sync(k);
+  k.use('commit 2001');
+  k.ticket(0x00, 'done');
+  const {mirror} = await sync(k);
+  expect(mirror.seals?.length).toBe(1);
+});
