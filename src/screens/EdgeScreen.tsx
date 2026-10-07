@@ -12,7 +12,7 @@
  */
 import React, {useEffect, useState} from 'react';
 import {bytes as okbytes} from 'node-onlykey-lib';
-import {Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {BackHandler, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {grants, codes, live} from 'node-onlykey-lib/edge';
 import {Btn, Section, Segmented} from '../ui/components';
 import {theme} from '../ui/theme';
@@ -556,6 +556,11 @@ function PendingCard({r, busy, waiting, fake, blocked, onApprove, onPress, onDec
  * (each with its ticket), and its end. Its steps must run 1, 2, 3...
  */
 function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof useEdge>; onBack: () => void}) {
+  /* the phone's own Back (button or gesture) goes back too, as the ‹ Back button does (Brad, 2026-10-07) */
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { onBack(); return true; });
+    return () => sub.remove();
+  }, [onBack]);
   const v = edge.view;
   const line = v ? verdictLine(v.verdict) : {text: 'Reading…', color: theme.textDim};
   /* oldest first, only to check its steps ran 1, 2, 3; the view lists its presses newest first,
