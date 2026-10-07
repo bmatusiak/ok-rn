@@ -414,3 +414,43 @@ test('chain state: a budget end seals a block - \'sealed\' fires', async () => {
   off();
   expect(sealed).toEqual([(await k.head()).seq]);
 });
+
+/* ONE MOMENT OF THE KEY (A13, 2026-10-07): a link lands between the head read and the checkpoint read */
+class RacingKey extends SignedFake {
+  race = false;
+  async copyKey() {
+    if (this.race) { this.race = false; this.use('a push signs mid-sync'); }
+    return super.copyKey();
+  }
+}
+
+test('burst: a checkpoint newer than the head read is dropped - still new links only, not a full check', async () => {
+  const k = FakeEdgeKey.demo(new RacingKey()) as RacingKey;
+  await sync(k);
+  expect(lastCheckPath()).toBe('full');
+  k.use('commit 4000');
+  k.race = true;
+  const {view} = await sync(k);
+  expect(lastCheckPath()).toBe('new-links');
+  expect(view.verdict.kind).toBe('verified');
+});
+
+/* NOT PAST THE HEAD (Pixel, 2026-10-07): a link the key writes WHILE the sync reads links */
+class WritingDuringRead extends SignedFake {
+  writeOnRead = false;
+  async read(from: number, count: number) {
+    if (this.writeOnRead) { this.writeOnRead = false; this.use('a commit signs while the sync reads'); }
+    return super.read(from, count);
+  }
+}
+
+test('burst: a link written while the sync reads is not taken past the head - no false "tampered"', async () => {
+  const k = FakeEdgeKey.demo(new WritingDuringRead()) as WritingDuringRead;
+  await sync(k);
+  k.use('commit 5000');
+  k.writeOnRead = true;
+  const first = await sync(k);
+  expect(first.view.verdict.kind).toBe('verified');
+  const next = await sync(k);
+  expect(next.view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
+});

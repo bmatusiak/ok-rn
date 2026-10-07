@@ -415,6 +415,15 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
     if (!got.length) break;
     let welded = true;
     for (const r of got) {
+      /*
+       * NOT PAST THE HEAD THIS SYNC READ (Pixel, 2026-10-07). A batch can return a link
+       * the key wrote AFTER the head was read (a commit signing mid-sync). Kept, the copy
+       * held a link beyond the key's head, the check read that as the key going
+       * backwards - "rollback at #496", tampered (red) - and every check fell back to the
+       * full one (on the A13: 22 s, and Bluetooth replies missed). It waits for the next
+       * sync, which reads a head that includes it.
+       */
+      if (seqOf(r) > head.seq) { welded = false; break; }
       const last = mirror.links[mirror.links.length - 1];
       if (follows(last, r)) { mirror.links.push(r); mirror.seen[seqOf(r)] = mirror.seen[seqOf(r)] ?? now; }
       else if (!last || seqOf(r) > seqOf(last)) { welded = false; break; } /* not this chain's next link: read it again next sync */
@@ -448,7 +457,7 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   /* B7: new alarms become phone notifications - every sync, the tab's and the background copy's */
   await raiseAlarms(mirror, view, live ?? []).catch(() => {});
   lap('alarms');
-  console.log(`[edge] sync ${Date.now() - t0} ms: ${laps.join(', ')}`);
+  console.log(`[edge] sync ${Date.now() - t0} ms: ${laps.join(', ')} -> ${view.verdict.kind}${'through' in view.verdict ? ` #${view.verdict.through}` : ''}${'seq' in view.verdict ? ` at #${view.verdict.seq}` : ''} (${lastCheck})`);
   record(source.deviceId, mirror, view, Date.now() - t0, sealsBefore);
   return {mirror, view};
 }
@@ -540,8 +549,8 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
    * read and it runs again from nothing.
    */
   if (shortPath(mirror, head)) {
-    const view = evaluate(mirror, head, [], key);
-    if (lastCheck !== 'full') return view;
+    const view = evaluateWith(mirror, head, [], key, true);
+    if (view && lastCheck !== 'full') return view;
     verifiedNow.delete(toHex(mirror.deviceId));
   }
   return evaluate(mirror, head, await ring(), key);
@@ -656,6 +665,16 @@ export function lastCheckPath() {
 }
 
 export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[] = [], key: EdgeCopyKey | null = null): EdgeView {
+  return evaluateWith(mirror, head, held, key, false)!;
+}
+
+/*
+ * noFull: the quick path (liveView, without the key's ring). When only the full
+ * check would do, it stops and says so (null) instead of running the full check
+ * WITHOUT the ring and having liveView run it again with it - after a burst of
+ * links on a Galaxy A13 that was 22.5 s of checking in one sync (2026-10-07).
+ */
+function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[], key: EdgeCopyKey | null, noFull: boolean): EdgeView | null {
   const decoded = mirror.links.map(r => ({r, f: chain.decodeLink(r.link)}));
   if (!head) {
     return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null};
@@ -666,6 +685,16 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
   const viewOf = (verdict: Verdict, unverified: Set<number>): EdgeView =>
     ({verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null});
   const was = verifiedNow.get(id);
+  /*
+   * ONE MOMENT OF THE KEY (as lib grants.check, Pixel 2026-10-06; seen again on the
+   * A13 2026-10-07): the head and the key's checkpoint are separate reads, and a link
+   * that lands between them (a push's signature right after a ticket) gives a
+   * checkpoint for a NEWER head than the one checked. As an anchor past the end it
+   * made the new-links check fail and sent every check to the full one. It is only
+   * one anchor: check without it; the next sync has both at the same head.
+   */
+  const cp = key?.checkpoint && key.checkpoint.seq <= head.seq ? key.checkpoint : null;
+  if (key?.checkpoint && !cp) console.log(`[edge] verify ${id.slice(0, 8)}: the key's checkpoint is for #${key.checkpoint.seq}, the head read was #${head.seq} - a link landed during the sync; checked without it`);
   const remember = (verdict: Verdict, unverified: number[]) => {
     const last = decoded[decoded.length - 1];
     verifiedNow.set(id, {seq: head.seq, head: headHex, count: mirror.links.length, lastSeq: last ? last.f.seq : -1, lastHead: last ? toHex(last.r.head) : '', copyHash: hash, verdict, unverified});
@@ -689,7 +718,7 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
       copyHash(mirror.links, was.count) === was.copyHash) {
     const a = copy.assess(
       {links: mirror.links, openings: key?.openings ?? {}},
-      {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: key?.checkpoint ?? null},
+      {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: cp},
       {from: {seq: was.lastSeq, head: fromHex(was.lastHead)}, ringFrom: head.ringFrom},
     );
     if (a.chain.ok && !a.chain.gaps.length && !a.open.length && !a.missing.length) {
@@ -701,6 +730,11 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
       return viewOf(verdict, new Set(was.unverified));
     }
     /* anything but a clean pass: the full check decides (and names what failed) */
+    console.log(`[edge] verify ${id.slice(0, 8)}: new links not clean (${(a.chain.failure ? `${a.chain.failure.reason} at #${a.chain.failure.seq}` : `${a.chain.gaps.length} gap(s), ${a.open.length} open, ${a.missing.length} missing`)}) - full check`);
+  }
+  if (noFull) {
+    lastCheck = 'full';
+    return null;
   }
   /*
    * R27 "what counts as verified": the library's one answer, the same Approve
@@ -720,7 +754,7 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
   const sealed = was ? null : sealedStart(mirror, head, key);
   const assessWith = (seal: {seq: number; head: Uint8Array} | null) => copy.assess(
     {links: mirror.links, openings: key?.openings ?? {}},
-    {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: key?.checkpoint ?? null},
+    {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: cp},
     {ringFrom: head.ringFrom, lastSeen: mirror.lastSeen ?? undefined, ...(seal ? {sealed: seal} : {})},
   );
   let a = sealed ? assessWith(sealed) : null;
@@ -728,7 +762,7 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
     lastCheck = 'sealed';
     console.log(`[edge] verify ${id.slice(0, 8)}: sealed through #${sealed.seq} (its signature checked this session), full checks after it through #${head.seq}`);
   } else {
-    if (a) console.log(`[edge] verify ${id.slice(0, 8)}: the sealed start was not clean - full check`);
+    if (a) console.log(`[edge] verify ${id.slice(0, 8)}: the sealed start was not clean (${a.chain.failure ? `${a.chain.failure.reason} at #${a.chain.failure.seq}` : `${a.chain.gaps.length} gap(s), ${a.open.length} open`}) - full check`);
     lastCheck = 'full';
     console.log(`[edge] verify ${id.slice(0, 8)}: full check through #${head.seq}${was && was.seq === head.seq && was.copyHash !== hash ? ' (the stored copy changed under the same head)' : ''}`);
     a = assessWith(null);
