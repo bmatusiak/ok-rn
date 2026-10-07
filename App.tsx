@@ -11,7 +11,8 @@ import {useEdgeBackgroundSync} from './src/hooks/useEdgeBackgroundSync';
 import {rememberTab, takeResumeTab} from './src/resumeTab';
 import {Drawer} from './src/ui/Drawer';
 import {Logo} from './src/ui/Logo';
-import {ledColor, theme} from './src/ui/theme';
+import {ledColor, stateColor, theme} from './src/ui/theme';
+import {IO_STEP_MS, ioPurple, nextShow, onIo, type IoChannel, type IoShow} from './src/btActivity';
 
 import {useLog} from './src/hooks/useLog';
 import {useKey} from './src/hooks/useKey';
@@ -216,6 +217,35 @@ function IoPolicySync({setTarget}: {setTarget: (address: string | null) => void}
 const READY_ASK_MS = 1500;
 /* how many times the Bluetooth off/on sequence restarts ours to land where the computer knows it */
 const LAYOUT_MAX_TRIES = 5;
+
+/*
+ * PURPLE WHILE DATA CROSSES THE WIRE (Brad, 2026-10-07; the rule is btActivity.ts):
+ * true while the icon should show traffic - until a second with none. Re-renders only
+ * when the answer flips, on the 250 ms steps of a blink.
+ */
+function useIoPurple(match: (c: IoChannel) => boolean, solid: boolean): boolean {
+  const [purple, setPurple] = useState(false);
+  useEffect(() => {
+    let show: IoShow | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = () => {
+      timer = null;
+      const now = Date.now();
+      setPurple(ioPurple(show, now, solid));
+      if (!show || now >= show.end) { show = null; return; }
+      const nextStep = IO_STEP_MS - ((now - show.start) % IO_STEP_MS);
+      timer = setTimeout(tick, solid ? show.end - now : Math.min(nextStep, show.end - now));
+    };
+    const off = onIo((c, at) => {
+      if (!match(c)) return;
+      show = nextShow(show, at);
+      if (!timer) tick();
+    });
+    return () => { off(); if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [solid]);
+  return purple;
+}
 
 function RadioStatus({
   on,
@@ -454,6 +484,18 @@ function RadioStatus({
 
   const color = (enabled: boolean, connected: boolean) =>
     connected ? theme.ok : enabled ? theme.accentHover : theme.textDim;
+  /*
+   * Purple first (traffic), then the state. ⚿ is yellow while it advertises - the
+   * advertising pill's colour on the Bluetooth tab (Brad, 2026-10-07) - and the only
+   * icon that is: the key service is the one thing here advertised over BLE.
+   */
+  const anyIo = useIoPurple(() => true, true);
+  const keyboardIo = useIoPurple(c => c === 'keyboard', false);
+  const keyIo = useIoPurple(c => c === 'key', false);
+  const keyColor = keyIo ? theme.io
+    : fido.state === 'connected' ? theme.ok
+    : fido.state === 'advertising' ? stateColor('advertising')
+    : theme.textDim;
 
   return (
     <Pressable
@@ -461,12 +503,11 @@ function RadioStatus({
       accessibilityRole="button"
       accessibilityLabel="Bluetooth status"
       style={({pressed}) => [styles.barMid, pressed && styles.pressed]}>
-      <Text style={[styles.barIcon, {color: color(on, linked)}]}>{'ᛒ'}</Text>
-      <Text style={[styles.barIcon, {color: color(published, linked)}]}>
+      <Text style={[styles.barIcon, {color: anyIo ? theme.io : color(on, linked)}]}>{'ᛒ'}</Text>
+      <Text style={[styles.barIcon, {color: keyboardIo ? theme.io : color(published, linked)}]}>
         {'⌨'}
       </Text>
-      <Text
-        style={[styles.barIcon, {color: color(advertising, fido.state === 'connected')}]}>
+      <Text style={[styles.barIcon, {color: keyColor}]}>
         {'⚿'}
       </Text>
     </Pressable>

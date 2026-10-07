@@ -3,6 +3,13 @@ import {bytes as okbytes} from 'node-onlykey-lib';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import NativeBtKeyboard from '../../specs/NativeBtKeyboard';
 import type {BtHost, BtKeyboardStatusEvent} from '../../specs/NativeBtKeyboard';
+import {ioPulse} from '../btActivity';
+
+/* every keystroke report goes out here, so the status icons can show it (btActivity.ts) */
+function sendReport(hex: string) {
+  ioPulse('keyboard');
+  return NativeBtKeyboard.sendReport(hex);
+}
 import OkEmu, {IFACE} from '../transport/OkEmu';
 import {reportsFor} from '../btTestText';
 import UsbPipe from '../transport/UsbPipe';
@@ -233,7 +240,7 @@ export function useBtKeyboard(): BtKeyboard {
     setForwardingState(next);
     void AsyncStorage.setItem(FORWARD_KEY, next ? '1' : '0');
     /* Nothing held across the change, either way. */
-    NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+    sendReport(RELEASE_ALL).catch(() => {});
   }, []);
 
   /** The chosen host's address, or '' until storage has been read. */
@@ -324,7 +331,7 @@ export function useBtKeyboard(): BtKeyboard {
       if (connected) setSent(0);
       /* The host went away mid-word: say everything is up, in case it comes
          back to a keyboard it still thinks is holding a key down. */
-      if (!connected) NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+      if (!connected) sendReport(RELEASE_ALL).catch(() => {});
     });
     return () => sub.remove();
   }, []);
@@ -345,7 +352,7 @@ export function useBtKeyboard(): BtKeyboard {
        * hold up the ones behind it. A dropped report is a lost character, and
        * the count is what says whether that happened.
        */
-      NativeBtKeyboard.sendReport(okbytes.toHex(e.bytes))
+      sendReport(okbytes.toHex(e.bytes))
         .then(ok => {
           if (ok) setSent(n => n + 1);
         })
@@ -358,7 +365,7 @@ export function useBtKeyboard(): BtKeyboard {
        * well as on unmount - and a key switch mid-keystroke is exactly the
        * case that strands a key down on the host.
        */
-      NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+      sendReport(RELEASE_ALL).catch(() => {});
     };
   }, [backend]);
 
@@ -530,7 +537,7 @@ export function useBtKeyboard(): BtKeyboard {
     setError(null);
     try {
       /* Nothing held, before the profile goes away and cannot say so. */
-      await NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+      await sendReport(RELEASE_ALL).catch(() => {});
       await NativeBtKeyboard.unregister();
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
@@ -576,7 +583,7 @@ export function useBtKeyboard(): BtKeyboard {
          * Release first, for the same reason withdraw() does: a modifier held
          * when the link goes is a modifier stuck down on the host.
          */
-        await NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+        await sendReport(RELEASE_ALL).catch(() => {});
         await NativeBtKeyboard.disconnect().catch(() => {});
         return;
       }
@@ -598,7 +605,7 @@ export function useBtKeyboard(): BtKeyboard {
        * host), disconnect - which also clears an attempt wedged half-open, the
        * other thing None used to fix by accident - and dial the new one.
        */
-      await NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+      await sendReport(RELEASE_ALL).catch(() => {});
       await NativeBtKeyboard.disconnect().catch(() => {});
       attemptAtRef.current = 0;
       void connect(address);
@@ -661,7 +668,7 @@ export function useBtKeyboard(): BtKeyboard {
       return await during();
     } finally {
       /* Whatever the key was holding when it stopped, it is not held now. */
-      NativeBtKeyboard.sendReport(RELEASE_ALL).catch(() => {});
+      sendReport(RELEASE_ALL).catch(() => {});
       suspendedRef.current = false;
     }
   }, []);
@@ -678,7 +685,7 @@ export function useBtKeyboard(): BtKeyboard {
        * button, not a stream - and a test that reports "12 sent" should mean
        * the host acknowledged twelve.
        */
-      const ok = await NativeBtKeyboard.sendReport(okbytes.toHex(report));
+      const ok = await sendReport(okbytes.toHex(report));
       if (ok) sentNow += 1;
     }
     setSent(n => n + sentNow);

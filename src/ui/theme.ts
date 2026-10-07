@@ -53,6 +53,8 @@ export const theme = {
   accent: '#0056b3',
   accentHover: '#2563eb',
   ok: '#4ade80',
+  /* the Bluetooth status icons (Brad, 2026-10-07): purple while data crosses the wire */
+  io: '#a855f7',
   warn: '#fcd34d',
   error: '#f87171',
   link: '#7ec8ff',

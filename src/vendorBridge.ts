@@ -42,6 +42,7 @@ import {btTransit, type BtTransit} from './btTransit';
 import type {OnlyKeyApp} from './onlykey';
 import type {LogLevel} from './hooks/useLog';
 import {testingModeOn} from './debugGuard';
+import {ioPulse} from './btActivity';
 
 /*
  * ONE MEASURING ROUND ON THE A13 (Brad, 2026-10-06): pings are answered in a
@@ -364,7 +365,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
   function sendFrame(cmd: number, bytes: Uint8Array) {
     lastHostActivity = Date.now();
     sending = sending
-      .then(() => NativeFidoGatt.sendVendorFrame(cmd, okbytes.toHex(bytes)))
+      .then(() => { ioPulse('key'); return NativeFidoGatt.sendVendorFrame(cmd, okbytes.toHex(bytes)); })
       .catch((err: unknown) => {
         /*
          * Swallowed, and the chain continues. A failed notify is usually the

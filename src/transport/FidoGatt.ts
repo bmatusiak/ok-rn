@@ -1,6 +1,7 @@
 import {noteRpId} from '../keyChainRecorder';
 import {protocol} from 'node-onlykey-lib';
 import NativeFidoGatt from '../../specs/NativeFidoGatt';
+import {ioPulse} from '../btActivity';
 import {bytes as okbytes} from 'node-onlykey-lib';
 
 /**
@@ -114,6 +115,7 @@ class FidoGattClient {
 
     this.nativeSubs.push(
       NativeFidoGatt.onCtapRequest((event: CtapRequestEvent) => {
+        ioPulse('key'); /* data in, from a computer: the status icons show it */
         /*
          * The native side reassembles the CTAP2 payload and hands it over as
          * hex; it never parsed the relying party out of it, so `rpId` was
@@ -198,6 +200,7 @@ class FidoGattClient {
   }
 
   respondToRequest(requestId: string, hex: string): Promise<void> {
+    ioPulse('key');
     return NativeFidoGatt.respondToRequest(requestId, hex);
   }
 
@@ -207,11 +210,13 @@ class FidoGattClient {
    * CTAP keepalive status: 0x01 PROCESSING, 0x02 UP_NEEDED.
    */
   sendKeepAlive(requestId: string, status: number): Promise<void> {
+    ioPulse('key');
     return NativeFidoGatt.sendKeepAlive(requestId, status);
   }
 
   /** Reject a request with a CTAP2 status byte and no CBOR body. */
   rejectRequest(requestId: string, status: number = CTAP2_STATUS.NOT_ALLOWED): Promise<void> {
+    ioPulse('key');
     return NativeFidoGatt.respondToRequest(requestId, status.toString(16).padStart(2, '0'));
   }
 
