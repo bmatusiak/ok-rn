@@ -3,7 +3,7 @@
  * phone's mirror and verified by the library (spec okrn-edge-tab.md phase 2).
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {FakeEdgeKey} from '../src/edgeFake';
+import {FakeEdgeKey, type EdgeCopyKey} from '../src/edgeFake';
 import {addNote, evaluate, forgetVerified, keepOffered, lastCheckPath, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
 
 beforeEach(async () => {
@@ -286,7 +286,7 @@ class SignedFake extends FakeEdgeKey {
     super();
     (this as unknown as {deviceId: Uint8Array}).deviceId = edgeChain.deviceIdOf(this.pub);
   }
-  async copyKey() {
+  async copyKey(_opts?: {checkpoint?: boolean}): Promise<EdgeCopyKey> {
     const h = await this.head();
     return {publicKey: this.pub, openings: {}, checkpoint: {seq: h.seq, head: h.head, signature: edgeChain.signCheckpoint({deviceId: this.deviceId, seq: h.seq, head: h.head}, this.sk)}};
   }
@@ -418,7 +418,7 @@ test('chain state: a budget end seals a block - \'sealed\' fires', async () => {
 /* ONE MOMENT OF THE KEY (A13, 2026-10-07): a link lands between the head read and the checkpoint read */
 class RacingKey extends SignedFake {
   race = false;
-  async copyKey() {
+  async copyKey(): Promise<EdgeCopyKey> {
     if (this.race) { this.race = false; this.use('a push signs mid-sync'); }
     return super.copyKey();
   }
@@ -491,4 +491,20 @@ test('one hashing pass: a flipped copy under the same head is still red', async 
   await sync(k);
   await tamper(k.deviceId, 'flip');
   expect((await sync(k)).view.verdict.kind).toBe('tampered');
+});
+
+/* the ticket pairing is kept per copy (A13: rows 215 ms a sync) - never past an edit to a stored message */
+test('the pairing memo: an edited stored message pairs again and shows its mismatch', async () => {
+  const k = new FakeEdgeKey();
+  const seq = k.use('commit 1');
+  k.ticket(0x00, 'pushed ok-rn');
+  k.messages = async () => ({});
+  await sync(k);
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, ticketMsg: 'pushed ok-rn'});
+  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.ticket?.messageStatus).toBe('match');
+  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.ticket?.messageStatus).toBe('match');
+  const m = await loadMirror(k.deviceId);
+  m.messages = Object.fromEntries(Object.entries(m.messages).map(([s, t]) => [s, typeof t === 'string' ? 'edited in storage' : t]));
+  await saveMirror(m);
+  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.ticket?.messageStatus).toBe('mismatch');
 });

@@ -184,6 +184,17 @@ const freeListeners = new Set<() => void>();
 export function computerHoldsKey(): boolean {
   return computerHolding;
 }
+/*
+ * All the time a computer has held the key, so far (ms). A sync takes the difference
+ * across itself: its log then says how much of it was waiting for a computer's
+ * conversation to end - standing aside on purpose - and not its own work (A13,
+ * 2026-10-07: "head 2230, vouch 3528" in a burst were the computer's turn).
+ */
+let heldDone = 0;
+let heldFrom: number | null = null;
+export function computerHeldMs(): number {
+  return heldDone + (heldFrom !== null ? Date.now() - heldFrom : 0);
+}
 export function onKeyFree(listener: () => void): () => void {
   freeListeners.add(listener);
   return () => {
@@ -295,6 +306,8 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     held = null;
     holding = null;
     computerHolding = false;
+    if (heldFrom !== null) heldDone += Date.now() - heldFrom;
+    heldFrom = null;
     h.release();
     /* how long the app's own key reads (the Edge tab's sync) could not get in */
     console.log(`[vendor] the key is free again: the computer held it ${Date.now() - h.since} ms${why}`);
@@ -306,6 +319,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       const conversation = () => new Promise<void>(release => {
         held = {release, timer: null, since: Date.now()};
         computerHolding = true;
+        heldFrom = Date.now();
         console.log('[vendor] the computer holds the key');
         ready();
         armRelease();

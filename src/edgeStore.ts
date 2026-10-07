@@ -17,6 +17,7 @@ import {chain, codes, copy, sync as syncLib, tickets} from 'node-onlykey-lib/edg
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
+import {computerHeldMs} from './vendorBridge';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
@@ -394,6 +395,7 @@ const OP_TICKET = codes.OP.TICKET;
 async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror; view: EdgeView}> {
   /* where a sync's time goes, for the log (Brad, 2026-10-06) - times only */
   const t0 = Date.now();
+  const held0 = computerHeldMs(); /* a computer's turn on the key during this sync: waited for, not worked */
   let tp = t0;
   const laps: string[] = [];
   const lap = (n: string) => { const x = Date.now(); laps.push(`${n} ${x - tp}`); tp = x; };
@@ -472,7 +474,8 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   /* B7: new alarms become phone notifications - every sync, the tab's and the background copy's */
   await raiseAlarms(mirror, view, live ?? []).catch(() => {});
   lap('alarms');
-  console.log(`[edge] sync ${Date.now() - t0} ms: ${laps.join(', ')} -> ${view.verdict.kind}${'through' in view.verdict ? ` #${view.verdict.through}` : ''}${'seq' in view.verdict ? ` at #${view.verdict.seq}` : ''} (${lastCheck})`);
+  const held = computerHeldMs() - held0;
+  console.log(`[edge] sync ${Date.now() - t0} ms${held ? ` (${held} of it a computer's turn on the key)` : ''}: ${laps.join(', ')} -> ${view.verdict.kind}${'through' in view.verdict ? ` #${view.verdict.through}` : ''}${'seq' in view.verdict ? ` at #${view.verdict.seq}` : ''} (${lastCheck})`);
   record(source.deviceId, mirror, view, Date.now() - t0, sealsBefore);
   return {mirror, view};
 }
@@ -558,6 +561,10 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
   const key = knownKey !== undefined ? knownKey : source.copyKey ? await source.copyKey() : null;
   const ring = async () => (head.seq >= 0 ? source.read(head.ringFrom, head.seq - head.ringFrom + 1) : []);
   await primeCopyHash(mirror.links, [verifiedNow.get(toHex(mirror.deviceId))?.count ?? -1]);
+  /* the ticket pairing on its own turn of the JS thread, not stacked on the check (rows, A13: 215 ms) */
+  await new Promise<void>(r => setTimeout(r, 0));
+  ticketsBySeq(mirror);
+  await new Promise<void>(r => setTimeout(r, 0));
   /*
    * The key's ring is for the FULL check (its links count as held). When this
    * session's check can reuse its result or check only the new links, the ring
@@ -867,9 +874,27 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
   return viewOf(verdict, unverified);
 }
 
-function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLink>}[], unverified: Set<number>, mirror: Mirror): EdgeRow[] {
+/*
+ * THE TICKET PAIRING, ONCE PER COPY (A13, 2026-10-07: "rows 215" on every sync, a
+ * skipped one too - one block on the JS thread that answers Bluetooth). Pairing
+ * every use with its ticket and checking each ticket's message hash is the same
+ * answer while the links and the messages are the same; the key is the copy's hash
+ * (from the one hashing pass) and the stored messages as they are now, compared in
+ * full - an edited message in storage still pairs again and shows its mismatch.
+ */
+let pairedMemo: {key: string; bySeq: Map<number, ReturnType<typeof tickets.pairTickets>['uses'][number]>} | null = null;
+function ticketsBySeq(mirror: Mirror) {
+  const key = toHex(mirror.deviceId) + '|' + copyHash(mirror.links) + '|' + JSON.stringify(mirror.messages ?? {});
+  if (pairedMemo?.key === key) return pairedMemo.bySeq;
+  const t0 = Date.now();
   const paired = tickets.pairTickets(mirror.links, mirror.messages);
-  const bySeq = new Map(paired.uses.map(u => [u.seq, u]));
+  vlap('tickets', t0);
+  pairedMemo = {key, bySeq: new Map(paired.uses.map(u => [u.seq, u]))};
+  return pairedMemo.bySeq;
+}
+
+function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLink>}[], unverified: Set<number>, mirror: Mirror): EdgeRow[] {
+  const bySeq = ticketsBySeq(mirror);
   return decoded
     .map(({r, f}) => ({seq: f.seq, fields: f, weld: toHex(r.head), verified: !unverified.has(f.seq), ticket: bySeq.get(f.seq), seenAt: mirror.seen[f.seq], note: mirror.reasons[f.seq]}))
     .reverse();
