@@ -174,34 +174,47 @@ module.exports = function register({it}, ctx) {
     return {before, signed, after, f, l};
   }
 
-  it('edge: a pressed sign becomes a link the library verifies; it owes its ticket only on a covered slot (R16)', async ({log, assert}) => {
+  /*
+   * BUDGET OR NO GO (spec session, 2026-10-06): an ordinary press is not Edge -
+   * no link, nothing owed, budget or not. A sign that is not the announced one
+   * (R13a) or whose budget was held in between is REFUSED, never prompted.
+   */
+  it('edge: an ordinary press writes no link and owes nothing; a sign that is not the announced one, or whose budget went on hold, is refused (R13a)', async ({log, assert}) => {
     const app = await ready(log);
     await clearDebts(app, log);
 
-    /* no budget covers agent sign 222: the person pressed, the person saw it - nothing owed */
-    const free = await pressedUse(app, 'uncovered', log);
-    assert.equal(free.f.op, OP_SIGN);
-    assert.equal(free.f.decision, APPROVE);
-    assert.equal(free.f.flags & (PRESS_OBSERVED | OWES_TICKET | ARMED), PRESS_OBSERVED, 'the uncovered pressed use is not "pressed, owes nothing, not armed"');
-    assert.equal(hex(free.f.subject), hex(sha256(free.signed.payload)), 'the subject is not SHA-256 of what was submitted');
-    if (free.before.seq !== null) {
-      const [prev] = await app.edge.pickup(free.before.seq, 1);
-      const r = chain.verify([free.l], {fromSeq: free.after.seq, fromHead: prev.head, expectHead: {seq: free.after.seq, head: free.after.head}});
-      assert.ok(r.ok, `the library rejects the link: ${JSON.stringify(r.failure)}`);
-    }
-    assert.equal(free.after.owed, 0, 'a direct press on a slot no budget covers owes a ticket');
+    const h0 = await app.edge.head();
+    await agentSign(app, 'ordinary', {press: true});
+    const h1 = await app.edge.head();
+    assert.equal(h1.seq, h0.seq, 'an ordinary press wrote a link');
+    assert.equal(h1.owed, 0, 'an ordinary press owes a ticket');
 
-    /* a held budget covers the slot (hold stops paying, not owing): the pressed use owes, bit 4 set, bit 5 clear */
-    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1, identity: E2E_IDENTITY}], reason: 'okrn e2e: cover', verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
+    /* a live budget covering the slot changes nothing for an ordinary press */
+    const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 2, identity: E2E_IDENTITY}], reason: 'okrn e2e: budget or no go', verifiedHead: h1.head, onPress: pressSoon});
+    const h2 = await app.edge.head();
+    await agentSign(app, 'ordinary under a budget', {press: true});
+    const h3 = await app.edge.head();
+    assert.equal(h3.seq, h2.seq, 'a press under a live budget wrote a link');
+    assert.equal(h3.owed, 0, 'a press under a live budget owes a ticket');
+
+    /* announced one request, sent another: refused (EDGE:1C), no link, counted */
+    await armFor(app, h3.head, agentRequest('the announced one'));
+    const other = await refusal(agentSign(app, 'not the announced one'));
+    log(`not the announced one: ${other}`);
+    assert.ok(/EDGE:1C/i.test(String(other)), `the sign that was not announced was not refused (${other})`);
+    const h4 = await app.edge.head();
+    assert.equal(h4.seq, h3.seq, 'the refused sign wrote a link');
+    assert.equal(h4.refusedArms, h3.refusedArms + 1, 'the refused sign was not counted');
+
+    /* announced, then the budget held before the sign: refused (EDGE:0D), never a press prompt */
+    const req = agentRequest('held in between');
+    await armFor(app, h4.head, req);
     assert.equal(await app.edge.hold(g.grantId), true);
-    const owing = await pressedUse(app, 'covered', log);
-    assert.equal(owing.f.flags & (PRESS_OBSERVED | OWES_TICKET | ARMED), PRESS_OBSERVED | OWES_TICKET, 'the covered pressed use is not "pressed, owes, not armed"');
-    assert.equal(owing.after.owed, 1, 'the pressed use on a covered slot owes nothing');
-    /* its ticket answers with the head after it */
-    const t = await app.edge.ticket(owing.after.seq, 0x00, sha256('okrn e2e: pressed'));
-    const now = await app.edge.head();
-    assert.equal(t.seq, now.seq, 'the ticket reply is not the seq HEAD reports');
-    assert.equal(now.owed, 0);
+    const h5 = await app.edge.head(); /* the hold is a link */
+    const held = await refusal(agentSign(app, 'held in between', {req}));
+    log(`held in between: ${held}`);
+    assert.ok(/EDGE:0D/i.test(String(held)), `the sign after a hold was not refused (${held})`);
+    assert.equal((await app.edge.head()).seq, h5.seq, 'the refused sign wrote a link');
     assert.equal(await app.edge.revoke(g.grantId), true);
   });
 

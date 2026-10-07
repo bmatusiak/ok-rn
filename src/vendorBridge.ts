@@ -42,7 +42,6 @@ import {btTransit, type BtTransit} from './btTransit';
 import type {OnlyKeyApp} from './onlykey';
 import type {LogLevel} from './hooks/useLog';
 import {testingModeOn} from './debugGuard';
-import {armedIntent} from './edgeIntent';
 
 /*
  * ONE MEASURING ROUND ON THE A13 (Brad, 2026-10-06): pings are answered in a
@@ -469,8 +468,6 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       await holdForComputer(transport);
       armRelease();
       log('rx', `[vendor] ${data.length} bytes -> the key`);
-      /* R13b: an Edge ARM on its way to the key - its 16 intent bytes, for the press prompt */
-      if (data.length >= 54 && data[0] === 0xff && data[1] === 0xff && data[2] === 0xff && data[3] === 0xff && data[4] === 0xf8 && data[5] === 0x22) armedIntent(data.slice(38, 54));
       /* Before the write: a fast key answers before write() resolves. */
       owner = address;
       lastHostActivity = Date.now();

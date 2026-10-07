@@ -339,16 +339,12 @@ function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued
         </View>
       ) : null}
       {/* a sign or decrypt no budget paid: hung under it like a ticket, in yellow, so it stands out in Presses (Brad, 2026-10-04) */}
-      {/* B7: the two presses that should never happen under a budget, in red - they stand out without looking */}
+      {/* an old link's mismatched ARM, in red (a new key refuses a mismatch and writes no link; the B7 press alarm went 2026-10-06) */}
       {live.classifyUse(row.fields)?.alarm ? (
         <View style={[styles.ticket, {borderLeftColor: theme.error}]}>
-          <Text style={[styles.ticketTitle, {color: theme.error}]}>
-            {live.classifyUse(row.fields)!.kind === live.KIND.MISMATCHED_ARM ? '⚠ ARM did not match' : '⚠ Press during a live budget'}
-          </Text>
+          <Text style={[styles.ticketTitle, {color: theme.error}]}>⚠ ARM did not match</Text>
           <Text style={styles.dim}>
-            {live.classifyUse(row.fields)!.kind === live.KIND.MISMATCHED_ARM
-              ? 'An agent ARMed the key, but the request that came was not the one it ARMed for - someone else may have jumped in. It needed a press and owes a ticket.'
-              : 'A press was asked for while a budget was live, so it owes a ticket (R16). If you did not expect it, hold the budget.'}
+            An agent ARMed the key, but the request that came was not the one it ARMed for - someone else may have jumped in. It needed a press and owes a ticket.
           </Text>
         </View>
       ) : (row.fields.op === OP.SIGN || row.fields.op === OP.DECRYPT) && !row.fields.grantId ? (

@@ -32,7 +32,7 @@ export function alarmsAfter(view: EdgeView, after: number): EdgeAlarm[] {
     const f = r.fields;
     const use = live.classifyUse(f);
     if (r.seq > after && use?.alarm) {
-      const what = use.kind === live.KIND.MISMATCHED_ARM ? 'ARM did not match' : 'Press during a live budget';
+      const what = 'ARM did not match'; /* the one alarm left - old links only (the B7 press alarm went 2026-10-06) */
       out.push({seq: r.seq, title: `Edge: ${what}`, text: `#${r.seq} ${f.op === OP.DECRYPT ? 'decrypt' : 'sign'} · slot ${f.slot} - ${use.alarm}.`, budget: f.grantId || undefined});
     }
     /* an alarm ticket: news when the TICKET link is new, shown on the use it answers */

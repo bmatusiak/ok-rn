@@ -78,6 +78,7 @@
 #define EDGE_SIBLINGS_FULL 0x19     /* SIBLING_ADD: 4 siblings already (CHOSEN number) */
 #define EDGE_NO_SUCH_SIBLING 0x1A   /* SIBLING_REMOVE / ANCHOR: no sibling at that index (CHOSEN number) */
 #define EDGE_BAD_CHECKPOINT 0x1B    /* ANCHOR: the checkpoint does not verify under that sibling's key (CHOSEN number) */
+#define EDGE_ARM_MISMATCH 0x1C      /* R13a (2026-10-06): the sign was not the request the ARM was for - refused, the ARM is used up */
 #define EDGE_SYNC_ORDER 0x17       /* SYNC: a part out of order (CHOSEN number); EDGE:16 also answers a peer not on the list, EDGE:12 first > last */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */
@@ -91,6 +92,8 @@ void okplugin_edge_recv(uint8_t *buffer);
 void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len);
 /* the decision points: run_pending_op (approve), wrong challenge (deny), the 20 s fade (timeout) */
 void okplugin_edge_decision(int decision);
+/* R13a + budget or no go: refuse the primed sign/decrypt before it runs (no press, no link) -> 1 if refused */
+int okplugin_edge_refused(void);
 /* wipeflashdata(): the key is being wiped */
 void okplugin_edge_wipe(void);
 /* the plugin backup section (the loader calls these): version 2, seq, head and the owed uses */

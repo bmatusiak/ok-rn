@@ -29,11 +29,8 @@ beforeEach(async () => {
   (NativeEdgeAlert!.post as jest.Mock).mockClear();
 });
 
-test('a mismatched ARM and a press under a live budget are alarms; a self-press and a plain press are not', () => {
-  expect(alarmsAfter(view(rows), 10).map(a => [a.seq, a.title])).toEqual([
-    [13, 'Edge: Press during a live budget'],
-    [14, 'Edge: ARM did not match'],
-  ]);
+test('an old link mismatched ARM is an alarm; a press under a live budget is not any more (2026-10-06), nor a self-press or a plain press', () => {
+  expect(alarmsAfter(view(rows), 10).map(a => [a.seq, a.title])).toEqual([[14, 'Edge: ARM did not match']]);
   expect(alarmsAfter(view(rows), 13).map(a => a.seq)).toEqual([14]);
 });
 
@@ -41,9 +38,9 @@ test('the first sync on a phone only records where the chain is; later syncs pos
   await raiseAlarms(mirror, view(rows.slice(2)));
   expect(NativeEdgeAlert!.post).not.toHaveBeenCalled();
   await raiseAlarms(mirror, view(rows));
-  expect((NativeEdgeAlert!.post as jest.Mock).mock.calls.map(c => c[0])).toEqual([13, 14]);
+  expect((NativeEdgeAlert!.post as jest.Mock).mock.calls.map(c => c[0])).toEqual([14]);
   await raiseAlarms(mirror, view(rows));
-  expect(NativeEdgeAlert!.post).toHaveBeenCalledTimes(2);
+  expect(NativeEdgeAlert!.post).toHaveBeenCalledTimes(1);
 });
 
 test('the watcher: refused ARMs rising (once), a ticket owed over 10 min (once), a used-up budget (quiet, not on a first look)', async () => {

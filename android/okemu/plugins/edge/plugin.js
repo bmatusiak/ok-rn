@@ -41,7 +41,8 @@ module.exports = {
       file: 'okcore.cpp',
       anchor: 'void okcore_run_pending_op() {\n',
       insert: 'after',
-      text: '    okplugin_edge_decision(OKEDGE_DECISION_APPROVE);\n',
+      /* R13a + budget or no go (2026-10-06): a refused request ends here - nothing runs, no link, red fade */
+      text: '    if (okplugin_edge_refused()) {\n        CRYPTO_AUTH = 0;\n        user_input_mode = USER_INPUT_CHALLENGE;\n        pending_op_no_press = 0;\n        pending_operation = 0;\n        packet_buffer_details[0] = 0;\n        fadeoff(1);\n        return;\n    }\n    okplugin_edge_decision(OKEDGE_DECISION_APPROVE);\n',
     },
     {
       file: 'okcore.cpp',
