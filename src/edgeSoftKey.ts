@@ -542,35 +542,39 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * opening of every budget it approved. A budget opened elsewhere has no
    * opening here, so a copy with its grant-create link does not verify -
    * fail closed, and the reason says which budget.
+   *
+   * ONE STORAGE READ (Pixel, 2026-10-07): this read every budget ever opened one
+   * at a time (44 on the A13, growing) and loaded the whole copy again only to
+   * hand back links nobody used - on every sync. Now one getMany, openings only.
    */
-  private async copy() {
-    const mirror = await this.mirrorNow();
+  private async openings() {
     const openings: Record<number, unknown> = {};
     const prefix = REGISTRY + toHex(this.deviceId) + '.';
-    for (const k of await this.storageKeys()) {
-      if (!k.startsWith(prefix)) continue;
-      const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
+    const keys = (await this.storageKeys()).filter(k => k.startsWith(prefix));
+    for (const [k, raw] of Object.entries(await AsyncStorage.getMany([...keys]))) {
+      const kept: Kept | null = JSON.parse(raw || 'null');
       if (!kept || !kept.signature) continue;
       openings[Number(k.slice(prefix.length))] = {
         scopes: kept.scopes, reasonHash: tickets.messageHash(kept.reason), genesis: fromHex(kept.genesis),
         uses: kept.uses, lifetime: kept.lifetime ?? 0, signature: fromHex(kept.signature),
       };
     }
-    return {links: mirror.links, openings};
+    return openings;
   }
 
   /* R27 anchors for the banner: the KEY's public key (PUBKEY this session) and its checkpoints */
-  async copyKey(): Promise<EdgeCopyKey> {
+  async copyKey(opts: {checkpoint?: boolean} = {}): Promise<EdgeCopyKey> {
+    const want = opts.checkpoint !== false;
     /* the key's Edge public key never changes for this device: read once a session */
     const id = toHex(this.deviceId);
     const publicKey = publicKeys.get(id) ?? (await this.edge.publicKey()).publicKey;
     publicKeys.set(id, publicKey);
     /* the key's latest checkpoint; a restoring key refuses CHECKPOINT (R26), so then none - once per action */
     const cached = this.sameHead && 'checkpoint' in this.sameHead ? this.sameHead.checkpoint : undefined;
-    const checkpoint = this.snap && 'checkpoint' in this.snap ? this.snap.checkpoint : cached !== undefined ? cached : await this.edge.checkpoint().catch(() => null);
-    if (this.snap) this.snap.checkpoint = checkpoint;
-    if (this.sameHead && checkpoint) this.sameHead.checkpoint = checkpoint;
-    return {publicKey, openings: (await this.copy()).openings, checkpoint};
+    const checkpoint = this.snap && 'checkpoint' in this.snap ? this.snap.checkpoint : cached !== undefined ? cached : want ? await this.edge.checkpoint().catch(() => null) : null;
+    if (want && this.snap) this.snap.checkpoint = checkpoint;
+    if (want && this.sameHead && checkpoint) this.sameHead.checkpoint = checkpoint;
+    return {publicKey, openings: await this.openings(), checkpoint};
   }
 
   /**

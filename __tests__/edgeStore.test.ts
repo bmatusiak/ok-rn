@@ -454,3 +454,41 @@ test('burst: a link written while the sync reads is not taken past the head - no
   const next = await sync(k);
   expect(next.view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
 });
+
+/*
+ * A CHECKPOINT ONLY WHEN IT IS USED (Pixel, 2026-10-07: each sync in a burst had the
+ * key sign one, queued behind the agent's own requests). Asked for: the first check
+ * this session, and a seal. Not for a sync that checks only new links.
+ */
+class CountingKey extends SignedFake {
+  signed = 0;
+  async copyKey(opts: {checkpoint?: boolean} = {}) {
+    const k = await super.copyKey();
+    if (opts.checkpoint === false) return {...k, checkpoint: null};
+    this.signed++;
+    return k;
+  }
+}
+
+test('burst: no checkpoint for a new-links sync; one for the first check and one for a seal', async () => {
+  const k = FakeEdgeKey.demo(new CountingKey()) as CountingKey;
+  await sync(k);
+  expect([lastCheckPath(), k.signed]).toEqual(['full', 1]);
+  k.use('a burst: one');
+  await sync(k);
+  k.use('a burst: two');
+  const burst = await sync(k);
+  expect([lastCheckPath(), k.signed]).toEqual(['new-links', 1]);
+  expect(burst.view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
+  await endOne(k);
+  const sealed = await sync(k);
+  expect(k.signed).toBe(2);
+  expect(sealed.mirror.seals?.length).toBe(1);
+});
+
+test('one hashing pass: a flipped copy under the same head is still red', async () => {
+  const k = signedDemo();
+  await sync(k);
+  await tamper(k.deviceId, 'flip');
+  expect((await sync(k)).view.verdict.kind).toBe('tampered');
+});

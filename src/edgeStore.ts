@@ -329,6 +329,7 @@ export const chainState = {
       if (prev?.head && prev.head.seq === head.seq && toHex(prev.head.head) === toHex(head.head)) {
         const was = verifiedNow.get(id);
         const m = await loadMirror(source.deviceId);
+        await primeCopyHash(m.links, []);
         if (was && was.seq === head.seq && was.head === toHex(head.head) && was.copyHash === copyHash(m.links)) {
           const a: ChainAnswer = {...prev, path: 'skipped', at: Date.now(), ms: Date.now() - t0};
           answers.set(id, a);
@@ -434,8 +435,21 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   lap('read');
   mirror.messages = {...mirror.messages, ...(await source.messages())};
   lap('messages');
-  const ownKey = source.copyKey ? await source.copyKey().catch(() => null) : null;
-  lap('copyKey');
+  /*
+   * A CHECKPOINT ONLY WHEN IT IS USED (Pixel, 2026-10-07: copyKey 400-1070 ms a
+   * sync, 4.5 s in a burst - each agent request makes a sync, and each sync's key
+   * requests queue behind the agent's own). The key signs one for: the first check
+   * this session (full or sealed), a check that was not clean, and a seal (a budget
+   * ended since the last one). A sync that only checks new links on a verified copy
+   * is anchored by the head it read; if that check does not hold, liveView asks for
+   * the checkpoint before the full check. (BLOCKS.md's "a seal at every sync" is the
+   * key-to-key sync, R30 - not this copy's sync.)
+   */
+  const live = await source.budgets(true).then(bs => bs.map(b => b.grantId)).catch(() => null as number[] | null);
+  const was = verifiedNow.get(toHex(source.deviceId));
+  const wantCheckpoint = !was || was.verdict.kind !== 'verified' || (live !== null && sealDue(mirror, live));
+  const ownKey = source.copyKey ? await source.copyKey({checkpoint: wantCheckpoint}).catch(() => null) : null;
+  lap(wantCheckpoint ? 'copyKey' : 'copyKey (no checkpoint)');
   if (ownKey?.publicKey) mirror.publicKey = ownKey.publicKey;
   if (!mirror.continued) mirror.continued = await continuedFrom(mirror);
   /* R26: keep the key's newest vouch with the copy (a restoring key gives none) */
@@ -444,12 +458,13 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   if (v) mirror.vouch = v;
   lap('vouch');
   mirror.lastSync = now;
+  vlaps = {};
   const view = await liveView(source, mirror, head, ownKey ?? undefined);
   lap('verify');
+  laps[laps.length - 1] += ` (${Object.entries(vlaps).map(([k, v]) => `${k} ${v}`).join(', ')})`;
   if (view.verdict.kind === 'verified' || view.verdict.kind === 'gap') {
     mirror.lastSeen = {seq: head.seq, head: head.head};
   }
-  const live = await source.budgets(true).then(bs => bs.map(b => b.grantId)).catch(() => null as number[] | null);
   /* a budget ended since the last seal: its block is closed - seal it (BLOCKS.md §2, stage a) */
   if (live && view.verdict.kind === 'verified' && ownKey?.checkpoint) takeSeal(mirror, head, ownKey.checkpoint, live);
   await saveMirror(mirror);
@@ -542,6 +557,7 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
   /* the key's public key and checkpoint: the caller's, when it has just read them (syncNow) - not a second read */
   const key = knownKey !== undefined ? knownKey : source.copyKey ? await source.copyKey() : null;
   const ring = async () => (head.seq >= 0 ? source.read(head.ringFrom, head.seq - head.ringFrom + 1) : []);
+  await primeCopyHash(mirror.links, [verifiedNow.get(toHex(mirror.deviceId))?.count ?? -1]);
   /*
    * The key's ring is for the FULL check (its links count as held). When this
    * session's check can reuse its result or check only the new links, the ring
@@ -553,7 +569,9 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
     if (view && lastCheck !== 'full') return view;
     verifiedNow.delete(toHex(mirror.deviceId));
   }
-  return evaluate(mirror, head, await ring(), key);
+  /* a sync in a burst asks no checkpoint (syncNow); the full check has one again */
+  const full = key && !key.checkpoint && source.copyKey ? await source.copyKey().catch(() => key) : key;
+  return evaluate(mirror, head, await ring(), full);
 }
 
 /* would evaluate() reuse this session's result, or check only the new links? (no I/O, no verification) */
@@ -586,11 +604,18 @@ function takeSeal(mirror: Mirror, head: {seq: number; head: Uint8Array}, cp: {se
   const seals = mirror.seals ?? [];
   const last = seals[seals.length - 1];
   if (last && cp.seq <= last.seq) return;
+  if (!sealDue(mirror, live)) return;
   const ended = grantIdsIn(mirror).filter(id => !live.includes(id));
   const before = new Set(last ? last.ended : []);
-  if (!ended.some(id => !before.has(id))) return;
   mirror.seals = [...seals, {seq: cp.seq, head: cp.head, signature: cp.signature, ended}].slice(-8);
   console.log(`[edge] sealed #${cp.seq}: budget ${ended.filter(id => !before.has(id)).join(', ')} ended - its block is closed`);
+}
+
+/* a budget the copy saw opened is no longer live, and the last seal did not close it */
+function sealDue(mirror: Mirror, live: number[]): boolean {
+  const last = mirror.seals?.[mirror.seals.length - 1];
+  const before = new Set(last ? last.ended : []);
+  return grantIdsIn(mirror).some(id => !live.includes(id) && !before.has(id));
 }
 
 /*
@@ -647,16 +672,69 @@ export function forgetVerified() {
   answers.clear(); /* the one chain state forgets too: a restart */
   asking.clear();
 }
-function copyHash(links: EdgeLinkRecord[], count = links.length): string {
+/*
+ * WHERE THE VERIFY TIME GOES (A13, 2026-10-07: "verify 740" on a check that was
+ * skipped). Summed over a sync, printed in its log line: decode, hash, check, rows.
+ */
+let vlaps: Record<string, number> = {};
+const vlap = (n: string, t0: number) => { vlaps[n] = (vlaps[n] ?? 0) + Date.now() - t0; };
+/*
+ * ONE PASS (Pixel, 2026-10-07: "hash 264-480" of a 300-620 ms verify). A sync hashed
+ * the whole copy two to four times: shortPath, then evaluate, each over the whole copy
+ * and over the part this session verified. One pass now gives every count asked for
+ * (the hash state is cloned at each), kept for THIS links array only: every sync loads
+ * the copy fresh from storage, so an edit to the stored copy is always hashed again
+ * (BLOCKS.md 2a rule 3). In a sync the array only grows, and the memo is checked
+ * against its length.
+ *
+ * IN CHUNKS (the cheap half of "the check off the JS thread"): primeCopyHash runs
+ * the same pass HASH_CHUNK links at a time and gives the JS thread back in between -
+ * the thread that answers Bluetooth. The check itself then finds the hashes ready.
+ */
+const HASH_CHUNK = 64;
+const hashMemo = new WeakMap<EdgeLinkRecord[], {n: number; at: Map<number, string>}>();
+function* hashSteps(links: EdgeLinkRecord[], counts: number[], at: Map<number, string>) {
+  const want = new Set(counts.filter(c => c >= 0 && c <= links.length));
   const h = sha256.create();
-  for (let i = 0; i < count; i++) {
+  if (want.has(0)) at.set(0, toHex(h.clone().digest()));
+  for (let i = 0; i < links.length; i++) {
     const r = links[i];
     h.update(r.link);
     h.update(r.head);
     h.update(r.reveal ?? new Uint8Array(0));
     h.update(Uint8Array.of(r.reveal ? 1 : 0));
+    if (want.has(i + 1)) at.set(i + 1, toHex(h.clone().digest()));
+    if ((i + 1) % HASH_CHUNK === 0) yield;
   }
-  return toHex(h.digest());
+}
+function memoFor(links: EdgeLinkRecord[]) {
+  const m = hashMemo.get(links);
+  if (m && m.n === links.length) return m;
+  const fresh = {n: links.length, at: new Map<number, string>()};
+  hashMemo.set(links, fresh);
+  return fresh;
+}
+function copyHash(links: EdgeLinkRecord[], count = links.length): string {
+  const m = memoFor(links);
+  const got = m.at.get(count);
+  if (got !== undefined) return got;
+  const t0 = Date.now();
+  for (const _ of hashSteps(links, [count, links.length], m.at)) { /* all at once */ }
+  vlap('hash', t0);
+  return m.at.get(count)!;
+}
+/** the same pass, a chunk at a time, before a check (counts: the parts it will ask for) */
+async function primeCopyHash(links: EdgeLinkRecord[], counts: number[]): Promise<void> {
+  const m = memoFor(links);
+  const missing = [links.length, ...counts].filter(c => c >= 0 && c <= links.length && !m.at.has(c));
+  if (!missing.length) return;
+  let t0 = Date.now();
+  for (const _ of hashSteps(links, missing, m.at)) {
+    vlap('hash', t0);
+    await new Promise<void>(r => setTimeout(r, 0));
+    t0 = Date.now();
+  }
+  vlap('hash', t0);
 }
 /* the path each verdict took, for the log and the tests: not saved, nothing sensitive */
 let lastCheck: 'full' | 'new-links' | 'sealed' | 'skipped' | null = null;
@@ -675,15 +753,23 @@ export function evaluate(mirror: Mirror, head: {seq: number; head: Uint8Array; r
  * links on a Galaxy A13 that was 22.5 s of checking in one sync (2026-10-07).
  */
 function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ringFrom: number} | null, held: EdgeLinkRecord[], key: EdgeCopyKey | null, noFull: boolean): EdgeView | null {
+  const td = Date.now();
   const decoded = mirror.links.map(r => ({r, f: chain.decodeLink(r.link)}));
+  vlap('decode', td);
   if (!head) {
     return {verdict: {kind: 'not-synced'}, headSeq: null, lastSync: mirror.lastSync, rows: rowsOf(decoded, new Set(), mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null};
   }
   const id = toHex(mirror.deviceId);
   const headHex = toHex(head.head);
   const hash = copyHash(mirror.links);
-  const viewOf = (verdict: Verdict, unverified: Set<number>): EdgeView =>
-    ({verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null});
+  const tc = Date.now();
+  const viewOf = (verdict: Verdict, unverified: Set<number>): EdgeView => {
+    vlap('check', tc);
+    const tr = Date.now();
+    try {
+      return {verdict, headSeq: head.seq, lastSync: mirror.lastSync, rows: rowsOf(decoded, unverified, mirror), setAside: asideOf(mirror), refusals: mirror.refusals, continued: mirror.continued ?? null};
+    } finally { vlap('rows', tr); }
+  };
   const was = verifiedNow.get(id);
   /*
    * ONE MOMENT OF THE KEY (as lib grants.check, Pixel 2026-10-06; seen again on the

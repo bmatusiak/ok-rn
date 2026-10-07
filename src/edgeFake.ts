@@ -97,7 +97,8 @@ export interface EdgeSource {
    * checkpoint. A key that signs nothing (the fake) has none: then only the
    * genesis and HEAD anchor the copy.
    */
-  copyKey?(): Promise<EdgeCopyKey>;
+  /** checkpoint false: the public key and openings only - the key signs nothing (a sync in a burst) */
+  copyKey?(opts?: {checkpoint?: boolean}): Promise<EdgeCopyKey>;
 }
 
 export type EdgeCopyKey = {
