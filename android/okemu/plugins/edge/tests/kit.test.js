@@ -1338,7 +1338,7 @@ module.exports = function register({ it }, ctx) {
    * (daily-loop §3): the shared endpoint is a press, a skipped ticket and a
    * stale head refuse the next exec before it runs, Hold refuses it too.
    */
-  it('edge: the agent service on the emulator - a signed commit and an ssh sign paid by the budget and ticketed; the shared endpoint is a press; skipped ticket, stale head and Hold refuse the next exec',
+  it('edge: the agent service on the emulator - a signed commit and an ssh sign paid by the budget and ticketed; there is no shared endpoint; skipped ticket, stale head and Hold refuse the next exec',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
@@ -1349,7 +1349,9 @@ module.exports = function register({ it }, ctx) {
       const { execFileSync } = require('child_process');
       const { request, approve, client, codes } = ctx.requireLib('node-onlykey-lib/edge');
       const { startEdgeAgent } = ctx.requireLib('node-onlykey-lib/cli/edge-agent');
-      const okedge = ctx.requireLib('node-onlykey-lib/cli/okedge');
+      /* one CLI (CLI.md, 2026-10-06): okedge is gone - onlykey-js edge's commands, asking the service's control endpoint */
+      const commands = ctx.requireLib('node-onlykey-lib/edge/cli/commands');
+      const control = ctx.requireLib('node-onlykey-lib/cli/edge-control');
       const wire = ctx.requireLib('node-onlykey-lib/cli/ssh-wire');
       const bindLib = ctx.requireLib('node-onlykey-lib/cli/ssh-session-bind');
       const hexOf = (b) => Buffer.from(b).toString('hex');
@@ -1357,8 +1359,7 @@ module.exports = function register({ it }, ctx) {
 
       const lib = await ctx.kit.libstack.composeLib(device);
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-edge-agent-'));
-      const savedHome = process.env.OKEDGE_HOME;
-      process.env.OKEDGE_HOME = home;
+      control.setHome(home); /* a test home: setHome, never the env (CLI.md §5) */
       let svc = null;
       try {
         const { okcrypto, transport } = lib.services;
@@ -1391,7 +1392,7 @@ module.exports = function register({ it }, ctx) {
         log(`ssh key: ${svc.sshLine}`);
         assert.ok(svc.fingerprint, 'the agent\'s PGP certificate was made');
         const lastLink = async () => { const h = await edgeSvc.head(); return chain.decodeLink((await edgeSvc.pickup(h.seq, 1))[0].link); };
-        const run = async (args) => { const lines = []; const code = await okedge.main(args, { out: (s) => lines.push(s), err: (s) => lines.push(`ERR ${s}`) }); log(lines.join(' | ')); return { code, lines }; };
+        const run = async (args) => { const lines = []; const code = await commands.main(args, { out: (s) => lines.push(s), err: (s) => lines.push(`ERR ${s}`), ask: control.ask }); log(lines.join(' | ')); return { code, lines }; };
 
         /* A1: one Yes + press for the work budget */
         let r = await run(['budget', '--reason', 'okt: commit and push', '--ssh', '3', '--gpg', '3', '--ttl', '30']);
@@ -1449,12 +1450,8 @@ module.exports = function register({ it }, ctx) {
         r = await run(['ticket', String(sshLink.seq), '--msg', 'pushed okt']);
         head = r.lines.find((l) => l.startsWith('head = ')).slice(7);
 
-        /* must fail safely: the shared endpoint is a press, never the budget - an ordinary press: no link, nothing owed (2026-10-06) */
-        const before = await edgeSvc.head();
-        assert.equal((await sshSign(svc.sharedPath))[0], wire.MSG.SIGN_RESPONSE);
-        const after = await edgeSvc.head();
-        assert.equal(after.seq, before.seq, 'the shared endpoint wrote a link (paid by the budget, or an ordinary press linked)');
-        assert.equal(after.owed, 0, 'the press on the shared endpoint owes a ticket');
+        /* there is no shared endpoint (CLI.md §4, 2026-10-06): the agent's key is reached only through an exec, under the budget */
+        assert.equal(svc.sharedPath, undefined, 'the service still serves a shared endpoint');
 
         /* must fail safely: a stale head; Hold from the phone */
         r = await run(['exec', '--head', '00'.repeat(32), '--reason', 'stale', '--', 'git', '--version']);
@@ -1468,7 +1465,7 @@ module.exports = function register({ it }, ctx) {
       } finally {
         if (svc) await svc.close();
         await lib.destroy();
-        if (savedHome === undefined) delete process.env.OKEDGE_HOME; else process.env.OKEDGE_HOME = savedHome;
+        control.setHome(null);
       }
     });
 
