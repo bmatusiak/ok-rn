@@ -882,15 +882,19 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
  * (from the one hashing pass) and the stored messages as they are now, compared in
  * full - an edited message in storage still pairs again and shows its mismatch.
  */
-let pairedMemo: {key: string; bySeq: Map<number, ReturnType<typeof tickets.pairTickets>['uses'][number]>} | null = null;
+/* one per chain: the A13 keeps the Pixel's chain too, and one slot was taken in turns */
+const pairedMemo = new Map<string, {key: string; bySeq: Map<number, ReturnType<typeof tickets.pairTickets>['uses'][number]>}>();
 function ticketsBySeq(mirror: Mirror) {
-  const key = toHex(mirror.deviceId) + '|' + copyHash(mirror.links) + '|' + JSON.stringify(mirror.messages ?? {});
-  if (pairedMemo?.key === key) return pairedMemo.bySeq;
+  const id = toHex(mirror.deviceId);
+  const key = copyHash(mirror.links) + '|' + JSON.stringify(mirror.messages ?? {});
+  const was = pairedMemo.get(id);
+  if (was?.key === key) return was.bySeq;
   const t0 = Date.now();
   const paired = tickets.pairTickets(mirror.links, mirror.messages);
   vlap('tickets', t0);
-  pairedMemo = {key, bySeq: new Map(paired.uses.map(u => [u.seq, u]))};
-  return pairedMemo.bySeq;
+  const bySeq = new Map(paired.uses.map(u => [u.seq, u]));
+  pairedMemo.set(id, {key, bySeq});
+  return bySeq;
 }
 
 function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLink>}[], unverified: Set<number>, mirror: Mirror): EdgeRow[] {

@@ -56,6 +56,8 @@ type SameHead = {key: string; raw: any; checkpoint?: any; vouch?: any};
 /* per key: the answers the key gave for its current head, and its Edge public key - this session's memory only */
 const sameHeads = new Map<string, SameHead>();
 const publicKeys = new Map<string, Uint8Array>();
+/* a budget's opening, by its stored record as read: the reason hash is JS SHA-256 per budget (A13: 46 of them, ~380 ms a sync) */
+const openingsKept = new Map<string, {raw: string; opening: unknown}>();
 
 export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   readonly deviceId: Uint8Array;
@@ -552,12 +554,17 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     const prefix = REGISTRY + toHex(this.deviceId) + '.';
     const keys = (await this.storageKeys()).filter(k => k.startsWith(prefix));
     for (const [k, raw] of Object.entries(await AsyncStorage.getMany([...keys]))) {
+      /* the same stored record as last time: the same opening (an edited one is read again) */
+      const was = raw ? openingsKept.get(k) : undefined;
+      if (was && was.raw === raw) { openings[Number(k.slice(prefix.length))] = was.opening; continue; }
       const kept: Kept | null = JSON.parse(raw || 'null');
       if (!kept || !kept.signature) continue;
-      openings[Number(k.slice(prefix.length))] = {
+      const opening = {
         scopes: kept.scopes, reasonHash: tickets.messageHash(kept.reason), genesis: fromHex(kept.genesis),
         uses: kept.uses, lifetime: kept.lifetime ?? 0, signature: fromHex(kept.signature),
       };
+      openingsKept.set(k, {raw: raw!, opening});
+      openings[Number(k.slice(prefix.length))] = opening;
     }
     return openings;
   }
