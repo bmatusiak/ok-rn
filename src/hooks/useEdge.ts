@@ -14,7 +14,7 @@ import {SoftKeyEdge} from '../edgeSoftKey';
 import {computerHoldsKey, onKeyFree} from '../vendorBridge';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {useBackend} from './KeyContext';
-import {evaluate, forgetVerifiedFor, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
+import {chainState, evaluate, forgetVerifiedFor, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
 
 type Source = EdgeSource & EdgeInbox;
 
@@ -110,7 +110,7 @@ export function useEdge() {
     return (await syncMirror(s)).view;
   }), [run]);
   /** Verify the stored copy against the live head WITHOUT reading - shows an edited copy as it is. */
-  const verify = useCallback(() => run(async s => liveView(s, await loadMirror(s.deviceId))), [run]);
+  const verify = useCallback(() => run(async s => (await chainState.validity(s)).view), [run]);
   const tamper = useCallback(
     (how: Tamper) => run(async s => {
       const m = await tamperMirror(s.deviceId, how);
@@ -200,12 +200,12 @@ export function useEdge() {
   /* Continue: a request for what is left; then Approve is the usual Yes and press */
   const continueBudget = useCallback((grantId: number) => run(async s => {
     await s.continueBudget?.(grantId);
-    return liveView(s, await loadMirror(s.deviceId));
+    return (await chainState.validity(s)).view;
   }), [run]);
   /* 4.7a: an ended AGENT budget only goes away - the agent continues it, not the tab */
   const dismissEnded = useCallback((grantId: number) => run(async s => {
     await s.dismissEnded?.(grantId);
-    return liveView(s, await loadMirror(s.deviceId));
+    return (await chainState.validity(s)).view;
   }), [run]);
   /* R24 / the red banner: Yes on screen, then the press; the key links LOSS {from, to} */
   const acceptLoss = useCallback((from: number, to: number) => run(async s => {
@@ -225,7 +225,7 @@ export function useEdge() {
   /* R26 / B6: replay this phone's copy, then the press over "restored to #N" */
   const replayCopy = useCallback(() => run(async s => {
     if (s.replayCopy) setReplay(await s.replayCopy());
-    return liveView(s, await loadMirror(s.deviceId));
+    return (await chainState.validity(s)).view;
   }), [run]);
   const finishRestore = useCallback((newestSeq: number) => run(async s => {
     try {
@@ -242,7 +242,7 @@ export function useEdge() {
   }, [source]);
   const decline = useCallback((id: number) => run(async s => {
     await s.decline(id);
-    return liveView(s, await loadMirror(s.deviceId));
+    return (await chainState.validity(s)).view;
   }), [run]);
   const resetFake = useCallback(async () => {
     if (wantReal) return;

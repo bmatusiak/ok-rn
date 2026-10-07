@@ -17,7 +17,7 @@ import {approve as approveLib, chain, codes, request as requestLib, tickets} fro
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
-import {loadMirror} from './edgeStore';
+import {chainState, loadMirror} from './edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeCopyKey, EdgeEnded, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeReplay, EdgeRequest, EdgeSource} from './edgeFake';
 
 const {DECISION, OP} = codes;
@@ -300,7 +300,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   /* R15a + R27: like Approve, only from a copy that verifies, then the press */
   async resume(grantId: number, onPress?: () => void) {
-    await this.edge.grants.resume(grantId, {copy: await this.copy(), onPress: this.pressing(onPress)});
+    await this.edge.resume(grantId, {verifiedHead: await this.verifiedHead(), onPress: this.pressing(onPress)});
     this.pressWanted = null;
   }
 
@@ -581,8 +581,18 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * approval (answerAgent verifyCopy) and the library's create/resume stay strict.
    */
   async check(): Promise<EdgeCopyCheck> {
-    const v = await this.edge.grants.check(await this.copy(), {keyTail: true});
-    return v.ok ? {ok: true} : {ok: false, reason: v.reason, seq: v.seq ?? undefined, to: v.detail?.gaps?.[0]?.to};
+    /* the one chain state (okrn-edge-tab.md S3a): not a check of its own */
+    const a = await chainState.validity(this);
+    if (a.ok) return {ok: true};
+    const v = a.view.verdict as {kind: string; seq?: number; from?: number; to?: number};
+    return {ok: false, reason: v.kind, seq: v.seq ?? v.from, to: v.to};
+  }
+
+  /* R27 for Approve and resume: the head the one chain state verified, or a refusal */
+  private async verifiedHead(): Promise<Uint8Array> {
+    const a = await chainState.validity(this);
+    if (!a.ok || !a.head) throw new Error(`edge: this phone's copy of the chain does not verify (${a.view.verdict.kind}) - sync or settle it first`);
+    return a.head.head;
   }
 
   /**
@@ -594,8 +604,8 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     const r = this.requests.find(x => x.id === id);
     if (!r) throw new Error(`edge: no request ${id}`);
     const reasonHash = tickets.messageHash(r.reason);
-    const g = await this.edge.grants.create({
-      copy: await this.copy(),
+    const g = await this.edge.grant({
+      verifiedHead: await this.verifiedHead(),
       scopes: r.scopes,
       reasonHash,
       ttlMinutes: r.ttlMinutes ?? 0,
@@ -640,7 +650,12 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       seen: o.seen,
       ownIdentities: o.ownIdentities,
       ask: o.ask,
-      verifyCopy: async () => this.edge.grants.check(await this.copy()),
+      /* the one chain state, strict: only a verified copy gives a head (okrn-edge-tab.md S3a) */
+      verifyCopy: async () => {
+        const a = await chainState.validity(this);
+        /* a refusal: approveRequest looks at ok first, so the empty head is never used */
+        return a.ok && a.head ? {ok: true, head: a.head.head} : {ok: false, head: new Uint8Array(0)};
+      },
       budgetOf: (id: number) => this.keptSync.get(id) ?? null,
       coverOf: (m: any) => this.coverOf(m),
       onPress: () => {

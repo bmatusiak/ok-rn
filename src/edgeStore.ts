@@ -253,6 +253,96 @@ function setAsideStrays(mirror: Mirror, keySeq: number, now: number): void {
  * second save would drop the first one's links.
  */
 let syncing: Promise<unknown> = Promise.resolve();
+/*
+ * ONE CHAIN STATE (okrn-edge-tab.md S3a; Brad, 2026-10-07: "unify the state of the
+ * block chain in memory so ui and bluetooth dont need to constantly hammer
+ * verifying ... 1 complete check, both bluetooth and ui or anything else can just
+ * ask for validity"; "a lot easier to manage and save, and watch events on it").
+ *
+ * There were three verify paths with their own state - the tab's (here), the
+ * soft key's check() for the display and the agent sheet, and Approve/resume's
+ * strict copy check in the library - and on a Galaxy A13 one agent request could
+ * run four full checks of 10-16 s each, on the thread that answers Bluetooth.
+ * Now everything asks chainState.validity(): the answer from memory when nothing
+ * changed (the same head, the same stored copy), else ONE queued sync - the same
+ * queue every sync already shares, so two askers never run two checks. Every
+ * sync records its answer and emits: 'checked' (every check), 'changed' (the
+ * verdict's kind changed), 'sealed' (a budget end sealed a block).
+ * In memory only: nothing "verified" is stored (BLOCKS.md 2a rule 4).
+ */
+export type ChainAnswer = {
+  deviceId: string;
+  view: EdgeView;
+  /* the head the copy verified through - what Approve/resume hand the key (R27) - or null */
+  head: {seq: number; head: Uint8Array} | null;
+  ok: boolean;
+  path: 'full' | 'new-links' | 'sealed' | 'skipped' | null;
+  at: number;
+  ms: number;
+};
+type ChainEvent = 'checked' | 'changed' | 'sealed';
+const answers = new Map<string, ChainAnswer>();
+const asking = new Map<string, Promise<ChainAnswer>>();
+const chainListeners: Record<ChainEvent, Set<(a: ChainAnswer) => void>> = {checked: new Set(), changed: new Set(), sealed: new Set()};
+function emitChain(ev: ChainEvent, a: ChainAnswer) {
+  /* a listener's failure is its own: it never breaks the check that told it */
+  for (const fn of [...chainListeners[ev]]) {
+    try { fn(a); } catch (e) { console.warn(`[edge] chain state: a '${ev}' listener threw: ${String(e)}`); }
+  }
+}
+function record(deviceId: Uint8Array, mirror: Mirror, view: EdgeView, ms: number, sealsBefore: number) {
+  const id = toHex(deviceId);
+  const prev = answers.get(id);
+  const seen = mirror.lastSeen;
+  /* a head only from a check that vouched for it now: lastSeen can be an older sync's, and a tampered copy offers none */
+  const vouched = view.verdict.kind === 'verified' || view.verdict.kind === 'gap';
+  const head = vouched && seen && view.headSeq !== null && seen.seq === view.headSeq ? {seq: seen.seq, head: seen.head} : null;
+  const a: ChainAnswer = {deviceId: id, view, head, ok: view.verdict.kind === 'verified' && head !== null, path: lastCheck, at: Date.now(), ms};
+  answers.set(id, a);
+  emitChain('checked', a);
+  if (!prev || prev.view.verdict.kind !== view.verdict.kind) emitChain('changed', a);
+  if ((mirror.seals?.length ?? 0) > sealsBefore) emitChain('sealed', a);
+}
+export const chainState = {
+  /** watch the chain: returns the unsubscribe */
+  on(ev: ChainEvent, fn: (a: ChainAnswer) => void): () => void {
+    chainListeners[ev].add(fn);
+    return () => { chainListeners[ev].delete(fn); };
+  },
+  /** the last answer, no I/O (null before the first check this session) */
+  current(deviceId: Uint8Array): ChainAnswer | null {
+    return answers.get(toHex(deviceId)) ?? null;
+  },
+  /**
+   * Is the copy valid, up to the key's live head? From memory when nothing
+   * changed; else one sync (queued with every other) - never a second check
+   * while one runs.
+   */
+  validity(source: EdgeSource): Promise<ChainAnswer> {
+    const id = toHex(source.deviceId);
+    const running = asking.get(id);
+    if (running) return running;
+    const p = (async () => {
+      const t0 = Date.now();
+      const prev = answers.get(id);
+      const head = await source.head();
+      if (prev?.head && prev.head.seq === head.seq && toHex(prev.head.head) === toHex(head.head)) {
+        const was = verifiedNow.get(id);
+        const m = await loadMirror(source.deviceId);
+        if (was && was.seq === head.seq && was.head === toHex(head.head) && was.copyHash === copyHash(m.links)) {
+          const a: ChainAnswer = {...prev, path: 'skipped', at: Date.now(), ms: Date.now() - t0};
+          answers.set(id, a);
+          return a;
+        }
+      }
+      await sync(source);
+      return answers.get(id)!;
+    })().finally(() => asking.delete(id));
+    asking.set(id, p);
+    return p;
+  },
+};
+
 export function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mirror; view: EdgeView}> {
   const run = syncing.then(() => syncNow(source, now), () => syncNow(source, now));
   syncing = run.catch(() => undefined);
@@ -307,6 +397,7 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   const laps: string[] = [];
   const lap = (n: string) => { const x = Date.now(); laps.push(`${n} ${x - tp}`); tp = x; };
   const mirror = await loadMirror(source.deviceId);
+  const sealsBefore = mirror.seals?.length ?? 0;
   lap('load');
   const head = await source.head();
   lap('head');
@@ -358,6 +449,7 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   await raiseAlarms(mirror, view, live ?? []).catch(() => {});
   lap('alarms');
   console.log(`[edge] sync ${Date.now() - t0} ms: ${laps.join(', ')}`);
+  record(source.deviceId, mirror, view, Date.now() - t0, sealsBefore);
   return {mirror, view};
 }
 
@@ -522,6 +614,7 @@ function sealedStart(mirror: Mirror, head: {seq: number}, key: EdgeCopyKey | nul
 /** The Sync button: the next check of this key's copy is a full one, from the root. */
 export function forgetVerifiedFor(deviceId: Uint8Array) {
   verifiedNow.delete(toHex(deviceId));
+  answers.delete(toHex(deviceId));
 }
 
 /** Verify a mirror against a live head (no I/O): the verdict and the rows to draw. */
@@ -542,6 +635,8 @@ const verifiedNow = new Map<string, Verified>();
 /** for tests: forget what this session verified, as a restart does */
 export function forgetVerified() {
   verifiedNow.clear();
+  answers.clear(); /* the one chain state forgets too: a restart */
+  asking.clear();
 }
 function copyHash(links: EdgeLinkRecord[], count = links.length): string {
   const h = sha256.create();

@@ -346,3 +346,71 @@ test('sealed: no budget ended since the last seal -> no new seal', async () => {
   const {mirror} = await sync(k);
   expect(mirror.seals?.length).toBe(1);
 });
+
+/*
+ * ONE CHAIN STATE (okrn-edge-tab.md S3a; Brad, 2026-10-07: "1 complete check, both
+ * bluetooth and ui or anything else can just ask for validity"; "watch events on it").
+ */
+import {chainState} from '../src/edgeStore';
+
+test('chain state: two askers at once share ONE check', async () => {
+  const k = FakeEdgeKey.demo();
+  const checked: unknown[] = [];
+  const off = chainState.on('checked', a => checked.push(a));
+  const [a, b] = await Promise.all([chainState.validity(k), chainState.validity(k)]);
+  off();
+  expect(a).toBe(b);
+  expect(checked).toHaveLength(1);
+  expect(a.ok).toBe(true);
+  expect(a.head?.seq).toBe((await k.head()).seq);
+});
+
+test('chain state: nothing changed -> the answer from memory, no check, no event', async () => {
+  const k = FakeEdgeKey.demo();
+  await chainState.validity(k);
+  const checked: unknown[] = [];
+  const off = chainState.on('checked', a => checked.push(a));
+  const again = await chainState.validity(k);
+  off();
+  expect(again.path).toBe('skipped');
+  expect(again.ok).toBe(true);
+  expect(checked).toHaveLength(0);
+});
+
+test('chain state: new links -> one check of the new links only, and \'checked\' says so', async () => {
+  const k = FakeEdgeKey.demo();
+  await chainState.validity(k);
+  k.use('commit 3000');
+  k.ticket(0x00, 'done');
+  const seen: string[] = [];
+  const off = chainState.on('checked', a => seen.push(String(a.path)));
+  const a = await chainState.validity(k);
+  off();
+  expect(seen).toEqual(['new-links']);
+  expect(a.head?.seq).toBe((await k.head()).seq);
+});
+
+test('chain state: a tampered copy flips the verdict - \'changed\' fires, no verified head', async () => {
+  const k = FakeEdgeKey.demo();
+  await chainState.validity(k);
+  await tamper(k.deviceId, 'flip');
+  const changed: string[] = [];
+  const off = chainState.on('changed', a => changed.push(a.view.verdict.kind));
+  const a = await chainState.validity(k);
+  off();
+  expect(a.ok).toBe(false);
+  expect(a.head).toBeNull();
+  expect(changed).toEqual([a.view.verdict.kind]);
+  expect(changed[0]).not.toBe('verified');
+});
+
+test('chain state: a budget end seals a block - \'sealed\' fires', async () => {
+  const k = signedDemo();
+  await chainState.validity(k);
+  const sealed: number[] = [];
+  const off = chainState.on('sealed', a => sealed.push(a.head!.seq));
+  await endOne(k);
+  await chainState.validity(k);
+  off();
+  expect(sealed).toEqual([(await k.head()).seq]);
+});
