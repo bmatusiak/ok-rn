@@ -4,7 +4,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {FakeEdgeKey, type EdgeCopyKey} from '../src/edgeFake';
-import {addNote, evaluate, forgetVerified, keepOffered, lastCheckPath, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
+import {addNote, evaluate, forgetVerified, forgetVerifiedFor, keepOffered, lastCheckPath, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
 
 beforeEach(async () => {
   await AsyncStorage.clear();
@@ -486,14 +486,14 @@ test('burst: no checkpoint for a new-links sync; one for the first check and one
   expect(sealed.mirror.seals?.length).toBe(1);
 });
 
-test('one hashing pass: a flipped copy under the same head is still red', async () => {
+test('option A: a flipped record under the same head is still red', async () => {
   const k = signedDemo();
   await sync(k);
   await tamper(k.deviceId, 'flip');
   expect((await sync(k)).view.verdict.kind).toBe('tampered');
 });
 
-/* the ticket pairing is kept per copy (A13: rows 215 ms a sync) - never past an edit to a stored message */
+/* the ticket pairing is kept per copy (A13: rows 215 ms a sync) - never past a changed message */
 test('the pairing memo: an edited stored message pairs again and shows its mismatch', async () => {
   const k = new FakeEdgeKey();
   const seq = k.use('commit 1');
@@ -507,4 +507,53 @@ test('the pairing memo: an edited stored message pairs again and shows its misma
   m.messages = Object.fromEntries(Object.entries(m.messages).map(([s, t]) => [s, typeof t === 'string' ? 'edited in storage' : t]));
   await saveMirror(m);
   expect((await sync(k)).view.rows.find(r => r.seq === seq)!.ticket?.messageStatus).toBe('mismatch');
+});
+
+/*
+ * OPTION A (Brad, 2026-10-07): the copy lives in memory for the session - storage is
+ * read once, then only written. An edit to the STORED copy while the app runs shows at
+ * the next start, or at once with the Sync button (forgetVerifiedFor).
+ */
+const storedKeyOf = (k: FakeEdgeKey) => 'okrn.edge.mirror.' + Array.from(k.deviceId, x => x.toString(16).padStart(2, '0')).join('');
+
+test('option A: the stored copy is parsed once a session, then only written (and compared)', async () => {
+  const k = new FakeEdgeKey();
+  k.use('one');
+  await sync(k);
+  const parses = jest.spyOn(JSON, 'parse');
+  k.use('two');
+  await sync(k);
+  await sync(k);
+  expect(parses.mock.calls.filter(c => typeof c[0] === 'string' && c[0].startsWith('{\"deviceId\"'))).toEqual([]);
+  parses.mockRestore();
+  expect((await AsyncStorage.getItem(storedKeyOf(k)))).toContain('"links"'); /* written */
+});
+
+test('option A: a stored copy edited while the app runs is never written over, and turns red', async () => {
+  const k = new FakeEdgeKey();
+  for (const r of ['a', 'b', 'c']) k.use(r);
+  expect((await sync(k)).view.verdict.kind).toBe('verified');
+  const raw = JSON.parse((await AsyncStorage.getItem(storedKeyOf(k)))!);
+  const l = raw.links[1].link as string;
+  raw.links[1].link = l.slice(0, 40) + (l[40] === '0' ? '1' : '0') + l.slice(41);
+  await AsyncStorage.setItem(storedKeyOf(k), JSON.stringify(raw));
+  const edited = await AsyncStorage.getItem(storedKeyOf(k));
+  k.use('d');
+  await sync(k); /* its save finds the stored copy changed: it is not written over */
+  expect(await AsyncStorage.getItem(storedKeyOf(k))).toBe(edited);
+  expect((await sync(k)).view.verdict.kind).toBe('tampered'); /* the next sync reads it back */
+  forgetVerified(); /* a restart */
+  expect((await sync(k)).view.verdict.kind).toBe('tampered');
+});
+
+test('option A: the Sync button reads the stored copy at once', async () => {
+  const k = new FakeEdgeKey();
+  for (const r of ['a', 'b', 'c']) k.use(r);
+  await sync(k);
+  const raw = JSON.parse((await AsyncStorage.getItem(storedKeyOf(k)))!);
+  const l = raw.links[1].link as string;
+  raw.links[1].link = l.slice(0, 40) + (l[40] === '0' ? '1' : '0') + l.slice(41);
+  await AsyncStorage.setItem(storedKeyOf(k), JSON.stringify(raw));
+  forgetVerifiedFor(k.deviceId);
+  expect((await sync(k)).view.verdict.kind).toBe('tampered');
 });

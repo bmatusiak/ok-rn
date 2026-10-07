@@ -11,9 +11,7 @@
  * TRUST, THEN USE: before plugging in, every function is checked against the
  * library's JS on pinned answers (and a bad signature must fail). One mismatch,
  * or an APK without these calls, and the checks stay in JS - slower, never wrong.
- *
- * copyHashCuts serves ok-rn's own copy hash (edgeStore.ts): one native pass over
- * the stored copy, the digest at each count asked for.
+
  */
 import * as provider from 'node-onlykey-lib/crypto/provider';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
@@ -38,8 +36,6 @@ const ED25519 = {
   msg: '040506',
   pub: '93fbce7316450a74e8a7f12dfb32131096cc06f4f08b63cbf649317b21869db8',
 };
-
-let ssl: OkSslEdge | null = null;
 
 function flip(hex: string, at: number): string {
   const c = parseInt(hex[at], 16) ^ 1;
@@ -78,7 +74,6 @@ function install(): void {
     console.log(`[crypto] Edge checks stay in JS: ${e instanceof Error ? e.message : String(e)}`);
     return;
   }
-  ssl = n;
   provider.setCryptoProvider({
     sha256: (b: Uint8Array) => fromHex(n.sha256Hex(toHex(b))),
     sha256Repeat: (b: Uint8Array, times: number) => fromHex(n.sha256RepeatHex(toHex(b), times)),
@@ -86,12 +81,6 @@ function install(): void {
     p256VerifyDigest: (sig: Uint8Array, digest: Uint8Array, pub: Uint8Array) => n.p256VerifyDigestHex(toHex(sig), toHex(digest), toHex(pub)),
     ed25519Verify: (sig: Uint8Array, msg: Uint8Array, pub: Uint8Array) => n.ed25519VerifyHex(toHex(sig), toHex(msg), toHex(pub)),
   }, 'openssl');
-}
-
-/** the digest of bytes[0..cut) for each cut, in one native pass; null when OpenSSL is not in use */
-export function copyHashCuts(bytes: Uint8Array, cuts: number[]): string[] | null {
-  if (!ssl) return null;
-  return ssl.sha256CutsHex(toHex(bytes), cuts.join(',')).split(',');
 }
 
 install();

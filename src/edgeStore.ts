@@ -18,10 +18,6 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
 import {computerHeldMs} from './vendorBridge';
-import {copyHashCuts} from './okSslCrypto';
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
 
 const KEY_PREFIX = 'okrn.edge.mirror.';
 const READ_BATCH = 16;
@@ -155,13 +151,67 @@ export type EdgeRow = {
 
 const storageKey = (deviceId: Uint8Array) => KEY_PREFIX + toHex(deviceId);
 
+/*
+ * THE COPY IN MEMORY FOR THE SESSION (option A; Brad, 2026-10-07: "option A is good").
+ * Every sync read the whole copy back from storage, parsed it, and hashed it to see
+ * whether anything had edited it - on the A13 ~130 ms to load and 60-500 ms to hash,
+ * every sync. Now storage is read once a session; after that the copy lives here and
+ * storage is only written. Other apps cannot edit this process's memory, so the copy
+ * in memory is the one this session checked: what changed since is told by its
+ * RECORDS - the same objects (appended to) or not - with nothing to hash.
+ *   An edit to the copy in STORAGE while the app runs must still turn red, so it is
+ *   never written over: each save first reads the stored text back and compares it
+ *   with what this session last read or wrote (a string compare - no parsing, no
+ *   hashing). Different: something else wrote it - the save is not made, the copy in
+ *   memory is dropped, and the next sync reads storage and checks it (red if edited).
+ *   Found by its test (2026-10-07): without this the next save quietly erased the
+ *   edit. The Sync button (forgetVerifiedFor) and a restart read storage at once.
+ * Records are never changed in place (tamper replaces them), and loadMirror hands out
+ * a copy of the lists, so a caller that changes it without saving changes nothing.
+ */
+const inMemory = new Map<string, Mirror>();
+/* the stored text as this session last read or wrote it */
+const storedText = new Map<string, string>();
+function cloneMirror(m: Mirror): Mirror {
+  return {
+    ...m, links: m.links.slice(), messages: {...m.messages}, seen: {...m.seen}, reasons: {...m.reasons},
+    refusals: m.refusals.slice(), setAside: m.setAside.slice(),
+    ...(m.anchors ? {anchors: m.anchors.slice()} : {}), ...(m.seals ? {seals: m.seals.slice()} : {}),
+  };
+}
+/* each record's stored form, kept with it: a save turns only the NEW records into hex (A13: "save 80-290") */
+type StoredLink = StoredMirror['links'][number];
+const storedForm = new WeakMap<EdgeLinkRecord, StoredLink>();
+function storedOf(l: EdgeLinkRecord): StoredLink {
+  let x = storedForm.get(l);
+  if (!x) {
+    x = {link: toHex(l.link), head: toHex(l.head), ...(l.reveal ? {reveal: toHex(l.reveal)} : {})};
+    storedForm.set(l, x);
+  }
+  return x;
+}
+
 export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
+  const kept = inMemory.get(toHex(deviceId));
+  if (kept) return cloneMirror(kept);
+  const m = await readMirror(deviceId);
+  inMemory.set(toHex(deviceId), m);
+  return cloneMirror(m);
+}
+
+async function readMirror(deviceId: Uint8Array): Promise<Mirror> {
   const raw = await AsyncStorage.getItem(storageKey(deviceId));
+  if (raw) storedText.set(toHex(deviceId), raw);
+  else storedText.delete(toHex(deviceId));
   if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: [], seen: {}, reasons: {}, refusals: []};
   const s = JSON.parse(raw) as StoredMirror;
   return {
     deviceId: fromHex(s.deviceId),
-    links: s.links.map(l => ({link: fromHex(l.link), head: fromHex(l.head), reveal: l.reveal ? fromHex(l.reveal) : null})),
+    links: s.links.map(l => {
+      const r = {link: fromHex(l.link), head: fromHex(l.head), reveal: l.reveal ? fromHex(l.reveal) : null};
+      storedForm.set(r, l);
+      return r;
+    }),
     messages: Object.fromEntries(Object.entries(s.messages).map(([k, v]) => [Number(k), v])),
     lastSeen: s.lastSeen ? {seq: s.lastSeen.seq, head: fromHex(s.lastSeen.head)} : null,
     lastSync: s.lastSync,
@@ -178,9 +228,10 @@ export async function loadMirror(deviceId: Uint8Array): Promise<Mirror> {
 }
 
 export async function saveMirror(m: Mirror): Promise<void> {
+  const id = toHex(m.deviceId);
   const s: StoredMirror = {
     deviceId: toHex(m.deviceId),
-    links: m.links.map(l => ({link: toHex(l.link), head: toHex(l.head), ...(l.reveal ? {reveal: toHex(l.reveal)} : {})})),
+    links: m.links.map(storedOf),
     messages: Object.fromEntries(Object.entries(m.messages).map(([k, v]) => [String(k), v])),
     lastSeen: m.lastSeen ? {seq: m.lastSeen.seq, head: toHex(m.lastSeen.head)} : null,
     lastSync: m.lastSync,
@@ -194,10 +245,24 @@ export async function saveMirror(m: Mirror): Promise<void> {
     ...(m.anchors?.length ? {anchors: m.anchors.map(a => ({seq: a.seq, head: toHex(a.head), signature: toHex(a.signature), mySeq: a.mySeq, at: a.at}))} : {}),
     ...(m.seals?.length ? {seals: m.seals.map(x => ({seq: x.seq, head: toHex(x.head), signature: toHex(x.signature), ended: x.ended}))} : {}),
   };
-  await AsyncStorage.setItem(storageKey(m.deviceId), JSON.stringify(s));
+  const text = JSON.stringify(s);
+  const now = await AsyncStorage.getItem(storageKey(m.deviceId));
+  if (inMemory.has(id) && now !== (storedText.get(id) ?? null)) {
+    console.log(`[edge] the stored copy of ${id.slice(0, 8)} was changed outside this session - not written over; the next sync reads it back and checks it`);
+    inMemory.delete(id);
+    verifiedNow.delete(id);
+    answers.delete(id);
+    return;
+  }
+  inMemory.set(id, cloneMirror(m));
+  if (now === text) return; /* nothing new to store */
+  await AsyncStorage.setItem(storageKey(m.deviceId), text);
+  storedText.set(id, text);
 }
 
 export async function forgetMirror(deviceId: Uint8Array): Promise<void> {
+  inMemory.delete(toHex(deviceId));
+  storedText.delete(toHex(deviceId));
   await AsyncStorage.removeItem(storageKey(deviceId));
 }
 
@@ -331,8 +396,7 @@ export const chainState = {
       if (prev?.head && prev.head.seq === head.seq && toHex(prev.head.head) === toHex(head.head)) {
         const was = verifiedNow.get(id);
         const m = await loadMirror(source.deviceId);
-        await primeCopyHash(m.links, []);
-        if (was && was.seq === head.seq && was.head === toHex(head.head) && was.copyHash === copyHash(m.links)) {
+        if (was && was.seq === head.seq && was.head === toHex(head.head) && sameCopy(m.links, was)) {
           const a: ChainAnswer = {...prev, path: 'skipped', at: Date.now(), ms: Date.now() - t0};
           answers.set(id, a);
           return a;
@@ -449,6 +513,7 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
    * key-to-key sync, R30 - not this copy's sync.)
    */
   const live = await source.budgets(true).then(bs => bs.map(b => b.grantId)).catch(() => null as number[] | null);
+  lap('budgets');
   const was = verifiedNow.get(toHex(source.deviceId));
   const wantCheckpoint = !was || was.verdict.kind !== 'verified' || (live !== null && sealDue(mirror, live));
   const ownKey = source.copyKey ? await source.copyKey({checkpoint: wantCheckpoint}).catch(() => null) : null;
@@ -561,7 +626,6 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
   /* the key's public key and checkpoint: the caller's, when it has just read them (syncNow) - not a second read */
   const key = knownKey !== undefined ? knownKey : source.copyKey ? await source.copyKey() : null;
   const ring = async () => (head.seq >= 0 ? source.read(head.ringFrom, head.seq - head.ringFrom + 1) : []);
-  await primeCopyHash(mirror.links, [verifiedNow.get(toHex(mirror.deviceId))?.count ?? -1]);
   /* the ticket pairing on its own turn of the JS thread, not stacked on the check (rows, A13: 215 ms) */
   await new Promise<void>(r => setTimeout(r, 0));
   ticketsBySeq(mirror);
@@ -586,10 +650,9 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
 function shortPath(mirror: Mirror, head: {seq: number; head: Uint8Array}): boolean {
   const was = verifiedNow.get(toHex(mirror.deviceId));
   if (!was) return false;
-  const hash = copyHash(mirror.links);
-  if (was.seq === head.seq && was.head === toHex(head.head) && was.copyHash === hash) return true;
+  if (was.seq === head.seq && was.head === toHex(head.head) && sameCopy(mirror.links, was)) return true;
   return was.verdict.kind === 'verified' && was.count > 0 && was.count <= mirror.links.length &&
-    (mirror.links.length > was.count || head.seq > was.seq) && copyHash(mirror.links, was.count) === was.copyHash;
+    (mirror.links.length > was.count || head.seq > was.seq) && samePrefix(mirror.links, was);
 }
 
 /* the grant ids the copy has seen opened (grant-create links) */
@@ -656,6 +719,7 @@ function sealedStart(mirror: Mirror, head: {seq: number}, key: EdgeCopyKey | nul
 /** The Sync button: the next check of this key's copy is a full one, from the root. */
 export function forgetVerifiedFor(deviceId: Uint8Array) {
   verifiedNow.delete(toHex(deviceId));
+  inMemory.delete(toHex(deviceId)); /* from storage, as at a start: an edit made there shows now */
   answers.delete(toHex(deviceId));
 }
 
@@ -663,112 +727,40 @@ export function forgetVerifiedFor(deviceId: Uint8Array) {
 /*
  * WHAT THIS SESSION ALREADY VERIFIED - IN MEMORY ONLY (Brad, 2026-10-05: a
  * pull-down re-checked the whole chain every time). Keyed by the key's head AND
- * the SHA-256 of the stored copy: the copy on disk is untrusted (S3), and an
- * edit to it that leaves the head where it was must not stay green. Never
- * saved - a restart checks in full.
+ * the copy's records (option A: the same objects in memory - what this session
+ * checked; a changed or removed record is a different object). Never saved - a
+ * restart reads the copy from storage and checks it again.
  *   nothing here (app start)        -> full check
  *   same head, same copy            -> skip: the result from memory
  *   head moved, older part the same -> only the new links, from the verified head
  *   anything else (copy changed)    -> full check (red if it fails)
  */
 /* seq/head: the key's head then; count/lastSeq/lastHead: the copy's links then, and its last one (whose stored head the full check confirmed) */
-type Verified = {seq: number; head: string; count: number; lastSeq: number; lastHead: string; copyHash: string; verdict: Verdict; unverified: number[]};
+type Verified = {seq: number; head: string; count: number; lastSeq: number; lastHead: string; records: EdgeLinkRecord[]; verdict: Verdict; unverified: number[]};
+/* the copy holds exactly the records this session verified / starts with them (the rest appended) */
+function samePrefix(links: EdgeLinkRecord[], was: {records: EdgeLinkRecord[]}): boolean {
+  if (links.length < was.records.length) return false;
+  for (let i = 0; i < was.records.length; i++) if (links[i] !== was.records[i]) return false;
+  return true;
+}
+function sameCopy(links: EdgeLinkRecord[], was: {records: EdgeLinkRecord[]}): boolean {
+  return links.length === was.records.length && samePrefix(links, was);
+}
 const verifiedNow = new Map<string, Verified>();
 /** for tests: forget what this session verified, as a restart does */
 export function forgetVerified() {
   verifiedNow.clear();
+  inMemory.clear(); /* a restart reads the copy from storage again */
+  storedText.clear();
   answers.clear(); /* the one chain state forgets too: a restart */
   asking.clear();
 }
 /*
  * WHERE THE VERIFY TIME GOES (A13, 2026-10-07: "verify 740" on a check that was
- * skipped). Summed over a sync, printed in its log line: decode, hash, check, rows.
+ * skipped). Summed over a sync, printed in its log line: decode, tickets, check, rows.
  */
 let vlaps: Record<string, number> = {};
 const vlap = (n: string, t0: number) => { vlaps[n] = (vlaps[n] ?? 0) + Date.now() - t0; };
-/*
- * ONE PASS (Pixel, 2026-10-07: "hash 264-480" of a 300-620 ms verify). A sync hashed
- * the whole copy two to four times: shortPath, then evaluate, each over the whole copy
- * and over the part this session verified. One pass now gives every count asked for
- * (the hash state is cloned at each), kept for THIS links array only: every sync loads
- * the copy fresh from storage, so an edit to the stored copy is always hashed again
- * (BLOCKS.md 2a rule 3). In a sync the array only grows, and the memo is checked
- * against its length.
- *
- * IN CHUNKS (the cheap half of "the check off the JS thread"): primeCopyHash runs
- * the same pass HASH_CHUNK links at a time and gives the JS thread back in between -
- * the thread that answers Bluetooth. The check itself then finds the hashes ready.
- */
-const HASH_CHUNK = 64;
-const hashMemo = new WeakMap<EdgeLinkRecord[], {n: number; at: Map<number, string>}>();
-function* hashSteps(links: EdgeLinkRecord[], counts: number[], at: Map<number, string>) {
-  const want = new Set(counts.filter(c => c >= 0 && c <= links.length));
-  const h = sha256.create();
-  if (want.has(0)) at.set(0, toHex(h.clone().digest()));
-  for (let i = 0; i < links.length; i++) {
-    const r = links[i];
-    h.update(r.link);
-    h.update(r.head);
-    h.update(r.reveal ?? new Uint8Array(0));
-    h.update(Uint8Array.of(r.reveal ? 1 : 0));
-    if (want.has(i + 1)) at.set(i + 1, toHex(h.clone().digest()));
-    if ((i + 1) % HASH_CHUNK === 0) yield;
-  }
-}
-function memoFor(links: EdgeLinkRecord[]) {
-  const m = hashMemo.get(links);
-  if (m && m.n === links.length) return m;
-  const fresh = {n: links.length, at: new Map<number, string>()};
-  hashMemo.set(links, fresh);
-  return fresh;
-}
-/*
- * IN OPENSSL when the app has it (okSslCrypto.ts): the same bytes in the same order,
- * one native pass, every count at once - no chunks needed, it takes a few ms.
- */
-function nativeHashes(links: EdgeLinkRecord[], counts: number[], at: Map<number, string>): boolean {
-  const want = [...new Set(counts.filter(c => c >= 0 && c <= links.length))].sort((a, b) => a - b);
-  let size = 0;
-  for (const r of links) size += r.link.length + r.head.length + (r.reveal?.length ?? 0) + 1;
-  const all = new Uint8Array(size);
-  const ends = [0];
-  let o = 0;
-  for (const r of links) {
-    all.set(r.link, o); o += r.link.length;
-    all.set(r.head, o); o += r.head.length;
-    if (r.reveal) { all.set(r.reveal, o); o += r.reveal.length; }
-    all[o++] = r.reveal ? 1 : 0;
-    ends.push(o);
-  }
-  const got = copyHashCuts(all, want.map(c => ends[c]));
-  if (!got) return false;
-  want.forEach((c, i) => at.set(c, got[i]));
-  return true;
-}
-function copyHash(links: EdgeLinkRecord[], count = links.length): string {
-  const m = memoFor(links);
-  const got = m.at.get(count);
-  if (got !== undefined) return got;
-  const t0 = Date.now();
-  if (nativeHashes(links, [count, links.length], m.at)) { vlap('hash', t0); return m.at.get(count)!; }
-  for (const _ of hashSteps(links, [count, links.length], m.at)) { /* all at once */ }
-  vlap('hash', t0);
-  return m.at.get(count)!;
-}
-/** the same pass, a chunk at a time, before a check (counts: the parts it will ask for) */
-async function primeCopyHash(links: EdgeLinkRecord[], counts: number[]): Promise<void> {
-  const m = memoFor(links);
-  const missing = [links.length, ...counts].filter(c => c >= 0 && c <= links.length && !m.at.has(c));
-  if (!missing.length) return;
-  let t0 = Date.now();
-  if (nativeHashes(links, missing, m.at)) { vlap('hash', t0); return; }
-  for (const _ of hashSteps(links, missing, m.at)) {
-    vlap('hash', t0);
-    await new Promise<void>(r => setTimeout(r, 0));
-    t0 = Date.now();
-  }
-  vlap('hash', t0);
-}
 /* the path each verdict took, for the log and the tests: not saved, nothing sensitive */
 let lastCheck: 'full' | 'new-links' | 'sealed' | 'skipped' | null = null;
 export function lastCheckPath() {
@@ -794,7 +786,6 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
   }
   const id = toHex(mirror.deviceId);
   const headHex = toHex(head.head);
-  const hash = copyHash(mirror.links);
   const tc = Date.now();
   const viewOf = (verdict: Verdict, unverified: Set<number>): EdgeView => {
     vlap('check', tc);
@@ -816,16 +807,16 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
   if (key?.checkpoint && !cp) console.log(`[edge] verify ${id.slice(0, 8)}: the key's checkpoint is for #${key.checkpoint.seq}, the head read was #${head.seq} - a link landed during the sync; checked without it`);
   const remember = (verdict: Verdict, unverified: number[]) => {
     const last = decoded[decoded.length - 1];
-    verifiedNow.set(id, {seq: head.seq, head: headHex, count: mirror.links.length, lastSeq: last ? last.f.seq : -1, lastHead: last ? toHex(last.r.head) : '', copyHash: hash, verdict, unverified});
+    verifiedNow.set(id, {seq: head.seq, head: headHex, count: mirror.links.length, lastSeq: last ? last.f.seq : -1, lastHead: last ? toHex(last.r.head) : '', records: mirror.links.slice(), verdict, unverified});
   };
-  if (was && was.seq === head.seq && was.head === headHex && was.copyHash === hash) {
+  if (was && was.seq === head.seq && was.head === headHex && sameCopy(mirror.links, was)) {
     lastCheck = 'skipped';
     console.log(`[edge] verify ${id.slice(0, 8)}: skipped (same head #${head.seq}, same copy)`);
     return viewOf(was.verdict, new Set(was.unverified));
   }
   /*
    * A verified copy may carry losses the person accepted (R24) - older history,
-   * unchanged while its hash is: they and the seqs they leave unverified carry
+   * unchanged while its records are: they and the seqs they leave unverified carry
    * over, and only the links after the copy's last verified one are new - the
    * key's head moved, or the copy caught up with links the key's ring held
    * (seen on the Pixel: a restart checked the copy, then the sync appended
@@ -834,7 +825,7 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
    */
   const grew = was && (mirror.links.length > was.count || head.seq > was.seq);
   if (was && grew && was.verdict.kind === 'verified' && was.count > 0 && was.count <= mirror.links.length &&
-      copyHash(mirror.links, was.count) === was.copyHash) {
+      samePrefix(mirror.links, was)) {
     const a = copy.assess(
       {links: mirror.links, openings: key?.openings ?? {}},
       {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: cp},
@@ -883,7 +874,7 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
   } else {
     if (a) console.log(`[edge] verify ${id.slice(0, 8)}: the sealed start was not clean (${a.chain.failure ? `${a.chain.failure.reason} at #${a.chain.failure.seq}` : `${a.chain.gaps.length} gap(s), ${a.open.length} open`}) - full check`);
     lastCheck = 'full';
-    console.log(`[edge] verify ${id.slice(0, 8)}: full check through #${head.seq}${was && was.seq === head.seq && was.copyHash !== hash ? ' (the stored copy changed under the same head)' : ''}`);
+    console.log(`[edge] verify ${id.slice(0, 8)}: full check through #${head.seq}${was && was.seq === head.seq && !sameCopy(mirror.links, was) ? ' (the copy changed under the same head)' : ''}`);
     a = assessWith(null);
   }
   const result = a.chain;
@@ -904,22 +895,22 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
  * THE TICKET PAIRING, ONCE PER COPY (A13, 2026-10-07: "rows 215" on every sync, a
  * skipped one too - one block on the JS thread that answers Bluetooth). Pairing
  * every use with its ticket and checking each ticket's message hash is the same
- * answer while the links and the messages are the same; the key is the copy's hash
- * (from the one hashing pass) and the stored messages as they are now, compared in
- * full - an edited message in storage still pairs again and shows its mismatch.
+ * answer while the links and the messages are the same: the same records (option A)
+ * and the messages as they are now, compared in full - a changed message pairs again
+ * and shows its mismatch.
  */
 /* one per chain: the A13 keeps the Pixel's chain too, and one slot was taken in turns */
-const pairedMemo = new Map<string, {key: string; bySeq: Map<number, ReturnType<typeof tickets.pairTickets>['uses'][number]>}>();
+const pairedMemo = new Map<string, {records: EdgeLinkRecord[]; messages: string; bySeq: Map<number, ReturnType<typeof tickets.pairTickets>['uses'][number]>}>();
 function ticketsBySeq(mirror: Mirror) {
   const id = toHex(mirror.deviceId);
-  const key = copyHash(mirror.links) + '|' + JSON.stringify(mirror.messages ?? {});
+  const messages = JSON.stringify(mirror.messages ?? {});
   const was = pairedMemo.get(id);
-  if (was?.key === key) return was.bySeq;
+  if (was && was.messages === messages && sameCopy(mirror.links, was)) return was.bySeq;
   const t0 = Date.now();
   const paired = tickets.pairTickets(mirror.links, mirror.messages);
   vlap('tickets', t0);
   const bySeq = new Map(paired.uses.map(u => [u.seq, u]));
-  pairedMemo.set(id, {key, bySeq});
+  pairedMemo.set(id, {records: mirror.links.slice(), messages, bySeq});
   return bySeq;
 }
 
@@ -963,11 +954,16 @@ async function tamperNow(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
     return m;
   }
   if (m.links.length < 3) return m;
-  if (how === 'flip') m.links[mid].link[20] ^= 0x01;
+  const flipped = (i: number) => {
+    const link = m.links[i].link.slice();
+    link[20] ^= 0x01;
+    m.links[i] = {...m.links[i], link};
+  };
+  if (how === 'flip') flipped(mid);
   /* the newest TICKET link (Brad, 2026-10-06: "edit a stored ticket and it shows red"); a second flip restores it */
   if (how === 'ticket') {
     const at = m.links.map(r => chain.decodeLink(r.link).op).lastIndexOf(OP_TICKET);
-    if (at >= 0) m.links[at].link[20] ^= 0x01;
+    if (at >= 0) flipped(at);
   }
   if (how === 'delete') m.links.splice(mid, 1);
   if (how === 'swap') [m.links[mid], m.links[mid + 1]] = [m.links[mid + 1], m.links[mid]];
