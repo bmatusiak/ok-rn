@@ -31,6 +31,13 @@ import 'react-native-get-random-values';
  */
 import './src/installWebCrypto';
 
+/*
+ * THIRD: Edge's checks in OpenSSL instead of JS, before any check runs (A13,
+ * 2026-10-07: ~1 s a sync of JS crypto). It checks OpenSSL against the JS first
+ * and stays in JS if they differ - see src/okSslCrypto.ts.
+ */
+import './src/okSslCrypto';
+
 import React from 'react';
 import { AppRegistry } from 'react-native';
 import { name as appName } from './app.json';

@@ -21,4 +21,12 @@ object OkSsl {
   @JvmStatic external fun version(): String
   @JvmStatic external fun randStatus(): Boolean
   @JvmStatic external fun randomBytes(n: Int): ByteArray
+
+  /* Edge's checks (okssl.cpp "EDGE'S CHECKS IN OPENSSL"): hex in, hex or a verdict out, synchronous */
+  @JvmStatic external fun sha256Hex(hex: String): String
+  @JvmStatic external fun sha256RepeatHex(hex: String, times: Int): String
+  @JvmStatic external fun sha256CutsHex(hex: String, cutsCsv: String): String
+  @JvmStatic external fun hmacSha256Hex(keyHex: String, msgHex: String): String
+  @JvmStatic external fun p256VerifyDigestHex(sigHex: String, digestHex: String, pubHex: String): Boolean
+  @JvmStatic external fun ed25519VerifyHex(sigHex: String, msgHex: String, pubHex: String): Boolean
 }

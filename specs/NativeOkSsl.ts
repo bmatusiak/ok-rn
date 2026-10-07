@@ -14,6 +14,16 @@ export interface Spec extends TurboModule {
   randStatus(): Promise<boolean>;
   /** RAND_bytes(n), hex. 1..65536 bytes. */
   randomBytes(n: number): Promise<string>;
+  /*
+   * Edge's checks in OpenSSL, SYNCHRONOUS (the library's checks are): the crypto
+   * provider ok-rn plugs into node-onlykey-lib (src/okSslCrypto.ts). Hex in and out.
+   */
+  sha256Hex(hex: string): string;
+  sha256RepeatHex(hex: string, times: number): string;
+  sha256CutsHex(hex: string, cutsCsv: string): string;
+  hmacSha256Hex(keyHex: string, msgHex: string): string;
+  p256VerifyDigestHex(sigHex: string, digestHex: string, pubHex: string): boolean;
+  ed25519VerifyHex(sigHex: string, msgHex: string, pubHex: string): boolean;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('NativeOkSsl');

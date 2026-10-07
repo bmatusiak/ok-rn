@@ -15,9 +15,13 @@
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
 #include <openssl/err.h>
+#include <openssl/ecdsa.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/param_build.h>
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -141,4 +145,202 @@ Java_com_okrn_okssl_OkSsl_rsaPrimes(JNIEnv *env, jclass, jint bits, jint publicE
   EVP_PKEY_free(key);
   EVP_PKEY_CTX_free(ctx);
   return result;
+}
+
+/*
+ * EDGE'S CHECKS IN OPENSSL (A13, 2026-10-07: ~1 s a sync of SHA-256 and P-256 in JS
+ * under Hermes; Brad: "try not to use JS crypto if okssl can provide it as a faster
+ * version"). The library's crypto provider (node-onlykey-lib src/crypto/provider.js)
+ * calls these SYNCHRONOUSLY, as its checks are synchronous - so they take and give
+ * hex strings straight across JNI (no Kotlin loops) and do one small job each. The
+ * verdict rules (P-256 lowS, input lengths) stay in the provider, so OpenSSL and the
+ * JS answer the same; here a bad input is an exception or false, never a guess.
+ */
+namespace {
+
+int nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+/* hex -> bytes; false on an odd length or a non-hex character */
+bool unhex(JNIEnv *env, jstring hex, std::vector<unsigned char> &out) {
+  if (!hex) return false;
+  const char *s = env->GetStringUTFChars(hex, nullptr);
+  if (!s) return false;
+  const size_t n = static_cast<size_t>(env->GetStringUTFLength(hex));
+  bool ok = n % 2 == 0;
+  out.assign(n / 2, 0);
+  for (size_t i = 0; ok && i < n / 2; i++) {
+    const int hi = nibble(s[2 * i]), lo = nibble(s[2 * i + 1]);
+    if (hi < 0 || lo < 0) ok = false;
+    else out[i] = static_cast<unsigned char>(hi << 4 | lo);
+  }
+  env->ReleaseStringUTFChars(hex, s);
+  return ok;
+}
+
+const char HEX_DIGITS[] = "0123456789abcdef";
+
+void appendHex(std::string &s, const unsigned char *data, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    s += HEX_DIGITS[data[i] >> 4];
+    s += HEX_DIGITS[data[i] & 15];
+  }
+}
+
+jstring hexOf(JNIEnv *env, const unsigned char *data, size_t n) {
+  std::string s;
+  s.reserve(n * 2);
+  appendHex(s, data, n);
+  return env->NewStringUTF(s.c_str());
+}
+
+bool needHex(JNIEnv *env, jstring hex, std::vector<unsigned char> &out, const char *what) {
+  if (unhex(env, hex, out)) return true;
+  throwError(env, std::string(what) + ": not hex");
+  return false;
+}
+
+const EVP_MD *sha256Md() {
+  static EVP_MD *md = EVP_MD_fetch(nullptr, "SHA256", nullptr);
+  return md;
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_okrn_okssl_OkSsl_sha256Hex(JNIEnv *env, jclass, jstring hex) {
+  std::vector<unsigned char> in;
+  if (!needHex(env, hex, in, "sha256")) return nullptr;
+  unsigned char out[32];
+  unsigned int n = 0;
+  if (!EVP_Digest(in.data(), in.size(), out, &n, sha256Md(), nullptr)) { throwError(env, "sha256"); return nullptr; }
+  return hexOf(env, out, n);
+}
+
+/* SHA-256 applied `times` times (a budget's hash chain: up to 1,024 a reveal) */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_okrn_okssl_OkSsl_sha256RepeatHex(JNIEnv *env, jclass, jstring hex, jint times) {
+  std::vector<unsigned char> x;
+  if (!needHex(env, hex, x, "sha256Repeat")) return nullptr;
+  if (times < 0) { throwError(env, "sha256Repeat: negative count"); return nullptr; }
+  unsigned char out[32];
+  unsigned int n = 0;
+  for (jint k = 0; k < times; k++) {
+    if (!EVP_Digest(x.data(), x.size(), out, &n, sha256Md(), nullptr)) { throwError(env, "sha256Repeat"); return nullptr; }
+    x.assign(out, out + n);
+  }
+  return hexOf(env, x.data(), x.size());
+}
+
+/*
+ * One pass over a byte string, the digest of each prefix asked for: cuts are byte
+ * offsets, comma-separated, ascending. -> the digests, comma-separated, same order.
+ * (ok-rn's copy hash: the whole stored copy and the part this session verified.)
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_okrn_okssl_OkSsl_sha256CutsHex(JNIEnv *env, jclass, jstring hex, jstring cutsCsv) {
+  std::vector<unsigned char> in;
+  if (!needHex(env, hex, in, "sha256Cuts")) return nullptr;
+  const char *c = cutsCsv ? env->GetStringUTFChars(cutsCsv, nullptr) : nullptr;
+  const std::string cuts = c ? c : "";
+  if (c) env->ReleaseStringUTFChars(cutsCsv, c);
+  EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+  EVP_MD_CTX *fork = EVP_MD_CTX_new();
+  std::string result;
+  size_t at = 0, pos = 0;
+  bool ok = ctx && fork && EVP_DigestInit_ex(ctx, sha256Md(), nullptr);
+  while (ok && pos < cuts.size()) {
+    size_t comma = cuts.find(',', pos);
+    if (comma == std::string::npos) comma = cuts.size();
+    const std::string one = cuts.substr(pos, comma - pos);
+    pos = comma + 1;
+    char *end = nullptr;
+    const unsigned long cut = std::strtoul(one.c_str(), &end, 10);
+    if (one.empty() || *end || cut < at || cut > in.size()) { ok = false; break; }
+    if (cut > at && !EVP_DigestUpdate(ctx, in.data() + at, cut - at)) { ok = false; break; }
+    at = cut;
+    unsigned char out[32];
+    unsigned int n = 0;
+    if (!EVP_MD_CTX_copy_ex(fork, ctx) || !EVP_DigestFinal_ex(fork, out, &n)) { ok = false; break; }
+    if (!result.empty()) result += ',';
+    appendHex(result, out, n);
+  }
+  EVP_MD_CTX_free(fork);
+  EVP_MD_CTX_free(ctx);
+  if (!ok) { throwError(env, "sha256Cuts: bad cut list"); return nullptr; }
+  return env->NewStringUTF(result.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_okrn_okssl_OkSsl_hmacSha256Hex(JNIEnv *env, jclass, jstring keyHex, jstring msgHex) {
+  std::vector<unsigned char> key, msg;
+  if (!needHex(env, keyHex, key, "hmac key") || !needHex(env, msgHex, msg, "hmac msg")) return nullptr;
+  unsigned char out[32];
+  unsigned int n = 0;
+  if (!HMAC(sha256Md(), key.data(), static_cast<int>(key.size()), msg.data(), msg.size(), out, &n)) {
+    throwError(env, "hmacSha256");
+    return nullptr;
+  }
+  return hexOf(env, out, n);
+}
+
+/* P-256 over a 32-byte digest: sig r||s (64), pub SEC1 0x04||x||y (65). Anything malformed: false. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_okrn_okssl_OkSsl_p256VerifyDigestHex(JNIEnv *env, jclass, jstring sigHex, jstring digestHex, jstring pubHex) {
+  std::vector<unsigned char> sig, digest, pub;
+  if (!unhex(env, sigHex, sig) || !unhex(env, digestHex, digest) || !unhex(env, pubHex, pub)) return JNI_FALSE;
+  if (sig.size() != 64 || digest.size() != 32 || pub.size() != 65 || pub[0] != 0x04) return JNI_FALSE;
+  bool good = false;
+  EVP_PKEY *key = nullptr;
+  OSSL_PARAM_BLD *bld = OSSL_PARAM_BLD_new();
+  OSSL_PARAM *params = nullptr;
+  EVP_PKEY_CTX *mk = EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr);
+  ECDSA_SIG *es = ECDSA_SIG_new();
+  BIGNUM *r = BN_bin2bn(sig.data(), 32, nullptr);
+  BIGNUM *s = BN_bin2bn(sig.data() + 32, 32, nullptr);
+  unsigned char *der = nullptr;
+  EVP_PKEY_CTX *vctx = nullptr;
+  if (bld && mk && es && r && s &&
+      OSSL_PARAM_BLD_push_utf8_string(bld, OSSL_PKEY_PARAM_GROUP_NAME, "prime256v1", 0) &&
+      OSSL_PARAM_BLD_push_octet_string(bld, OSSL_PKEY_PARAM_PUB_KEY, pub.data(), pub.size()) &&
+      (params = OSSL_PARAM_BLD_to_param(bld)) != nullptr &&
+      EVP_PKEY_fromdata_init(mk) > 0 && EVP_PKEY_fromdata(mk, &key, EVP_PKEY_PUBLIC_KEY, params) > 0 &&
+      ECDSA_SIG_set0(es, r, s)) {
+    r = s = nullptr; /* owned by es now */
+    const int derLen = i2d_ECDSA_SIG(es, &der);
+    vctx = EVP_PKEY_CTX_new_from_pkey(nullptr, key, nullptr);
+    good = derLen > 0 && vctx && EVP_PKEY_verify_init(vctx) > 0 &&
+           EVP_PKEY_verify(vctx, der, static_cast<size_t>(derLen), digest.data(), digest.size()) == 1;
+  }
+  OPENSSL_free(der);
+  EVP_PKEY_CTX_free(vctx);
+  BN_free(r);
+  BN_free(s);
+  ECDSA_SIG_free(es);
+  EVP_PKEY_CTX_free(mk);
+  OSSL_PARAM_free(params);
+  OSSL_PARAM_BLD_free(bld);
+  EVP_PKEY_free(key);
+  ERR_clear_error();
+  return good ? JNI_TRUE : JNI_FALSE;
+}
+
+/* Ed25519, RFC 8032 strict (OpenSSL's own rule). Anything malformed: false. */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_okrn_okssl_OkSsl_ed25519VerifyHex(JNIEnv *env, jclass, jstring sigHex, jstring msgHex, jstring pubHex) {
+  std::vector<unsigned char> sig, msg, pub;
+  if (!unhex(env, sigHex, sig) || !unhex(env, msgHex, msg) || !unhex(env, pubHex, pub)) return JNI_FALSE;
+  if (sig.size() != 64 || pub.size() != 32) return JNI_FALSE;
+  EVP_PKEY *key = EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr, pub.data(), pub.size());
+  EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+  const bool good = key && ctx && EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, key) > 0 &&
+                    EVP_DigestVerify(ctx, sig.data(), sig.size(), msg.data(), msg.size()) == 1;
+  EVP_MD_CTX_free(ctx);
+  EVP_PKEY_free(key);
+  ERR_clear_error();
+  return good ? JNI_TRUE : JNI_FALSE;
 }

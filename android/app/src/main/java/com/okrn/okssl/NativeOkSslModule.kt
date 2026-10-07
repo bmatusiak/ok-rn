@@ -41,6 +41,19 @@ class NativeOkSslModule(reactContext: ReactApplicationContext) :
     }.start()
   }
 
+  /*
+   * Edge's checks, SYNCHRONOUS on the JS thread (the library's checks are): each is
+   * one small native call, far quicker than the JS it replaces (A13, 2026-10-07).
+   */
+  override fun sha256Hex(hex: String): String = OkSsl.sha256Hex(hex)
+  override fun sha256RepeatHex(hex: String, times: Double): String = OkSsl.sha256RepeatHex(hex, times.toInt())
+  override fun sha256CutsHex(hex: String, cutsCsv: String): String = OkSsl.sha256CutsHex(hex, cutsCsv)
+  override fun hmacSha256Hex(keyHex: String, msgHex: String): String = OkSsl.hmacSha256Hex(keyHex, msgHex)
+  override fun p256VerifyDigestHex(sigHex: String, digestHex: String, pubHex: String): Boolean =
+    OkSsl.p256VerifyDigestHex(sigHex, digestHex, pubHex)
+  override fun ed25519VerifyHex(sigHex: String, msgHex: String, pubHex: String): Boolean =
+    OkSsl.ed25519VerifyHex(sigHex, msgHex, pubHex)
+
   companion object {
     const val NAME = NativeOkSslSpec.NAME
   }

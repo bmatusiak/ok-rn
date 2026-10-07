@@ -18,6 +18,7 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
 import {computerHeldMs} from './vendorBridge';
+import {copyHashCuts} from './okSslCrypto';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
@@ -721,11 +722,35 @@ function memoFor(links: EdgeLinkRecord[]) {
   hashMemo.set(links, fresh);
   return fresh;
 }
+/*
+ * IN OPENSSL when the app has it (okSslCrypto.ts): the same bytes in the same order,
+ * one native pass, every count at once - no chunks needed, it takes a few ms.
+ */
+function nativeHashes(links: EdgeLinkRecord[], counts: number[], at: Map<number, string>): boolean {
+  const want = [...new Set(counts.filter(c => c >= 0 && c <= links.length))].sort((a, b) => a - b);
+  let size = 0;
+  for (const r of links) size += r.link.length + r.head.length + (r.reveal?.length ?? 0) + 1;
+  const all = new Uint8Array(size);
+  const ends = [0];
+  let o = 0;
+  for (const r of links) {
+    all.set(r.link, o); o += r.link.length;
+    all.set(r.head, o); o += r.head.length;
+    if (r.reveal) { all.set(r.reveal, o); o += r.reveal.length; }
+    all[o++] = r.reveal ? 1 : 0;
+    ends.push(o);
+  }
+  const got = copyHashCuts(all, want.map(c => ends[c]));
+  if (!got) return false;
+  want.forEach((c, i) => at.set(c, got[i]));
+  return true;
+}
 function copyHash(links: EdgeLinkRecord[], count = links.length): string {
   const m = memoFor(links);
   const got = m.at.get(count);
   if (got !== undefined) return got;
   const t0 = Date.now();
+  if (nativeHashes(links, [count, links.length], m.at)) { vlap('hash', t0); return m.at.get(count)!; }
   for (const _ of hashSteps(links, [count, links.length], m.at)) { /* all at once */ }
   vlap('hash', t0);
   return m.at.get(count)!;
@@ -736,6 +761,7 @@ async function primeCopyHash(links: EdgeLinkRecord[], counts: number[]): Promise
   const missing = [links.length, ...counts].filter(c => c >= 0 && c <= links.length && !m.at.has(c));
   if (!missing.length) return;
   let t0 = Date.now();
+  if (nativeHashes(links, missing, m.at)) { vlap('hash', t0); return; }
   for (const _ of hashSteps(links, missing, m.at)) {
     vlap('hash', t0);
     await new Promise<void>(r => setTimeout(r, 0));
