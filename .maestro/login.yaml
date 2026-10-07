@@ -1,0 +1,58 @@
+# Log the soft key in and land on the Edge tab - the UI flow a person does first.
+#
+#   maestro --device <serial> test -e PIN=<pin> [-e MODE=testing] .maestro/login.yaml
+#
+# MODE=login (default) is the normal "Log in" (the A13, Brad's phone - only while
+# debugging Bluetooth there, his rule of 2026-10-07). MODE=testing is "Enter testing
+# mode" (the Pixel). The PIN always comes from the command line, never this file.
+appId: com.okrn
+env:
+  MODE: login
+---
+# a fresh start: the flow begins at the login screen whatever state the app was in
+- launchApp:
+    appId: com.okrn
+    stopApp: true
+- runFlow:
+    when:
+      true: ${MODE == 'testing'}
+    commands:
+      - tapOn: "Enter testing mode"
+      - tapOn: "Menu"
+      - tapOn: "This Key"
+- runFlow:
+    when:
+      true: ${MODE == 'login'}
+    commands:
+      - tapOn: "Log in"
+- extendedWaitUntil:
+    visible: "Enter your PIN on the keypad."
+    timeout: 20000
+# one tap per digit of the PIN, on the keypad's "Button n", at least 200 ms apart
+# (Brad, 2026-10-07: the keypad's login timing). Maestro has no plain sleep: waiting
+# for text that is never there, optional, is a fixed 200 ms pause.
+- evalScript: ${output.digits = PIN.split('')}
+- repeat:
+    times: ${output.digits.length}
+    commands:
+      - evalScript: ${output.d = output.digits.shift()}
+      # no retry: Maestro re-taps when it sees no change, and on a keypad that is a second digit
+      - tapOn:
+          text: "Button ${output.d}"
+          retryTapIfNoChange: false
+          waitToSettleTimeoutMs: 200
+      - extendedWaitUntil:
+          visible: "__pause_200ms__"
+          timeout: 200
+          optional: true
+- extendedWaitUntil:
+    visible: "unlocked"
+    timeout: 20000
+- tapOn:
+    text: "Menu"
+    waitToSettleTimeoutMs: 500
+- tapOn:
+    text: "Edge"
+    waitToSettleTimeoutMs: 500
+# the heading reads "▲ Edge Management" - Maestro matches the whole text, so a pattern
+- assertVisible: ".*Edge Management"

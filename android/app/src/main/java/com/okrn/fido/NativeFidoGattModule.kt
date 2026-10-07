@@ -762,6 +762,13 @@ class NativeFidoGattModule(
   @SuppressLint("MissingPermission")
   private fun beginAdvertising(): Boolean {
     val leAdvertiser = advertiser ?: return false
+    /*
+     * One start at a time: a start still registering is left to finish (see
+     * Held.advertisingStartedAt). Capped, so a callback that never comes cannot
+     * keep the advertisement off the air.
+     */
+    val inFlight = Held.advertisingStartedAt
+    if (inFlight != 0L && android.os.SystemClock.elapsedRealtime() - inFlight < START_IN_FLIGHT_MS) return true
     return try {
       // Stopping first is harmless when nothing is running, and avoids
       // ALREADY_STARTED on the paths where something is.
@@ -783,6 +790,7 @@ class NativeFidoGattModule(
         .addServiceUuid(ParcelUuid(FIDO_SERVICE_UUID))
         .build()
 
+      Held.advertisingStartedAt = android.os.SystemClock.elapsedRealtime()
       leAdvertiser.startAdvertising(settings, data, advertiseCallback)
       Held.wantAdvertising = true
       armWatchdog()
@@ -977,6 +985,8 @@ class NativeFidoGattModule(
   private fun stopEverything() {
     Held.wantAdvertising = false
     Held.advertisingOn = false
+    /* an explicit stop ends any start in flight: the next start is a fresh one */
+    Held.advertisingStartedAt = 0L
     try {
       advertiser?.stopAdvertising(advertiseCallback)
     } catch (_: Exception) {
@@ -2045,6 +2055,18 @@ class NativeFidoGattModule(
       /** What IS true: set by onStartSuccess, cleared when the controller stops it. */
       @Volatile var advertisingOn = false
       /*
+       * A START IN FLIGHT (2026-10-07, the A13). One disconnect fires two restarts
+       * ~40 ms apart: the GATT server's disconnect callback and the ACL_DISCONNECTED
+       * broadcast (reassert). advertisingOn is still false between startAdvertising()
+       * and onStartSuccess, so the second restart ran too - and beginAdvertising()
+       * stops before it starts, so it stopped the first start mid-registration. The
+       * A13's stack logged "advertiser not finished registration yet", lost the
+       * callback for that set ("no callback found for regId"), and the next host
+       * connect took ~18 s or failed ("Device is unreachable while discovering
+       * services", 1 run in 10). The time a start went out; 0 = none in flight.
+       */
+      @Volatile var advertisingStartedAt = 0L
+      /*
        * The callback belongs to the PROCESS, not the instance: stopAdvertising()
        * only stops the set that was started with the same callback object, so
        * a per-instance callback let every new module instance start a second
@@ -2054,9 +2076,11 @@ class NativeFidoGattModule(
       val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
           advertisingOn = true
+          advertisingStartedAt = 0L
         }
         override fun onStartFailure(errorCode: Int) {
           advertisingOn = false
+          advertisingStartedAt = 0L
           live?.setState(STATE_ERROR, "advertising failed with code $errorCode")
         }
       }
@@ -2172,6 +2196,8 @@ class NativeFidoGattModule(
      */
     private const val WATCHDOG_ENABLED = true
     private const val WATCHDOG_MS = 6_000L
+    /* a start not confirmed in this long is treated as lost (see Held.advertisingStartedAt) */
+    private const val START_IN_FLIGHT_MS = 2_000L
     /* where our FIDO service was when a computer last read it (fidoKnownHandle) */
     private const val LAYOUT_PREFS = "okrn.fido.layout"
     private const val KEY_KNOWN_FIDO_HANDLE = "knownFidoHandle"

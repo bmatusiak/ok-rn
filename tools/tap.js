@@ -18,6 +18,25 @@
  */
 'use strict';
 
+/*
+ * --brad-exception drives the A13 and nothing else: it is found by its model,
+ * because its wireless adb address changes on every reconnect - and the command
+ * line Brad's permission rule allows must stay the same. Picked BEFORE ./ui loads
+ * ./adb, which reads ANDROID_SERIAL once.
+ */
+if (process.argv.includes('--brad-exception') && !process.env.ANDROID_SERIAL) {
+  const {execFileSync} = require('child_process');
+  const {ADB} = require('./adb');
+  const listed = execFileSync(ADB, ['devices'], {encoding: 'utf8'}).split(/\r?\n/).slice(1)
+    .map((l) => l.split('\t')).filter((p) => p[1] === 'device').map((p) => p[0]);
+  const a13 = listed.find((s) => {
+    try { return execFileSync(ADB, ['-s', s, 'shell', 'getprop', 'ro.product.model'], {encoding: 'utf8'}).trim() === 'SM-S136DL'; } catch { return false; }
+  });
+  if (!a13) { process.stderr.write('tap: --brad-exception needs the A13 (SM-S136DL) on adb - not found\n'); process.exit(2); }
+  process.env.ANDROID_SERIAL = a13;
+  delete require.cache[require.resolve('./adb')];
+}
+
 const {dumpUi, tapText, visibleLabels, sleep, allLabels, swipeUp, swipeDown} = require('./ui');
 
 const trace = message => process.stdout.write(`  · ${message}\n`);
@@ -54,7 +73,25 @@ async function main() {
    */
   const SENSITIVE = /^(Approve|Press the soft key|Confirm|Yes, waive|Waive…|Accept loss.*|Yes, accept loss.*|Yes, let it sign as me)$/;
   const sensitive = labels.filter((l) => SENSITIVE.test(l));
-  if (sensitive.length) {
+  /*
+   * BRAD'S EXCEPTION (2026-10-07: "so you can drive the whole process", after being
+   * told it means the agent approving its own budget). On the A13 TEST build - the
+   * red "TEST BUILD - debugging lock OFF" banner on screen - Claude may approve and
+   * press its own work budgets. Allowed only with that banner showing, and every tap
+   * is logged (logs/consent-taps.log: when, which phone, which button, the request on
+   * screen). Rule 10 is unchanged everywhere else.
+   */
+  if (sensitive.length && args.includes('--brad-exception')) {
+    const seen = allLabels(dumpUi({trace}));
+    if (!seen.some((t) => /^TEST BUILD - debugging lock OFF/.test(t))) {
+      throw new Error('refused: --brad-exception only on the TEST build (its red banner is not on screen)');
+    }
+    const fsx = require('fs');
+    const pathx = require('path');
+    const logf = pathx.join(__dirname, '..', '..', 'logs', 'consent-taps.log');
+    const request = seen.filter((t) => /asks for|uses without a press|^Sign · /.test(t)).join(' | ');
+    fsx.appendFileSync(logf, `${new Date().toISOString()} ${process.env.ANDROID_SERIAL || '?'} tap "${sensitive.join('", "')}" on: ${request || seen.slice(0, 4).join(' | ')}\n`);
+  } else if (sensitive.length) {
     if (!args.includes('--test')) {
       throw new Error(`refused (spec rule 10): "${sensitive.join('", "')}" is a consent tap - automation may do it only for a TEST budget/identity (pass --test then); real ones are Brad's`);
     }
