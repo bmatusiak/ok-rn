@@ -519,6 +519,19 @@ export function createBtTransit(deps: Deps = {}) {
       return true;
     },
 
+    /**
+     * The paired computer's name for a link's address - the one approved at pairing
+     * (Brad, 2026-10-07: the Edge sheet says which computer asks, not only the agent).
+     * By the link's session first (a computer can show a new random address), else a
+     * record with that address; null when neither knows it.
+     */
+    async computerName(address: string): Promise<string | null> {
+      const s = await load();
+      const x = sessions.get(address);
+      const rec = (x && s.records.find(r => r.id === x.id)) || s.records.find(r => r.mac !== null && r.mac.toLowerCase() === address.toLowerCase());
+      return rec ? rec.name : null;
+    },
+
     async list(): Promise<PairedComputer[]> {
       const s = await load();
       return s.records.map(({id, name, mac, code, on, lastUsed, renewedAt, epoch}) => ({id, name, mac, code, on, lastUsed, renewedAt, epoch}));

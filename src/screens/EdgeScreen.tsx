@@ -387,7 +387,7 @@ export function statusColor(s: BudgetStatus): string {
   return theme.ok;
 }
 
-function BudgetCard({b, busy, stopping = false, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, status, heading, footer}: {
+export function BudgetCard({b, busy, stopping = false, onOpen, onRevoke, held, onHold, onResume, waitingResume, onPress, status, heading, footer}: {
   b: EdgeBudget;
   /* the budget view's "Budget N", inside the card (Brad, 2026-10-06) */
   heading?: string;
@@ -731,13 +731,22 @@ function RestoreCard({edge}: {edge: ReturnType<typeof useEdge>}) {
  * (App.tsx shows it only then), and the key's testing controls below check it
  * themselves too, so they stay hidden when the tab ships to everyone.
  */
-export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {testingMode?: boolean; focusSeq?: number | null; onFocused?: () => void}) {
+export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, openGrantId = null, onBudgetOpened}: {testingMode?: boolean; focusSeq?: number | null; onFocused?: () => void; openGrantId?: number | null; onBudgetOpened?: () => void}) {
   const edge = useEdge();
   /* R30: the paired keys' chains this phone holds - the one timeline (above every early return) */
   const siblingChains = useSiblingChains(edge.siblings, edge.view?.headSeq);
   /* anchor groups opened in full (a first anchor brings the other key's whole history) */
   const [allOf, setAllOf] = useState<Set<number>>(new Set());
   const [open, setOpen] = useState<EdgeBudget | null>(null);
+  /* the request sheet's budget card, tapped (edgeNav.ts): its details, once the budget is in the lists */
+  useEffect(() => {
+    if (openGrantId === null) return;
+    const b = edge.budgets.find(x => x.grantId === openGrantId) ?? edge.past.find(x => x.grantId === openGrantId);
+    if (!b) return;
+    setOpen(b);
+    onBudgetOpened?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openGrantId, edge.budgets, edge.past]);
   /* two views (Brad, 2026-10-04): the budgets - live, then past as blocks - and the history, the whole chain */
   const [pane, setPane] = useState<'Budgets' | 'Presses'>('Budgets');
   /* B7: opened from an alarm notification - Presses, that link marked */

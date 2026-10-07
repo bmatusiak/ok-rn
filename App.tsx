@@ -13,6 +13,7 @@ import {Drawer} from './src/ui/Drawer';
 import {Logo} from './src/ui/Logo';
 import {ledColor, stateColor, theme} from './src/ui/theme';
 import {IO_STEP_MS, ioPurple, nextShow, onIo, type IoChannel, type IoShow} from './src/btActivity';
+import {onOpenBudget} from './src/edgeNav';
 
 import {useLog} from './src/hooks/useLog';
 import {useKey} from './src/hooks/useKey';
@@ -583,6 +584,19 @@ function Shell() {
   backendRef.current = keys.backend;
   unlockedRef.current = keys.key.device === 'unlocked';
   const emu = keys.key;
+  /*
+   * TESTING MODE's Login (Brad, 2026-10-07: "a login button that sends the passcode
+   * 1234561", hidden once unlocked): the dev keys' passcode, pressed on the soft key
+   * as the keypad does, 200 ms apart (his keypad timing). Only in the testing bar,
+   * which is __DEV__ - Metro folds it out of a release bundle, passcode and all.
+   */
+  const devLogin = useCallback(async () => {
+    for (const button of [1, 2, 3, 4, 5, 6, 1]) {
+      keys.soft.press(button);
+      await new Promise<void>(r => setTimeout(r, 200));
+    }
+  }, [keys.soft]);
+  const devLoginShown = keys.backend === 'embedded' && keys.soft.state === 'running' && keys.soft.device !== 'unlocked';
   /* the soft key waiting on an API request (a sign, decrypt, HMAC, Edge) - its prompt below */
   const keyWaiting = useKeyWaiting(keys.backend === 'embedded' && keys.soft.state === 'running');
   /* the Edge copy kept current while the soft key runs - a restart keeps only its latest link */
@@ -769,6 +783,9 @@ function Shell() {
   const [tab, setTab] = useState<Tab>('This Key');
   /* B7: a tapped Edge alarm opens the Edge tab on its link (on launch and on every return to the app) */
   const [edgeFocus, setEdgeFocus] = useState<number | null>(null);
+  /* the request sheet's budget card, tapped: the Edge tab, on that budget's details (edgeNav.ts) */
+  const [edgeBudget, setEdgeBudget] = useState<number | null>(null);
+  useEffect(() => onOpenBudget(id => { setTab(EDGE_TAB); setEdgeBudget(id); }), []);
   useEffect(() => {
     const look = () => {
       const s = takeOpenedAlarm();
@@ -1030,10 +1047,11 @@ function Shell() {
 
         {/* `__DEV__` inline so Metro folds the branch out of a release bundle. */}
         {__DEV__ && testing.enabled ? (
-          <View style={styles.testing}>
-            <Text style={styles.testingText}>
+          <View style={[styles.testing, devLoginShown && styles.testingRow]}>
+            <Text style={[styles.testingText, devLoginShown && {flex: 1}]}>
               Testing mode — PIN bypassed, developer tools shown
             </Text>
+            {devLoginShown ? <Btn title="Login Bypass" tone="primary" onPress={() => void devLogin()} /> : null}
           </View>
         ) : null}
 
@@ -1264,7 +1282,7 @@ function Shell() {
             /* The PIN changes are on PIN Setup. */
             <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['prefs']} />
           ) : tab === EDGE_TAB ? (
-            <EdgeScreen testingMode={testing.enabled} focusSeq={edgeFocus} onFocused={() => setEdgeFocus(null)} />
+            <EdgeScreen testingMode={testing.enabled} focusSeq={edgeFocus} onFocused={() => setEdgeFocus(null)} openGrantId={edgeBudget} onBudgetOpened={() => setEdgeBudget(null)} />
           ) : tab === IN_DEV_TAB ? (
             <CryptoScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} testing={testing.enabled} show={['derive', 'vault', 'stored']} />
           ) : tab === 'Passkeys' ? (
@@ -1456,6 +1474,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(252, 211, 77, 0.10)',
   },
   testingText: {color: theme.warn, fontSize: 11, fontWeight: '600'},
+  testingRow: {flexDirection: 'row', alignItems: 'center', gap: 8},
   /* The testing banner's shape in the error colour, as it was before. */
   configBanner: {
     marginHorizontal: 16,

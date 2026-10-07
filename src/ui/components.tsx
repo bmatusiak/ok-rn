@@ -210,6 +210,8 @@ export function Btn({
   disabled,
   tone = 'default',
   large = false,
+  wide = false,
+  label,
 }: {
   title: string;
   onPress: () => void;
@@ -217,6 +219,10 @@ export function Btn({
   tone?: 'default' | 'primary' | 'danger';
   /* a bigger tap target - the Edge approval sheet (Brad, 2026-10-04: Close was hard to hit) */
   large?: boolean;
+  /* the full width of its row - the sheet's ▼ close (Brad, 2026-10-07) */
+  wide?: boolean;
+  /* what a screen reader says, when the title is a symbol */
+  label?: string;
 }) {
   const bg =
     tone === 'primary' ? theme.accent : tone === 'danger' ? theme.error : theme.surfaceAlt;
@@ -241,9 +247,12 @@ export function Btn({
     <Pressable
       onPress={onPress}
       disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={label ?? title}
       style={({pressed}) => [
         styles.btn,
         large && styles.btnLarge,
+        wide && {alignSelf: 'stretch'},
         /*
          * 0.4 WAS TOO FAR. A disabled button still has to be READ - it is how
          * you find out what is unavailable and, with the reason beside it, why.

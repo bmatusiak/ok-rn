@@ -17,6 +17,12 @@ import {request as requestLib} from 'node-onlykey-lib/edge';
 import {Btn} from './components';
 import {theme} from './theme';
 import {consentRefusal} from '../debugGuard';
+import {BudgetCard} from '../screens/EdgeScreen';
+import {SoftKeyEdge} from '../edgeSoftKey';
+import {chainState, type EdgeView} from '../edgeStore';
+import type {EdgeBudget} from '../edgeFake';
+import {budgetStatus} from '../budgetStatus';
+import {openBudget} from '../edgeNav';
 
 /* what each typed refusal means, in the person's words (the agent gets the code) */
 const REFUSAL_TEXT: Record<string, string> = {
@@ -72,6 +78,40 @@ function useSecondsLeft(until: number | null): number | null {
 }
 const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 
+/*
+ * AFTER APPROVE (Brad, 2026-10-07): the new budget's progress card - the Edge tab's
+ * own BudgetCard, live: it refreshes on every check of the chain, so its uses and
+ * tickets move while the sheet is open - instead of a Close button. Tapped, it
+ * opens the budget's details on the Edge tab; Back closes the sheet as before.
+ */
+function ApprovedBudget({grantId}: {grantId: number}) {
+  const [card, setCard] = useState<{b: EdgeBudget; live: boolean; view: EdgeView | null} | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      const source = await SoftKeyEdge.open();
+      if (!source || !alive) return;
+      const live = await source.budgets(true).catch(() => [] as EdgeBudget[]);
+      const now = live.find(x => x.grantId === grantId);
+      const b = now ?? (await source.pastBudgets().catch(() => [] as EdgeBudget[])).find(x => x.grantId === grantId);
+      if (alive && b) setCard({b, live: !!now, view: chainState.current(source.deviceId)?.view ?? null});
+    };
+    void load();
+    const off = chainState.on('checked', () => void load());
+    return () => { alive = false; off(); };
+  }, [grantId]);
+  if (!card) return <Text style={styles.dim}>{`Budget ${grantId}`}</Text>;
+  return (
+    <BudgetCard
+      b={card.b}
+      busy={false}
+      heading={`Budget ${grantId}`}
+      status={budgetStatus(card.b, card.live, card.view)}
+      onOpen={() => { closeSheet(); openBudget(grantId); }}
+    />
+  );
+}
+
 export function EdgeRequestSheet() {
   const [s, setS] = useState<SheetState | null>(null);
   /* the second confirm, for a request naming the person's own identity */
@@ -103,6 +143,8 @@ export function EdgeRequestSheet() {
   };
   if (!s) return null;
   const a = s.ask;
+  /* the budget is open: its card says the rest (Brad, 2026-10-07: "remove the old stuff at the top that is in the card") */
+  const opened = s.phase === 'done' && s.result.ok && s.result.grantId !== undefined;
   /*
    * Spec rule 10, the app's lock: the ONE shared check (debugGuard.consentRefusal) for
    * every kind this sheet shows - a budget, a registration, a place that keeps copies.
@@ -183,7 +225,10 @@ export function EdgeRequestSheet() {
                 <Text style={[styles.title, {color: theme.warn}]}>
                   {a.view.continues !== null ? `Continues budget ${a.view.continues}` : 'An agent asks for a budget'}
                 </Text>
-                <Text style={styles.dim}>{`Asked by ${a.agentName} · key ${requestLib.fingerprint(a.view.agent)}`}</Text>
+                <Text style={styles.dim}>
+                  {a.computer ? `From ${a.computer} · ${a.agentName}` : `Asked by ${a.agentName} · key ${requestLib.fingerprint(a.view.agent)}`}
+                </Text>
+                {opened ? null : (<>
                 <View style={styles.reason}>
                   <Text style={styles.op}>{a.view.reason}</Text>
                 </View>
@@ -212,6 +257,7 @@ export function EdgeRequestSheet() {
                     </Text>
                   </View>
                 ) : null}
+                </>)}
               </>
             )}
 
@@ -272,9 +318,17 @@ export function EdgeRequestSheet() {
                   {s.result.ok ? s.result.text : refusalText(s.result.refusal, a.kind)}
                 </Text>
                 {!s.result.ok && s.result.detail ? <Text style={styles.dim}>{s.result.detail}</Text> : null}
-                <View style={styles.row}>
-                  <Btn large title="Close" onPress={closeSheet} />
-                </View>
+                {s.result.ok && s.result.grantId !== undefined ? (
+                  <>
+                    <ApprovedBudget grantId={s.result.grantId} />
+                    {/* close it here too, the full width (Brad, 2026-10-07): the card opens the details */}
+                    <Btn large wide title="▼" label="Close" onPress={closeSheet} />
+                  </>
+                ) : (
+                  <View style={styles.row}>
+                    <Btn large title="Close" onPress={closeSheet} />
+                  </View>
+                )}
               </>
             ) : null}
           </ScrollView>

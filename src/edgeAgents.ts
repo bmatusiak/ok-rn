@@ -26,6 +26,7 @@ import {siblingNames} from './edgeSiblingNames';
 import {rememberSiblingName} from './edgeSiblingNames';
 import {markPaired} from './edgeSiblingAlarm';
 import {setTestIdentities} from './debugGuard';
+import {btTransit} from './btTransit';
 import NativeOkEmu from '../specs/NativeOkEmu';
 
 const AGENTS = 'okrn.edge.agents';
@@ -170,14 +171,14 @@ export type SheetAsk =
   /* R30 (P2c): a place offers a sibling's chain up to its signed checkpoint - anchor it */
   | {kind: 'anchor'; peer: string; place: string; name: string; sibling: string; seq: number; count: number}
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
-  | {kind: 'request'; agentName: string; view: any; blocked: string | null; at: number};
+  | {kind: 'request'; agentName: string; computer: string | null; view: any; blocked: string | null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
 export type SheetState =
   | {phase: 'ask'; ask: SheetAsk; until: number}
   | {phase: 'press'; ask: SheetAsk; until: number}
   /* the press is in: no more countdown, the key's answer is on its way (Brad: "when i press the button, the timer still counts down") */
   | {phase: 'pressed'; ask: SheetAsk}
-  | {phase: 'done'; ask: SheetAsk; result: {ok: true; text: string} | {ok: false; refusal: string; detail?: string}};
+  | {phase: 'done'; ask: SheetAsk; result: {ok: true; text: string; grantId?: number} | {ok: false; refusal: string; detail?: string}};
 
 type Listener = (s: SheetState | null) => void;
 const listeners = new Set<Listener>();
@@ -675,13 +676,15 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       ? null
       : `this phone's copy of the chain does not verify (${copy.reason}${copy.seq !== undefined ? ` at #${copy.seq}` : ''}). Sync or settle it on the Edge tab.`;
     let asked: SheetAsk | null = null;
+    /* the computer it came from, by its pairing's name (null: not a paired link) */
+    const computer = await btTransit.computerName(from).catch(() => null);
     const r: any = await soft.answerAgent(msg, {
       registered: agents.map(a => a.key),
       seen,
       ownIdentities: await loadOwnIdentities(),
       from: agentName,
       ask: async view => {
-        asked = {kind: 'request', agentName, view, blocked, at: Date.now()};
+        asked = {kind: 'request', agentName, computer, view, blocked, at: Date.now()};
         step('answerAgent');
         stepsDone('sheet shown');
         const a = await askPerson(asked);
@@ -696,7 +699,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       show({
         phase: 'done',
         ask: asked,
-        result: r.ok ? {ok: true, text: `Budget ${r.budget.grantId} is open: ${r.budget.uses} uses for ${msg.lifetime} minutes`} : r,
+        result: r.ok ? {ok: true, text: `Budget ${r.budget.grantId} is open: ${r.budget.uses} uses for ${msg.lifetime} minutes`, grantId: r.budget.grantId} : r,
       });
     }
     return r;
