@@ -248,6 +248,9 @@ function useIoPurple(match: (c: IoChannel) => boolean, solid: boolean): boolean 
   return purple;
 }
 
+/* ⚿: a session silent this long counts as gone (its command was killed without a goodbye) */
+const SESSION_QUIET_MS = 15000;
+
 function RadioStatus({
   on,
   setOn,
@@ -493,9 +496,28 @@ function RadioStatus({
   const anyIo = useIoPurple(() => true, true);
   const keyboardIo = useIoPurple(c => c === 'keyboard', false);
   const keyIo = useIoPurple(c => c === 'key', false);
+  /*
+   * GREEN ONLY BETWEEN HELLO AND GOODBYE (Brad, 2026-10-07): a paired computer's
+   * open session (btTransit), and nothing else. The radio's state is no guide: it
+   * said "connected" before any command (Windows keeps a link ~3 s after one, the
+   * OS makes its own), and it RACED - the next command's link and the last one's
+   * lingering link come from the same address, so the old one dropping told the
+   * phone "nothing connected, advertising again" while the new one talked
+   * ("yellow is winning the race", Brad). A link with no session - that lingering
+   * one, a browser's FIDO request - is yellow, and blinks purple on traffic.
+   * FALLBACK (Brad): a session silent for 15 s is yellow too - a command killed
+   * without its goodbye leaves its session open and Windows keeps its link.
+   */
+  const [inSession, setInSession] = useState(() => btTransit.openSessions(SESSION_QUIET_MS) > 0);
+  useEffect(() => {
+    const look = () => setInSession(btTransit.openSessions(SESSION_QUIET_MS) > 0);
+    const off = btTransit.subscribe(look);
+    const tick = setInterval(look, 1000); /* time alone turns a silent session yellow */
+    return () => { off(); clearInterval(tick); };
+  }, []);
   const keyColor = keyIo ? theme.io
-    : fido.state === 'connected' ? theme.ok
-    : fido.state === 'advertising' ? stateColor('advertising')
+    : inSession ? theme.ok
+    : fido.state === 'advertising' || fido.state === 'connected' ? stateColor('advertising')
     : theme.textDim;
 
   return (

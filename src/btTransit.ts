@@ -162,7 +162,8 @@ export function createBtTransit(deps: Deps = {}) {
   let loading: Promise<Stored> | null = null;
   let transitOffWanted = false;
   let sender: Sender | null = null;
-  const sessions = new Map<string, {session: Session; id: string; renew?: unknown}>();
+  /* at: the session's last traffic, either way (a session whose computer went without a goodbye ends by it - linkGone) */
+  const sessions = new Map<string, {session: Session; id: string; renew?: unknown; at: number}>();
   const listeners = new Set<() => void>();
 
   /* The pairing window: at most one pairing at a time, for one computer. */
@@ -245,6 +246,7 @@ export function createBtTransit(deps: Deps = {}) {
     sessions.delete(address);
     disconnect(address);
     log('info', `[bt] let a computer's link go: ${why}`);
+    changed(); /* the status bar's ⚿: a session ended */
   }
 
   function drop(s: Stored, id: string) {
@@ -345,7 +347,8 @@ export function createBtTransit(deps: Deps = {}) {
     if (!r.session) return; /* silence */
     s.records = s.records.map(x => (x.id === r.record.id ? r.record : x));
     await save();
-    sessions.set(address, {session: r.session, id: r.record.id});
+    sessions.set(address, {session: r.session, id: r.record.id, at: now()});
+    changed(); /* the status bar's ⚿: a session opened */
     send(CMD.PAIR, r.msg);
     /* this phone reads several reports per write (KIND.REPORTS), version 1 */
     send(CMD.SEALED, bt.seal(r.session, cat(Uint8Array.of(KIND.CONTROL), Uint8Array.of(CTRL_BATCH, 1))));
@@ -416,6 +419,7 @@ export function createBtTransit(deps: Deps = {}) {
             dropSession(address, 'a sealed request with no session');
             return null;
           }
+          x.at = now();
           const pt = bt.open(x.session, bytes);
           if (pt[0] === KIND.REPORT) return pt.slice(1);
           if (pt[0] === KIND.REPORTS) {
@@ -456,7 +460,10 @@ export function createBtTransit(deps: Deps = {}) {
     outgoing(address: string | null, report: Uint8Array): {cmd: number; bytes: Uint8Array} | null {
       if (!address) return null;
       const x = sessions.get(address);
-      if (x) return {cmd: CMD.SEALED, bytes: bt.seal(x.session, cat(Uint8Array.of(KIND.REPORT), report))};
+      if (x) {
+        x.at = now();
+        return {cmd: CMD.SEALED, bytes: bt.seal(x.session, cat(Uint8Array.of(KIND.REPORT), report))};
+      }
       if (transitOff()) return {cmd: CMD.PLAIN, bytes: report};
       return null;
     },
@@ -530,6 +537,41 @@ export function createBtTransit(deps: Deps = {}) {
       const x = sessions.get(address);
       const rec = (x && s.records.find(r => r.id === x.id)) || s.records.find(r => r.mac !== null && r.mac.toLowerCase() === address.toLowerCase());
       return rec ? rec.name : null;
+    },
+
+    /**
+     * Sessions open now: a paired computer between its hello and its goodbye (the
+     * status bar's ⚿ green). activeWithinMs: only those with traffic that recently -
+     * Brad's fallback (2026-10-07) for a command killed without its goodbye, whose
+     * link Windows keeps: live ones are never quiet long (watch polls, the agent
+     * service says goodbye when it idles).
+     */
+    openSessions(activeWithinMs?: number): number {
+      if (activeWithinMs === undefined) return sessions.size;
+      const t = now();
+      return [...sessions.values()].filter(x => t - x.at < activeWithinMs).length;
+    },
+
+    /*
+     * THE RADIO SAYS NO LINK IS LEFT: end the sessions that went quiet (Brad,
+     * 2026-10-07 - ⚿ stayed green after a command was killed without its goodbye).
+     * The radio's "nothing connected" races: the next command's link and the last
+     * one's lingering link share an address, and the old one dropping reads as
+     * none left while the new one talks. So only a session QUIET for quietMs ends -
+     * a killed command's has been silent since it died, and Windows drops its link
+     * ~3.6 s later; a live one has just said hello. Ended here without touching the
+     * link: if a new one is up, it is not cut.
+     */
+    linkGone(quietMs = 3000) {
+      const t = now();
+      let ended = 0;
+      for (const [addr, x] of [...sessions]) {
+        if (t - x.at < quietMs) continue;
+        sessions.delete(addr);
+        ended++;
+        log('info', `[bt] a computer's session ended without its goodbye (its link is gone, quiet ${Math.round((t - x.at) / 1000)} s)`);
+      }
+      if (ended) changed();
     },
 
     async list(): Promise<PairedComputer[]> {

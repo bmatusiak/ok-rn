@@ -14,6 +14,7 @@ import {handleEdgeMessage} from '../edgeAgents';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import type {OnlyKeyApp} from '../onlykey';
 import type {LogLevel} from './useLog';
+import {btTransit} from '../btTransit';
 
 /*
  * The "WebAuthn" switch - the FIDO door's gate.
@@ -180,6 +181,11 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
     const offStatus = FidoGatt.on('status', event => {
       setState(event.state);
       setMtu(event.mtu);
+      /* no link left by the radio: a session whose computer went without its goodbye ends - now, and once more after its quiet time (btTransit.linkGone) */
+      if (event.state !== 'connected') {
+        btTransit.linkGone();
+        setTimeout(() => { if (FidoGatt.getState() !== 'connected') btTransit.linkGone(); }, 3100);
+      }
       const detail = event.message ? ' - ' + event.message : '';
       log(event.state === 'error' ? 'error' : 'info', '[ble] ' + event.state + detail);
     });

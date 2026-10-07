@@ -346,3 +346,46 @@ test('the computer says goodbye (idle): its session ends and its link goes; its 
   const again = (await connect(p, record))!;
   expect(await p.gate.handle(0x04, sealedReport(again, report(0x67)), PC)).toEqual(report(0x67));
 });
+
+/*
+ * THE STATUS BAR'S ⚿ (Brad, 2026-10-07): green only between hello and goodbye. A
+ * command killed without its goodbye left the session open, green for good; when
+ * the radio says no link is left, a session quiet for 3 s ends - one that just
+ * talked does not (the radio races: the last command's link and the next one's
+ * share an address). Ending it this way never cuts the link.
+ */
+test('open sessions: hello opens, goodbye ends; with no link left, only a quiet session ends', async () => {
+  const p = phone();
+  const {record} = await pair(p);
+  let notices = 0;
+  p.gate.subscribe(() => { notices++; });
+  const session = (await connect(p, record))!;
+  expect(p.gate.openSessions()).toBe(1);
+  expect(notices).toBeGreaterThan(0);
+  p.tick(1000);
+  p.gate.linkGone(); /* it talked a second ago: the radio's "none left" is the race */
+  expect(p.gate.openSessions()).toBe(1);
+  await p.gate.handle(0x04, sealedReport(session, report(1)), PC);
+  p.tick(3500);
+  p.gate.linkGone(); /* quiet 3.5 s and no link: its computer went without a goodbye */
+  expect(p.gate.openSessions()).toBe(0);
+  expect(p.dropped).toEqual([]); /* the link is not touched */
+  const again = (await connect(p, record))!;
+  expect(p.gate.openSessions()).toBe(1);
+  await p.gate.handle(0x04, bt.seal(again, Uint8Array.of(KIND.CONTROL, 0x31)), PC); /* goodbye */
+  expect(p.gate.openSessions()).toBe(0);
+});
+
+test('open sessions, active within a window: a session silent for 15 s does not count (the fallback for a killed command)', async () => {
+  const p = phone();
+  const {record} = await pair(p);
+  const session = (await connect(p, record))!;
+  expect(p.gate.openSessions(15000)).toBe(1);
+  p.tick(14000);
+  await p.gate.handle(0x04, sealedReport(session, report(1)), PC);
+  p.tick(14000);
+  expect(p.gate.openSessions(15000)).toBe(1); /* it talked 14 s ago */
+  p.tick(2000);
+  expect(p.gate.openSessions(15000)).toBe(0); /* silent 16 s */
+  expect(p.gate.openSessions()).toBe(1); /* the session itself is left alone */
+});
