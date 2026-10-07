@@ -291,7 +291,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   async state(): Promise<EdgeKeyState> {
     const h = await this.keyHead();
-    return {owed: h.owed, overflow: h.overflow, held: h.held, restoring: h.restoring, refusedArms: h.refusedArms ?? 0};
+    return {owed: h.owed, overflow: h.overflow, held: h.held, restoring: h.restoring, refusedTx: h.refusedTx ?? 0};
   }
 
   async hold(grantId: number) {

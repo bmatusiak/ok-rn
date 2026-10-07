@@ -87,7 +87,7 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
         if (source && alive) {
           const {mirror, view} = await sync(source);
           const [st, live, past] = await Promise.all([source.state(), source.budgets(), source.pastBudgets()]);
-          await raiseWatchAlarms(mirror, view, {refusedArms: st.refusedArms, live: live.map(b => b.grantId), past});
+          await raiseWatchAlarms(mirror, view, {refusedTx: st.refusedTx, live: live.map(b => b.grantId), past});
           /* R30: a paired key that stopped syncing (reminder, then the alarm) */
           await raiseSiblingAlarms((await source.siblings?.()) ?? []).catch(() => undefined);
         }

@@ -97,11 +97,11 @@ function approval(row: EdgeRow): string {
   if (f.decision === DECISION.SELF_PRESS) return `self-press · budget ${f.grantId} step ${f.grantStep}`;
   if (f.decision === DECISION.DENY) return 'denied';
   if (f.decision === DECISION.TIMEOUT) return 'timed out';
-  /* B7: the key wrote which press this was (flags ARMED / OWES_TICKET) - lib live.classifyUse, as okedge watch */
+  /* B7: the key wrote which press this was (flags STARTED / OWES_TICKET) - lib live.classifyUse, as okedge watch */
   const k = live.classifyUse(f)?.kind;
-  if (k === live.KIND.MISMATCHED_ARM) return 'pressed · its ARM did not match';
-  /* R13b: the ARM matched (its intent is in the link) but nothing could pay - okedge exec --press */
-  if (k === live.KIND.ARMED_PRESS) return 'pressed · the agent asked, no budget paid';
+  if (k === live.KIND.MISMATCHED_TX) return 'pressed · its TX start did not match';
+  /* R13b: the TX start matched (its intent is in the link) but nothing could pay - okedge exec --press */
+  if (k === live.KIND.STARTED_PRESS) return 'pressed · the agent asked, no budget paid';
   if (k === live.KIND.PRESS_UNDER_BUDGET) return 'pressed while a budget was live';
   if (f.flags & FLAG.PRESS_OBSERVED) return 'pressed';
   return 'approved';
@@ -339,12 +339,12 @@ function LinkRow({row, ticketVerified, budgetUses, agentOf, notesFrom, continued
         </View>
       ) : null}
       {/* a sign or decrypt no budget paid: hung under it like a ticket, in yellow, so it stands out in Presses (Brad, 2026-10-04) */}
-      {/* an old link's mismatched ARM, in red (a new key refuses a mismatch and writes no link; the B7 press alarm went 2026-10-06) */}
+      {/* an old link's mismatched TX start, in red (a new key refuses a mismatch and writes no link; the B7 press alarm went 2026-10-06) */}
       {live.classifyUse(row.fields)?.alarm ? (
         <View style={[styles.ticket, {borderLeftColor: theme.error}]}>
-          <Text style={[styles.ticketTitle, {color: theme.error}]}>⚠ ARM did not match</Text>
+          <Text style={[styles.ticketTitle, {color: theme.error}]}>⚠ TX start did not match</Text>
           <Text style={styles.dim}>
-            An agent ARMed the key, but the request that came was not the one it ARMed for - someone else may have jumped in. It needed a press and owes a ticket.
+            An agent started the key, but the request that came was not the one it started for - someone else may have jumped in. It needed a press and owes a ticket.
           </Text>
         </View>
       ) : (row.fields.op === OP.SIGN || row.fields.op === OP.DECRYPT) && !row.fields.grantId ? (
@@ -985,21 +985,21 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused}: {t
   }
   const agentOf = new Map([...edge.past, ...edge.budgets].filter(b => b.agentKey).map(b => [b.grantId, String(b.agentKey).toLowerCase()]));
   /*
-   * B7 stage 2: refused ARMs write no link. The key's own count since it started
+   * B7 stage 2: refused TX starts write no link. The key's own count since it started
    * (HEAD byte 60) is the evidence; the agents' notes say which and why (their word).
    */
-  const refusedByKey = edge.keyState?.refusedArms ?? 0;
+  const refusedByKey = edge.keyState?.refusedTx ?? 0;
   const reported = (edge.view?.refusals ?? []).slice(-3).reverse();
   if (!edge.isFake && (refusedByKey > 0 || reported.length)) {
     items.push({key: 'live-refused', kind: 'node', render: () => (
       <View style={[styles.mismatch, {borderColor: theme.error}]}>
         <Text style={[styles.ticketTitle, {color: theme.error}]}>
-          {refusedByKey > 0 ? `⚠ The key refused ${refusedByKey} ARM${refusedByKey === 1 ? '' : 's'} since it started` : 'Refused ARMs reported by an agent'}
+          {refusedByKey > 0 ? `⚠ The key refused ${refusedByKey} TX start${refusedByKey === 1 ? '' : 's'} since it started` : 'Refused TX starts reported by an agent'}
         </Text>
         {reported.map((r, i) => (
           <Text key={i} style={styles.dim}>{`${new Date(r.at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})} · head #${r.seq} · the agent says: “${r.status}”`}</Text>
         ))}
-        <Text style={styles.dim}>A refused ARM writes no link. If you did not expect one, hold the budget.</Text>
+        <Text style={styles.dim}>A refused TX start writes no link. If you did not expect one, hold the budget.</Text>
       </View>
     )});
   }

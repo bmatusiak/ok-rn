@@ -1,6 +1,6 @@
 /**
  * B7 "stands out without looking" (onlykey-edge build/okrn-edge-tab.md): after a
- * sync, each NEW link that is an alarm becomes a phone notification - an ARM that
+ * sync, each NEW link that is an alarm becomes a phone notification - a TX start that
  * did not match its request, a press asked for under a live budget (lib
  * live.classifyUse, the same answer okedge watch gives), an alarm ticket (bit 7
  * or a code the v1 table does not know). Tapping one opens the Edge tab on it.
@@ -32,7 +32,7 @@ export function alarmsAfter(view: EdgeView, after: number): EdgeAlarm[] {
     const f = r.fields;
     const use = live.classifyUse(f);
     if (r.seq > after && use?.alarm) {
-      const what = 'ARM did not match'; /* the one alarm left - old links only (the B7 press alarm went 2026-10-06) */
+      const what = 'TX start did not match'; /* the one alarm left - old links only (the B7 press alarm went 2026-10-06) */
       out.push({seq: r.seq, title: `Edge: ${what}`, text: `#${r.seq} ${f.op === OP.DECRYPT ? 'decrypt' : 'sign'} · slot ${f.slot} - ${use.alarm}.`, budget: f.grantId || undefined});
     }
     /* an alarm ticket: news when the TICKET link is new, shown on the use it answers */
@@ -92,27 +92,28 @@ function lockText(budget: number | undefined, live: number[]): string {
  * ---------------------------------------------------------------- the watcher
  * B7 stage 2, option A (spec 2026-10-04): the background copy keeps running
  * with the app out of sight; after each sync it also checks the key's own state.
- * Red: the refused-ARM count rising (HEAD byte 60), a ticket owed past 10
+ * Red: the refused-TX start count rising (HEAD byte 60), a ticket owed past 10
  * minutes. Quiet: a budget used up or expired ("expect a continue request").
  */
 const OWED_RED_MS = 10 * 60 * 1000;
-const ARMS_KEY = 'okrn.edge.refusedArms.';
+/* the stored name keeps the old word: renaming it would make every phone forget the count it last saw and alert once for old refusals */
+const TX_REFUSED_KEY = 'okrn.edge.refusedArms.';
 const OWED_KEY = 'okrn.edge.owedAlerted.';
 const ENDED_KEY = 'okrn.edge.endedNoticed.';
 
-export type WatchState = {refusedArms?: number; live: number[]; past: {grantId: number; endedHow?: string; uses: number; used: number}[]};
+export type WatchState = {refusedTx?: number; live: number[]; past: {grantId: number; endedHow?: string; uses: number; used: number}[]};
 
 export async function raiseWatchAlarms(mirror: Mirror, view: EdgeView, st: WatchState, now = Date.now()): Promise<void> {
   const dev = toHex(mirror.deviceId);
-  /* the key's refused ARMs since it started: a rise is news; a drop is a restart (a new count) */
-  const arms = st.refusedArms ?? 0;
-  const lastArms = Number((await AsyncStorage.getItem(ARMS_KEY + dev)) ?? '0');
-  if (arms > lastArms) {
-    NativeEdgeAlert?.post(view.rows[0]?.seq ?? 0, 'Edge: the key refused an ARM',
-      `The key refused ${arms - lastArms} ARM${arms - lastArms === 1 ? '' : 's'} (${arms} since it started). A refused ARM writes no link - if you did not expect it, hold the budget.`,
+  /* the key's refused TX starts since it started: a rise is news; a drop is a restart (a new count) */
+  const refused = st.refusedTx ?? 0;
+  const lastRefused = Number((await AsyncStorage.getItem(TX_REFUSED_KEY + dev)) ?? '0');
+  if (refused > lastRefused) {
+    NativeEdgeAlert?.post(view.rows[0]?.seq ?? 0, 'Edge: the key refused a TX start',
+      `The key refused ${refused - lastRefused} TX start${refused - lastRefused === 1 ? '' : 's'} (${refused} since it started). A refused TX start writes no link - if you did not expect it, hold the budget.`,
       lockText(undefined, st.live), false);
   }
-  if (arms !== lastArms) await AsyncStorage.setItem(ARMS_KEY + dev, String(arms));
+  if (refused !== lastRefused) await AsyncStorage.setItem(TX_REFUSED_KEY + dev, String(refused));
 
   /* a ticket owed past 10 minutes: once per use */
   const owedDone: number[] = JSON.parse((await AsyncStorage.getItem(OWED_KEY + dev)) ?? '[]');

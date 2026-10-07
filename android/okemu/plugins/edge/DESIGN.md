@@ -27,9 +27,9 @@ The firmware half of OnlyKey Edge, as a plugin: soft key (ok-rn) and the desktop
 3. **Two signatures with the Edge key (K132 → HKDF), never reachable by a generic sign:**
    - the **budget genesis**, over fields it computes itself, made only at a **physical press**;
    - **checkpoints** over `(seq, head)`.
-4. **The debts** (the spec change, onlykey-edge `c7c30dd`; R16 changed again 2026-10-02): an approved use owes a ticket when an arm was waiting at its prime (any slot, token matched or not), or when a live budget - held or not, used up or not - covers its op and slot. A direct press on an uncovered slot owes nothing. The key decides at decision time and writes it into the link (flags bit 4 `owes_ticket`, bit 5 `armed`), because a replay cannot know afterwards whether an arm waited or a budget had expired; weld_in, REPLAY and the library's `keyDebts` read bit 4. The key keeps the latest 4 owed uses (`seq`, `head[seq]`) and an `overflow` flag in flash, links a TICKET for any of them, and while anything is owed there is no self-press, ARM, GRANT_CREATE or GRANT_RESUME (R18). A pressed WAIVE clears them all.
-5. **The arm** (R13a): a self-press needs `ARM {head}` over the current head first, one per use; any link clears it. A sign that skips ARM is pressed.
-6. **Hold** (R15a): a held budget pays for nothing and arms nothing; resuming takes a press.
+4. **The debts** (the spec change, onlykey-edge `c7c30dd`; R16 changed again 2026-10-02): an approved use owes a ticket when a TX start was waiting at its prime (any slot, token matched or not), or when a live budget - held or not, used up or not - covers its op and slot. A direct press on an uncovered slot owes nothing. The key decides at decision time and writes it into the link (flags bit 4 `owes_ticket`, bit 5 `started`), because a replay cannot know afterwards whether a TX start waited or a budget had expired; weld_in, REPLAY and the library's `keyDebts` read bit 4. The key keeps the latest 4 owed uses (`seq`, `head[seq]`) and an `overflow` flag in flash, links a TICKET for any of them, and while anything is owed there is no self-press, TX start, GRANT_CREATE or GRANT_RESUME (R18). A pressed WAIVE clears them all.
+5. **The start** (R13a): a self-press needs `TX start {head}` over the current head first, one per use; any link clears it. A sign that skips TX start is pressed.
+6. **Hold** (R15a): a held budget pays for nothing and starts nothing; resuming takes a press.
 7. **Restore, then replay** (R26, onlykey-edge `0dda6ac`): a restore leaves the key *restoring* - nothing automatic - until the host has replayed its newest copy (each link only if it is the next seq and welds to the head the copy stored) and the person presses REPLAY_DONE, which writes the LOSS over only what could not be replayed. It replaced the LOSS written straight away at the first unlock after a restore.
 8. **No budget from an unverified copy** (R27): GRANT_CREATE and GRANT_RESUME carry the head the host verified its copy up to, checked on arrival and again at the press. The full check is the library's (`copy.verifyCopy`).
 
@@ -140,7 +140,7 @@ Region layout (sectors from 0x1000):
      - reply `(grant_id, uses, G, signature)`.
 - **Self-press (R13):**
   - **Where:** a hook right after `user_input_mode = okcore_user_input_mode_for_slot(slot);` (core:6978, unique).
-  - **Condition:** a live budget has a scope for this op and slot with room, the key is unlocked and not in config mode, and (R18) the previous use has its ticket. *(Built, after the spec change: armed (R13a), the budget not on hold (R15a), and nothing owed at all (R18).)*
+  - **Condition:** a live budget has a scope for this op and slot with room, the key is unlocked and not in config mode, and (R18) the previous use has its ticket. *(Built, after the spec change: started (R13a), the budget not on hold (R15a), and nothing owed at all (R18).)*
   - **Effect:** it forces `USER_INPUT_NONE`. The existing branch then runs the operation without a press (`CRYPTO_AUTH = 4`, `pending_op_no_press`). The approve hook links it as `self-press` with the budget and step.
   - **Reveal:** the key keeps the last reveal `(grant_id, step, v_i, mac = HMAC(v_i, subject))` for the host to read with `LAST_REVEAL`.
 - **End:** `GRANT_REVOKE` links `grant-end` and wipes the seed. A lock or reboot loses the seeds, and the next boot links `grant-end` for every budget the state record says was live.
@@ -203,5 +203,5 @@ Peers, receipts and LOSS (R20–R24) come after E3b.
 ## 7. Build order (each step: the plugin's own kit + e2e tests, then commit)
 1. **Storage + identity + `HEAD`/`READ`/`CKPT_PUBKEY`.** Links for OKSIGN/OKDECRYPT approve/deny/timeout. The lib verifies the chain it reads.
 2. **Budgets:** `GRANT_CREATE` with the press and the signed genesis, self-press, `LAST_REVEAL`, `GRANT_LIST`/`GRANT_REVOKE`, `grant-end` at boot.
-3. **`TICKET`** and the R17/R18 rules; after the spec change also ARM, GRANT_HOLD/RESUME, the 4 owed uses and WAIVE (built 2026-10-02; R19 composite pairs still open). Then E3b: apk-signer under a budget, over Bluetooth (Part D).
+3. **`TICKET`** and the R17/R18 rules; after the spec change also TX start, GRANT_HOLD/RESUME, the 4 owed uses and WAIVE (built 2026-10-02; R19 composite pairs still open). Then E3b: apk-signer under a budget, over Bluetooth (Part D).
 4. **`CHECKPOINT`.** The lib's device calls and `capabilities().edge` (L4/L5). The Edge tab moves off the fake key.

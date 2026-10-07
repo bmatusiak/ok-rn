@@ -7,7 +7,7 @@
  * library stack (app.edge = node-onlykey-lib/plugins/edge): every link, the
  * budget's opening, the reveals and the chain are checked by the library.
  *
- * A use owes a ticket when it was ARMed, or when a live budget covers its op
+ * A use owes a ticket when it was started, or when a live budget covers its op
  * and slot (onlykey-edge firmware.md R16; the key sets bits 4/5 of the link at
  * decision time). Nothing automatic happens while one is owed (R18): a test
  * that opens a budget first clears what earlier ones left owed, with a pressed
@@ -34,7 +34,7 @@ const APPROVE = 1;
 const SELF_PRESS = 4;
 const PRESS_OBSERVED = 0x01;
 const OWES_TICKET = 0x10; /* R16: the key decided this use owes a ticket */
-const ARMED = 0x20;       /* R16: an arm was waiting when the request was primed */
+const STARTED = 0x20;       /* R16: a TX start was waiting when the request was primed */
 const OP_GRANT_CREATE = 6;
 
 module.exports = function register({it}, ctx) {
@@ -93,14 +93,14 @@ module.exports = function register({it}, ctx) {
    * (a HEAD once named link 0xB1790C02). `press`: the soft key's own button,
    * once the confirmation is primed.
    */
-  /* the bytes of an agent sign (message || identity hash): what the firmware primes, so what an ARM is for (R13a) */
+  /* the bytes of an agent sign (message || identity hash): what the firmware primes, so what a TX start is for (R13a) */
   const agentRequest = (text) => {
     const message = sha256(`okrn edge ${text} ${Date.now()}`);
     const identity = grants.identityLabel(E2E_IDENTITY); /* R11a: the test identity's label - never a real one */
     return {message, identity, payload: new Uint8Array([...message, ...identity])};
   };
-  /* R13a: ARM with the token over this head and the library's requestSubject of these bytes */
-  const armFor = (app, head, req) => app.edge.arm(head, grants.requestSubject(req.payload));
+  /* R13a: TX start with the token over this head and the library's requestSubject of these bytes */
+  const txStartFor = (app, head, req) => app.edge.txStart(head, grants.requestSubject(req.payload));
 
   async function agentSign(app, text, {press = false, req = agentRequest(text)} = {}) {
     const {message, identity} = req;
@@ -198,17 +198,17 @@ module.exports = function register({it}, ctx) {
     assert.equal(h3.owed, 0, 'a press under a live budget owes a ticket');
 
     /* announced one request, sent another: refused (EDGE:1C), no link, counted */
-    await armFor(app, h3.head, agentRequest('the announced one'));
+    await txStartFor(app, h3.head, agentRequest('the announced one'));
     const other = await refusal(agentSign(app, 'not the announced one'));
     log(`not the announced one: ${other}`);
     assert.ok(/EDGE:1C/i.test(String(other)), `the sign that was not announced was not refused (${other})`);
     const h4 = await app.edge.head();
     assert.equal(h4.seq, h3.seq, 'the refused sign wrote a link');
-    assert.equal(h4.refusedArms, h3.refusedArms + 1, 'the refused sign was not counted');
+    assert.equal(h4.refusedTx, h3.refusedTx + 1, 'the refused sign was not counted');
 
     /* announced, then the budget held before the sign: refused (EDGE:0D), never a press prompt */
     const req = agentRequest('held in between');
-    await armFor(app, h4.head, req);
+    await txStartFor(app, h4.head, req);
     assert.equal(await app.edge.hold(g.grantId), true);
     const h5 = await app.edge.head(); /* the hold is a link */
     const held = await refusal(agentSign(app, 'held in between', {req}));
@@ -218,7 +218,7 @@ module.exports = function register({it}, ctx) {
     assert.equal(await app.edge.revoke(g.grantId), true);
   });
 
-  it('edge: a budget opened by a press pays ARMed uses, each ticketed, and is revoked', async ({log, assert}) => {
+  it('edge: a budget opened by a press pays started uses, each ticketed, and is revoked', async ({log, assert}) => {
     const app = await ready(log);
     await clearDebts(app, log);
     const {publicKey, deviceId} = await app.edge.publicKey();
@@ -241,13 +241,13 @@ module.exports = function register({it}, ctx) {
     assert.equal(chain.decodeLink(opened.link).op, OP_GRANT_CREATE);
     assert.ok((await app.edge.head()).live.includes(g.grantId), 'HEAD does not list the budget as live');
 
-    /* grant -> arm -> use -> ticket -> arm -> use -> ticket: no press, self-press links with their reveals */
+    /* grant -> start -> use -> ticket -> start -> use -> ticket: no press, self-press links with their reveals */
     const spends = [];
-    let armHead = g.checkpoint.head;
+    let txHead = g.checkpoint.head;
     for (let i = 1; i <= 2; i++) {
       const seq0 = (await app.edge.head()).seq;
       const req = agentRequest(`budget ${i}`);
-      assert.equal(await armFor(app, armHead, req), true);
+      assert.equal(await txStartFor(app, txHead, req), true);
       const sent = await agentSign(app, `budget ${i}`, {req}); /* no press: the budget pays */
       const payload = sent.payload;
       const h = await headPast(app, seq0);
@@ -258,10 +258,10 @@ module.exports = function register({it}, ctx) {
       const subject = sha256(payload);
       assert.equal(hex(f.subject), hex(grants.requestSubject(payload)), `use ${i}: the firmware's subject is not the library's requestSubject`);
       spends.push({step: i, value: l.reveal, subject, mac: null});
-      armHead = (await app.edge.ticket(h.seq, 0x00, sha256(`okrn e2e: did as asked ${i}`))).head;
+      txHead = (await app.edge.ticket(h.seq, 0x00, sha256(`okrn e2e: did as asked ${i}`))).head;
     }
-    /* used up: nothing left to arm */
-    assert.equal(await refusal(armFor(app, armHead, agentRequest('used up'))), 'nothing-to-arm');
+    /* used up: nothing left to start */
+    assert.equal(await refusal(txStartFor(app, txHead, agentRequest('used up'))), 'nothing-to-pay');
     assert.ok(spends.every(s => s.value), 'a self-press came back without its reveal');
     for (const s of spends) {
       const r = grants.checkSelfPress({genesis: g.genesis, uses: g.uses, step: s.step, value: s.value, subject: s.subject,
@@ -273,18 +273,18 @@ module.exports = function register({it}, ctx) {
     assert.ok(!(await app.edge.head()).live.includes(g.grantId), 'a revoked budget is still live');
   });
 
-  it('edge: a held budget arms nothing until a pressed resume', async ({log, assert}) => {
+  it('edge: a held budget starts nothing until a pressed resume', async ({log, assert}) => {
     const app = await ready(log);
     await clearDebts(app, log);
     const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 1, identity: E2E_IDENTITY}], reason: 'okrn e2e: hold', verifiedHead: (await app.edge.head()).head, onPress: pressSoon});
     assert.equal(await app.edge.hold(g.grantId), true);
     let h = await app.edge.head();
     assert.equal(JSON.stringify(h.held), JSON.stringify([g.grantId]), 'HEAD does not report the hold');
-    assert.equal(await refusal(armFor(app, h.head, agentRequest('held'))), 'nothing-to-arm');
+    assert.equal(await refusal(txStartFor(app, h.head, agentRequest('held'))), 'nothing-to-pay');
     assert.equal(await app.edge.resume(g.grantId, {verifiedHead: (await app.edge.head()).head, onPress: pressSoon}), true);
     h = await app.edge.head();
     assert.equal(JSON.stringify(h.held), JSON.stringify([]));
-    assert.equal(await armFor(app, h.head, agentRequest('resumed')), true);
+    assert.equal(await txStartFor(app, h.head, agentRequest('resumed')), true);
     assert.equal(await app.edge.revoke(g.grantId), true);
   });
 

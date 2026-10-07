@@ -81,7 +81,7 @@ export type Mirror = {
    * nothing - no state, no debts, no budgets.
    */
   reasons: Record<number, {agent: string; text: string; at: number}>;
-  /* refused ARMs as the agents reported them (their word; the key's own count is HEAD's), newest 50 */
+  /* refused TX starts as the agents reported them (their word; the key's own count is HEAD's), newest 50 */
   refusals: {agent: string; seq: number; status: string; at: number}[];
   /*
    * R28 (spec: "keep the old checkpoint public key with the old copy"): the key's
@@ -114,7 +114,7 @@ export type EdgeView = {
   lastSync: number | null;
   /** newest first, for the chain view */
   rows: EdgeRow[];
-  /** B7 stage 2: refused ARMs the agents reported (their word), newest last */
+  /** B7 stage 2: refused TX starts the agents reported (their word), newest last */
   refusals?: Mirror['refusals'];
   /** records moved out of the copy because they were never links of this chain (Mirror.setAside) */
   setAside?: {seq: number | null; at: number}[];
@@ -249,7 +249,7 @@ export function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mir
  * that its key was registered with a press). In the sync queue, so a note and a
  * sync never save over each other.
  */
-export type EdgeNote = {agent: string; seq: number; reason?: string; ticketMsg?: string; armRefused?: string};
+export type EdgeNote = {agent: string; seq: number; reason?: string; ticketMsg?: string; txRefused?: string};
 export function addNote(deviceId: Uint8Array, n: EdgeNote, now = Date.now()): Promise<void> {
   const run = syncing.then(() => addNoteNow(deviceId, n, now), () => addNoteNow(deviceId, n, now));
   syncing = run.catch(() => undefined);
@@ -261,7 +261,7 @@ async function addNoteNow(deviceId: Uint8Array, n: EdgeNote, now: number): Promi
   if (n.reason !== undefined) m.reasons[n.seq] = {agent, text: n.reason, at: now};
   /* by the use's seq, as tickets.pairTickets reads it: shown only if it hashes to the ticket */
   if (n.ticketMsg !== undefined) m.messages[n.seq] = n.ticketMsg;
-  if (n.armRefused !== undefined) m.refusals = [...m.refusals, {agent, seq: n.seq, status: n.armRefused, at: now}].slice(-50);
+  if (n.txRefused !== undefined) m.refusals = [...m.refusals, {agent, seq: n.seq, status: n.txRefused, at: now}].slice(-50);
   await saveMirror(m);
 }
 

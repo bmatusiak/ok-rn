@@ -1,7 +1,7 @@
 /*
  * edge - the minimal firmware half of OnlyKey Edge: the key is a notary
  * (DESIGN.md section 0). It welds each sign/decrypt decision into the key's
- * chain, decides budget self-presses (each ARMed), signs budget geneses and
+ * chain, decides budget self-presses (each started), signs budget geneses and
  * checkpoints, keeps the owed tickets, and links tickets and waives; node-onlykey-lib/edge does everything else.
  */
 #ifndef OKPLUGIN_EDGE_H
@@ -28,7 +28,7 @@
 #define OKEDGE_GRANT_RESUME 0x14 /* R15a: press */
 #define OKEDGE_TICKET 0x20       /* replies seq . head */
 #define OKEDGE_WAIVE 0x21        /* R18: press; replies seq . head */
-#define OKEDGE_ARM 0x22          /* R13a: ARM {head} */
+#define OKEDGE_TX_START 0x22          /* R13a: TX start {head} */
 #define OKEDGE_REPLAY 0x23       /* R26: a link of the newest copy, while restoring */
 #define OKEDGE_AGENT_ADD 0x15    /* mcp-service 4.7a: {agent key 32}, press; an agent-add link, subject = SHA256("OKEDGE-AGENT-v1" || key) */
 #define OKEDGE_PEER_ADD 0x30     /* R20: two parts - {0, X 32} staged, then {1, Y 32} and a press; a peer-add link, subject = SHA256(X || Y) */
@@ -42,7 +42,7 @@
 #define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts; refused while restoring */
 #define OKEDGE_REPLAY_DONE 0x24  /* R26: {seq, tag, newest}, press; commits only a vouched replay; replies seq . head . tag or EDGE:11 */
 #define OKEDGE_REPLAY_INTENT 0x25 /* R13b: {intent 16}, while restoring - the next REPLAY of a self-press link welds it into bytes 47-62 */
-/* HEAD byte 61: what this build understands (R13b: ARM {token, intent}) */
+/* HEAD byte 61: what this build understands (R13b: TX start {token, intent}) */
 #define OKEDGE_CAP_INTENT 0x01
 /* R3 (2026-10-06): byte 63 of every link this build writes - 0 = the links before it (no version), still readable */
 #define OKEDGE_LINK_VERSION 1
@@ -62,10 +62,10 @@
 #define EDGE_NO_TICKET_WAITING 0x08 /* ticket: that use owes nothing; waive: nothing owed */
 #define EDGE_NOT_HELD 0x09          /* pickup: that link is no longer held */
 #define EDGE_UNKNOWN_REQUEST 0x0A
-#define EDGE_STALE_HEAD 0x0B        /* ARM: not the current head */
-#define EDGE_TICKET_OWED 0x0C       /* R18: a ticket is owed - no ARM, GRANT_CREATE or GRANT_RESUME */
-#define EDGE_NOTHING_TO_ARM 0x0D    /* ARM: no live budget off hold with uses left */
-#define EDGE_RESTORING 0x0E         /* R26: restored, not finished - no ARM, GRANT_CREATE or GRANT_RESUME */
+#define EDGE_STALE_HEAD 0x0B        /* TX start: not the current head */
+#define EDGE_TICKET_OWED 0x0C       /* R18: a ticket is owed - no TX start, GRANT_CREATE or GRANT_RESUME */
+#define EDGE_NOTHING_TO_PAY 0x0D    /* TX start: no live budget off hold with uses left */
+#define EDGE_RESTORING 0x0E         /* R26: restored, not finished - no TX start, GRANT_CREATE or GRANT_RESUME */
 #define EDGE_REPLAY_MISMATCH 0x0F   /* REPLAY: not the next seq, or it does not weld to the head the copy stored */
 #define EDGE_REPLAY_CLOSED 0x10     /* REPLAY: not restoring, or the key already wrote a link of its own */
 #define EDGE_BAD_RANGE 0x12         /* LOSS: from > to, or to past the key's head (CHOSEN, pending the spec) */
@@ -78,7 +78,7 @@
 #define EDGE_SIBLINGS_FULL 0x19     /* SIBLING_ADD: 4 siblings already (CHOSEN number) */
 #define EDGE_NO_SUCH_SIBLING 0x1A   /* SIBLING_REMOVE / ANCHOR: no sibling at that index (CHOSEN number) */
 #define EDGE_BAD_CHECKPOINT 0x1B    /* ANCHOR: the checkpoint does not verify under that sibling's key (CHOSEN number) */
-#define EDGE_ARM_MISMATCH 0x1C      /* R13a (2026-10-06): the sign was not the request the ARM was for - refused, the ARM is used up */
+#define EDGE_TX_MISMATCH 0x1C      /* R13a (2026-10-06): the sign was not the request the TX start was for - refused, the TX start is used up */
 #define EDGE_SYNC_ORDER 0x17       /* SYNC: a part out of order (CHOSEN number); EDGE:16 also answers a peer not on the list, EDGE:12 first > last */
 
 /* decisions, as node-onlykey-lib/edge/codes.js numbers them */

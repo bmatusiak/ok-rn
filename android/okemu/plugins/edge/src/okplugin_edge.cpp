@@ -8,7 +8,7 @@
  * The key adds only what the host (the agent's own machine, the thing being
  * watched) cannot be trusted with, from facts it saw itself:
  *   1 the weld at each sign/decrypt decision, and the head that pins history;
- *   2 the budget decision (self-press, only when ARMed) and its reveal;
+ *   2 the budget decision (self-press, only when started) and its reveal;
  *   3 ONE signature, with a key no generic sign request reaches: a checkpoint
  *     over (seq, head). Opening a budget at a physical press answers with a
  *     checkpoint over its grant-create link, whose subject commits to G - so
@@ -67,7 +67,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define FLAG_BUDGET_SPENT 0x02
 #define FLAG_PREV_NO_TICKET 0x04
 #define FLAG_OWES_TICKET 0x10 /* R16: this use owes a ticket (decided at the sign) */
-#define FLAG_ARMED 0x20       /* R16: an arm was waiting when it was primed */
+#define FLAG_STARTED 0x20       /* R16: a TX start was waiting when it was primed */
 
 #define SEQ_NONE 0xFFFFFFFFUL
 #define LINK_BYTES 64
@@ -188,7 +188,7 @@ struct scope { uint8_t op, slot; uint16_t cap, used; uint8_t has_label; uint8_t 
 /* a live budget: RAM only - a lock or reboot is a new process, so it ends with the session (R15) */
 struct budget {
   uint32_t id;
-  uint8_t nscopes, on_hold;   /* on_hold: R15a - pays for nothing, nothing arms under it */
+  uint8_t nscopes, on_hold;   /* on_hold: R15a - pays for nothing, nothing starts under it */
   struct scope scopes[MAX_SCOPES];
   uint16_t uses, used;
   uint32_t opened, lifetime_ms; /* R15b: millis() at the press, and how long it may live */
@@ -215,55 +215,57 @@ static int derived_code(uint8_t slot) {
 }
 
 /*
- * R13a: ONE self-press, armed by ARM {head}. RAM only, and any link clears it
+ * R13a: ONE self-press, started by TX start {head}. RAM only, and any link clears it
  * (append) - so it is spent by the very next sign/decrypt, whatever it decides,
  * and a lock or reboot drops it.
  */
-static uint8_t armed;
+static uint8_t started;
 /*
- * R13a (2026-10-02): the arm is bound to ONE request, not just the head:
- *   token = SHA256("OKEDGE-ARM-v1" || head || subject)
+ * R13a (2026-10-02): the TX start is bound to ONE request, not just the head:
+ *   token = SHA256("OKEDGE-TX-v1" || head || subject || intent)
  * subject = pend.subject, SHA-256 of exactly the bytes handed to
  * okcore_prime_user_confirmation. The key recomputes it from ITS head when the
- * next sign/decrypt is primed; a program that slips in between the agent's ARM
- * and its sign gets a press, never a free signature - and uses the arm up.
+ * next sign/decrypt is primed; a program that slips in between the agent's TX start
+ * and its sign gets a press, never a free signature - and uses the TX start up.
  */
-static uint8_t arm_token[32];
+static uint8_t tx_token[32];
 /*
- * R13a (spec session, 2026-10-06): a link written between an ARM and its sign (a hold,
- * a revoke, a ticket ...) voids the ARM - but that announced request must still be
- * REFUSED at its sign, never turned into a press prompt. The voided ARM is kept with
+ * R13a (spec session, 2026-10-06): a link written between a TX start and its sign (a hold,
+ * a revoke, a ticket ...) voids the TX start - but that announced request must still be
+ * REFUSED at its sign, never turned into a press prompt. The voided TX start is kept with
  * the head it was made over; the next sign that matches it is refused (EDGE:0D).
  */
-static uint8_t arm_voided;
+static uint8_t tx_voided;
 static uint8_t voided_head[32];
 /*
  * R13b (Brad, 2026-10-06): the use says what it's for BEFORE it happens.
- * ARM {token, intent}: intent = the first 16 bytes of SHA256("OKEDGE-INTENT-v1" ||
- * intent text), token = SHA256("OKEDGE-ARM-v2" || head || subject || intent); the
+ * TX start {token, intent}: intent = the first 16 bytes of SHA256("OKEDGE-INTENT-v1" ||
+ * intent text), token = SHA256("OKEDGE-TX-v1" || head || subject || intent); the
  * self-press link then carries the intent in bytes 47-62 (63 stays zero), so the
- * reason is welded into the chain before the signature exists. An ARM with an
- * all-zero intent is the older v1 (token over head || subject only) and writes
- * none - an agent that predates R13b keeps working until the chain reset (R31).
+ * reason is welded into the chain before the signature exists.
+ * ONE formula (the TX start rename, 2026-10-07): a use that names no intent sends 16
+ * zero bytes, the token covers them like any other, and the link carries no intent.
+ * The old split (OKEDGE-ARM-v1 without an intent, -v2 with one) is gone; lib and
+ * firmware change together, and nothing stored holds a token.
  */
-static uint8_t arm_intent[16];
-static uint8_t arm_v2;
-/* the intent the next append_scoped writes into bytes 47-62 (a self-press of a v2 arm), then cleared */
+static uint8_t tx_intent[16];
+static uint8_t tx_has_intent;
+/* the intent the next append_scoped writes into bytes 47-62 (a self-press with an intent), then cleared */
 static const uint8_t *next_intent;
 /* R13b + R26: the intent the next REPLAY of a self-press link welds in (REPLAY_INTENT), while restoring */
 static uint8_t replay_intent[16];
 static uint8_t replay_intent_set;
 
 /*
- * B7 stage 2 (spec, 2026-10-04): ARMs this key refused since power-up, in HEAD
- * byte 60. RAM only - a refused ARM writes no link (any host could flood the
+ * B7 stage 2 (spec, 2026-10-04): TX starts this key refused since power-up, in HEAD
+ * byte 60. RAM only - a refused TX start writes no link (any host could flood the
  * chain and wear the flash), so this count is the key's own evidence; the
  * phone's watcher alarms when it rises. Stops at 255.
  */
-static uint8_t refused_arms;
+static uint8_t refused_tx;
 static void status(uint8_t code);
-static void refuse_arm(uint8_t code) {
-  if (refused_arms < 255) refused_arms++;
+static void refuse_tx(uint8_t code) {
+  if (refused_tx < 255) refused_tx++;
   status(code);
 }
 
@@ -279,9 +281,9 @@ static struct held_link {
 /* what the confirmation that is waiting for its decision is about */
 static struct {
   uint8_t active, opcode, slot, press;
-  uint8_t armed; /* R16: an arm was waiting when this was primed (matched or not) */
-  uint8_t has_intent; /* R13b: a v2 arm matched - its intent goes into the self-press link */
-  uint8_t refuse;     /* R13a: the status to refuse this request with (0 = none) - not the ARM's request, or no budget can pay it now */
+  uint8_t started; /* R16: a TX start was waiting when this was primed (matched or not) */
+  uint8_t has_intent; /* R13b: a v2 start matched - its intent goes into the self-press link */
+  uint8_t refuse;     /* R13a: the status to refuse this request with (0 = none) - not the TX start's request, or no budget can pay it now */
   uint8_t intent[16];
   int8_t budget;
   uint8_t subject[32];
@@ -369,7 +371,7 @@ static int vouch_tag(uint32_t seq, const uint8_t head[32], uint8_t tag[16]);
 
 /*
  * seq . head . vouch tag (R26): TICKET's, WAIVE's and VOUCH's answer - the head
- * the agent passes to the next ARM (R13a), and the tag a host keeps with its
+ * the agent passes to the next TX start (R13a), and the tag a host keeps with its
  * copy so a later restore can prove this head was the key's.
  */
 static void reply_seq_head(void) {
@@ -605,8 +607,8 @@ static void write_continue(const uint8_t old_id[ID_BYTES]) {
   H(subject, "OKEDGE-CONTINUE-v1", buf, ID_BYTES + 36 + 4 * st.owed_n, NULL, 0, NULL, 0);
   memset(budgets, 0, sizeof(budgets));
   memset(held, 0, sizeof(held));
-  armed = 0;
-  arm_voided = 0;
+  started = 0;
+  tx_voided = 0;
   st.restored = 0;
   st.replay_closed = 0;
   st.cont = 0;
@@ -752,11 +754,11 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
     memset(&s->owed[s->owed_n], 0, sizeof(s->owed[0]) * (OWED_MAX - s->owed_n));
   }
   s->seq = seq;
-  /* R13a: a link other than the self-press that spends it voids the ARM - remember it (see arm_voided) */
-  if (s == &st && armed && link[5] != DECISION_SELF_PRESS) { arm_voided = 1; memcpy(voided_head, s->head, 32); }
+  /* R13a: a link other than the self-press that spends it voids the TX start - remember it (see tx_voided) */
+  if (s == &st && started && link[5] != DECISION_SELF_PRESS) { tx_voided = 1; memcpy(voided_head, s->head, 32); }
   memcpy(s->head, head, 32);
   memcpy(s->last_link, link, LINK_BYTES);
-  armed = 0; /* R13a: any link spends or clears the arm */
+  started = 0; /* R13a: any link spends or clears the TX start */
   if (s == &st) {
     state_save();
     hold(seq, link, head, reveal);
@@ -847,7 +849,7 @@ static uint8_t blocked_status(void) { return st.restored ? EDGE_RESTORING : EDGE
 static int head_is(const uint8_t *verified, uint8_t n) { return memcmp(verified, st.head, n) == 0; }
 
 /*
- * The live budget that pays for this use: armed (R13a), not on hold (R15a), a
+ * The live budget that pays for this use: started (R13a), not on hold (R15a), a
  * scope with room. Anything else falls back to the press the person sees -
  * never a refusal path of its own.
  */
@@ -859,7 +861,7 @@ static int scope_matches(const struct scope *sc, uint8_t op, uint8_t slot, const
 }
 
 static int budget_for(uint8_t op, uint8_t slot, const uint8_t *label, struct scope **sc_out) {
-  if (!armed || !budgets_may_pay()) return -1;
+  if (!started || !budgets_may_pay()) return -1;
   for (int i = 0; i < MAX_LIVE; i++) {
     struct budget *b = &budgets[i];
     if (!alive(b) || b->on_hold || b->used >= b->uses) continue;
@@ -877,7 +879,7 @@ static int budget_for(uint8_t op, uint8_t slot, const uint8_t *label, struct sco
 /* (R16's "covered" check went 2026-10-06: an ordinary press is not Edge and owes nothing) */
 
 
-/* R13a: ARM needs a budget that could pay for something - live, not on hold, uses left */
+/* R13a: TX start needs a budget that could pay for something - live, not on hold, uses left */
 static int any_budget_payable(void) {
   for (int i = 0; i < MAX_LIVE; i++)
     if (alive(&budgets[i]) && !budgets[i].on_hold && budgets[i].used < budgets[i].uses) return 1;
@@ -1373,7 +1375,7 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   }
   if (opcode != OKSIGN && opcode != OKDECRYPT) return;
   pend.active = 1;
-  pend.armed = armed; /* R16: taken before the token check below can spend the arm */
+  pend.started = started; /* R16: taken before the token check below can spend the TX start */
   pend.has_intent = 0;
   pend.refuse = 0;
   pend.opcode = opcode;
@@ -1383,37 +1385,35 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   pend.has_label = derived_code(slot) && msg_len >= 32;
   if (pend.has_label) memcpy(pend.label, msg + msg_len - 32, LABEL_PREFIX);
   state_load();
-  if (armed) {
-    /* R13a: this request, after THIS head, is the one the arm was for - or the arm is spent */
+  if (started) {
+    /* R13a: this request, after THIS head, is the one the TX start was for - or the TX start is spent */
     uint8_t t[32];
-    if (arm_v2) H(t, "OKEDGE-ARM-v2", st.head, 32, pend.subject, 32, arm_intent, 16); /* R13b */
-    else H(t, "OKEDGE-ARM-v1", st.head, 32, pend.subject, 32, NULL, 0);
-    if (memcmp(t, arm_token, 32) != 0) {
+    H(t, "OKEDGE-TX-v1", st.head, 32, pend.subject, 32, tx_intent, 16); /* R13b: zeros when no intent */
+    if (memcmp(t, tx_token, 32) != 0) {
       /*
-       * R13a (spec session, 2026-10-06): a request that is not the one the ARM
-       * was for is REFUSED, not pressed - no prompt, no link. The ARM is used up
-       * (the agent ARMs again) and HEAD byte 60 counts it with the refused ARMs.
+       * R13a (spec session, 2026-10-06): a request that is not the one the TX start
+       * was for is REFUSED, not pressed - no prompt, no link. The TX start is used up
+       * (the agent TX starts again) and HEAD byte 60 counts it with the refused TX starts.
        * No press: the core runs the request at once and okplugin_edge_refused()
        * answers EDGE:1C before anything is signed.
        */
-      armed = 0;
-      pend.refuse = EDGE_ARM_MISMATCH;
-      if (refused_arms < 255) refused_arms++;
+      started = 0;
+      pend.refuse = EDGE_TX_MISMATCH;
+      if (refused_tx < 255) refused_tx++;
       user_input_mode = USER_INPUT_NONE;
       pend.press = 0;
       return;
     }
-    else if (arm_v2) { pend.has_intent = 1; memcpy(pend.intent, arm_intent, 16); }
+    else if (tx_has_intent) { pend.has_intent = 1; memcpy(pend.intent, tx_intent, 16); }
   }
-  if (!armed && arm_voided) {
-    /* R13a: the request whose ARM a later link voided (a hold in between) - refused, never a press prompt */
+  if (!started && tx_voided) {
+    /* R13a: the request whose TX start a later link voided (a hold in between) - refused, never a press prompt */
     uint8_t t[32];
-    if (arm_v2) H(t, "OKEDGE-ARM-v2", voided_head, 32, pend.subject, 32, arm_intent, 16);
-    else H(t, "OKEDGE-ARM-v1", voided_head, 32, pend.subject, 32, NULL, 0);
-    arm_voided = 0;
-    if (memcmp(t, arm_token, 32) == 0) {
-      pend.refuse = EDGE_NOTHING_TO_ARM;
-      if (refused_arms < 255) refused_arms++;
+    H(t, "OKEDGE-TX-v1", voided_head, 32, pend.subject, 32, tx_intent, 16);
+    tx_voided = 0;
+    if (memcmp(t, tx_token, 32) == 0) {
+      pend.refuse = EDGE_NOTHING_TO_PAY;
+      if (refused_tx < 255) refused_tx++;
       user_input_mode = USER_INPUT_NONE;
       pend.press = 0;
       return;
@@ -1423,16 +1423,16 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   int i = budget_for(opcode == OKSIGN ? OP_SIGN : OP_DECRYPT, slot, pend.has_label ? pend.label : NULL, &sc);
   if (i >= 0) {
     pend.budget = (int8_t)i;
-    user_input_mode = USER_INPUT_NONE; /* an armed budget pays: the firmware's own no-press path runs it (R13) */
-  } else if (armed) {
+    user_input_mode = USER_INPUT_NONE; /* an started budget pays: the firmware's own no-press path runs it (R13) */
+  } else if (started) {
     /*
      * R13a (spec session, 2026-10-06): the request IS the one the agent announced,
      * but its budget expired, was held or ended in between - refused, never a press
-     * prompt, no link. Counted with the refused ARMs (HEAD byte 60).
+     * prompt, no link. Counted with the refused TX starts (HEAD byte 60).
      */
-    armed = 0;
-    pend.refuse = EDGE_NOTHING_TO_ARM;
-    if (refused_arms < 255) refused_arms++;
+    started = 0;
+    pend.refuse = EDGE_NOTHING_TO_PAY;
+    if (refused_tx < 255) refused_tx++;
     user_input_mode = USER_INPUT_NONE;
   }
   pend.press = user_input_mode != USER_INPUT_NONE;
@@ -1468,21 +1468,21 @@ void okplugin_edge_decision(int decision) {
   /*
    * R16 (Brad, 2026-10-02 evening: "a ticket is not owed, because it was a
    * direct use of the ssh agent, not the Edge agent"). Decided HERE, written
-   * into the link - the chain can't replay "ARMed" or expiry, and weld_in,
+   * into the link - the chain can't replay "started" or expiry, and weld_in,
    * REPLAY and the lib's keyDebts read only the link:
-   *   - ARMED (an arm waited at the prime, matched or not): owes, any slot;
-   *   - not ARMed, but a budget covers the op and slot (from its opening to
+   *   - STARTED (a TX start waited at the prime, matched or not): owes, any slot;
+   *   - not started, but a budget covers the op and slot (from its opening to
    *     its end - on hold or used up, it still covers): owes - the agent's key
    *     used outside Edge;
    *   - neither: owes nothing (the person's own keys), still linked.
    */
-  if (pend.armed) flags |= FLAG_ARMED;
+  if (pend.started) flags |= FLAG_STARTED;
   /* R16 (spec session, 2026-10-06): only budget uses owe a ticket - an ordinary press is not Edge */
-  if (decision == OKEDGE_DECISION_APPROVE && pend.armed) flags |= FLAG_OWES_TICKET;
+  if (decision == OKEDGE_DECISION_APPROVE && pend.started) flags |= FLAG_OWES_TICKET;
 
   if (decision == OKEDGE_DECISION_APPROVE && pend.budget >= 0) {
     struct scope *sc;
-    if (budget_for(op, pend.slot, pend.has_label ? pend.label : NULL, &sc) == pend.budget) { /* still armed, live, with room */
+    if (budget_for(op, pend.slot, pend.has_label ? pend.label : NULL, &sc) == pend.budget) { /* still started, live, with room */
       struct budget *b = &budgets[pend.budget];
       uint8_t reveal[32];
       b->used++;
@@ -1506,7 +1506,7 @@ void okplugin_edge_decision(int decision) {
 
 /*
  * Called first in okcore_run_pending_op (plugin.js hook), before the request
- * runs. Refuses (1) a request that did not match its ARM (R13a, EDGE:1C) and
+ * runs. Refuses (1) a request that did not match its TX start (R13a, EDGE:1C) and
  * (2) a request primed to be paid by a budget that can no longer pay - budget or
  * no go: it must never run without a press and without a link. -> 1 = refused.
  */
@@ -1524,7 +1524,7 @@ int okplugin_edge_refused(void) {
     uint8_t op = pend.opcode == OKSIGN ? OP_SIGN : OP_DECRYPT;
     if (budget_for(op, pend.slot, pend.has_label ? pend.label : NULL, &sc) != pend.budget) {
       pend.active = 0;
-      status(EDGE_NOTHING_TO_ARM);
+      status(EDGE_NOTHING_TO_PAY);
       return 1;
     }
   }
@@ -1547,8 +1547,8 @@ void okplugin_edge_wipe(void) {
   memset(&st, 0, sizeof(st));
   st.seq = SEQ_NONE;
   loaded = 1;
-  armed = 0;
-  arm_voided = 0;
+  started = 0;
+  tx_voided = 0;
   tent_active = 0;
   pend.active = 0;
   press_drop();
@@ -1638,8 +1638,8 @@ void okplugin_edge_restore(const uint8_t *in, int len) {
   st.replayed_to = st.seq;
   memset(held, 0, sizeof(held));
   memset(budgets, 0, sizeof(budgets));
-  armed = 0;
-  arm_voided = 0;
+  started = 0;
+  tx_voided = 0;
   loaded = 1;
   state_save();
 }
@@ -1675,8 +1675,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       r[57] = st.owed_n;
       r[58] = st.overflow;
       r[59] = st.restored;
-      r[60] = refused_arms; /* B7: refused ARMs since power-up (RAM only) */
-      r[61] = OKEDGE_CAP_INTENT; /* R13b: this build takes ARM {token, intent} */
+      r[60] = refused_tx; /* B7: refused TX starts since power-up (RAM only) */
+      r[61] = OKEDGE_CAP_INTENT; /* R13b: this build takes TX start {token, intent} */
       reply(r, 62);
       return;
     }
@@ -1793,29 +1793,29 @@ void okplugin_edge_recv(uint8_t *buffer) {
       press_wait(PRESS_WAIVE, what);
       return;
     }
-    case OKEDGE_ARM: {
+    case OKEDGE_TX_START: {
       /*
-       * R13a, like ssh-agent: the agent's wire asks, the key decides. ARM {token}
-       * arms ONE self-press when nothing is owed, no restore is unfinished and
+       * R13a, like ssh-agent: the agent's wire asks, the key decides. TX start {token}
+       * starts ONE self-press when nothing is owed, no restore is unfinished and
        * some budget (alive, off hold, uses left) could pay. Whether the token
        * fits - this head, this request - is decided when the request is primed
        * (okplugin_edge_primed); a stale head shows there, as a press.
        */
       /*
-       * R13b, budget or no go (Brad, 2026-10-06): an ARM, with or without an
+       * R13b, budget or no go (Brad, 2026-10-06): a TX start, with or without an
        * intent, is refused unless a budget can pay - there is no pressed-intent
-       * path. A press is the ordinary ssh/gpg agent, which sends no ARM.
+       * path. A press is the ordinary ssh/gpg agent, which sends no TX start.
        */
-      uint8_t v2 = 0;
-      for (int k = 0; k < 16; k++) v2 |= buffer[38 + k];
-      if (st.restored) { refuse_arm(EDGE_RESTORING); return; }
-      if (owes()) { refuse_arm(EDGE_TICKET_OWED); return; }
-      if (!any_budget_payable()) { refuse_arm(EDGE_NOTHING_TO_ARM); return; }
-      memcpy(arm_token, buffer + 6, 32);
-      memcpy(arm_intent, buffer + 38, 16); /* R13b: zeros = a v1 arm */
-      arm_v2 = v2;
-      armed = 1;
-      arm_voided = 0; /* a new ARM replaces a voided one */
+      uint8_t has_intent = 0;
+      for (int k = 0; k < 16; k++) has_intent |= buffer[38 + k];
+      if (st.restored) { refuse_tx(EDGE_RESTORING); return; }
+      if (owes()) { refuse_tx(EDGE_TICKET_OWED); return; }
+      if (!any_budget_payable()) { refuse_tx(EDGE_NOTHING_TO_PAY); return; }
+      memcpy(tx_token, buffer + 6, 32);
+      memcpy(tx_intent, buffer + 38, 16); /* R13b: zeros = no intent (still in the token) */
+      tx_has_intent = has_intent;
+      started = 1;
+      tx_voided = 0; /* a new TX start replaces a voided one */
       status(EDGE_OK);
       return;
     }

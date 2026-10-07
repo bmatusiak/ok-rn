@@ -106,8 +106,8 @@ export type EdgeCopyKey = {
   checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array} | null;
 };
 
-/* refusedArms: B7 stage 2, HEAD byte 60 - ARMs the key refused since it started (0 on older firmware) */
-export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; restoring: boolean; refusedArms?: number};
+/* refusedTx: B7 stage 2, HEAD byte 60 - TX starts the key refused since it started (0 on older firmware) */
+export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; restoring: boolean; refusedTx?: number};
 
 /**
  * A replay's outcome (spec B6): the key took #from..#to; it stopped because
@@ -246,7 +246,7 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
       if (!scope) continue;
       b.used++; // the budget's step counts across all of its scopes
       scope.used++;
-      return this.add({op, decision: DECISION.SELF_PRESS, slot, flags: flags | FLAG.BUDGET_SPENT | FLAG.OWES_TICKET | FLAG.ARMED, subject: sha(what), grantId: b.grantId, grantStep: b.used});
+      return this.add({op, decision: DECISION.SELF_PRESS, slot, flags: flags | FLAG.BUDGET_SPENT | FLAG.OWES_TICKET | FLAG.STARTED, subject: sha(what), grantId: b.grantId, grantStep: b.used});
     }
     /* R16, as the real key decides it at the sign: a human press owes only on a covered slot */
     const owes = this.covered(op, slot) ? FLAG.OWES_TICKET : 0;

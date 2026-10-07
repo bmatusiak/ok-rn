@@ -181,7 +181,7 @@ test('a note\'s reason lands on its row; its ticket message shows only when it h
   k.messages = async () => ({}); /* as the soft key: no messages from the key */
   await sync(k);
   await addNote(k.deviceId, {agent: 'AB'.repeat(32), seq, reason: 'git push origin master'});
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq: 999, armRefused: 'ticket_owed'});
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq: 999, txRefused: 'ticket_owed'});
   let {view} = await sync(k);
   let row = view.rows.find(r => r.seq === seq)!;
   expect(row.note).toMatchObject({agent: 'ab'.repeat(32), text: 'git push origin master'});

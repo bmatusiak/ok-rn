@@ -341,7 +341,7 @@ async function handleNote(msg: any): Promise<unknown | null> {
    * session's verified copy already showed registered is answered after the
    * note's signature checks; the note is kept and the copy synced right after, in
    * the background, so alarms still come within seconds. Any other key gets the
-   * full check (and an unregistered one is still refused). Only notes: ARMs,
+   * full check (and an unregistered one is still refused). Only notes: TX starts,
    * budget requests and anything that spends keep their full check.
    */
   const agentKey = String(msg?.agent ?? '').toLowerCase();
@@ -354,7 +354,7 @@ async function handleNote(msg: any): Promise<unknown | null> {
     const s = soft;
     if (!s) return null;
     void (async () => {
-      await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, armRefused: msg.armRefused}).catch(() => undefined);
+      await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, txRefused: msg.txRefused}).catch(() => undefined);
       await pressedAgents().catch(() => undefined); /* the sync (and its alarms), and the known keys refreshed */
     })();
     return {ok: true};
@@ -368,7 +368,7 @@ async function handleNote(msg: any): Promise<unknown | null> {
   soft = soft ?? (await SoftKeyEdge.open());
   const s = soft;
   if (!s) return null; /* locked, or no Edge: nothing to keep it with */
-  await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, armRefused: msg.armRefused});
+  await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, txRefused: msg.txRefused});
   return {ok: true};
 }
 
