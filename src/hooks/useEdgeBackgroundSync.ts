@@ -21,12 +21,16 @@
  * (The lib serialises Edge requests among themselves; the device and crypto
  * plugins do not yet wait for them - that is the lasting fix.)
  *
- * WHAT: edgeStore.sync - the same sync the tab runs (serialised with it there),
- * into the same stored copy. The tab shows the result when it opens.
+ * WHAT: edgeStore's chain state - the same check the tab and the agent sheet
+ * ask (one sync, serialised with theirs, into the same stored copy) - and only
+ * when the head moved; a round with nothing new is one head read. The rules for
+ * when a round runs and when its alarms run are in edgeWatchRound.ts (measured
+ * on the A13, 2026-10-07). The tab shows the result when it opens.
  */
 import {detail, errText} from '../logSafe';
 import {useEffect, useRef} from 'react';
-import {sync} from '../edgeStore';
+import {chainState, loadMirror, type ChainAnswer} from '../edgeStore';
+import {createWatchRound} from '../edgeWatchRound';
 import {beat, onHoldRequested, onWatchTick, raiseWatchAlarms, takeHoldRequest, watching} from '../edgeAlerts';
 import {raiseSiblingAlarms} from '../edgeSiblingAlarm';
 import {SoftKeyEdge} from '../edgeSoftKey';
@@ -37,6 +41,8 @@ import {transport as oktransport} from 'node-onlykey-lib';
 import type {KeyWaiting} from '../transport/OkEmu';
 
 const PERIOD_MS = 15000;
+/* the alarms that move with the clock (owed 10 min, expired, a sibling gone quiet) when the head did not */
+const ALARM_EVERY_MS = 60000;
 const SETTLE_MS = 6000;
 const BEAT_MS = 10000;
 const HOLD_RETRY_MS = 3000;
@@ -71,8 +77,21 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
       };
       offs.push(app.transport.on('write', mark));
     }).catch(() => {});
-    const attempt = async () => {
+    let source: SoftKeyEdge | null = null;
+    const round = createWatchRound<ChainAnswer>({
+      validity: () => chainState.validity(source!),
+      alarms: async a => {
+        const s = source!;
+        const [mirror, st, live, past] = await Promise.all([loadMirror(s.deviceId), s.state(), s.budgets(), s.pastBudgets()]);
+        await raiseWatchAlarms(mirror, a.view, {refusedTx: st.refusedTx, live: live.map(b => b.grantId), past});
+        /* R30: a paired key that stopped syncing (reminder, then the alarm) */
+        await raiseSiblingAlarms((await s.siblings?.()) ?? []).catch(() => undefined);
+      },
+    }, {periodMs: PERIOD_MS, alarmEveryMs: ALARM_EVERY_MS});
+    /* force: a confirmation just cleared - a link was made, catch it now */
+    const attempt = async (force = false) => {
       if (!alive || busy) return;
+      if (!force && !round.due()) return; /* the timer and the native tick share one clock */
       /*
        * B7 stage 2, option A (spec 2026-10-04): no longer only with the app in
        * front - the soft key's foreground service keeps this process alive, and
@@ -83,14 +102,8 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
       if (Date.now() - lastTraffic < SETTLE_MS) return; /* the key is in use - by this app too */
       busy = true;
       try {
-        const source = await SoftKeyEdge.open(); /* null: locked, or no Edge */
-        if (source && alive) {
-          const {mirror, view} = await sync(source);
-          const [st, live, past] = await Promise.all([source.state(), source.budgets(), source.pastBudgets()]);
-          await raiseWatchAlarms(mirror, view, {refusedTx: st.refusedTx, live: live.map(b => b.grantId), past});
-          /* R30: a paired key that stopped syncing (reminder, then the alarm) */
-          await raiseSiblingAlarms((await source.siblings?.()) ?? []).catch(() => undefined);
-        }
+        source = await SoftKeyEdge.open(); /* null: locked, or no Edge */
+        if (source && alive) await round.run();
       } catch (e) {
         console.log(`[edge-watch] sync failed: ${errText(e)}`);
         /* the next tick tries again; the tab shows any real error when opened */
@@ -98,7 +111,7 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
         busy = false;
       }
     };
-    kick.current = () => setTimeout(() => void attempt(), SETTLE_MS);
+    kick.current = () => setTimeout(() => void attempt(true), SETTLE_MS);
     const timer = setInterval(() => void attempt(), PERIOD_MS);
 
     /* the heartbeat: the native watchdog posts "Edge watching stopped" 30 s after the last one */
@@ -110,15 +123,11 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
      * the screen off (the Pixel, 2026-10-04: the beats stopped a minute after the
      * screen went off, the "watching stopped" notice came, no alarm did). The
      * native watchdog sends a tick every 10 s while watching; a tick still runs
-     * JS. Beat on each, sync at most every PERIOD_MS.
+     * JS. Beat on each; a round runs at most every PERIOD_MS, whichever clock asks.
      */
-    let lastAttempt = 0;
     const offTick = onWatchTick(() => {
       beat();
-      if (Date.now() - lastAttempt >= PERIOD_MS) {
-        lastAttempt = Date.now();
-        void attempt();
-      }
+      void attempt();
     });
 
     /*
