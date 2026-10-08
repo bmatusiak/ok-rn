@@ -76,7 +76,7 @@ jest.mock('../src/transport/FidoGatt', () => ({
   },
 }));
 
-import {startVendorBridge, computerHoldsKey} from '../src/vendorBridge';
+import {startVendorBridge, computerHoldsKey, KEY_STOPPED} from '../src/vendorBridge';
 
 const IFACE = oktransport.IFACE;
 
@@ -127,7 +127,7 @@ function fakeTransport() {
   };
 }
 
-function start(opts: {api?: () => boolean; target?: () => string | null} = {}) {
+function start(opts: {api?: () => boolean; target?: () => string | null; halted?: () => boolean} = {}) {
   const fake = fakeTransport();
   const logged: Array<[string, string]> = [];
   const off = startVendorBridge({
@@ -135,6 +135,7 @@ function start(opts: {api?: () => boolean; target?: () => string | null} = {}) {
     getKey: async () => ({transport: fake.transport} as never),
     isApi: opts.api,
     getTarget: opts.target ?? (() => TARGET),
+    isKeyHalted: opts.halted,
   });
   return {fake, logged, off};
 }
@@ -181,6 +182,24 @@ test('a vendor report is notified back as hex', async () => {
   fake.emitReport(IFACE.VENDOR, Uint8Array.from([0x55, 0x4e, 0x4c]));
   await settle();
   expect(mockSendVendorReport).toHaveBeenCalledWith('554e4c');
+  off();
+});
+
+test('a halted soft key: nothing is written, the computer hears KEY_STOPPED (Brad, 2026-10-07)', async () => {
+  /*
+   * The inactivity lockout halts the soft key's firmware for good (CPU_RESTART);
+   * before this the request went into it and the CLI waited out 3 s of silence.
+   */
+  const {fake, off} = start({halted: () => true});
+  await mockRequestListener!({iface: 'vendor', hex: 'ffffffffe4', requestId: '', address: TARGET});
+  await settle();
+  expect(fake.writes).toHaveLength(0);
+  expect(mockSendVendorReport).toHaveBeenCalledTimes(1);
+  const hex = mockSendVendorReport.mock.calls[0][0] as string;
+  const sent = (hex.match(/../g) || []).map(h => parseInt(h, 16));
+  expect(sent).toHaveLength(64);
+  expect(String.fromCharCode(...sent).replace(/\0+$/, '')).toBe(KEY_STOPPED);
+  expect(KEY_STOPPED.length).toBeLessThan(64);
   off();
 });
 

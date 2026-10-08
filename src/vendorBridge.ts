@@ -126,7 +126,38 @@ type Options = {
    * the app uses its one gate.
    */
   transit?: BtTransit;
+  /*
+   * True when the soft key's firmware has halted (it called CPU_RESTART(): the
+   * inactivity lockout, the lock gesture, a failed integrity check) - its thread
+   * is gone until the app restarts. The bridge then answers the computer itself
+   * instead of writing into a firmware that will never reply.
+   */
+  isKeyHalted?: () => boolean;
 };
+
+/*
+ * WHAT A COMPUTER HEARS FROM A HALTED SOFT KEY (Brad, 2026-10-07).
+ *
+ * The soft key's inactivity lockout ends in CPU_RESTART(). On hardware that is a
+ * reboot that comes back locked; here the firmware thread exits and cannot be
+ * started again in this process (useOkEmu.ts, 'restartRequested'), so the key is
+ * not locked but gone until ok-rn restarts. The app shows "Restart now" - but a
+ * computer asking over Bluetooth heard nothing at all: the request went into the
+ * dead firmware and the CLI said "no reply on interface 2 within 3000ms". Brad's
+ * A13 logged itself out that way and neither he nor the agent could tell.
+ *
+ * So the bridge answers in the firmware's own form: one 64-byte text report,
+ * padded as hidprint() pads, starting "Error" so every OnlyKey host reads it as
+ * a refusal. node-onlykey-lib names this sentence (okmsg 'stopped') and the CLI
+ * prints what to do. Under 64 bytes, so it fits one report.
+ */
+export const KEY_STOPPED = 'Error soft key stopped, restart ok-rn on the phone';
+
+function textReport(text: string): Uint8Array {
+  const out = new Uint8Array(64);
+  for (let i = 0; i < text.length && i < 64; i++) out[i] = text.charCodeAt(i) & 0xff;
+  return out;
+}
 
 /* a computer's conversation holds the key's lane until it has been quiet this long (and nothing waits for a press) */
 const COMPUTER_QUIET_MS = 1500;
@@ -203,7 +234,7 @@ export function onKeyFree(listener: () => void): () => void {
   };
 }
 
-export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, onEdgeRequest, transit = btTransit}: Options): () => void {
+export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, onEdgeRequest, transit = btTransit, isKeyHalted}: Options): () => void {
   /* EDGE_REQUEST pieces, by the computer sending them */
   const gathering = new Map<string, ReturnType<typeof edgeWire.createAssembler>>();
   /* whether every piece of the message being gathered from that computer came sealed (Part T) */
@@ -467,6 +498,13 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
 
       if (isEdgeRequest(data)) {
         keepForApp(data, address, sealed);
+        return;
+      }
+
+      /* a halted soft key never answers: say so in its place (KEY_STOPPED above) */
+      if (isKeyHalted && isKeyHalted()) {
+        log('info', '[vendor] the soft key has stopped - told the computer to restart ok-rn');
+        push(textReport(KEY_STOPPED), address);
         return;
       }
 

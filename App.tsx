@@ -594,17 +594,22 @@ function Shell() {
    */
   const unlockedRef = useRef(false);
   const isUnlocked = useCallback(() => unlockedRef.current, []);
+  /* the soft key halted (CPU_RESTART, e.g. its inactivity lockout): the vendor bridge answers for it */
+  const haltedRef = useRef(false);
+  const isKeyHalted = useCallback(() => haltedRef.current, []);
   const fido = useFidoGatt({
     log: fidoLog.log,
     getKey: getActiveKey,
     getBackend: getActiveBackend,
     isUnlocked,
+    isKeyHalted,
   });
   const keys = useKey({softLog: emuLog.log, hardLog: hardLog.log, fidoPending: fido.pending});
 
 
   backendRef.current = keys.backend;
   unlockedRef.current = keys.key.device === 'unlocked';
+  haltedRef.current = keys.backend === 'embedded' && keys.soft.state === 'halted';
   const emu = keys.key;
   /*
    * TESTING MODE's Login (Brad, 2026-10-07: "a login button that sends the passcode

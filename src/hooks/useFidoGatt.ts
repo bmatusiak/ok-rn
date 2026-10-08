@@ -45,6 +45,8 @@ type Options = {
   getBackend: () => string;
   /** Whether the active key is unlocked; see the gate in fidoBridge. */
   isUnlocked?: () => boolean;
+  /** Whether the soft key has halted (CPU_RESTART); the vendor bridge then answers for it. */
+  isKeyHalted?: () => boolean;
 };
 
 export type FidoSession = ReturnType<typeof useFidoGatt>;
@@ -53,7 +55,7 @@ export type FidoSession = ReturnType<typeof useFidoGatt>;
  * The BLE authenticator session. Call this ONCE, at app scope - it owns the
  * GATT server's lifetime and the bridge that answers requests.
  */
-export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
+export function useFidoGatt({log, getKey, getBackend, isUnlocked, isKeyHalted}: Options) {
   /*
    * THE KEY GETTER IS PASSED IN, and it has to be.
    *
@@ -230,6 +232,7 @@ export function useFidoGatt({log, getKey, getBackend, isUnlocked}: Options) {
       /* the soft key says when it waits for a press; a hard key cannot, and ends on quiet */
       isKeyWaiting: async () => (OkEmu.isRunning() ? (await OkEmu.waiting()) !== null : false),
       onEdgeRequest: hasSoftKeyPlugin('edge') ? handleEdgeMessage : undefined,
+      isKeyHalted,
     });
 
     FidoGatt.isSupported()
