@@ -12,7 +12,7 @@
  * request named, the rpId hash on the FIDO path, and the public key. NEVER a
  * private key, a seed or a shared secret.
  *
- * A derive is not a use: no Edge link, no ticket, no budget is touched. A
+ * A derive is not a use: no Edge link, no receipt, no budget is touched. A
  * firmware derive LINK (for hard keys too) is a later spec proposal.
  *
  * Hooks (each anchor occurs exactly once in the 3.1.0 tree):

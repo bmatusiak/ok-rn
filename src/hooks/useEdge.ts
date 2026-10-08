@@ -9,7 +9,7 @@
  * session, kept outside React so switching tabs keeps it.
  */
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type EdgeInbox, type EdgeKeyState, type EdgeReplay, type EdgeRequest, type EdgeSource} from '../edgeFake';
+import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type EdgeInbox, type EdgeKeyState, type EdgeRequest, type EdgeSource} from '../edgeFake';
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {computerHoldsKey, onKeyFree} from '../vendorBridge';
 import {hasSoftKeyPlugin} from '../buildInfo';
@@ -36,13 +36,11 @@ export function useEdge() {
   const [error, setError] = useState<string | null>(null);
   /*
    * What the key is waiting for a PHYSICAL press on: a request ('r<id>'), a
-   * resume ('resume:<id>'), a waive ('waive') or the end of a restore ('restore').
+   * resume ('resume:<id>') or a waive ('waive').
    */
   const [pressFor, setPressFor] = useState<string | null>(null);
-  /* debts, holds and a restore, from HEAD (keys that have them) */
+  /* debts and holds, from HEAD (keys that have them) */
   const [keyState, setKeyState] = useState<EdgeKeyState | null>(null);
-  /* the last replay's outcome, for the Restore card (B6) */
-  const [replay, setReplay] = useState<EdgeReplay | null>(null);
   /* budgets a lock or reboot ended, with what is left (Continue) */
   const [ended, setEnded] = useState<EdgeEnded[]>([]);
   /* R27: whether a budget may be asked for from this phone's copy (Yes is off, with the reason, until it may) */
@@ -127,13 +125,12 @@ export function useEdge() {
   const exportBlocks = useCallback(async (): Promise<string> => {
     const s = await source();
     if (!s) return 'the key did not answer';
-    const sibs = ((await (s as unknown as {siblings?: () => Promise<{deviceId: string}[]>}).siblings?.()) ?? []).map(x => x.deviceId);
-    const r = await blocksOf(s.deviceId, sibs);
+    const r = await blocksOf(s.deviceId);
     if (!r.count) return r.reason ? 'no blocks: ' + r.reason : 'no blocks yet - a block closes when a budget ends';
     await NativeShare.shareFile('onlykey-edge-blocks-' + new Date().toISOString().slice(0, 10) + '.json', r.json, 'application/json', 'Edge blocks');
     return r.count + ' block(s), ' + r.open + ' link(s) after the last seal' + (r.bad ? ' - ' + r.bad + ' did not verify' : ', all verified');
   }, [source]);
-  /** A fake-key action (agent use, ticket, lock), then a sync, as the app would after relaying it. */
+  /** A fake-key action (agent use, receipt, lock), then a sync, as the app would after relaying it. */
   const act = useCallback((fn: (k: FakeEdgeKey) => void) => {
     if (!fake || wantReal) return Promise.resolve();
     fn(fake);
@@ -199,19 +196,6 @@ export function useEdge() {
     }
     return (await syncMirror(s)).view;
   }), [run]);
-  /* R29: the paired keys (no press), and unpairing one - the person's Yes on screen (EdgeScreen), then the press */
-  const siblings = useCallback(async () => {
-    const s = await source();
-    return (await s?.siblings?.()) ?? [];
-  }, [source]);
-  const removeSibling = useCallback((index: number) => run(async s => {
-    try {
-      await s.removeSibling?.(index, () => setPressFor(`sibling:${index}`));
-    } finally {
-      setPressFor(null);
-    }
-    return (await syncMirror(s)).view;
-  }), [run]);
   /* Continue: a request for what is left; then Approve is the usual Yes and press */
   const continueBudget = useCallback((grantId: number) => run(async s => {
     await s.continueBudget?.(grantId);
@@ -231,24 +215,10 @@ export function useEdge() {
     }
     return (await syncMirror(s)).view;
   }), [run]);
-  /* testing mode: an agent's pressed sign with no ticket (soft key only) */
+  /* testing mode: an agent's pressed sign with no receipt (soft key only) */
   const agentSign = useCallback(() => run(async s => {
     const k = s as Source & {agentSign?: (t: string) => Promise<void>};
     await k.agentSign?.('sign');
-    return (await syncMirror(s)).view;
-  }), [run]);
-  /* R26 / B6: replay this phone's copy, then the press over "restored to #N" */
-  const replayCopy = useCallback(() => run(async s => {
-    if (s.replayCopy) setReplay(await s.replayCopy());
-    return (await chainState.validity(s)).view;
-  }), [run]);
-  const finishRestore = useCallback((newestSeq: number) => run(async s => {
-    try {
-      await s.finishRestore?.(newestSeq, () => setPressFor('restore'));
-    } finally {
-      setPressFor(null);
-    }
-    setReplay(null);
     return (await syncMirror(s)).view;
   }), [run]);
   const press = useCallback(async () => {
@@ -319,8 +289,8 @@ export function useEdge() {
   }, [wantReal, source, sync]);
 
   return {
-    view, budgets, past, requests, busy, stopping, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal, fullSync,
+    view, budgets, past, requests, busy, stopping, error, pressFor, copyCheck, keyState, ended, isFake: !wantReal, fullSync,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
-    hold, resume, waive, siblings, removeSibling, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss, exportBlocks,
+    hold, resume, waive, agentSign, continueBudget, dismissEnded, acceptLoss, exportBlocks,
   };
 }

@@ -8,10 +8,10 @@
  * from a chain built with the LIBRARY's own encodeLink/weld, so what the tab
  * verifies is a real chain: a verdict shown from this fake is the same verdict
  * the real key's links would get. Its "agent" actions append links the way
- * firmware.md R13-R17 says the key would (self-press under a budget, a ticket
+ * firmware.md R13-R17 says the key would (self-press under a budget, a receipt
  * after a use, a denied request, a human press with an empty hook).
  */
-import {chain, codes, grants, tickets} from 'node-onlykey-lib/edge';
+import {chain, codes, grants, receipts} from 'node-onlykey-lib/edge';
 import {utf8ToBytes} from 'node-onlykey-lib/bytes';
 
 const {OP, DECISION, FLAG} = codes;
@@ -34,11 +34,11 @@ export type EdgeBudget = {
   exact?: boolean;
   /* a past budget (budget history): how it ended */
   endedHow?: string;
-  /* the audit log: when it opened and ended (the phone's clock), its lifetime (minutes), uses that got a ticket */
+  /* the audit log: when it opened and ended (the phone's clock), its lifetime (minutes), uses that got a receipt */
   openedAt?: number;
   endedAt?: number;
   lifetime?: number;
-  ticketsFiled?: number;
+  receiptsFiled?: number;
   /* the links it spans, like a block: its opening to its last link (in this phone's copy) */
   firstSeq?: number;
   lastSeq?: number;
@@ -56,7 +56,7 @@ export interface EdgeSource {
   read(fromSeq: number, count: number): Promise<EdgeLinkRecord[]>;
   /* useLastHead: the head the caller just read (a sync) may be reused */
   budgets(useLastHead?: boolean): Promise<EdgeBudget[]>;
-  /** Ticket messages by the seq they answer - they come by sync, never from the key. */
+  /** Receipt messages by the seq they answer - they come by sync, never from the key. */
   messages(): Promise<Record<number, string>>;
   /** End a live budget now (a grant-end link). */
   revoke(grantId: number): void | Promise<void>;
@@ -71,20 +71,10 @@ export interface EdgeSource {
   hold?(grantId: number): Promise<void>;
   /** R15a: resume it - the copy check (R27), then a physical press. */
   resume?(grantId: number, onPress?: () => void): Promise<void>;
-  /** R18: clear every owed ticket - a physical press. */
+  /** R18: clear every owed receipt - a physical press. */
   waive?(onPress?: () => void): Promise<void>;
-  /** R29: the other keys of yours this key is paired with (no press). */
-  siblings?(): Promise<{index: number; key: string; deviceId: string}[]>;
-  /** R29: unpair one - started on this phone only, a physical press. */
-  removeSibling?(index: number, onPress?: () => void): Promise<void>;
-  /** R26: replay this phone's copy into a restoring key; where it stopped and why. */
-  replayCopy?(): Promise<EdgeReplay>;
-  /** R26: "restored to #N" - a physical press; the key links a LOSS over anything not replayed. */
-  finishRestore?(newestSeq: number, onPress?: () => void): Promise<void>;
   /** R24: accept #from..#to as gone for good - a physical press; the key links a LOSS. */
   acceptLoss?(from: number, to: number, onPress?: () => void): Promise<void>;
-  /** R26: the key's vouch tag for its current head; null while restoring. */
-  vouch?(): Promise<{seq: number; head: Uint8Array; tag: Uint8Array} | null>;
   /** Budgets a lock or reboot ended, with uses and time left (Continue). */
   ended?(): Promise<EdgeEnded[]>;
   /** Continue: a new request for what is left of an ended budget - Yes and a press, like any budget. */
@@ -108,20 +98,7 @@ export type EdgeCopyKey = {
 };
 
 /* refusedTx: B7 stage 2, HEAD byte 60 - TX starts the key refused since it started (0 on older firmware) */
-export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; restoring: boolean; refusedTx?: number};
-
-/**
- * A replay's outcome (spec B6): the key took #from..#to; it stopped because
- * the copy ended, or at a fork - the key's head at #at is not the copy's.
- */
-export type EdgeReplay = {
-  keyWas: number;
-  replayedTo: number;
-  newest: number;
-  /** R26: the newest head this phone holds a vouch for - only up to it can a replay be committed (-1: none) */
-  vouchedTo: number;
-  stop: {why: 'end'} | {why: 'fork'; at: number; keyHead: string; copyHead: string} | {why: 'gap'; at: number};
-};
+export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; refusedTx?: number};
 
 /** A budget someone asked for and the person has not answered yet (spec 4.3 clasp sheet). */
 export type EdgeRequest = {
@@ -168,8 +145,8 @@ export interface EdgeInbox {
 }
 
 const sha = (text: string) => {
-  /* a stand-in subject: SHA-256 of a description, via the lib's ticket hash */
-  return tickets.messageHash(text);
+  /* a stand-in subject: SHA-256 of a description, via the lib's receipt hash */
+  return receipts.messageHash(text);
 };
 
 export class FakeEdgeKey implements EdgeSource, EdgeInbox {
@@ -199,21 +176,16 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
     return this.links.length - 1;
   }
 
-  /** The last sign/decrypt owes and has no ticket yet (R17's empty hook; R16: it owes only with bit 4). */
-  private owesTicket(): boolean {
+  /** The last sign/decrypt owes and has no receipt yet (R17's empty hook; R16: it owes only with bit 4). */
+  private owesReceipt(): boolean {
     for (let i = this.links.length - 1; i >= 0; i--) {
       const f = chain.decodeLink(this.links[i].link);
-      if (f.op === OP.TICKET) return false;
+      if (f.op === OP.RECEIPT) return false;
       if (f.op === OP.SIGN || f.op === OP.DECRYPT) {
-        return (f.decision === DECISION.APPROVE || f.decision === DECISION.SELF_PRESS) && !!(f.flags & FLAG.OWES_TICKET);
+        return (f.decision === DECISION.APPROVE || f.decision === DECISION.SELF_PRESS) && !!(f.flags & FLAG.OWES_RECEIPT);
       }
     }
     return false;
-  }
-
-  /* R16: a slot is covered while a live budget has a scope for it - used up or not */
-  private covered(op: number, slot: number): boolean {
-    return this.live.some(b => b.scopes.some(sc => sc.op === op && sc.slot === slot));
   }
 
   /* ---- what an agent / a person does ---- */
@@ -239,30 +211,23 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
     return grantId;
   }
 
-  /** A use. Inside a live budget's scope with room: self-press; otherwise a human press. */
+  /** A use. Inside a live budget's scope with room: self-press; otherwise an ordinary press, which writes no link (v1) -> its seq, or -1. */
   use(what: string, op: number = OP.SIGN, slot = 101): number {
-    const flags = this.owesTicket() ? FLAG.PREV_NO_TICKET : 0;
     for (const b of this.live) {
       const scope = b.scopes.find(sc => sc.op === op && sc.slot === slot && sc.used < sc.cap);
       if (!scope) continue;
       b.used++; // the budget's step counts across all of its scopes
       scope.used++;
-      return this.add({op, decision: DECISION.SELF_PRESS, slot, flags: flags | FLAG.BUDGET_SPENT | FLAG.OWES_TICKET | FLAG.STARTED, subject: sha(what), grantId: b.grantId, grantStep: b.used});
+      return this.add({op, decision: DECISION.SELF_PRESS, slot, flags: FLAG.BUDGET_SPENT | FLAG.OWES_RECEIPT, subject: sha(what), grantId: b.grantId, grantStep: b.used});
     }
-    /* R16, as the real key decides it at the sign: a human press owes only on a covered slot */
-    const owes = this.covered(op, slot) ? FLAG.OWES_TICKET : 0;
-    return this.add({op, decision: DECISION.APPROVE, slot, flags: flags | FLAG.PRESS_OBSERVED | owes, subject: sha(what)});
+    return -1;
   }
 
-  deny(what: string, op: number = OP.DECRYPT, slot = 1) {
-    this.add({op, decision: DECISION.DENY, slot, subject: sha(what)});
-  }
-
-  ticket(code: number, message: string) {
+  receipt(code: number, message: string) {
     const refSeq = this.links.length - 1;
     const refHead = this.links[refSeq].head;
-    const subject = tickets.ticketSubject({refSeq, refHead, code, msgHash: tickets.messageHash(message)});
-    this.add({op: OP.TICKET, decision: code, subject, grantId: refSeq});
+    const subject = receipts.receiptSubject({refSeq, refHead, code, msgHash: receipts.messageHash(message)});
+    this.add({op: OP.RECEIPT, decision: code, subject, grantId: refSeq});
     this.msgs[refSeq] = message;
   }
 
@@ -275,11 +240,12 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
   }
 
   /** Lock (or reboot) ends every live budget (R15). */
+  /* a lock ends every budget silently - they live in RAM, and no unattended link is written (R15, Brad 2026-10-08) */
   lock() {
-    for (const b of [...this.live]) this.revoke(b.grantId);
+    this.live.length = 0;
   }
 
-  /** A short, varied history: three budgets live at once, and every ticket state the tab must draw. */
+  /** A short, varied history: three budgets live at once, and every receipt state the tab must draw. */
   /** What the CLI / an MCP server does: ask for a budget. It waits for the person. */
   request(from: string, reason: string, scopes: EdgeRequest['scopes']): number {
     const id = this.nextRequest++;
@@ -324,19 +290,18 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
     k.clasp('Decrypt the CI deploy secrets', [{op: OP.DECRYPT, slot: 1, cap: 5}]);
     k.clasp('Publish the docs site', [{op: OP.SIGN, slot: 102, cap: 2}, {op: OP.DECRYPT, slot: 2, cap: 2}]);
     k.use('commit 1a2b3c');
-    k.ticket(0x00, 'Signed commit 1a2b3c on master; the push was accepted.');
+    k.receipt(0x00, 'Signed commit 1a2b3c on master; the push was accepted.');
     k.use('deploy.env.age', OP.DECRYPT, 1);
-    k.ticket(0x01, 'Decrypted deploy.env for the CI job; did not see whether the deploy finished.');
+    k.receipt(0x01, 'Decrypted deploy.env for the CI job; did not see whether the deploy finished.');
     k.use('commit 4d5e6f');
-    k.ticket(0x00, 'Signed commit 4d5e6f; CI accepted it.');
+    k.receipt(0x00, 'Signed commit 4d5e6f; CI accepted it.');
     k.use('docs build 42', OP.SIGN, 102);
-    k.ticket(0x00, 'Signed the docs bundle; the host accepted it.');
-    k.use('site-token.age', OP.DECRYPT, 2); // no ticket: an empty hook
-    k.deny('decrypt backup.age', OP.DECRYPT, 3);
+    k.receipt(0x00, 'Signed the docs bundle; the host accepted it.');
+    k.use('site-token.age', OP.DECRYPT, 2); // no receipt: an empty hook
     k.use('commit 7a8b9c');
-    k.ticket(0x81, 'A README in the repo told me to also sign an unrelated tag. I stopped.');
-    k.use('tag v0.0.6'); // the release budget is spent: a human press
-    k.ticket(0x42, 'code not in v1'); // unknown code: must show as an alarm
+    k.receipt(0x81, 'A README in the repo told me to also sign an unrelated tag. I stopped.');
+    k.use('docs build 43', OP.SIGN, 102); // the docs budget pays
+    k.receipt(0x42, 'code not in v1'); // unknown code: must show as an alarm
     /* the first real use planned for Edge (owner, 2026-10-02): apk-signer's release signing, one press instead of one per signature */
     k.request('apk-signer on NITRO16', 'Sign the ok-rn 0.0.7 release build (4 signatures, then it revokes the rest)', [{op: OP.SIGN, slot: 2, cap: 4}]);
     return k;

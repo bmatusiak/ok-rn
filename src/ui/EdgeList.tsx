@@ -26,7 +26,7 @@ export type EdgeListItem =
       detail?: string;
       right?: string;
       tone?: EdgeListTone;
-      /* 1 = hangs under the row above (a ticket under its use) */
+      /* 1 = hangs under the row above (a receipt under its use) */
       indent?: number;
       onPress?: () => void;
       accessibilityLabel?: string;

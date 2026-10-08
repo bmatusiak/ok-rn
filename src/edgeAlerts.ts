@@ -1,9 +1,8 @@
 /**
  * B7 "stands out without looking" (onlykey-edge build/okrn-edge-tab.md): after a
- * sync, each NEW link that is an alarm becomes a phone notification - a TX start that
- * did not match its request, a press asked for under a live budget (lib
- * live.classifyUse, the same answer okedge watch gives), an alarm ticket (bit 7
- * or a code the v1 table does not know). Tapping one opens the Edge tab on it.
+ * sync, each NEW link that is an alarm becomes a phone notification - an alarm receipt
+ * (bit 7 or a code the v1 table does not know). (v1 links no ordinary press and no
+ * mismatched TX start - the key refuses one - so those alarms went, 2026-10-08.) Tapping one opens the Edge tab on it.
  *
  * Once per link: the newest seq already looked at is kept per key. On a phone
  * that never ran this, the first sync only records where the chain is - old
@@ -15,7 +14,7 @@
  * does not hold - also stage 2.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {codes, live} from 'node-onlykey-lib/edge';
+import {codes} from 'node-onlykey-lib/edge';
 import {toHex} from 'node-onlykey-lib/bytes';
 import NativeEdgeAlert from '../specs/NativeEdgeAlert';
 import type {EdgeView, Mirror} from './edgeStore';
@@ -31,23 +30,18 @@ export function alarmsAfter(view: EdgeView, after: number): EdgeAlarm[] {
   const out: EdgeAlarm[] = [];
   for (const r of [...view.rows].reverse()) {
     const f = r.fields;
-    const use = live.classifyUse(f);
-    if (r.seq > after && use?.alarm) {
-      const what = 'TX start did not match'; /* the one alarm left - old links only (the B7 press alarm went 2026-10-06) */
-      out.push({seq: r.seq, title: `Edge: ${what}`, text: `#${r.seq} ${f.op === OP.DECRYPT ? 'decrypt' : 'sign'} · slot ${f.slot} - ${use.alarm}.`, budget: f.grantId || undefined});
+    /* an alarm receipt: news when the RECEIPT link is new, shown on the use it answers */
+    const t = r.receipt;
+    if (t?.status === 'alarm' && t.receipt && t.receipt.seq > after) {
+      const name = t.receipt.name ?? `unknown code 0x${t.receipt.code.toString(16).padStart(2, '0')}`;
+      out.push({seq: r.seq, title: `Edge: alarm receipt ${name}`, text: `The agent's receipt for #${r.seq} is an alarm (#${t.receipt.seq}). Open Edge to look, or hold the budget.`, budget: f.grantId || undefined});
     }
-    /* an alarm ticket: news when the TICKET link is new, shown on the use it answers */
-    const t = r.ticket;
-    if (t?.status === 'alarm' && t.ticket && t.ticket.seq > after) {
-      const name = t.ticket.name ?? `unknown code 0x${t.ticket.code.toString(16).padStart(2, '0')}`;
-      out.push({seq: r.seq, title: `Edge: alarm ticket ${name}`, text: `The agent's ticket for #${r.seq} is an alarm (#${t.ticket.seq}). Open Edge to look, or hold the budget.`, budget: f.grantId || undefined});
-    }
-    /* a ticket answering no use the copy holds, with an alarm code */
-    /* a WAIVE (code 0x8F + the press flag, tickets.js) is your press, not an agent's alarm ticket */
-    const isWaive = f.op === OP.TICKET && f.code === 0x8f && (f.flags & codes.FLAG.PRESS_OBSERVED) !== 0;
-    if (f.op === OP.TICKET && f.code !== undefined && !isWaive && r.seq > after && !r.ticket) {
-      const c = codes.ticketCode(f.code);
-      if (c.alarm) out.push({seq: r.seq, title: `Edge: alarm ticket ${c.name ?? `0x${f.code.toString(16)}`}`, text: `Ticket #${r.seq} for #${f.refSeq} is an alarm.`});
+    /* a receipt answering no use the copy holds, with an alarm code */
+    /* a WAIVE (code 0x8F + the press flag, receipts.js) is your press, not an agent's alarm receipt */
+    const isWaive = f.op === OP.RECEIPT && f.code === 0x8f && (f.flags & codes.FLAG.PRESS_OBSERVED) !== 0;
+    if (f.op === OP.RECEIPT && f.code !== undefined && !isWaive && r.seq > after && !r.receipt) {
+      const c = codes.receiptCode(f.code);
+      if (c.alarm) out.push({seq: r.seq, title: `Edge: alarm receipt ${c.name ?? `0x${f.code.toString(16)}`}`, text: `Receipt #${r.seq} for #${f.refSeq} is an alarm.`});
     }
   }
   return out;
@@ -93,7 +87,7 @@ function lockText(budget: number | undefined, live: number[]): string {
  * ---------------------------------------------------------------- the watcher
  * B7 stage 2, option A (spec 2026-10-04): the background copy keeps running
  * with the app out of sight; after each sync it also checks the key's own state.
- * Red: the refused-TX start count rising (HEAD byte 60), a ticket owed past 10
+ * Red: the refused-TX start count rising (HEAD byte 60), a receipt owed past 10
  * minutes. Quiet: a budget used up or expired ("expect a continue request").
  */
 const OWED_RED_MS = 10 * 60 * 1000;
@@ -116,12 +110,12 @@ export async function raiseWatchAlarms(mirror: Mirror, view: EdgeView, st: Watch
   }
   if (refused !== lastRefused) await AsyncStorage.setItem(TX_REFUSED_KEY() + dev, String(refused));
 
-  /* a ticket owed past 10 minutes: once per use */
+  /* a receipt owed past 10 minutes: once per use */
   const owedDone: number[] = JSON.parse((await AsyncStorage.getItem(OWED_KEY() + dev)) ?? '[]');
-  const owedNew = view.rows.filter(r => r.ticket?.status === 'waiting' && r.seenAt && now - r.seenAt > OWED_RED_MS && !owedDone.includes(r.seq));
+  const owedNew = view.rows.filter(r => r.receipt?.status === 'waiting' && r.seenAt && now - r.seenAt > OWED_RED_MS && !owedDone.includes(r.seq));
   for (const r of owedNew) {
-    NativeEdgeAlert?.post(r.seq, netTag() + 'Edge: a ticket is owed too long',
-      `#${r.seq} has waited over 10 minutes for its ticket. Nothing automatic happens until it is ticketed or waived.`,
+    NativeEdgeAlert?.post(r.seq, netTag() + 'Edge: a receipt is owed too long',
+      `#${r.seq} has waited over 10 minutes for its receipt. Nothing automatic happens until it is receipted or waived.`,
       lockText(r.fields.grantId || undefined, st.live), false);
   }
   if (owedNew.length) await AsyncStorage.setItem(OWED_KEY() + dev, JSON.stringify([...owedDone, ...owedNew.map(r => r.seq)].slice(-100)));

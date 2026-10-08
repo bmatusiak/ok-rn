@@ -7,7 +7,7 @@
  * library stack (app.edge = node-onlykey-lib/plugins/edge): every link, the
  * budget's opening, the reveals and the chain are checked by the library.
  *
- * A use owes a ticket when it was started, or when a live budget covers its op
+ * A use owes a receipt when it was started, or when a live budget covers its op
  * and slot (onlykey-edge firmware.md R16; the key sets bits 4/5 of the link at
  * decision time). Nothing automatic happens while one is owed (R18): a test
  * that opens a budget first clears what earlier ones left owed, with a pressed
@@ -33,12 +33,12 @@ const OP_SIGN = 1;
 const APPROVE = 1;
 const SELF_PRESS = 4;
 const PRESS_OBSERVED = 0x01;
-const OWES_TICKET = 0x10; /* R16: the key decided this use owes a ticket */
+const OWES_RECEIPT = 0x10; /* R16: the key decided this use owes a receipt */
 const STARTED = 0x20;       /* R16: a TX start was waiting when the request was primed */
 const OP_GRANT_CREATE = 6;
 
 module.exports = function register({it}, ctx) {
-  const {chain, grants, tickets} = ctx.lib.edge;
+  const {chain, grants, receipts} = ctx.lib.edge;
   /*
    * R11a: agent sign 222 is a DERIVED code, shared by every P-256 identity, so
    * a budget on it names one. These tests use their own TEST identity: its
@@ -47,8 +47,8 @@ module.exports = function register({it}, ctx) {
    */
   const E2E_IDENTITY = 'ssh://okrn-e2e@test';
   const hex = (b) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
-  /* SHA-256 of bytes, or of text as UTF-8 (tickets.messageHash hashes TEXT only) */
-  const sha256 = (x) => (typeof x === 'string' ? tickets.messageHash(x) : ctx.lib.sha256(x));
+  /* SHA-256 of bytes, or of text as UTF-8 (receipts.messageHash hashes TEXT only) */
+  const sha256 = (x) => (typeof x === 'string' ? receipts.messageHash(x) : ctx.lib.sha256(x));
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   async function ready(log) {
@@ -74,7 +74,7 @@ module.exports = function register({it}, ctx) {
       await ctx.edgeCopy.sync();
       return r;
     };
-    for (const name of ['ticket', 'revoke', 'waive', 'hold', 'resume', 'agentAdd', 'loss']) edge[name] = after(name);
+    for (const name of ['receipt', 'revoke', 'waive', 'hold', 'resume', 'agentAdd', 'loss']) edge[name] = after(name);
     edge.grant = async ({reason, ...o}) => {
       const g = await app.edge.grant({...o, reasonHash: sha256(reason)});
       await ctx.edgeCopy.keep(g, {reason, scopes: o.scopes, lifetime: o.ttlMinutes ?? 0});
@@ -187,7 +187,7 @@ module.exports = function register({it}, ctx) {
     await agentSign(app, 'ordinary', {press: true});
     const h1 = await app.edge.head();
     assert.equal(h1.seq, h0.seq, 'an ordinary press wrote a link');
-    assert.equal(h1.owed, 0, 'an ordinary press owes a ticket');
+    assert.equal(h1.owed, 0, 'an ordinary press owes a receipt');
 
     /* a live budget covering the slot changes nothing for an ordinary press */
     const g = await app.edge.grant({scopes: [{op: OP_SIGN, slot: 222, cap: 2, identity: E2E_IDENTITY}], reason: 'okrn e2e: budget or no go', verifiedHead: h1.head, onPress: pressSoon});
@@ -195,7 +195,7 @@ module.exports = function register({it}, ctx) {
     await agentSign(app, 'ordinary under a budget', {press: true});
     const h3 = await app.edge.head();
     assert.equal(h3.seq, h2.seq, 'a press under a live budget wrote a link');
-    assert.equal(h3.owed, 0, 'a press under a live budget owes a ticket');
+    assert.equal(h3.owed, 0, 'a press under a live budget owes a receipt');
 
     /* announced one request, sent another: refused (EDGE:1C), no link, counted */
     await txStartFor(app, h3.head, agentRequest('the announced one'));
@@ -206,19 +206,15 @@ module.exports = function register({it}, ctx) {
     assert.equal(h4.seq, h3.seq, 'the refused sign wrote a link');
     assert.equal(h4.refusedTx, h3.refusedTx + 1, 'the refused sign was not counted');
 
-    /* announced, then the budget held before the sign: refused (EDGE:0D), never a press prompt */
-    const req = agentRequest('held in between');
-    await txStartFor(app, h4.head, req);
-    assert.equal(await app.edge.hold(g.grantId), true);
-    const h5 = await app.edge.head(); /* the hold is a link */
-    const held = await refusal(agentSign(app, 'held in between', {req}));
-    log(`held in between: ${held}`);
-    assert.ok(/EDGE:0D/i.test(String(held)), `the sign after a hold was not refused (${held})`);
-    assert.equal((await app.edge.head()).seq, h5.seq, 'the refused sign wrote a link');
+    /*
+     * (A budget held between the TX start and the sign is no longer refused: that sign is
+     * an ordinary request the press decides, with no link - Brad, 2026-10-08. The plugin
+     * kit covers it; a press prompt has no place in this unattended run.)
+     */
     assert.equal(await app.edge.revoke(g.grantId), true);
   });
 
-  it('edge: a budget opened by a press pays started uses, each ticketed, and is revoked', async ({log, assert}) => {
+  it('edge: a budget opened by a press pays started uses, each receipted, and is revoked', async ({log, assert}) => {
     const app = await ready(log);
     await clearDebts(app, log);
     const {publicKey, deviceId} = await app.edge.publicKey();
@@ -241,7 +237,7 @@ module.exports = function register({it}, ctx) {
     assert.equal(chain.decodeLink(opened.link).op, OP_GRANT_CREATE);
     assert.ok((await app.edge.head()).live.includes(g.grantId), 'HEAD does not list the budget as live');
 
-    /* grant -> start -> use -> ticket -> start -> use -> ticket: no press, self-press links with their reveals */
+    /* grant -> start -> use -> receipt -> start -> use -> receipt: no press, self-press links with their reveals */
     const spends = [];
     let txHead = g.checkpoint.head;
     for (let i = 1; i <= 2; i++) {
@@ -258,7 +254,7 @@ module.exports = function register({it}, ctx) {
       const subject = sha256(payload);
       assert.equal(hex(f.subject), hex(grants.requestSubject(payload)), `use ${i}: the firmware's subject is not the library's requestSubject`);
       spends.push({step: i, value: l.reveal, subject, mac: null});
-      txHead = (await app.edge.ticket(h.seq, 0x00, sha256(`okrn e2e: did as asked ${i}`))).head;
+      txHead = (await app.edge.receipt(h.seq, 0x00, sha256(`okrn e2e: did as asked ${i}`))).head;
     }
     /* used up: nothing left to start */
     assert.equal(await refusal(txStartFor(app, txHead, agentRequest('used up'))), 'nothing-to-pay');

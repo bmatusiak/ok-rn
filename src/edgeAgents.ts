@@ -19,12 +19,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {approve as approveLib, chain, note as noteLib, request as requestLib, sync as syncLib} from 'node-onlykey-lib/edge';
 import {SoftKeyEdge} from './edgeSoftKey';
 import {keepMergedKeyChain, readKeyChainList} from './keyChainRecorder';
-import {addNote, keepOffered, keepSibling, loadMirror, mergeOffered, mergeSibling, sync as syncCopy} from './edgeStore';
+import {addNote, keepOffered, loadMirror, mergeOffered, sync as syncCopy} from './edgeStore';
+import {holdKeychain, holdLog, loadHeld, ownStatement} from './edgeDevices';
 import NativeEdgeAlert from '../specs/NativeEdgeAlert';
 import NativeBtKeyboard from '../specs/NativeBtKeyboard';
-import {siblingNames} from './edgeSiblingNames';
-import {rememberSiblingName} from './edgeSiblingNames';
-import {markPaired} from './edgeSiblingAlarm';
 import {setTestIdentities} from './debugGuard';
 import {btTransit} from './btTransit';
 import NativeOkEmu from '../specs/NativeOkEmu';
@@ -163,14 +161,7 @@ async function saveSeen(seen: Set<string>) {
 
 export type SheetAsk =
   | {kind: 'register'; agent: string; name: string; fingerprint: string}
-  /* R20 (sync phase 2, P2a): a place that keeps copies asks to be on the key's list */
-  | {kind: 'peer'; peer: string; name: string; fingerprint: string}
-  /* okedge sync phase 2: a place on the key's list offers links this phone's copy lacks */
-  | {kind: 'sync'; peer: string; name: string; fingerprint: string; count: number; ranges: number[][]; keychainIn?: number; keychainOut?: number}
-  /* R29 (P2b): a place on the key's list asks to pair the key with another key of yours; code = from both keys, the other phone shows it too */
-  | {kind: 'sibling'; peer: string; place: string; name: string; sibling: string; siblingId: string; code: string}
-  /* R30 (P2c): a place offers a sibling's chain up to its signed checkpoint - anchor it */
-  | {kind: 'anchor'; peer: string; place: string; name: string; sibling: string; seq: number; count: number}
+  /* no peer, sync, sibling or anchor sheet since 2026-10-08: a sync is HELD and answered from the Edge tab's banner (MergeSheet) */
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
   | {kind: 'request'; agentName: string; computer: string | null; view: any; blocked: string | null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
@@ -226,7 +217,7 @@ function show(s: SheetState | null) {
 function attention(s: SheetState | null) {
   try {
     if (s && s.phase === 'ask') {
-      const what = s.ask.kind === 'register' ? 'An agent asks to register' : s.ask.kind === 'peer' ? 'A computer asks to keep copies' : s.ask.kind === 'sync' ? 'A computer offers to sync your copy' : s.ask.kind === 'sibling' ? 'A computer asks to pair another key of yours' : s.ask.kind === 'anchor' ? 'A computer offers another key\'s chain to anchor' : 'An agent asks for a budget';
+      const what = s.ask.kind === 'register' ? 'An agent asks to register' : 'An agent asks for a budget';
       NativeOkEmu.setAttention(what, s.until);
     } else {
       NativeOkEmu.setAttention('', 0);
@@ -306,7 +297,8 @@ function stepsDone(what: string) {
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
   /* B7 stage 2: a note changes nothing, so it never waits behind a sheet */
   if (msg?.type === noteLib.TYPE) return handleNote(msg).catch(() => null);
-  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE || msg?.type === requestLib.PEER_TYPE || msg?.type === syncLib.COMMIT_TYPE || msg?.type === syncLib.SIBLING_TYPE || msg?.type === syncLib.ANCHOR_TYPE;
+  /* a sheet the person answers: a budget or an agent's registration (a sync is held, never asked - 2026-10-08) */
+  const asks = msg?.type === requestLib.TYPE || msg?.type === requestLib.REGISTER_TYPE;
   if (asks && inFlight) {
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
   }
@@ -356,7 +348,7 @@ async function handleNote(msg: any): Promise<unknown | null> {
     const s = soft;
     if (!s) return null;
     void (async () => {
-      await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, txRefused: msg.txRefused}).catch(() => undefined);
+      await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, receiptMsg: msg.receiptMsg, txRefused: msg.txRefused}).catch(() => undefined);
       await pressedAgents().catch(() => undefined); /* the sync (and its alarms), and the known keys refreshed */
     })();
     return {ok: true};
@@ -370,7 +362,7 @@ async function handleNote(msg: any): Promise<unknown | null> {
   soft = soft ?? (await SoftKeyEdge.open());
   const s = soft;
   if (!s) return null; /* locked, or no Edge: nothing to keep it with */
-  await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, ticketMsg: msg.ticketMsg, txRefused: msg.txRefused});
+  await addNote(s.deviceId, {agent: msg.agent, seq: msg.seq, reason: msg.reason, receiptMsg: msg.receiptMsg, txRefused: msg.txRefused});
   return {ok: true};
 }
 
@@ -392,17 +384,21 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   seen.add(String(msg.nonce).toLowerCase());
   soft = soft ?? (await SoftKeyEdge.open());
   if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
+  /*
+   * Which computer: its own sync key signed this (msg.peer), and the message came over a
+   * Bluetooth link the person approved with its 6-digit code - no peer list since
+   * 2026-10-08 (Brad: peers dropped). What it brings of another device is HELD.
+   */
   const peer = String(msg.peer).toLowerCase();
-  if (!(await soft.peerKeys()).includes(peer)) return null;
   if (String(msg.payload.deviceId).toLowerCase() !== toHexId(soft.deviceId)) {
     return {ok: false, refusal: 'invalid', detail: "those links are another chain's, not this phone's key"};
   }
   const p = msg.payload;
   if (msg.type === syncLib.GIVE_TYPE) {
     /*
-     * R30 (P2c): this phone's copy of its OWN chain, to a place on the key's
-     * list - history only, no press (the place keeps copies anyway). From the
-     * copy as it is NOW (the key's newest included), BATCH at a time.
+     * This phone's copy of its OWN chain - history only, no press (a computer keeps
+     * copies anyway). From the copy as it is NOW (the key's newest included), BATCH at
+     * a time.
      */
     const {mirror} = await syncCopy(soft);
     const from = mirror.links.filter((r: any) => seqOfLink(r) >= p.from);
@@ -411,36 +407,37 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     const next = from.length > batch.length ? seqOfLink(from[batch.length]) : null;
     /*
      * BLOCKS (BLOCKS.md §3, Brad 2026-10-07): with the last batch, the key's seals
-     * (the checkpoints that close each block) and the sibling checkpoints this
-     * chain anchored - what a place needs to cut its copy into JSON blocks. Each is
-     * checked there against the key's own public key; nothing here is trusted.
+     * (the checkpoints that close each block) - what a computer needs to cut its copy
+     * into JSON blocks, each checked there against the key's own public key - and this
+     * phone's own latest statement (its NAMETAG, 2026-10-08): what lets that computer
+     * offer this phone's log to your other devices.
      */
+    const own = next === null ? await ownStatement() : null;
     const blocks = next === null ? {
       seals: (mirror.seals ?? []).map(s => [s.seq, hex(s.head), hex(s.signature)]),
-      seen: (await Promise.all((await soft.siblings()).map(async s => ((await loadMirror(fromHexId(s.deviceId))).anchors ?? [])
-        .map(a => [s.deviceId, a.seq, hex(a.head), hex(a.signature)])))).flat(),
+      ...(own ? {statement: {deviceId: own.deviceId, publicKey: own.publicKey, seq: own.seq, nametag: own.nametag, signature: own.signature}} : {}),
     } : {};
     return {ok: true, links: batch.map((r: any) => [hex(r.link), hex(r.head), r.reveal ? hex(r.reveal) : null]), next, ...blocks};
   }
-  /* R30: HAVE / LINKS / ANCHOR for a SIBLING's chain - only a key paired with this one */
-  const sibling = p.chain ? (await soft.siblings()).find(s => s.deviceId === String(p.chain).toLowerCase()) ?? null : null;
-  if (p.chain && !sibling) return {ok: false, refusal: 'invalid', detail: 'that chain is not a key paired with this one'};
-  if (msg.type === syncLib.HAVE_TYPE && sibling) {
+  /* HAVE / LINKS / OFFER for ANOTHER device's chain: what this phone holds of it (merged or held) */
+  const other = p.chain ? String(p.chain).toLowerCase() : null;
+  if (other && other === toHexId(soft.deviceId)) return {ok: false, refusal: 'invalid', detail: "that is this phone's own chain"};
+  if (msg.type === syncLib.HAVE_TYPE && other) {
     syncNames.set(peer, p.name);
-    const held = await loadMirror(fromHexId(sibling.deviceId));
-    return {ok: true, ranges: syncLib.rangesOf(held.links.map((r: any) => seqOfLink(r)))};
+    const merged = (await loadMirror(fromHexId(other))).links.map((r: any) => seqOfLink(r));
+    const heldOne = (await loadHeld()).find(h => h.deviceId === other);
+    const heldSeqs = heldOne ? heldOne.records.map(([l]) => seqOfLink({link: fromHexId(l)})) : [];
+    return {ok: true, ranges: syncLib.rangesOf([...new Set([...merged, ...heldSeqs])].sort((a, b) => a - b))};
   }
   if (msg.type === syncLib.HAVE_TYPE) {
     syncNames.set(peer, p.name);
     const {mirror} = await syncCopy(soft); /* what this copy holds NOW, the key's newest included */
     /* the Key Chain list's digest too: a place whose list matches sends nothing (an empty sync took ~50 s with the whole list both ways) */
     const keychainDigest = Array.from(syncLib.keychainDigest(await readKeyChainList()) as Uint8Array, (x: number) => x.toString(16).padStart(2, '0')).join('');
-    /* the phone's own (Bluetooth) name: the default label on another phone's pairing and anchor sheets - renamable there, never trusted */
-    const deviceName = await NativeBtKeyboard.localName().catch(() => '');
-    return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r))), keychainDigest, ...(deviceName ? {deviceName} : {})};
+    return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r))), keychainDigest};
   }
   if (msg.type === syncLib.TAKE_TYPE) {
-    /* only after THIS place's commit was approved with a press */
+    /* only what THIS computer's commit made takeable: entries it lacked, or a list the person approved */
     const t = syncTakes.get(p.sid);
     if (!t || t.peer !== peer || p.part >= t.parts.length) return {ok: false, refusal: 'invalid', detail: 'nothing approved to take'};
     if (p.part === t.parts.length - 1) syncTakes.delete(p.sid);
@@ -464,14 +461,36 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     st.keychainParts = p.parts;
     return {ok: true, staged: st.keychain.size};
   }
-  if (msg.type === syncLib.ANCHOR_TYPE) return await handleAnchor(p, peer, st, sibling);
-  if (st.chain) return {ok: false, refusal: 'invalid', detail: "a sibling's links end with an anchor, not a commit"};
-  /* COMMIT: every part here, then ONE sheet for links and list */
+  if (msg.type === syncLib.OFFER_TYPE) {
+    /*
+     * ANOTHER DEVICE'S LOG, HELD (Brad, 2026-10-08: "we should hold these blocks in the app
+     * until approved and merged"): kept in edgeDevices' held area with its checkpoint and
+     * statement - no sheet, nothing merged. The Edge tab's banner opens the Approve sheet.
+     */
+    syncStaged.delete(p.sid);
+    if (st.links.size !== p.linkParts) return {ok: false, refusal: 'invalid', detail: `parts missing (links ${st.links.size}/${p.linkParts}) - sync again`};
+    const offered = [...st.links.entries()].sort((a, b) => a[0] - b[0]).flatMap(([, r]) => r);
+    /* what this phone already holds of that chain (merged, or held before), with what came now */
+    const before = [...(await loadMirror(fromHexId(String(p.chain)))).links];
+    const heldBefore = (await loadHeld()).find(h => h.deviceId === String(p.chain).toLowerCase());
+    if (heldBefore) for (const [l, hd, r] of heldBefore.records) before.push({link: fromHexId(l), head: fromHexId(hd), reveal: r ? fromHexId(r) : null});
+    const all = syncLib.merge(syncLib.merge([], before).links, offered);
+    const c = p.checkpoint;
+    const st2 = p.statement;
+    const r = await holdLog({
+      deviceId: fromHexId(String(p.chain)), publicKey: fromHexId(st2.publicKey), records: all.links,
+      checkpoint: {seq: c.seq, head: fromHexId(c.head), signature: fromHexId(c.signature)},
+      statement: {deviceId: fromHexId(String(p.chain)), publicKey: fromHexId(st2.publicKey), seq: st2.seq ?? null, nametag: st2.nametag, signature: fromHexId(st2.signature)},
+      from: syncNames.get(peer) ?? 'a computer',
+    });
+    return {ok: true, held: r.held, count: offered.length};
+  }
+  if (st.chain) return {ok: false, refusal: 'invalid', detail: "another device's links end with an offer, not a commit"};
+  /* COMMIT: every part here; this phone's own links merge, a Key Chain list that would change waits */
   syncStaged.delete(p.sid);
   if (st.links.size !== p.linkParts || st.keychain.size !== p.keychainParts) {
     return {ok: false, refusal: 'invalid', detail: `parts missing (links ${st.links.size}/${p.linkParts}, Key Chain ${st.keychain.size}/${p.keychainParts}) - sync again`};
   }
-  if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
   const offered = [...st.links.entries()].sort((a, b) => a[0] - b[0]).flatMap(([, r]) => r);
   const m = await mergeOffered(soft, offered);
   if (m.conflicts.length) {
@@ -491,41 +510,28 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     }
     plan = syncLib.keychainPlan(await readKeyChainList(), place);
   }
-  const keychainMoves = plan.in > 0 || plan.out > 0;
-  if (!m.added.length && !keychainMoves) return {ok: true, count: 0, seq: null};
-  const name = syncNames.get(peer) ?? 'a place that keeps copies';
-  let asked: SheetAsk | null = null;
-  const r: any = await soft.approveSync({
-    peer, name, added: m.added,
-    head: m.candidate.links[m.candidate.links.length - 1].head,
-    keychainHash: keychainMoves ? syncLib.keychainDigest(plan.merged) : null,
-    keychainIn: plan.in,
-    keychainOut: plan.out,
-    ask: async (v: any) => {
-      const sheet: SheetAsk = {kind: 'sync', ...v};
-      asked = sheet;
-      return askPerson(sheet);
-    },
-    onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
-  });
+  /*
+   * Brad, 2026-10-08 ("Own links direct, Key Chain held"): this phone's OWN links merge at
+   * once - its own key's, checked against its signature, nothing new to trust. A Key Chain
+   * list that would CHANGE this phone's waits in the banner's Approve sheet; entries only
+   * the computer lacks need no approval - the phone just gives them (TAKE).
+   */
+  const name = syncNames.get(peer) ?? 'a computer';
+  if (m.added.length) {
+    await keepOffered(soft.deviceId, m.added);
+    await syncCopy(soft).catch(() => undefined);
+  }
   let takeParts = 0;
-  if (r.ok && r.seq !== null) {
-    if (m.added.length) {
-      await keepOffered(soft.deviceId, m.added);
-      await syncCopy(soft).catch(() => undefined); /* the sync link itself, into the copy */
-    }
-    if (keychainMoves) {
-      await keepMergedKeyChain(plan.merged);
-      const parts = syncLib.keychainParts(plan.merged);
-      syncTakes.set(p.sid, {peer, parts});
-      takeParts = parts.length;
-    }
+  let keychainHeld = false;
+  if (plan.in > 0) {
+    await holdKeychain({from: name, at: Date.now(), merged: plan.merged, in: plan.in, out: plan.out});
+    keychainHeld = true;
+  } else if (plan.out > 0) {
+    const parts = syncLib.keychainParts(plan.merged);
+    syncTakes.set(p.sid, {peer, parts});
+    takeParts = parts.length;
   }
-  if (asked) {
-    const what = [m.added.length ? `${m.added.length} link${m.added.length === 1 ? '' : 's'}` : '', plan.in ? `${plan.in} Key Chain entr${plan.in === 1 ? 'y' : 'ies'}` : ''].filter(Boolean).join(' and ') || 'nothing new';
-    show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `This phone took ${what} from ${name} (the key linked the sync as #${r.seq})`} : r});
-  }
-  return r.ok ? {...r, keychainIn: plan.in, keychainOut: plan.out, takeParts} : r;
+  return {ok: true, count: m.added.length, seq: null, keychainIn: plan.in, keychainOut: plan.out, takeParts, keychainHeld};
 }
 /*
  * R30 (P2c): a place brings this phone a SIBLING's chain up to the sibling's
@@ -537,42 +543,6 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
  * sheet, Yes, a press; the key checks the checkpoint again and links the anchor;
  * only then are the sibling's links kept.
  */
-async function handleAnchor(p: any, peer: string, st: any, sibling: {index: number; key: string; deviceId: string} | null): Promise<unknown> {
-  syncStaged.delete(p.sid);
-  if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
-  if (!sibling) return {ok: false, refusal: 'invalid', detail: 'that chain is not a key paired with this one'};
-  if (st.links.size !== p.linkParts) return {ok: false, refusal: 'invalid', detail: `parts missing (links ${st.links.size}/${p.linkParts}) - sync again`};
-  if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
-  const chainId = fromHexId(sibling.deviceId);
-  const publicKey = fromHexId(sibling.key);
-  const checkpoint = {seq: p.checkpoint.seq, head: fromHexId(p.checkpoint.head), signature: fromHexId(p.checkpoint.signature)};
-  const offered = [...st.links.entries()].sort((a: any, b: any) => a[0] - b[0]).flatMap(([, r]: any) => r);
-  const m = await mergeSibling(chainId, offered);
-  const name = (await siblingNames())[sibling.key] ?? p.name;
-  const alarm = (why: string) => {
-    NativeEdgeAlert?.post(checkpoint.seq, `Edge: ${name}'s chain does not hold up`, why, 'Nothing was anchored. Check the other phone.', false);
-    return {ok: false, refusal: 'invalid', detail: why};
-  };
-  if (m.conflicts.length) return alarm(`a fork: this phone holds other links of ${name}'s chain at #${m.conflicts.join(', #')}`);
-  const c = syncLib.anchorCheck({records: m.links, publicKey, checkpoint, anchors: m.mirror.anchors ?? []});
-  if (!c.ok) return alarm(`${c.alarm}${c.detail ? `: ${c.detail}` : ''}`);
-  let asked: SheetAsk | null = null;
-  const r: any = await soft.approveAnchor({
-    peer, name, index: sibling.index, chain: chainId, checkpoint, count: m.added.length,
-    ask: async (v: any) => {
-      asked = {kind: 'anchor', ...v, name};
-      return askPerson(asked as SheetAsk);
-    },
-    onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
-  });
-  if (r.ok) {
-    await keepSibling(chainId, publicKey, m.added, {seq: checkpoint.seq, head: checkpoint.head, signature: checkpoint.signature, mySeq: r.seq, at: Date.now()});
-    await syncCopy(soft).catch(() => undefined); /* the anchor link itself, into this phone's own copy */
-  }
-  if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `Anchored ${name} at #${checkpoint.seq} (the key linked it as #${r.seq})`} : r});
-  return r;
-}
-
 const toHexId = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
 const fromHexId = (h: string) => Uint8Array.from((String(h).match(/../g) ?? []).map(x => parseInt(x, 16)));
 const seqOfLink = (r: any) => chain.decodeLink(r.link).seq;
@@ -606,60 +576,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `${r.name} is registered (the key linked it as #${r.seq})`} : r});
       return r;
     }
-    if (msg?.type === requestLib.PEER_TYPE) {
-      /*
-       * R20 (okedge sync phase 2, P2a): a place that keeps copies asks to be on
-       * the KEY's list - a sync goes only there. Not gated on a registered
-       * agent or the Agents switch: the copy store is not the agent. The
-       * computer must still be paired (Part T) for its message to get here.
-       */
-      if (!requestLib.verifyPeerAdd(msg, {seen}).ok) return null;
-      if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
-      soft = soft ?? (await SoftKeyEdge.open());
-      if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
-      let asked: SheetAsk | null = null;
-      const r: any = await soft.addPeer(msg, {
-        seen,
-        ask: async (v: {peer: string; name: string; fingerprint: string}) => {
-          asked = {kind: 'peer', ...v};
-          return askPerson(asked);
-        },
-        onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
-      });
-      if (r.dropped) return null;
-      if (r.ok && !r.already) await syncCopy(soft).catch(() => undefined); /* the peer-add link, into the tab's copy */
-      if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `${r.name} keeps copies now (the key linked it as #${r.seq})`} : r});
-      return r;
-    }
-    if (msg?.type === syncLib.SIBLING_TYPE) {
-      /*
-       * R29 (okedge sync phase 2, P2b): pair this key with another key of yours.
-       * Only from a place already on the KEY's list (approveSibling checks it).
-       * The place relays the other key, so the sheet shows the code from both
-       * keys; the other phone shows the same code only if neither key was swapped.
-       */
-      if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
-      soft = soft ?? (await SoftKeyEdge.open());
-      if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
-      let asked: SheetAsk | null = null;
-      const r: any = await soft.addSibling(msg, {
-        seen,
-        ask: async (v: {peer: string; place: string; name: string; sibling: string; siblingId: string; code: string}) => {
-          asked = {kind: 'sibling', ...v};
-          return askPerson(asked);
-        },
-        onPress: () => asked && show({phase: 'press', ask: asked, until: Date.now() + PRESS_WAIT_MS}),
-      });
-      if (r.dropped) return null;
-      /* the name the sheet showed, for "Your other keys" - the key keeps no names */
-      if (r.ok && asked) await rememberSiblingName((asked as any).sibling, (asked as any).name).catch(() => undefined);
-      /* R30: the stopped-anchoring clock starts at the pairing */
-      if (r.ok && !r.already && asked) await markPaired((asked as any).sibling).catch(() => undefined);
-      if (r.ok && !r.already) await syncCopy(soft).catch(() => undefined); /* the sibling-add link, into the tab's copy */
-      if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `Paired with ${(asked as any).name} (the key linked it as #${r.seq})`} : r});
-      return r;
-    }
-    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.KEYCHAIN_TYPE, syncLib.COMMIT_TYPE, syncLib.TAKE_TYPE, syncLib.GIVE_TYPE, syncLib.ANCHOR_TYPE].includes(msg?.type)) return await handleSync(msg, seen);
+    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.KEYCHAIN_TYPE, syncLib.COMMIT_TYPE, syncLib.TAKE_TYPE, syncLib.GIVE_TYPE, syncLib.OFFER_TYPE].includes(msg?.type)) return await handleSync(msg, seen);
     if (msg?.type !== requestLib.TYPE) return null;
     /* the Agents card's switch is off: refused unread, like an unregistered agent */
     if (!(await agentRequestsOn())) return null;

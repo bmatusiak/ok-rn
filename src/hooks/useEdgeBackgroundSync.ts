@@ -32,7 +32,6 @@ import {useEffect, useRef} from 'react';
 import {chainState, loadMirror, type ChainAnswer} from '../edgeStore';
 import {createWatchRound} from '../edgeWatchRound';
 import {beat, onHoldRequested, onWatchTick, raiseWatchAlarms, takeHoldRequest, watching} from '../edgeAlerts';
-import {raiseSiblingAlarms} from '../edgeSiblingAlarm';
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {vendorQuietForMs} from '../vendorBridge';
@@ -41,7 +40,7 @@ import {transport as oktransport} from 'node-onlykey-lib';
 import type {KeyWaiting} from '../transport/OkEmu';
 
 const PERIOD_MS = 15000;
-/* the alarms that move with the clock (owed 10 min, expired, a sibling gone quiet) when the head did not */
+/* the alarms that move with the clock (owed 10 min, expired) when the head did not */
 const ALARM_EVERY_MS = 60000;
 const SETTLE_MS = 6000;
 const BEAT_MS = 10000;
@@ -85,7 +84,6 @@ export function useEdgeBackgroundSync({enabled, waiting}: {enabled: boolean; wai
         const [mirror, st, live, past] = await Promise.all([loadMirror(s.deviceId), s.state(), s.budgets(), s.pastBudgets()]);
         await raiseWatchAlarms(mirror, a.view, {refusedTx: st.refusedTx, live: live.map(b => b.grantId), past});
         /* R30: a paired key that stopped syncing (reminder, then the alarm) */
-        await raiseSiblingAlarms((await s.siblings?.()) ?? []).catch(() => undefined);
       },
     }, {periodMs: PERIOD_MS, alarmEveryMs: ALARM_EVERY_MS});
     /* force: a confirmation just cleared - a link was made, catch it now */

@@ -3,6 +3,7 @@
  * phone's mirror and verified by the library (spec okrn-edge-tab.md phase 2).
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {codes} from 'node-onlykey-lib/edge';
 import {FakeEdgeKey, type EdgeCopyKey} from '../src/edgeFake';
 import {addNote, evaluate, forgetVerified, forgetVerifiedFor, keepOffered, lastCheckPath, loadMirror, saveMirror, sync, tamper} from '../src/edgeStore';
 
@@ -10,6 +11,17 @@ beforeEach(async () => {
   await AsyncStorage.clear();
   forgetVerified(); /* as a restart: nothing verified carries over */
 });
+
+/*
+ * v1 links a sign only when a budget pays it (2026-10-08): these tests are about syncing
+ * and verifying links, so a use with no budget left first opens one with room.
+ */
+const spend = (k: FakeEdgeKey, what: string): number => {
+  const seq = k.use(what);
+  if (seq >= 0) return seq;
+  k.clasp('test uses', [{op: codes.OP.SIGN, slot: 101, cap: 100}]);
+  return k.use(what);
+};
 
 const verifyOnly = async (k: FakeEdgeKey) => evaluate(await loadMirror(k.deviceId), await k.head());
 
@@ -23,27 +35,26 @@ test('a first sync stores every link and verifies through the key\'s head', asyn
   expect(view.lastSync).toBe(1000);
 });
 
-test('the chain rows carry every ticket state the tab draws', async () => {
+test('the chain rows carry every receipt state the tab draws', async () => {
   const {view} = await sync(FakeEdgeKey.demo());
-  const uses = view.rows.filter(r => r.ticket).map(r => [r.seq, r.ticket!.status, r.ticket!.ticket?.name ?? null]);
+  const uses = view.rows.filter(r => r.receipt).map(r => [r.seq, r.receipt!.status, r.receipt!.receipt?.name ?? null]);
   expect(uses).toEqual([
-    [15, 'alarm', null], // 0x42: not a v1 code - fails closed
-    [13, 'alarm', 'SUSPECTED_INJECTION'],
-    [12, 'no-ticket-owed', null], // denied
-    [11, 'waiting', null], // unpaid, and still on the key's list of 4 (the list does not refill, lib tickets.keyDebts)
-    [9, 'ticketed', 'OK'],
-    [7, 'ticketed', 'OK'],
-    [5, 'ticketed', 'OK_UNCONFIRMED'],
-    [3, 'ticketed', 'OK'],
+    [14, 'alarm', null], // 0x42: not a v1 code - fails closed
+    [12, 'alarm', 'SUSPECTED_INJECTION'],
+    [11, 'waiting', null], // unpaid, and still on the key's list of 4 (the list does not refill, lib receipts.keyDebts)
+    [9, 'receipted', 'OK'],
+    [7, 'receipted', 'OK'],
+    [5, 'receipted', 'OK_UNCONFIRMED'],
+    [3, 'receipted', 'OK'],
   ]);
-  expect(view.rows.find(r => r.seq === 3)!.ticket!.message).toMatch(/push was accepted/);
+  expect(view.rows.find(r => r.seq === 3)!.receipt!.message).toMatch(/push was accepted/);
 });
 
 test('a later sync reads only the new links and still verifies', async () => {
   const k = FakeEdgeKey.demo();
   await sync(k);
-  k.use('commit 999');
-  k.ticket(0x00, 'done');
+  spend(k, 'commit 999');
+  k.receipt(0x00, 'done');
   const {view, mirror} = await sync(k);
   expect(view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
   expect(mirror.links).toHaveLength((await k.head()).seq + 1);
@@ -81,7 +92,7 @@ test('a key whose head went back since the last verified sync is a rollback', as
   const k = FakeEdgeKey.demo();
   await sync(k);
   const older = new FakeEdgeKey(); // same device id, shorter history
-  older.use('commit 1');
+  spend(older, 'commit 1');
   expect((await sync(older)).view.verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
 });
 
@@ -91,7 +102,7 @@ test('three budgets are live at once, each spending its own steps', async () => 
   expect(live.map(b => [b.reason, b.used, b.uses])).toEqual([
     ['Sign release commits for ok-rn 0.0.6', 3, 3],
     ['Decrypt the CI deploy secrets', 1, 5],
-    ['Publish the docs site', 2, 4],
+    ['Publish the docs site', 3, 4],
   ]);
   expect(JSON.stringify(live)).not.toMatch(/seed/); // the key never gives a seed out
   k.revoke(live[1].grantId);
@@ -113,15 +124,15 @@ test('never synced: not-synced, and nothing claimed', async () => {
  */
 test('a stored record that is not a link, past the key\'s head, is set aside and the copy catches up', async () => {
   const k = new FakeEdgeKey();
-  k.use('commit 1');
-  k.use('commit 2');
+  spend(k, 'commit 1');
+  spend(k, 'commit 2');
   await sync(k);
   const m = await loadMirror(k.deviceId);
   const junk = Uint8Array.from({length: 64}, (_, i) => (i * 37 + 11) & 0xff); /* seq far past the head, bytes 47-63 not zero */
   m.links.push({link: junk, head: new Uint8Array(32).fill(7), reveal: null});
   await saveMirror(m);
   expect((await verifyOnly(k)).verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
-  k.use('commit 3');
+  spend(k, 'commit 3');
   const {view, mirror} = await sync(k);
   const head = await k.head();
   expect(view.verdict).toEqual({kind: 'verified', through: head.seq});
@@ -138,7 +149,7 @@ test('real links past the key\'s head are not set aside: the copy still reads as
   m.lastSeen = null; /* the copy alone says it is ahead, not a remembered head */
   await saveMirror(m);
   const older = new FakeEdgeKey();
-  older.use('commit 1');
+  spend(older, 'commit 1');
   const {view, mirror} = await sync(older);
   expect(view.verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
   expect(mirror.setAside).toHaveLength(0);
@@ -151,8 +162,8 @@ test('real links past the key\'s head are not set aside: the copy still reads as
  */
 test('a head report stored as a link (reserved bytes zero, seq jump) is set aside, and the copy catches up', async () => {
   const k = new FakeEdgeKey();
-  k.use('commit 1');
-  k.use('commit 2');
+  spend(k, 'commit 1');
+  spend(k, 'commit 2');
   await sync(k);
   const m = await loadMirror(k.deviceId);
   const nextLink = (await k.read(0, 1))[0].link;
@@ -161,7 +172,7 @@ test('a head report stored as a link (reserved bytes zero, seq jump) is set asid
   m.links.push({link: junk, head: nextLink.slice(0, 32), reveal: nextLink.slice(32, 64)});
   await saveMirror(m);
   expect((await verifyOnly(k)).verdict).toMatchObject({kind: 'tampered', reason: 'rollback'});
-  k.use('commit 3');
+  spend(k, 'commit 3');
   const {view, mirror} = await sync(k);
   const head = await k.head();
   expect(view.verdict).toEqual({kind: 'verified', through: head.seq});
@@ -170,29 +181,29 @@ test('a head report stored as a link (reserved bytes zero, seq jump) is set asid
 });
 
 /*
- * B7 stage 2: EDGE_NOTE reaches the copy. The soft key gives no ticket messages
+ * B7 stage 2: EDGE_NOTE reaches the copy. The soft key gives no receipt messages
  * (they never reach the key): the agent's note does, and it shows only when it
- * hashes to the ticket. A reason is kept on its seq.
+ * hashes to the receipt. A reason is kept on its seq.
  */
-test('a note\'s reason lands on its row; its ticket message shows only when it hashes to the ticket', async () => {
+test('a note\'s reason lands on its row; its receipt message shows only when it hashes to the receipt', async () => {
   const k = new FakeEdgeKey();
-  const seq = k.use('commit 1');
-  k.ticket(0x00, 'pushed ok-rn');
+  const seq = spend(k, 'commit 1');
+  k.receipt(0x00, 'pushed ok-rn');
   k.messages = async () => ({}); /* as the soft key: no messages from the key */
   await sync(k);
   await addNote(k.deviceId, {agent: 'AB'.repeat(32), seq, reason: 'git push origin master'});
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq: 999, txRefused: 'ticket_owed'});
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq: 999, txRefused: 'receipt_owed'});
   let {view} = await sync(k);
   let row = view.rows.find(r => r.seq === seq)!;
   expect(row.note).toMatchObject({agent: 'ab'.repeat(32), text: 'git push origin master'});
-  expect(row.ticket?.messageStatus).toBe('none');
-  expect(view.refusals).toMatchObject([{seq: 999, status: 'ticket_owed'}]);
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, ticketMsg: 'not what was ticketed'});
+  expect(row.receipt?.messageStatus).toBe('none');
+  expect(view.refusals).toMatchObject([{seq: 999, status: 'receipt_owed'}]);
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, receiptMsg: 'not what was receipted'});
   row = (await sync(k)).view.rows.find(r => r.seq === seq)!;
-  expect(row.ticket?.messageStatus).toBe('mismatch');
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, ticketMsg: 'pushed ok-rn'});
+  expect(row.receipt?.messageStatus).toBe('mismatch');
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, receiptMsg: 'pushed ok-rn'});
   row = (await sync(k)).view.rows.find(r => r.seq === seq)!;
-  expect(row.ticket).toMatchObject({messageStatus: 'match', message: 'pushed ok-rn'});
+  expect(row.receipt).toMatchObject({messageStatus: 'match', message: 'pushed ok-rn'});
 });
 
 /*
@@ -204,9 +215,9 @@ test('a note\'s reason lands on its row; its ticket message shows only when it h
  */
 test('links kept from a sync offer survive a copy sync already running (one queue)', async () => {
   const k = new FakeEdgeKey();
-  k.use('commit 1');
-  k.use('commit 2');
-  k.use('commit 3');
+  spend(k, 'commit 1');
+  spend(k, 'commit 2');
+  spend(k, 'commit 3');
   await sync(k);
   const full = await loadMirror(k.deviceId);
   const offered = full.links.slice(1, 3);
@@ -237,8 +248,8 @@ test('verification: start is full, a pull-down with no change skips, new links o
   const again = await sync(k);
   expect(lastCheckPath()).toBe('skipped');
   expect(again.view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
-  k.use('commit 1000');
-  k.ticket(0x00, 'done');
+  spend(k, 'commit 1000');
+  k.receipt(0x00, 'done');
   const grown = await sync(k);
   expect(lastCheckPath()).toBe('new-links');
   expect(grown.view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
@@ -262,8 +273,8 @@ test('verification: an edited OLD link is caught even when the head moved', asyn
   const k = FakeEdgeKey.demo();
   await sync(k);
   await tamper(k.deviceId, 'flip');
-  k.use('commit 1001');
-  k.ticket(0x00, 'done');
+  spend(k, 'commit 1001');
+  k.receipt(0x00, 'done');
   const {view} = await sync(k);
   expect(lastCheckPath()).toBe('full');
   expect(view.verdict.kind).not.toBe('verified');
@@ -302,8 +313,8 @@ test('sealed: a budget end seals the block, and a restart starts from the seal, 
   const sealedAt = await sync(k);
   expect(sealedAt.mirror.seals?.length).toBe(1);
   expect(sealedAt.mirror.seals![0].seq).toBe((await k.head()).seq);
-  k.use('commit 2000');
-  k.ticket(0x00, 'done');
+  spend(k, 'commit 2000');
+  k.receipt(0x00, 'done');
   forgetVerified(); /* a restart */
   const {view} = await sync(k);
   expect(lastCheckPath()).toBe('sealed');
@@ -341,8 +352,8 @@ test('sealed: no budget ended since the last seal -> no new seal', async () => {
   await sync(k);
   await endOne(k);
   await sync(k);
-  k.use('commit 2001');
-  k.ticket(0x00, 'done');
+  spend(k, 'commit 2001');
+  k.receipt(0x00, 'done');
   const {mirror} = await sync(k);
   expect(mirror.seals?.length).toBe(1);
 });
@@ -380,8 +391,8 @@ test('chain state: nothing changed -> the answer from memory, no check, no event
 test('chain state: new links -> one check of the new links only, and \'checked\' says so', async () => {
   const k = FakeEdgeKey.demo();
   await chainState.validity(k);
-  k.use('commit 3000');
-  k.ticket(0x00, 'done');
+  spend(k, 'commit 3000');
+  k.receipt(0x00, 'done');
   const seen: string[] = [];
   const off = chainState.on('checked', a => seen.push(String(a.path)));
   const a = await chainState.validity(k);
@@ -419,7 +430,7 @@ test('chain state: a budget end seals a block - \'sealed\' fires', async () => {
 class RacingKey extends SignedFake {
   race = false;
   async copyKey(): Promise<EdgeCopyKey> {
-    if (this.race) { this.race = false; this.use('a push signs mid-sync'); }
+    if (this.race) { this.race = false; spend(this, 'a push signs mid-sync'); }
     return super.copyKey();
   }
 }
@@ -428,7 +439,7 @@ test('burst: a checkpoint newer than the head read is dropped - still new links 
   const k = FakeEdgeKey.demo(new RacingKey()) as RacingKey;
   await sync(k);
   expect(lastCheckPath()).toBe('full');
-  k.use('commit 4000');
+  spend(k, 'commit 4000');
   k.race = true;
   const {view} = await sync(k);
   expect(lastCheckPath()).toBe('new-links');
@@ -439,7 +450,7 @@ test('burst: a checkpoint newer than the head read is dropped - still new links 
 class WritingDuringRead extends SignedFake {
   writeOnRead = false;
   async read(from: number, count: number) {
-    if (this.writeOnRead) { this.writeOnRead = false; this.use('a commit signs while the sync reads'); }
+    if (this.writeOnRead) { this.writeOnRead = false; spend(this, 'a commit signs while the sync reads'); }
     return super.read(from, count);
   }
 }
@@ -447,7 +458,7 @@ class WritingDuringRead extends SignedFake {
 test('burst: a link written while the sync reads is not taken past the head - no false "tampered"', async () => {
   const k = FakeEdgeKey.demo(new WritingDuringRead()) as WritingDuringRead;
   await sync(k);
-  k.use('commit 5000');
+  spend(k, 'commit 5000');
   k.writeOnRead = true;
   const first = await sync(k);
   expect(first.view.verdict.kind).toBe('verified');
@@ -474,9 +485,9 @@ test('burst: no checkpoint for a new-links sync; one for the first check and one
   const k = FakeEdgeKey.demo(new CountingKey()) as CountingKey;
   await sync(k);
   expect([lastCheckPath(), k.signed]).toEqual(['full', 1]);
-  k.use('a burst: one');
+  spend(k, 'a burst: one');
   await sync(k);
-  k.use('a burst: two');
+  spend(k, 'a burst: two');
   const burst = await sync(k);
   expect([lastCheckPath(), k.signed]).toEqual(['new-links', 1]);
   expect(burst.view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
@@ -493,20 +504,20 @@ test('option A: a flipped record under the same head is still red', async () => 
   expect((await sync(k)).view.verdict.kind).toBe('tampered');
 });
 
-/* the ticket pairing is kept per copy (A13: rows 215 ms a sync) - never past a changed message */
+/* the receipt pairing is kept per copy (A13: rows 215 ms a sync) - never past a changed message */
 test('the pairing memo: an edited stored message pairs again and shows its mismatch', async () => {
   const k = new FakeEdgeKey();
-  const seq = k.use('commit 1');
-  k.ticket(0x00, 'pushed ok-rn');
+  const seq = spend(k, 'commit 1');
+  k.receipt(0x00, 'pushed ok-rn');
   k.messages = async () => ({});
   await sync(k);
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, ticketMsg: 'pushed ok-rn'});
-  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.ticket?.messageStatus).toBe('match');
-  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.ticket?.messageStatus).toBe('match');
+  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, receiptMsg: 'pushed ok-rn'});
+  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.receipt?.messageStatus).toBe('match');
+  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.receipt?.messageStatus).toBe('match');
   const m = await loadMirror(k.deviceId);
   m.messages = Object.fromEntries(Object.entries(m.messages).map(([s, t]) => [s, typeof t === 'string' ? 'edited in storage' : t]));
   await saveMirror(m);
-  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.ticket?.messageStatus).toBe('mismatch');
+  expect((await sync(k)).view.rows.find(r => r.seq === seq)!.receipt?.messageStatus).toBe('mismatch');
 });
 
 /*
@@ -518,10 +529,10 @@ const storedKeyOf = (k: FakeEdgeKey) => 'okrn.edge.mirror.' + Array.from(k.devic
 
 test('option A: the stored copy is parsed once a session, then only written (and compared)', async () => {
   const k = new FakeEdgeKey();
-  k.use('one');
+  spend(k, 'one');
   await sync(k);
   const parses = jest.spyOn(JSON, 'parse');
-  k.use('two');
+  spend(k, 'two');
   await sync(k);
   await sync(k);
   expect(parses.mock.calls.filter(c => typeof c[0] === 'string' && c[0].startsWith('{\"deviceId\"'))).toEqual([]);
@@ -531,14 +542,14 @@ test('option A: the stored copy is parsed once a session, then only written (and
 
 test('option A: a stored copy edited while the app runs is never written over, and turns red', async () => {
   const k = new FakeEdgeKey();
-  for (const r of ['a', 'b', 'c']) k.use(r);
+  for (const r of ['a', 'b', 'c']) spend(k, r);
   expect((await sync(k)).view.verdict.kind).toBe('verified');
   const raw = JSON.parse((await AsyncStorage.getItem(storedKeyOf(k)))!);
   const l = raw.links[1].link as string;
   raw.links[1].link = l.slice(0, 40) + (l[40] === '0' ? '1' : '0') + l.slice(41);
   await AsyncStorage.setItem(storedKeyOf(k), JSON.stringify(raw));
   const edited = await AsyncStorage.getItem(storedKeyOf(k));
-  k.use('d');
+  spend(k, 'd');
   await sync(k); /* its save finds the stored copy changed: it is not written over */
   expect(await AsyncStorage.getItem(storedKeyOf(k))).toBe(edited);
   expect((await sync(k)).view.verdict.kind).toBe('tampered'); /* the next sync reads it back */
@@ -548,7 +559,7 @@ test('option A: a stored copy edited while the app runs is never written over, a
 
 test('option A: the Sync button reads the stored copy at once', async () => {
   const k = new FakeEdgeKey();
-  for (const r of ['a', 'b', 'c']) k.use(r);
+  for (const r of ['a', 'b', 'c']) spend(k, r);
   await sync(k);
   const raw = JSON.parse((await AsyncStorage.getItem(storedKeyOf(k)))!);
   const l = raw.links[1].link as string;
@@ -564,12 +575,12 @@ import {block as edgeBlock} from 'node-onlykey-lib/edge';
 test('blocks (BLOCKS.md §3): a budget end closes a block; blocksOf exports it as JSON that verifies with the key\'s public key', async () => {
   const k = signedDemo();
   await sync(k);
-  expect((await blocksOf(k.deviceId, [])).count).toBe(0); /* no budget has ended: nothing closed yet */
+  expect((await blocksOf(k.deviceId)).count).toBe(0); /* no budget has ended: nothing closed yet */
   await endOne(k);
   await sync(k);
-  k.use('commit 3000'); /* after the seal: an open link, in no block yet */
+  spend(k, 'commit 3000'); /* after the seal: an open link, in no block yet */
   await sync(k);
-  const r = await blocksOf(k.deviceId, []);
+  const r = await blocksOf(k.deviceId);
   expect(r).toMatchObject({count: 1, bad: 0});
   expect(r.open).toBeGreaterThan(0);
   const [b] = JSON.parse(r.json);

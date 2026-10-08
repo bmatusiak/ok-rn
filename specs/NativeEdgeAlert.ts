@@ -3,8 +3,8 @@ import {TurboModuleRegistry} from 'react-native';
 
 /**
  * B7 "stands out without looking" (onlykey-edge build/okrn-edge-tab.md): a phone
- * notification for an Edge alarm - an alarm ticket, an ARM that did not match,
- * a press under a live budget, the refused-ARM count rising, a ticket owed past
+ * notification for an Edge alarm - an alarm receipt, an ARM that did not match,
+ * a press under a live budget, the refused-ARM count rising, a receipt owed past
  * 10 minutes - and a quiet notice for a budget used up or expired. One
  * notification per event; tapping it opens the app on that link.
  *

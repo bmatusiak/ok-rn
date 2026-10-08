@@ -277,7 +277,7 @@ class NativeEdgeAlertModule(reactContext: ReactApplicationContext) : NativeEdgeA
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
       if (manager.getNotificationChannel(CHANNEL) == null) {
         val c = NotificationChannel(CHANNEL, "Edge alarms", NotificationManager.IMPORTANCE_HIGH)
-        c.description = "Something an agent did with your key that should stand out: an alarm ticket, an ARM that did not match, a press during a live budget, refused ARMs, a ticket owed too long."
+        c.description = "Something an agent did with your key that should stand out: an alarm receipt, an ARM that did not match, a press during a live budget, refused ARMs, a receipt owed too long."
         c.enableVibration(true)
         c.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         manager.createNotificationChannel(c)

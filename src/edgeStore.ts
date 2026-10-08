@@ -9,11 +9,11 @@
  *     green that was not recomputed this session). The only thing kept from an
  *     earlier session is `lastSeen` - the head this phone verified last time -
  *     and it is used only to catch a key that went BACKWARDS (rollback).
- * S5: ticket messages come by sync, and pairTickets shows one only when it
- *     hashes to its ticket link.
+ * S5: receipt messages come by sync, and pairReceipts shows one only when it
+ *     hashes to its receipt link.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {block, chain, codes, copy, sync as syncLib, tickets} from 'node-onlykey-lib/edge';
+import {block, chain, codes, copy, sync as syncLib, receipts} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
@@ -31,14 +31,13 @@ type StoredMirror = {
   messages: Record<string, string>;
   lastSeen: {seq: number; head: string} | null;
   lastSync: number | null;
-  vouch?: {seq: number; head: string; tag: string} | null;
   setAside?: {link: string; head: string; at: number}[];
   seen?: Record<string, number>;
   reasons?: Record<string, {agent: string; text: string; at: number}>;
   refusals?: {agent: string; seq: number; status: string; at: number}[];
   publicKey?: string;
   continued?: ContinueCheck | null;
-  anchors?: {seq: number; head: string; signature: string; mySeq: number; at: number}[];
+  merged?: {seq: number; head: string; signature: string; at: number}[];
   seals?: {seq: number; head: string; signature: string; ended: number[]}[];
 };
 
@@ -59,12 +58,6 @@ export type Mirror = {
   messages: Record<number, string>;
   lastSeen: {seq: number; head: Uint8Array} | null;
   lastSync: number | null;
-  /*
-   * R26: the newest head the key vouched for (its HMAC tag over (seq, head)),
-   * read at each sync. After a restore, only a replay up to a vouched head can
-   * be committed; anything newer falls under the LOSS.
-   */
-  vouch: {seq: number; head: Uint8Array; tag: Uint8Array} | null;
   /*
    * Records that were never links of this chain, moved out of `links` (kept, not
    * deleted, so what happened stays readable). A late PICKUP reply, read one
@@ -95,12 +88,12 @@ export type Mirror = {
   publicKey?: Uint8Array | null;
   continued?: ContinueCheck | null;
   /*
-   * R30 (P2c), on a SIBLING's copy: the signed checkpoints this phone's key
-   * anchored it at (and the anchor link's seq in this phone's own chain) - the
-   * spec's "every copy keeps the sibling's checkpoint beside the anchor", and
-   * what the next sync is checked against (a rollback or a changed head alarms).
+   * On ANOTHER device's copy (2026-10-08): the signed checkpoints of that device this
+   * phone merged its log up to, when you approved it - what the next offer is checked
+   * against (a rollback or a changed head alarms; lib sync.anchorCheck). No link on this
+   * key records a merge: pairing and sync are all app (Brad).
    */
-  anchors?: {seq: number; head: Uint8Array; signature: Uint8Array; mySeq: number; at: number}[];
+  merged?: {seq: number; head: Uint8Array; signature: Uint8Array; at: number}[];
   /*
    * SEALED BLOCKS (BLOCKS.md §2, §2a; Brad, 2026-10-07: "checkpoints can happen on a
    * budget grant end, like it's the end of the block of transactions"; "we only need
@@ -145,7 +138,7 @@ export type EdgeRow = {
   fields: ReturnType<typeof chain.decodeLink>;
   weld: string;
   verified: boolean;
-  ticket?: ReturnType<typeof tickets.pairTickets>['uses'][number];
+  receipt?: ReturnType<typeof receipts.pairReceipts>['uses'][number];
   /** when this phone first stored the link (its clock; links carry no time) */
   seenAt?: number;
   /** B7 stage 2: the reason an agent's note gave for this seq (not yet checked against the budget's agent) */
@@ -179,7 +172,7 @@ function cloneMirror(m: Mirror): Mirror {
   return {
     ...m, links: m.links.slice(), messages: {...m.messages}, seen: {...m.seen}, reasons: {...m.reasons},
     refusals: m.refusals.slice(), setAside: m.setAside.slice(),
-    ...(m.anchors ? {anchors: m.anchors.slice()} : {}), ...(m.seals ? {seals: m.seals.slice()} : {}),
+    ...(m.merged ? {merged: m.merged.slice()} : {}), ...(m.seals ? {seals: m.seals.slice()} : {}),
   };
 }
 /* each record's stored form, kept with it: a save turns only the NEW records into hex (A13: "save 80-290") */
@@ -206,12 +199,12 @@ async function readMirror(deviceId: Uint8Array): Promise<Mirror> {
   const raw = await AsyncStorage.getItem(storageKey(deviceId));
   if (raw) storedText.set(toHex(deviceId), raw);
   else storedText.delete(toHex(deviceId));
-  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: [], seen: {}, reasons: {}, refusals: []};
+  if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, setAside: [], seen: {}, reasons: {}, refusals: []};
   const s = JSON.parse(raw) as StoredMirror;
   if (s.v !== 1) {
     /* the old chain's copy (before the clean start, edgeV1.ts): not read - this key starts again */
     storedText.delete(toHex(deviceId));
-    return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: [], seen: {}, reasons: {}, refusals: []};
+    return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, setAside: [], seen: {}, reasons: {}, refusals: []};
   }
   return {
     deviceId: fromHex(s.deviceId),
@@ -223,14 +216,13 @@ async function readMirror(deviceId: Uint8Array): Promise<Mirror> {
     messages: Object.fromEntries(Object.entries(s.messages).map(([k, v]) => [Number(k), v])),
     lastSeen: s.lastSeen ? {seq: s.lastSeen.seq, head: fromHex(s.lastSeen.head)} : null,
     lastSync: s.lastSync,
-    vouch: s.vouch ? {seq: s.vouch.seq, head: fromHex(s.vouch.head), tag: fromHex(s.vouch.tag)} : null,
     setAside: (s.setAside ?? []).map(x => ({link: fromHex(x.link), head: fromHex(x.head), at: x.at})),
     seen: Object.fromEntries(Object.entries(s.seen ?? {}).map(([k, v]) => [Number(k), v])),
     reasons: Object.fromEntries(Object.entries(s.reasons ?? {}).map(([k, v]) => [Number(k), v])),
     refusals: s.refusals ?? [],
     publicKey: s.publicKey ? fromHex(s.publicKey) : null,
     continued: s.continued ?? null,
-    anchors: (s.anchors ?? []).map(a => ({seq: a.seq, head: fromHex(a.head), signature: fromHex(a.signature), mySeq: a.mySeq, at: a.at})),
+    merged: (s.merged ?? []).map(a => ({seq: a.seq, head: fromHex(a.head), signature: fromHex(a.signature), at: a.at})),
     seals: (s.seals ?? []).map(x => ({seq: x.seq, head: fromHex(x.head), signature: fromHex(x.signature), ended: x.ended ?? []})),
   };
 }
@@ -244,14 +236,13 @@ export async function saveMirror(m: Mirror): Promise<void> {
     messages: Object.fromEntries(Object.entries(m.messages).map(([k, v]) => [String(k), v])),
     lastSeen: m.lastSeen ? {seq: m.lastSeen.seq, head: toHex(m.lastSeen.head)} : null,
     lastSync: m.lastSync,
-    vouch: m.vouch ? {seq: m.vouch.seq, head: toHex(m.vouch.head), tag: toHex(m.vouch.tag)} : null,
     seen: Object.fromEntries(Object.entries(m.seen).map(([k, v]) => [String(k), v])),
     ...(Object.keys(m.reasons).length ? {reasons: Object.fromEntries(Object.entries(m.reasons).map(([k, v]) => [String(k), v]))} : {}),
     ...(m.refusals.length ? {refusals: m.refusals} : {}),
     ...(m.setAside.length ? {setAside: m.setAside.map(x => ({link: toHex(x.link), head: toHex(x.head), at: x.at}))} : {}),
     ...(m.publicKey ? {publicKey: toHex(m.publicKey)} : {}),
     ...(m.continued ? {continued: m.continued} : {}),
-    ...(m.anchors?.length ? {anchors: m.anchors.map(a => ({seq: a.seq, head: toHex(a.head), signature: toHex(a.signature), mySeq: a.mySeq, at: a.at}))} : {}),
+    ...(m.merged?.length ? {merged: m.merged.map(a => ({seq: a.seq, head: toHex(a.head), signature: toHex(a.signature), at: a.at}))} : {}),
     ...(m.seals?.length ? {seals: m.seals.map(x => ({seq: x.seq, head: toHex(x.head), signature: toHex(x.signature), ended: x.ended}))} : {}),
   };
   const text = JSON.stringify(s);
@@ -430,7 +421,7 @@ export function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mir
  * that its key was registered with a press). In the sync queue, so a note and a
  * sync never save over each other.
  */
-export type EdgeNote = {agent: string; seq: number; reason?: string; ticketMsg?: string; txRefused?: string};
+export type EdgeNote = {agent: string; seq: number; reason?: string; receiptMsg?: string; txRefused?: string};
 export function addNote(deviceId: Uint8Array, n: EdgeNote, now = Date.now()): Promise<void> {
   const run = syncing.then(() => addNoteNow(deviceId, n, now), () => addNoteNow(deviceId, n, now));
   syncing = run.catch(() => undefined);
@@ -440,8 +431,8 @@ async function addNoteNow(deviceId: Uint8Array, n: EdgeNote, now: number): Promi
   const m = await loadMirror(deviceId);
   const agent = n.agent.toLowerCase();
   if (n.reason !== undefined) m.reasons[n.seq] = {agent, text: n.reason, at: now};
-  /* by the use's seq, as tickets.pairTickets reads it: shown only if it hashes to the ticket */
-  if (n.ticketMsg !== undefined) m.messages[n.seq] = n.ticketMsg;
+  /* by the use's seq, as receipts.pairReceipts reads it: shown only if it hashes to the receipt */
+  if (n.receiptMsg !== undefined) m.messages[n.seq] = n.receiptMsg;
   if (n.txRefused !== undefined) m.refusals = [...m.refusals, {agent, seq: n.seq, status: n.txRefused, at: now}].slice(-50);
   await saveMirror(m);
 }
@@ -464,7 +455,7 @@ async function continuedFrom(mirror: Mirror): Promise<ContinueCheck | null> {
   return unverifiable ?? {ok: false, oldSeq: f.seq - 1, reason: keys.length ? 'no-match' : 'no-old-copy'};
 }
 const OP_CONTINUE = 16;
-const OP_TICKET = codes.OP.TICKET;
+const OP_RECEIPT = codes.OP.RECEIPT;
 
 async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror; view: EdgeView}> {
   /* where a sync's time goes, for the log (Brad, 2026-10-06) - times only */
@@ -529,11 +520,7 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   lap(wantCheckpoint ? 'copyKey' : 'copyKey (no checkpoint)');
   if (ownKey?.publicKey) mirror.publicKey = ownKey.publicKey;
   if (!mirror.continued) mirror.continued = await continuedFrom(mirror);
-  /* R26: keep the key's newest vouch with the copy (a restoring key gives none) */
   lap('continued');
-  const v = source.vouch ? await source.vouch() : null;
-  if (v) mirror.vouch = v;
-  lap('vouch');
   mirror.lastSync = now;
   vlaps = {};
   const view = await liveView(source, mirror, head, ownKey ?? undefined);
@@ -585,27 +572,30 @@ export async function mergeOffered(source: EdgeSource, offered: EdgeLinkRecord[]
  * that sibling's chain it already holds (the same store, keyed by the sibling's
  * device id - it never mixes with this phone's own chain). No I/O beyond the read.
  */
-export async function mergeSibling(chainId: Uint8Array, offered: EdgeLinkRecord[]):
+export async function mergeOther(chainId: Uint8Array, offered: EdgeLinkRecord[]):
   Promise<{mirror: Mirror; links: EdgeLinkRecord[]; added: EdgeLinkRecord[]; conflicts: number[]}> {
   const mirror = await loadMirror(chainId);
   const m = syncLib.merge(mirror.links, offered);
   return {mirror, links: m.links, added: m.added, conflicts: m.conflicts};
 }
 
-/** R30: keep the sibling's links and the anchor - only after this key linked it. In the sync queue. */
-export function keepSibling(chainId: Uint8Array, publicKey: Uint8Array, added: EdgeLinkRecord[], anchor: NonNullable<Mirror['anchors']>[number], now = Date.now()): Promise<void> {
-  const run = syncing.then(() => keepSiblingNow(chainId, publicKey, added, anchor, now), () => keepSiblingNow(chainId, publicKey, added, anchor, now));
+/**
+ * Keep another device's links and the checkpoint they were merged up to - only once you
+ * approved that device's held log (edgeDevices.approveHeld). In the sync queue.
+ */
+export function keepMerged(chainId: Uint8Array, publicKey: Uint8Array, added: EdgeLinkRecord[], point: NonNullable<Mirror['merged']>[number], now = Date.now()): Promise<void> {
+  const run = syncing.then(() => keepMergedNow(chainId, publicKey, added, point, now), () => keepMergedNow(chainId, publicKey, added, point, now));
   syncing = run.catch(() => undefined);
   return run;
 }
-async function keepSiblingNow(chainId: Uint8Array, publicKey: Uint8Array, added: EdgeLinkRecord[], anchor: NonNullable<Mirror['anchors']>[number], now: number): Promise<void> {
+async function keepMergedNow(chainId: Uint8Array, publicKey: Uint8Array, added: EdgeLinkRecord[], point: NonNullable<Mirror['merged']>[number], now: number): Promise<void> {
   const mirror = await loadMirror(chainId);
   const m = syncLib.merge(mirror.links, added);
   if (m.conflicts.length) throw new Error(`a fork at #${m.conflicts.join(', #')} - nothing kept`);
   mirror.links = m.links;
   for (const r of m.added) mirror.seen[seqOf(r)] = mirror.seen[seqOf(r)] ?? now;
   mirror.publicKey = publicKey;
-  mirror.anchors = [...(mirror.anchors ?? []), anchor];
+  mirror.merged = [...(mirror.merged ?? []), point];
   mirror.lastSync = now;
   await saveMirror(mirror);
 }
@@ -635,9 +625,9 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
   /* the key's public key and checkpoint: the caller's, when it has just read them (syncNow) - not a second read */
   const key = knownKey !== undefined ? knownKey : source.copyKey ? await source.copyKey() : null;
   const ring = async () => (head.seq >= 0 ? source.read(head.ringFrom, head.seq - head.ringFrom + 1) : []);
-  /* the ticket pairing on its own turn of the JS thread, not stacked on the check (rows, A13: 215 ms) */
+  /* the receipt pairing on its own turn of the JS thread, not stacked on the check (rows, A13: 215 ms) */
   await new Promise<void>(r => setTimeout(r, 0));
-  ticketsBySeq(mirror);
+  receiptsBySeq(mirror);
   await new Promise<void>(r => setTimeout(r, 0));
   /*
    * The key's ring is for the FULL check (its links count as held). When this
@@ -767,7 +757,7 @@ export function forgetVerified() {
 }
 /*
  * WHERE THE VERIFY TIME GOES (A13, 2026-10-07: "verify 740" on a check that was
- * skipped). Summed over a sync, printed in its log line: decode, tickets, check, rows.
+ * skipped). Summed over a sync, printed in its log line: decode, receipts, check, rows.
  */
 let vlaps: Record<string, number> = {};
 const vlap = (n: string, t0: number) => { vlaps[n] = (vlaps[n] ?? 0) + Date.now() - t0; };
@@ -808,7 +798,7 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
   /*
    * ONE MOMENT OF THE KEY (as lib grants.check, Pixel 2026-10-06; seen again on the
    * A13 2026-10-07): the head and the key's checkpoint are separate reads, and a link
-   * that lands between them (a push's signature right after a ticket) gives a
+   * that lands between them (a push's signature right after a receipt) gives a
    * checkpoint for a NEWER head than the one checked. As an anchor past the end it
    * made the new-links check fail and sent every check to the full one. It is only
    * one anchor: check without it; the next sync has both at the same head.
@@ -902,32 +892,32 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
 }
 
 /*
- * THE TICKET PAIRING, ONCE PER COPY (A13, 2026-10-07: "rows 215" on every sync, a
+ * THE RECEIPT PAIRING, ONCE PER COPY (A13, 2026-10-07: "rows 215" on every sync, a
  * skipped one too - one block on the JS thread that answers Bluetooth). Pairing
- * every use with its ticket and checking each ticket's message hash is the same
+ * every use with its receipt and checking each receipt's message hash is the same
  * answer while the links and the messages are the same: the same records (option A)
  * and the messages as they are now, compared in full - a changed message pairs again
  * and shows its mismatch.
  */
 /* one per chain: the A13 keeps the Pixel's chain too, and one slot was taken in turns */
-const pairedMemo = new Map<string, {records: EdgeLinkRecord[]; messages: string; bySeq: Map<number, ReturnType<typeof tickets.pairTickets>['uses'][number]>}>();
-function ticketsBySeq(mirror: Mirror) {
+const pairedMemo = new Map<string, {records: EdgeLinkRecord[]; messages: string; bySeq: Map<number, ReturnType<typeof receipts.pairReceipts>['uses'][number]>}>();
+function receiptsBySeq(mirror: Mirror) {
   const id = toHex(mirror.deviceId);
   const messages = JSON.stringify(mirror.messages ?? {});
   const was = pairedMemo.get(id);
   if (was && was.messages === messages && sameCopy(mirror.links, was)) return was.bySeq;
   const t0 = Date.now();
-  const paired = tickets.pairTickets(mirror.links, mirror.messages);
-  vlap('tickets', t0);
+  const paired = receipts.pairReceipts(mirror.links, mirror.messages);
+  vlap('receipts', t0);
   const bySeq = new Map(paired.uses.map(u => [u.seq, u]));
   pairedMemo.set(id, {records: mirror.links.slice(), messages, bySeq});
   return bySeq;
 }
 
 function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLink>}[], unverified: Set<number>, mirror: Mirror): EdgeRow[] {
-  const bySeq = ticketsBySeq(mirror);
+  const bySeq = receiptsBySeq(mirror);
   return decoded
-    .map(({r, f}) => ({seq: f.seq, fields: f, weld: toHex(r.head), verified: !unverified.has(f.seq), ticket: bySeq.get(f.seq), seenAt: mirror.seen[f.seq], note: mirror.reasons[f.seq]}))
+    .map(({r, f}) => ({seq: f.seq, fields: f, weld: toHex(r.head), verified: !unverified.has(f.seq), receipt: bySeq.get(f.seq), seenAt: mirror.seen[f.seq], note: mirror.reasons[f.seq]}))
     .reverse();
 }
 
@@ -936,11 +926,11 @@ function rowsOf(decoded: {r: EdgeLinkRecord; f: ReturnType<typeof chain.decodeLi
  * every red and amber verdict can be seen against a key that is telling the
  * truth. Each returns the edited mirror, already saved.
  */
-export type Tamper = 'flip' | 'delete' | 'swap' | 'truncate' | 'forget' | 'stray' | 'ticket';
+export type Tamper = 'flip' | 'delete' | 'swap' | 'truncate' | 'forget' | 'stray' | 'receipt';
 /*
  * IN THE SYNC QUEUE, like every other write to the copy: found on the Pixel
  * (2026-10-06), a background sync that had loaded the copy before "Flip a
- * ticket" was undone saved it back, and the restart found the flip still there.
+ * receipt" was undone saved it back, and the restart found the flip still there.
  */
 export function tamper(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
   const run = syncing.then(() => tamperNow(deviceId, how), () => tamperNow(deviceId, how));
@@ -970,9 +960,9 @@ async function tamperNow(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
     m.links[i] = {...m.links[i], link};
   };
   if (how === 'flip') flipped(mid);
-  /* the newest TICKET link (Brad, 2026-10-06: "edit a stored ticket and it shows red"); a second flip restores it */
-  if (how === 'ticket') {
-    const at = m.links.map(r => chain.decodeLink(r.link).op).lastIndexOf(OP_TICKET);
+  /* the newest RECEIPT link (Brad, 2026-10-06: "edit a stored ticket and it shows red"); a second flip restores it */
+  if (how === 'receipt') {
+    const at = m.links.map(r => chain.decodeLink(r.link).op).lastIndexOf(OP_RECEIPT);
     if (at >= 0) flipped(at);
   }
   if (how === 'delete') m.links.splice(mid, 1);
@@ -985,16 +975,13 @@ async function tamperNow(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
 /*
  * BLOCKS (BLOCKS.md §3, Brad 2026-10-07: "we use hash of a json"): this key's copy
  * cut at its seals into canonical JSON blocks - one per closed budget, each sealed
- * by the key's signed checkpoint - for Export. `seen` is what this chain anchored
- * of each sibling (kept in that sibling's mirror). Each block is checked against the
+ * by the key's signed checkpoint - for Export. Each block is checked against the
  * key's public key kept with the copy and the block before it; one that does not
  * verify is still exported (that is the evidence), and counted.
  */
-export async function blocksOf(deviceId: Uint8Array, siblingIds: string[]): Promise<{json: string; count: number; open: number; bad: number; reason?: string}> {
+export async function blocksOf(deviceId: Uint8Array): Promise<{json: string; count: number; open: number; bad: number; reason?: string}> {
   const mirror = await loadMirror(deviceId);
-  const seen = (await Promise.all(siblingIds.map(async sid => ((await loadMirror(fromHex(sid))).anchors ?? [])
-    .map(a => ({deviceId: fromHex(sid), seq: a.seq, head: a.head, signature: a.signature}))))).flat();
-  const r = block.blocksFrom({net: currentNet(), deviceId, records: mirror.links, seals: mirror.seals ?? [], seen});
+  const r = block.blocksFrom({net: currentNet(), deviceId, records: mirror.links, seals: mirror.seals ?? []});
   let bad = 0;
   r.blocks.forEach((b: any, i: number) => {
     const v = mirror.publicKey ? block.verifyBlock(b, mirror.publicKey, i ? r.blocks[i - 1] : null) : {ok: false};

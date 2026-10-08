@@ -39,5 +39,5 @@ No backup part.
 
 ## Not a use
 
-No Edge link, ticket or budget is touched. A firmware derive link (hard keys
+No Edge link, receipt or budget is touched. A firmware derive link (hard keys
 too) is a later spec proposal.

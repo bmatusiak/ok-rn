@@ -7,10 +7,10 @@
  * The firmware is a notary (DESIGN.md section 0); the truth is the LIBRARY's
  * reading of what it writes (node-onlykey-lib/edge, through ctx.requireLib -
  * the kit's own pinned lib): every link, weld, budget signature, reveal,
- * ticket, waive and checkpoint must check out there. The rules are
+ * receipt, waive and checkpoint must check out there. The rules are
  * onlykey-edge/build/firmware.md's; verification row 5 lists what these prove.
  *
- * Only budget uses owe a ticket (R16, 2026-10-06: an ordinary press is not Edge and
+ * Only budget uses owe a receipt (R16, 2026-10-06: an ordinary press is not Edge and
  * writes no link) and nothing automatic happens while
  * one is owed (R18), so a test that opens a budget first clears what earlier
  * tests left owed - with a pressed WAIVE, the same way out a person has.
@@ -24,33 +24,23 @@ const HEAD = 0x01;
 const PICKUP = 0x02;
 const CHECKPOINT = 0x03;
 const PUBKEY = 0x04;
-const VOUCH = 0x05;
+const STATEMENT = 0x06;  /* {nametag hash 32}, no press, no link: seq . nametag hash, owner key, signature (2026-10-08) */
 const LOSS = 0x34;
 const AGENT_ADD = 0x15; /* mcp-service 4.7a: {agent key 32}, press */
-const PEER_ADD = 0x30;    /* R20: {P-256 key, compressed 33}, press */
-const PEER_REMOVE = 0x31; /* R20: {index}, press */
-const PEER_LIST = 0x32;   /* R20: count . k . max, then one report per slot */
-const SIBLING_ADD = 0x35;    /* R29: {0, X} staged, then {1, Y, device id} and a press */
-const SIBLING_REMOVE = 0x36; /* R29: {index}, press */
-const SIBLING_LIST = 0x37;   /* R29: count . max, then one report per slot */
-const ANCHOR = 0x38;         /* R30: {0, index, seq, head}, {1, sig r}, {2, sig s}, then a press */
-const SYNC = 0x39;        /* sync phase 2: {subject 32}, press; a sync link (op 20), no ticket (number CHOSEN) */
 const GRANT_CREATE = 0x10;
 const GRANT_LABEL = 0x11; /* R11a: {scope index, label 32}, no press - a derived code's identity */
 const GRANT_REVOKE = 0x12;
 const GRANT_HOLD = 0x13;
 const GRANT_RESUME = 0x14;
-const TICKET = 0x20;
+const RECEIPT = 0x20;
 const WAIVE = 0x21;
 const TX_START = 0x22;
-const REPLAY = 0x23;
-const REPLAY_DONE = 0x24;
 const SEQ_NONE = 0xffffffff;
 /* lib codes.js */
 const OP_SIGN = 1;
 const OP_DECRYPT = 2;
 const OP_GRANT_CREATE = 6;
-const OP_TICKET = 8;
+const OP_RECEIPT = 8;
 const OP_GRANT_HOLD = 13;
 const OP_GRANT_RESUME = 14;
 const APPROVE = 1;
@@ -58,17 +48,15 @@ const TIMEOUT = 3;
 const SELF_PRESS = 4;
 const NEEDS_REVIEW = 0x8f;
 const PRESS_OBSERVED = 0x01;
-const PREV_NO_TICKET = 0x04;
-const OWES_TICKET = 0x10; /* R16: set by the key at decision time - this use owes a ticket */
-const STARTED = 0x20;       /* R16: a TX start was waiting when the request was primed */
+const OWES_RECEIPT = 0x10; /* R16: set by the key at decision time - this use owes a receipt */
 /* the console line that says a confirmation is primed (14-stored-keys uses it too) */
 const PRIMED = /Encrypted Buffer/g;
 const P256_SPKI = Buffer.from('3059301306072a8648ce3d020106082a8648ce3d030107034200', 'hex');
 
 module.exports = function register({ it }, ctx) {
-  /* R28: the backup the R26 test kept in the PREVIOUS run - read now, before this run's R26 test replaces it */
+  /* R28: the backup the same-device restore test kept in the PREVIOUS run - read now, before this run's replaces it */
   const keptAtLoad = (() => { try { return JSON.parse(require('fs').readFileSync(require('path').join(require('os').tmpdir(), 'okt-plugin-backup.json'), 'utf8')); } catch { return null; } })();
-  const { chain, grants, tickets } = ctx.requireLib('node-onlykey-lib/edge');
+  const { chain, grants, receipts } = ctx.requireLib('node-onlykey-lib/edge');
   const sha256 = (b) => crypto.createHash('sha256').update(b).digest();
   const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
 
@@ -112,16 +100,16 @@ module.exports = function register({ it }, ctx) {
     const ids = [0, 1, 2, 3].map((i) => r.readUInt32LE(40 + 4 * i));
     return {
       seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), oldest: r.readUInt32LE(36),
-      live: ids.filter(Boolean), held: ids.filter((id, i) => id && (r[56] >> i) & 1), owed: r[57], overflow: r[58], restoring: r[59],
+      live: ids.filter(Boolean), held: ids.filter((id, i) => id && (r[56] >> i) & 1), owed: r[57], overflow: r[58],
       refusedTx: r[60], /* B7 stage 2: TX starts refused since power-up (RAM only) */
     };
   }
 
-  /* TICKET and WAIVE answer seq . head - what the next TX start passes (R13a) */
+  /* RECEIPT and WAIVE answer seq . head - what the next TX start passes (R13a) */
   const seqHead = (r) => ({ seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)) });
 
-  async function ticket(device, ref, msg, opts) {
-    const [r] = await edge(device, TICKET, Buffer.concat([u32(ref), Buffer.from([0x00]), sha256(Buffer.from(msg))]), opts);
+  async function receipt(device, ref, msg, opts) {
+    const [r] = await edge(device, RECEIPT, Buffer.concat([u32(ref), Buffer.from([0x00]), sha256(Buffer.from(msg))]), opts);
     return seqHead(r);
   }
 
@@ -204,6 +192,23 @@ module.exports = function register({ it }, ctx) {
     const message = Buffer.concat([Buffer.from('OKEDGE-CKPT-v1'), Buffer.from(deviceIdOf(pub)), u32(seq), Buffer.from(headBytes)]);
     const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), Buffer.from(pub)]), format: 'der', type: 'spki' });
     return crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sig).subarray(0, 64));
+  }
+
+  /*
+   * The owner statement (2026-10-08), checked with node:crypto alone (the kit's pinned lib
+   * predates it): SHA256("OKEDGE-STATEMENT-v1" || device id || checkpoint key || seq || nametag
+   * hash) signed with the OWNER key the reply carries; nametag hash = SHA256("OKEDGE-NAMETAG-v1" || text).
+   */
+  async function statementOf(device, nametag, opts) {
+    const nh = sha256(Buffer.concat([Buffer.from('OKEDGE-NAMETAG-v1'), Buffer.from(nametag, 'utf8')]));
+    const pub = await pubkey(device, opts);
+    const [a, k, sg] = await edge(device, STATEMENT, nh, { ...opts, reports: 3 });
+    const seq = a.readUInt32LE(0);
+    const owner = new Uint8Array(k.subarray(0, 64));
+    const message = Buffer.concat([Buffer.from('OKEDGE-STATEMENT-v1'), Buffer.from(deviceIdOf(pub)), Buffer.from(pub), u32(seq), nh]);
+    const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), Buffer.from(owner)]), format: 'der', type: 'spki' });
+    const ok = crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sg).subarray(0, 64));
+    return { seq, echoed: Buffer.from(a.subarray(4, 36)).equals(nh), owner, ok, pub };
   }
 
   /* PICKUP: per link the link, then its head and (for a self-press) the reveal */
@@ -318,7 +323,22 @@ module.exports = function register({ it }, ctx) {
       if (h.seq === SEQ_NONE) assert.bytes(Buffer.from(h.head), Buffer.from(chain.genesis(deviceId)), 'an empty chain\'s head is not the genesis');
     });
 
-  it('edge: an ordinary press writes no link and owes nothing, budget or not; a budget use owes its ticket - a timeout does not clear it, a late ticket pays it, a second is refused (R16, 2026-10-06)',
+  it('edge: the owner statement - signed by an owner key that is not the checkpoint key, names its seq and nametag, writes no link (2026-10-08)',
+    async ({ device, assert, signal, log }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      const before = await head(device, { signal });
+      const st = await statementOf(device, 'okt bench', { signal });
+      log(`statement at #${st.seq}, owner ${Buffer.from(st.owner).toString('hex').slice(0, 16)}…`);
+      assert.ok(st.ok, 'the statement does not verify under the owner key it carries');
+      assert.ok(st.echoed, 'the reply does not echo the nametag hash');
+      assert.equal(st.seq, before.seq === null ? 0xffffffff : before.seq, 'the statement does not name the key\'s own seq');
+      assert.ok(!Buffer.from(st.owner).equals(Buffer.from(st.pub)), 'the owner key is the checkpoint key - it must carry no salt, the checkpoint key does');
+      assert.equal(JSON.stringify((await head(device, { signal })).seq), JSON.stringify(before.seq), 'the statement wrote a link');
+      const again = await statementOf(device, 'okt bench', { signal });
+      assert.ok(Buffer.from(again.owner).equals(Buffer.from(st.owner)), 'the owner key moved between two reads');
+    });
+
+  it('edge: an ordinary press writes no link and owes nothing, budget or not; a budget use owes its receipt - a timeout does not clear it, a late receipt pays it, a second is refused (R16, 2026-10-06)',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
@@ -329,15 +349,15 @@ module.exports = function register({ it }, ctx) {
       await ordinaryPress(device, 'okt edge ordinary', { signal });
       const h0 = await head(device, { signal });
       assert.equal(h0.seq, before.seq, 'an ordinary press wrote a link');
-      assert.equal(h0.owed, 0, 'an ordinary press owes a ticket');
+      assert.equal(h0.owed, 0, 'an ordinary press owes a receipt');
 
-      /* a budget use: self-pressed, owes its ticket */
+      /* a budget use: self-pressed, owes its receipt */
       const b = await openBudget(device, 2, 'okt: one paid use', { signal });
       const payload = agentPayload('okt edge paid 1');
       assert.equal(await txStartFor(device, (await head(device, { signal })).head, payload, { signal }), 'EDGE:00');
       const paid = await selfPressedSign(device, Buffer.concat([payload]), { signal });
       const hp = await head(device, { signal });
-      assert.equal(hp.owed, 1, 'the budget use does not owe its ticket');
+      assert.equal(hp.owed, 1, 'the budget use does not owe its receipt');
 
       /* under the live budget: an ordinary press, and one left to time out - no link, the debt stays */
       await ordinaryPress(device, 'okt edge ordinary under a budget', { signal });
@@ -350,23 +370,23 @@ module.exports = function register({ it }, ctx) {
       assert.equal(afterTimeout.owed, 1, 'the timeout cleared the debt');
 
       const msg = 'okt: paid use 1';
-      const t = await ticket(device, paid.seq, msg, { signal });
-      assert.equal(t.seq, afterTimeout.seq + 1, 'the ticket reply is not the ticket link\'s seq');
-      const again = await edge(device, TICKET, Buffer.concat([u32(paid.seq), Buffer.from([0]), sha256(Buffer.from(msg))]), { signal, text: true });
-      assert.equal(again, 'EDGE:08', 'a second ticket for one use was taken');
+      const t = await receipt(device, paid.seq, msg, { signal });
+      assert.equal(t.seq, afterTimeout.seq + 1, 'the receipt reply is not the receipt link\'s seq');
+      const again = await edge(device, RECEIPT, Buffer.concat([u32(paid.seq), Buffer.from([0]), sha256(Buffer.from(msg))]), { signal, text: true });
+      assert.equal(again, 'EDGE:08', 'a second receipt for one use was taken');
 
       const { h, fields: f, links } = await verifyFrom(device, first, before.head, { signal, assert, log });
       log(trail(f));
-      assert.bytes(Buffer.from(t.head), Buffer.from(h.head), 'the ticket reply is not the key\'s head');
+      assert.bytes(Buffer.from(t.head), Buffer.from(h.head), 'the receipt reply is not the key\'s head');
       assert.equal(h.owed, 0);
       assert.ok(f.every((x) => x.op !== OP_SIGN || x.decision === SELF_PRESS), `a sign link that is not a budget use: ${trail(f)}`);
-      const use = tickets.pairTickets(links, { [paid.seq]: msg }).uses.find((u) => u.seq === paid.seq);
-      assert.equal(use.status, 'ticketed');
-      assert.equal(use.message, msg, 'the ticket\'s message does not match its link');
+      const use = receipts.pairReceipts(links, { [paid.seq]: msg }).uses.find((u) => u.seq === paid.seq);
+      assert.equal(use.status, 'receipted');
+      assert.equal(use.message, msg, 'the receipt\'s message does not match its link');
       assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:00');
     });
 
-  it('edge: a budget signed at a press pays only started uses; a TX start pays for its own request only, and nothing starts while a ticket is owed (R10, R13, R13a, R18)',
+  it('edge: a budget signed at a press pays only started uses; a TX start pays for its own request only, and nothing starts while a receipt is owed (R10, R13, R13a, R18)',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
@@ -398,13 +418,13 @@ module.exports = function register({ it }, ctx) {
       const h0b = await head(device, { signal });
       assert.equal(JSON.stringify([h0b.seq, h0b.owed]), JSON.stringify([h0.seq, 0]), 'an unstarted use under a live budget wrote a link or owes');
 
-      /* grant -> start -> use -> ticket -> start -> use -> ticket */
+      /* grant -> start -> use -> receipt -> start -> use -> receipt */
       const pl1 = agentPayload('okt budget message 1');
       assert.equal(await txStartFor(device, h0b.head, pl1, { signal }), 'EDGE:00');
       const s1 = await selfPressedSign(device, pl1, { signal });
-      assert.equal(await txStartFor(device, (await head(device, { signal })).head, pl1, { signal }), 'EDGE:0C', 'TX start went through while a ticket was owed (R18)');
-      assert.equal(await edge(device, GRANT_CREATE, Buffer.alloc(58, 0).fill(1, 0, 1), { signal, text: true }), 'EDGE:0C', 'a budget opened while a ticket was owed (R10)');
-      const t1 = await ticket(device, s1.seq, 'okt: 1', { signal });
+      assert.equal(await txStartFor(device, (await head(device, { signal })).head, pl1, { signal }), 'EDGE:0C', 'TX start went through while a receipt was owed (R18)');
+      assert.equal(await edge(device, GRANT_CREATE, Buffer.alloc(58, 0).fill(1, 0, 1), { signal, text: true }), 'EDGE:0C', 'a budget opened while a receipt was owed (R10)');
+      const t1 = await receipt(device, s1.seq, 'okt: 1', { signal });
       await catchUp(device, kept, b.chainSeq, { signal });
 
       /*
@@ -432,7 +452,7 @@ module.exports = function register({ it }, ctx) {
       const pl2 = agentPayload('okt budget message 2');
       assert.equal(await txStartFor(device, hr.head, pl2, { signal }), 'EDGE:00');
       const s2 = await selfPressedSign(device, pl2, { signal });
-      const t2 = await ticket(device, s2.seq, 'okt: 2', { signal });
+      const t2 = await receipt(device, s2.seq, 'okt: 2', { signal });
       assert.equal(await txStartFor(device, t2.head, agentPayload('okt budget message 3'), { signal }), 'EDGE:0D', 'TX start went through under a used-up budget');
       const kh = await catchUp(device, kept, b.chainSeq, { signal });
 
@@ -448,9 +468,9 @@ module.exports = function register({ it }, ctx) {
       assert.equal(JSON.stringify([at(s2.seq).decision, at(s2.seq).grantStep]), JSON.stringify([SELF_PRESS, 2]));
       /* the chain holds only Edge's own records: every sign link is a budget use (2026-10-06) */
       assert.ok(f.every((x) => x.op !== OP_SIGN || x.decision === SELF_PRESS), `a sign link that is not a budget use: ${trail(f)}`);
-      /* R16 bits: a self-press is STARTED and OWES */
-      const bits = (p) => at(p.seq).flags & (OWES_TICKET | STARTED);
-      for (const p of [s1, s2]) assert.equal(bits(p), OWES_TICKET | STARTED, `#${p.seq}: a self-press does not carry bits 4 and 5`);
+      /* R16: a self-press OWES; v1 sets no other bit above the budget's (no STARTED, no PREV_NO_RECEIPT) */
+      const bits = (p) => at(p.seq).flags & 0xfc;
+      for (const p of [s1, s2]) assert.equal(bits(p), OWES_RECEIPT, `#${p.seq}: a self-press must carry bit 4 and nothing above bit 1 but it`);
 
       /* each reveal belongs to G and to what was signed (the MAC is the host's to compute) */
       const spends = [s1, s2].map((s, i) => {
@@ -460,14 +480,14 @@ module.exports = function register({ it }, ctx) {
         return { step: i + 1, value, mac, subject };
       });
       assert.equal(JSON.stringify(grants.checkSpends(b.G, b.uses, spends)), '{"ok":true,"spent":2}');
-      const paired = tickets.pairTickets(links);
-      for (const s of [s1, s2]) assert.equal(paired.uses.find((u) => u.seq === s.seq).status, 'ticketed', `use #${s.seq}`);
+      const paired = receipts.pairReceipts(links);
+      for (const s of [s1, s2]) assert.equal(paired.uses.find((u) => u.seq === s.seq).status, 'receipted', `use #${s.seq}`);
 
       assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:00');
       assert.ok(!(await head(device, { signal })).live.includes(b.grantId), 'a revoked budget is still listed as live');
     });
 
-  it('edge: a held budget pays for nothing; resume takes a press and waits for owed tickets (R15a)',
+  it('edge: a held budget pays for nothing; resume takes a press and waits for owed receipts (R15a)',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
@@ -486,8 +506,8 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await txStartFor(device, (await head(device, { signal })).head, pl2, { signal }), 'EDGE:00');
       const p = await selfPressedSign(device, pl2, { signal });
       const resumeReq = (headBytes) => Buffer.concat([u32(b.grantId), Buffer.from(headBytes)]);
-      assert.equal(await edge(device, GRANT_RESUME, resumeReq((await head(device, { signal })).head), { signal, text: true }), 'EDGE:0C', 'resume went through while a ticket was owed');
-      const t = await ticket(device, p.seq, 'okt: paid while held', { signal });
+      assert.equal(await edge(device, GRANT_RESUME, resumeReq((await head(device, { signal })).head), { signal, text: true }), 'EDGE:0C', 'resume went through while a receipt was owed');
+      const t = await receipt(device, p.seq, 'okt: paid while held', { signal });
 
       /* R27: only on the head the host verified */
       assert.equal(await edge(device, GRANT_RESUME, resumeReq(new Uint8Array(32).fill(1)), { signal, text: true }), 'EDGE:0B', 'resume went through on a head the host never verified');
@@ -506,16 +526,16 @@ module.exports = function register({ it }, ctx) {
       const resume = ops.find((x) => x.op === OP_GRANT_RESUME);
       assert.ok(hold && hold.grantId === b.grantId && !(hold.flags & PRESS_OBSERVED), 'no grant-hold link (or it claims a press)');
       assert.ok(resume && resume.grantId === b.grantId && (resume.flags & PRESS_OBSERVED), 'no pressed grant-resume link');
-      /* the debt was the other budget's paid use: STARTED and OWES */
+      /* the debt was the other budget's paid use: it OWES */
       const pl = ops.find((x) => x.seq === p.seq);
-      assert.equal(JSON.stringify([pl.decision, pl.grantId, pl.flags & (OWES_TICKET | STARTED)]), JSON.stringify([SELF_PRESS, b2.grantId, OWES_TICKET | STARTED]), 'the debt is not the other budget\'s paid use');
+      assert.equal(JSON.stringify([pl.decision, pl.grantId, pl.flags & OWES_RECEIPT]), JSON.stringify([SELF_PRESS, b2.grantId, OWES_RECEIPT]), 'the debt is not the other budget\'s paid use');
       await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
-      await edge(device, GRANT_REVOKE, u32(b2.grantId), { signal, text: true }).catch(() => {}); /* used up: it may have ended at its ticket */
+      await edge(device, GRANT_REVOKE, u32(b2.grantId), { signal, text: true }).catch(() => {}); /* used up: it may have ended at its receipt */
     });
 
   /*
    * Only budget uses owe (spec session, 2026-10-06) and nothing TX starts while one is
-   * owed (R18), so the key owes at most one ticket at a time: the old "past 4 owed,
+   * owed (R18), so the key owes at most one receipt at a time: the old "past 4 owed,
    * the overflow" case cannot arise any more. One owed budget use is waived.
    */
   it('edge: WAIVE takes a press; a restart keeps the debt; an unpressed waive does nothing (R16, R18)',
@@ -528,7 +548,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await txStartFor(device, (await head(device, { signal })).head, plw, { signal }), 'EDGE:00');
       const uses = [await selfPressedSign(device, plw, { signal })];
       let h = await head(device, { signal });
-      assert.equal(JSON.stringify([h.owed, h.overflow]), '[1,0]', 'the budget use does not owe its ticket');
+      assert.equal(JSON.stringify([h.owed, h.overflow]), '[1,0]', 'the budget use does not owe its receipt');
       /* picked up now: a restart keeps only the latest link in RAM, as a host's copy would */
       const first = before.seq === SEQ_NONE ? 0 : before.seq + 1;
       const kept = await pickup(device, first, h.seq - first + 1, { signal });
@@ -558,30 +578,21 @@ module.exports = function register({ it }, ctx) {
       assert.ok(result.ok, `the library rejects the key's chain: ${JSON.stringify(result.failure)}`);
       const wl = chain.decodeLink(links[links.length - 1].link);
       log(trail([wl]));
-      assert.equal(JSON.stringify([wl.op, wl.decision, wl.flags & PRESS_OBSERVED, wl.grantId]), JSON.stringify([OP_TICKET, NEEDS_REVIEW, PRESS_OBSERVED, uses[0].seq]));
-      assert.bytes(Buffer.from(wl.subject), Buffer.from(tickets.waiveSubject(uses.map((u) => u.seq), false)), 'the waive subject does not list what it waived');
-      const paired = tickets.pairTickets(links);
+      assert.equal(JSON.stringify([wl.op, wl.decision, wl.flags & PRESS_OBSERVED, wl.grantId]), JSON.stringify([OP_RECEIPT, NEEDS_REVIEW, PRESS_OBSERVED, uses[0].seq]));
+      assert.bytes(Buffer.from(wl.subject), Buffer.from(receipts.waiveSubject(uses.map((u) => u.seq), false)), 'the waive subject does not list what it waived');
+      const paired = receipts.pairReceipts(links);
       assert.equal(paired.uses.find((u) => u.seq === uses[0].seq).status, 'waived', `use #${uses[0].seq}`);
     });
 
   /*
-   * The plugin backup section (DESIGN.md 6; the loader's 0xFB section) and R26,
-   * firmware.md verification row 5b. Edge keeps version, seq, head and the owed
-   * uses. One backup at head S, two real links after it (the host's copy holds
-   * them, each with the key's vouch tag), then three restores from that backup:
-   *   1. INVENTED links - a made-up ticket paying the backup's debt and a
-   *      made-up "pressed" waive - replay only TENTATIVELY (HEAD does not move);
-   *      VOUCH, CHECKPOINT and TX start are refused while restoring; a human press
-   *      writes onto the backup's head and closes replay; a forged tag commits
-   *      nothing (EDGE:11) and the LOSS covers everything since the backup - the
-   *      debt is still owed;
-   *   2. a power cut mid-replay leaves the backup's state and restoring; an
-   *      OLDER real vouch commits only up to its own point, the LOSS covers the
-   *      rest;
-   *   3. the whole copy with the newest real vouch commits it all: the newer
-   *      links' heads and debts come back, no LOSS.
+   * The plugin backup section (DESIGN.md 6; the loader's 0xFB section). Edge keeps
+   * version, seq, head and the owed uses. EVERY RESTORE CONTINUES THE LOG (Brad,
+   * 2026-10-08: "you cant reset bitcoin, so i cant reset our log"; restore-then-replay
+   * went as overkill): restored onto the very device that made it, the key draws a new
+   * salt - a new device id, never a second writer of the old chain - and its first
+   * link is a continue naming the backup's chain, seq and head, the debt carried.
    */
-  it('edge: a restore commits only replayed history the key vouched for - invented links, a power cut, an older vouch, the whole copy (R26)',
+  it('edge: a backup restored onto the device that made it continues the log - a new device id, a continue link first, the debt carried (R28)',
     async ({ device, assert, signal, log }) => {
       const { backup } = ctx.kit;
       const PASSPHRASE = 'okt edge backup passphrase 2026-10-02';
@@ -605,12 +616,7 @@ module.exports = function register({ it }, ctx) {
       await device.restart({ signal });
       await device.unlock(ctx.PINS.primary, { signal });
 
-      /*
-       * Only Edge's own records are links and only budget uses owe (2026-10-06): the
-       * debt at the backup is a budget's paid use; the links after it are that use's
-       * ticket and a new budget's opening; the key's own link while restoring is the
-       * real ticket for the owed use (TICKET is taken while restoring and closes replay).
-       */
+      /* only budget uses owe (2026-10-06): the debt at the backup is a budget's paid use */
       await openBudget(device, 2, 'okt: a debt before the backup', { signal });
       const plb = agentPayload('okt edge before the backup');
       assert.equal(await txStartFor(device, (await head(device, { signal })).head, plb, { signal }), 'EDGE:00');
@@ -648,114 +654,42 @@ module.exports = function register({ it }, ctx) {
       }));
       log(`kept for the older-firmware restore: ${keep}`);
 
-      /* two links the backup does not have - the host's copy holds them, each with the key's vouch tag */
+      const ownerBefore = (await statementOf(device, 'okt bench', { signal })).owner;
+      /* a link the backup does not have: lost with the restore - the continue link names the backup's head, not this one */
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      const vouchOf = (r) => ({ seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), tag: Buffer.from(r.subarray(36, 52)) });
-      const l1 = { seq: (await ticket(device, owedAtBackup.seq, 'okt: paid after the backup', { signal })).seq };
-      const v1 = vouchOf((await edge(device, VOUCH, null, { signal }))[0]);
-      const l2 = { seq: (await openBudget(device, 1, 'okt: opened after the backup', { signal })).chainSeq };
-      const v2 = vouchOf((await edge(device, VOUCH, null, { signal }))[0]);
-      const lost = await head(device, { signal });
-      assert.equal(JSON.stringify([l1.seq, l2.seq, v1.seq, v2.seq]), JSON.stringify([atBackup.seq + 1, atBackup.seq + 2, atBackup.seq + 1, atBackup.seq + 2]));
-      const [c1, c2] = await pickup(device, l1.seq, 2, { signal });
+      await receipt(device, owedAtBackup.seq, 'okt: paid after the backup', { signal });
+      assert.equal((await head(device, { signal })).seq, atBackup.seq + 1);
 
-      /* the restore - OKRESTORE is taken in config mode (as 10-backup-restore sends it) */
-      const restore = async (label) => {
-        await device.enterConfigMode(ctx.PINS.primary, { signal });
-        const gen = device.generation;
-        for (const payload of backup.toRestorePackets(parsed.data)) {
-          device.sendVendor({ msg: ctx.okmsg.MSG.OKRESTORE, payload });
-          await device.sleep(50, { signal });
-        }
-        await device.waitForReboot({ from: gen, timeoutMs: 90000, signal });
-        await device.waitReady({ signal });
-        await device.ensureUnlocked(ctx.PINS.primary, { signal });
-        const h = await head(device, { signal });
-        log(`${label}: head #${h.seq} owed ${h.owed} restoring ${h.restoring} (backup at #${atBackup.seq})`);
-        assert.equal(h.seq, atBackup.seq, `${label}: not back at the backup's head`);
-        assert.bytes(Buffer.from(h.head), Buffer.from(atBackup.head));
-        assert.equal(h.owed, atBackup.owed, `${label}: the restore changed what is owed`);
-        assert.equal(h.restoring, 1, `${label}: HEAD does not say the key is restoring`);
-        return h;
-      };
-      /* REPLAY: 47 link bytes (R3: through byte 46, the scope) + the first 8 of the head the copy stored after it */
-      /* R3 (2026-10-06): the version byte (link byte 63) follows the head's 8 bytes - as the lib's replay() sends it */
-      const replayReq = (link, headBytes) => Buffer.concat([Buffer.from(link).subarray(0, 47), Buffer.from(headBytes).subarray(0, 8), Buffer.from(link).subarray(63, 64)]);
-      const replay = (link, headBytes) => edge(device, REPLAY, replayReq(link, headBytes), { signal, text: true });
-      const replayDone = (seq, tag, newest, opts = {}) =>
-        edge(device, REPLAY_DONE, Buffer.concat([u32(seq), Buffer.from(tag), u32(newest)]), { signal, press: true, ...opts });
-
-      /* ---- 1. invented links ---- */
-      let after = await restore('restore 1');
-      assert.equal(await edge(device, VOUCH, null, { signal, text: true }), 'EDGE:0E', 'the key vouched while restoring');
-      assert.equal(await edge(device, CHECKPOINT, null, { signal, text: true }), 'EDGE:0E', 'the key signed a checkpoint while restoring');
-      assert.equal(await edge(device, LOSS, Buffer.concat([u32(0), u32(0)]), { signal, text: true }), 'EDGE:0E', 'a standalone LOSS went through while restoring');
-      assert.equal(await txStartFor(device, after.head, agentPayload('okt restoring'), { signal }), 'EDGE:0E', 'TX start went through while restoring');
-      assert.equal(await edge(device, GRANT_CREATE, grantRequest(1, sha256(Buffer.from('r')), after.head), { signal, text: true }), 'EDGE:0E', 'a budget opened while restoring');
-      assert.equal(await replay(c2.link, c2.head), 'EDGE:0F', 'a link out of order was replayed');
-      assert.equal(await replay(c1.link, new Uint8Array(32).fill(1)), 'EDGE:0F', 'a link that does not weld to the copy\'s head was replayed');
-      /* a made-up ticket that pays the backup's debt, and a made-up waive "pressed" by nobody - they weld, as any 64 bytes do */
-      const owedSeq = atBackup.seq;
-      const fakeTicket = chain.encodeLink({ seq: atBackup.seq + 1, op: OP_TICKET, decision: 0x00, subject: new Uint8Array(32), grantId: owedSeq });
-      const fh1 = chain.weld(atBackup.head, fakeTicket);
-      const fakeWaive = chain.encodeLink({ seq: atBackup.seq + 2, op: OP_TICKET, decision: NEEDS_REVIEW, flags: PRESS_OBSERVED, grantId: owedSeq, subject: tickets.waiveSubject([owedSeq], false) });
-      const fh2 = chain.weld(fh1, fakeWaive);
-      assert.equal(await replay(fakeTicket, fh1), 'EDGE:00');
-      assert.equal(await replay(fakeWaive, fh2), 'EDGE:00');
-      let h = await head(device, { signal });
-      assert.equal(JSON.stringify([h.seq, h.owed]), JSON.stringify([atBackup.seq, atBackup.owed]), 'a replay moved the real head or paid a debt before it was vouched');
-      /* a link of the key's own (the real ticket for the owed use) writes onto the backup's head, throws the tentative replay away and closes replay */
-      const own = { seq: (await ticket(device, owedSeq, 'okt: paid while restoring', { signal })).seq };
-      assert.equal(own.seq, atBackup.seq + 1, 'the key\'s own link is not on the backup\'s head');
-      assert.equal(await replay(c1.link, c1.head), 'EDGE:10', 'replay stayed open after the key wrote its own link');
-      /* and a forged tag commits nothing: EDGE:11, LOSS since the backup */
-      assert.equal(await replayDone(atBackup.seq + 2, Buffer.alloc(16, 7), lost.seq, { text: true }), 'EDGE:11', 'a forged vouch was taken');
-      h = await head(device, { signal });
-      assert.equal(h.restoring, 0, 'still restoring after REPLAY_DONE');
-      assert.equal(h.owed, atBackup.owed - 1, 'the real ticket written while restoring did not pay its debt (the invented ones were checked above)');
-      const [loss1] = await pickup(device, h.seq, 1, { signal });
-      const fl1 = chain.decodeLink(loss1.link);
-      assert.equal(JSON.stringify([fl1.op, fl1.grantId, fl1.flags & PRESS_OBSERVED]), JSON.stringify([11, own.seq + 1, PRESS_OBSERVED]), 'no pressed LOSS link after the unvouched replay');
-
-      /* ---- 2. a power cut mid-replay, then an older real vouch ---- */
-      await restore('restore 2');
-      assert.equal(await replay(c1.link, c1.head), 'EDGE:00');
-      await device.restart({ signal }); /* the power cut */
+      /* the restore onto THIS device (config mode) */
+      await device.enterConfigMode(ctx.PINS.primary, { signal });
+      const gen = device.generation;
+      for (const payload of backup.toRestorePackets(parsed.data)) {
+        device.sendVendor({ msg: ctx.okmsg.MSG.OKRESTORE, payload });
+        await device.sleep(50, { signal });
+      }
+      await device.waitForReboot({ from: gen, timeoutMs: 90000, signal });
+      await device.waitReady({ signal });
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      h = await head(device, { signal });
-      assert.equal(JSON.stringify([h.seq, h.restoring]), JSON.stringify([atBackup.seq, 1]), 'a power cut mid-replay did not leave the backup\'s state and restoring');
-      assert.equal(await replay(c1.link, c1.head), 'EDGE:00');
-      const [d2] = await replayDone(v1.seq, v1.tag, lost.seq);
-      const done2 = vouchOf(d2);
-      h = await head(device, { signal });
-      log(`restore 2: committed to #${l1.seq} on its older vouch; head #${h.seq} owed ${h.owed}`);
-      assert.equal(done2.seq, l1.seq + 1, 'the older vouch did not commit up to its own point and LOSS the rest');
-      assert.equal(h.owed, atBackup.owed - 1, 'the vouched link (the ticket) did not pay its debt');
-      const [k1, loss2] = await pickup(device, l1.seq, 2, { signal });
-      assert.bytes(Buffer.from(k1.head), Buffer.from(c1.head), 'the committed link is not the real one');
-      const fl2 = chain.decodeLink(loss2.link);
-      assert.equal(JSON.stringify([fl2.op, fl2.grantId, Buffer.from(fl2.subject).readUInt32LE(0)]), JSON.stringify([11, l2.seq, lost.seq]), 'the LOSS does not name #first-lost..#newest');
 
-      /* ---- 3. the whole copy, vouched by the newest tag ---- */
-      await restore('restore 3');
-      assert.equal(await replay(c1.link, c1.head), 'EDGE:00');
-      assert.equal(await replay(c2.link, c2.head), 'EDGE:00');
-      const [d3] = await replayDone(v2.seq, v2.tag, lost.seq);
-      const done3 = vouchOf(d3);
-      h = await head(device, { signal });
-      assert.equal(JSON.stringify([done3.seq, h.seq, h.restoring, h.owed]), JSON.stringify([l2.seq, l2.seq, 0, lost.owed]), 'the vouched replay did not commit the whole copy');
-      assert.bytes(Buffer.from(h.head), Buffer.from(lost.head), 'the restored head is not the real one');
+      const h = await head(device, { signal });
+      const id = deviceIdOf(await pubkey(device, { signal }));
+      log(`restored this device's own backup of ${Buffer.from(backupDeviceId).toString('hex')} at #${atBackup.seq}: now chain ${Buffer.from(id).toString('hex')} at #${h.seq}, owed ${h.owed}`);
+      assert.ok(!Buffer.from(id).equals(Buffer.from(backupDeviceId)), 'the restored key kept its old device id - it would write a second history of that chain');
+      assert.equal(h.seq, atBackup.seq + 1, 'the continue link is not the next seq after the backup\'s head');
+      assert.equal(h.owed, 1, 'the debt did not carry into the new chain');
+      const [c] = await pickup(device, h.seq, 1, { signal });
+      const fc = chain.decodeLink(c.link);
+      assert.equal(JSON.stringify([fc.op, fc.grantId, fc.flags]), JSON.stringify([16, 1, 0]), 'the first link is not a continue carrying one debt');
+      const want = sha256(Buffer.concat([Buffer.from('OKEDGE-CONTINUE-v1'), Buffer.from(backupDeviceId), u32(atBackup.seq), Buffer.from(atBackup.head), u32(owedAtBackup.seq)]));
+      assert.bytes(Buffer.from(fc.subject), want, 'the continue subject does not commit to the backup\'s chain, head and debt');
+      assert.bytes(Buffer.from(c.head), Buffer.from(chain.weld(chain.genesis(id), c.link)), 'the continue is not welded onto the new device\'s genesis');
+      /* the same OnlyKey secret: the owner key is the same before and after - that is how another device knows the log is yours */
+      const after2 = await statementOf(device, 'okt bench', { signal });
+      assert.ok(after2.ok && Buffer.from(after2.owner).equals(Buffer.from(ownerBefore)), 'the owner key changed with the restore - a restored key would no longer be recognised as yours');
+      await receipt(device, owedAtBackup.seq, 'okt: the carried debt paid on the new chain', { signal });
+      assert.equal((await head(device, { signal })).owed, 0, 'a receipt on the new chain did not pay the carried debt');
     });
 
-  /*
-   * R13a, THE SUBJECT PROOF (Brad, 2026-10-02): the token only works if the
-   * library's requestSubject of the bytes a host sends equals what the
-   * firmware hashes into pend.subject - SHA-256 of what it hands
-   * okcore_prime_user_confirmation. A mismatch would not fail safe so much as
-   * fail useless: every TX start would end in a press. So, per op type, a
-   * self-press must go through on a lib-computed token, and the link's
-   * subject (written by the firmware) must equal the lib's subject.
-   */
   it('edge: a TX start pays for exactly its request - RSA sign, ECC sign, RSA decrypt and a multi-packet sign each self-press, with the lib\'s subject in the link (R13a)',
     async ({ device, assert, signal, log }) => {
       const { pqc } = ctx.kit;
@@ -841,7 +775,7 @@ module.exports = function register({ it }, ctx) {
         assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.grantId]), JSON.stringify([c.op, SELF_PRESS, c.slot, b.grantId]), `${c.name}: not a self-press under the budget`);
         assert.bytes(Buffer.from(f.subject), Buffer.from(subject), `${c.name}: the firmware's subject is not the library's requestSubject`);
         assert.ok(c.check(out), `${c.name}: the result does not check out`);
-        await ticket(device, f.seq, `okt: ${c.name}`, { signal });
+        await receipt(device, f.seq, `okt: ${c.name}`, { signal });
       }
       await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
     });
@@ -852,11 +786,11 @@ module.exports = function register({ it }, ctx) {
    * composite PQC-PGP signature is TWO OKSIGNs to the RSA slot holding the
    * key: [0x00 | digest] -> Ed25519 (64 B), [0x01 | digest] -> ML-DSA-65
    * (3309 B). Under a budget covering that slot the first half is started and
-   * self-pressed, and OWES its ticket (R16); so the second half cannot be
-   * started (R18: nothing automatic while a ticket is owed) and goes through
+   * self-pressed, and OWES its receipt (R16); so the second half cannot be
+   * started (R18: nothing automatic while a receipt is owed) and goes through
    * only with a physical press - a pressed link, not paid by the budget.
    */
-  it('edge: a composite signature under a budget today - the first half is paid and owes its ticket, so the second half needs an ordinary press, no link (R19 not built)',
+  it('edge: a composite signature under a budget today - the first half is paid and owes its receipt, so the second half needs an ordinary press, no link (R19 not built)',
     async ({ device, assert, signal, log }) => {
       const { pqc } = ctx.kit;
       const RSA_SLOT = 1;
@@ -890,7 +824,7 @@ module.exports = function register({ it }, ctx) {
         return out.subarray(0, want);
       };
 
-      /* half 1, Ed25519: started, the budget pays, and it owes its ticket */
+      /* half 1, Ed25519: started, the budget pays, and it owes its receipt */
       const half1 = Buffer.concat([Buffer.from([0x00]), digest]);
       let h = await head(device, { signal });
       assert.equal(await txStartFor(device, h.head, half1, { signal }), 'EDGE:00', 'half 1: TX start refused');
@@ -900,13 +834,13 @@ module.exports = function register({ it }, ctx) {
       let after = await headPast(device, h.seq, { signal });
       const f1 = chain.decodeLink((await pickup(device, after.seq, 1, { signal }))[0].link);
       log(`half 1: #${f1.seq} decision ${f1.decision} flags ${f1.flags} grant ${f1.grantId}`);
-      assert.equal(JSON.stringify([f1.decision, f1.grantId, f1.flags & OWES_TICKET]), JSON.stringify([SELF_PRESS, b.grantId, OWES_TICKET]), 'half 1: not a self-press that owes its ticket');
+      assert.equal(JSON.stringify([f1.decision, f1.grantId, f1.flags & OWES_RECEIPT]), JSON.stringify([SELF_PRESS, b.grantId, OWES_RECEIPT]), 'half 1: not a self-press that owes its receipt');
 
-      /* half 2, ML-DSA-65: the TX start is refused while half 1's ticket is owed (R18) ... */
+      /* half 2, ML-DSA-65: the TX start is refused while half 1's receipt is owed (R18) ... */
       const half2 = Buffer.concat([Buffer.from([0x01]), digest]);
       h = await head(device, { signal });
       const tx2 = await txStartFor(device, h.head, half2, { signal });
-      assert.notEqual(tx2, 'EDGE:00', 'half 2 was started while half 1 owed its ticket');
+      assert.notEqual(tx2, 'EDGE:00', 'half 2 was started while half 1 owed its receipt');
       log(`half 2: TX start refused ${tx2}`);
       /*
        * ... so it waits for a physical press - an ORDINARY press (2026-10-06): not
@@ -923,8 +857,8 @@ module.exports = function register({ it }, ctx) {
       assert.equal(h2.seq, h.seq, 'half 2 (an ordinary press) wrote a link');
       assert.equal(h2.owed, 1, 'half 2 owes, or half 1\'s debt went');
 
-      /* half 1's ticket, then the budget ends */
-      await ticket(device, f1.seq, 'okt: composite half 1', { signal });
+      /* half 1's receipt, then the budget ends */
+      await receipt(device, f1.seq, 'okt: composite half 1', { signal });
       await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
     });
 
@@ -983,7 +917,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(JSON.stringify([f.decision, f.grantStep]), JSON.stringify([SELF_PRESS, 1]));
       const spend = { step: 1, value: l.reveal, subject: new Uint8Array(sha256(pl)), mac: new Uint8Array(crypto.createHmac('sha256', l.reveal).update(sha256(pl)).digest()) };
       assert.equal(JSON.stringify(grants.checkSpends(b.G, 1024, [spend])), '{"ok":true,"spent":1}', 'the first reveal of a 1024-use budget does not hash back to G');
-      await ticket(device, s1.seq, 'okt: 1 of 1024', { signal });
+      await receipt(device, s1.seq, 'okt: 1 of 1024', { signal });
       await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
     });
 
@@ -1046,225 +980,6 @@ module.exports = function register({ it }, ctx) {
       assert.bytes(Buffer.from(f.subject), Buffer.from(grants.agentSubject(key)));
     });
 
-  /*
-   * R20 (okedge sync phase 2, P2a, Brad 2026-10-05): the places a sync may send
-   * copies to are the KEY's list, added and removed only with a press, each a
-   * link. The subject is checked against Node's own SHA-256 of X || Y, not the
-   * lib's, so the two sides are not checking themselves.
-   */
-  /*
-   * Sync phase 2 (spec, 2026-10-05): every approved sync writes a sync link -
-   * op 20, the press flag, no ticket owed - and the KEY computes its subject
-   * from three parts: SHA256("OKEDGE-SYNC-v1" || SHA256(peer pubkey) || first
-   * || last || the copy's head after the merge || SHA256(Key Chain list) or
-   * zeros), checking the peer is on its own list. THE SAME VECTOR the lib pins
-   * (node-onlykey-lib test/edge-sync-phase2.test.js): peer = the P-256
-   * generator, #268..#269, head 0xab x 32, no Key Chain list ->
-   * b3966f6a90ea2c6ed3ba38af8614de19e54c322bbbbd30dbfa161dcbc3cb2470.
-   */
-  it('edge: SYNC computes the spec subject from its three parts (the shared vector), takes a press, owes no ticket; a stranger or a part out of order is refused',
-    async ({ device, assert, signal }) => {
-      await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      const G = Buffer.from('6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5', 'hex');
-      const sha = (b) => crypto.createHash('sha256').update(b).digest();
-      const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
-      const part = (n, bytes, opts) => edge(device, SYNC, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
-      const list = async () => { const [h, ...slots] = await edge(device, PEER_LIST, null, { signal, reports: 5 }); return slots.slice(0, h[0]).map((r) => Buffer.from(r.subarray(0, 64)).toString('hex')); };
-      /* the vector's place on the list (removed again at the end) */
-      if (!(await list()).includes(G.toString('hex'))) {
-        assert.equal(await edge(device, PEER_ADD, Buffer.concat([Buffer.of(0), G.subarray(0, 32)]), { signal, text: true }), 'EDGE:00');
-        await edge(device, PEER_ADD, Buffer.concat([Buffer.of(1), G.subarray(32)]), { signal, press: true });
-      }
-      /* a place NOT on the list, a part out of order, first > last: refused, nothing staged */
-      assert.equal(await part(0, Buffer.concat([sha(Buffer.alloc(64, 7)), u32(268), u32(269)]), { text: true }), 'EDGE:16', 'a stranger was not refused');
-      assert.equal(await part(1, Buffer.alloc(32, 0xab), { text: true }), 'EDGE:17', 'a part out of order was not refused');
-      assert.equal(await part(0, Buffer.concat([sha(G), u32(269), u32(268)]), { text: true }), 'EDGE:12', 'first > last was not refused');
-      const before = await head(device, { signal });
-      /* unpressed: nothing linked */
-      assert.equal(await part(0, Buffer.concat([sha(G), u32(268), u32(269)]), { text: true }), 'EDGE:00');
-      assert.equal(await part(1, Buffer.alloc(32, 0xab), { text: true }), 'EDGE:00');
-      await part(2, Buffer.alloc(32), { text: true }).catch(() => null);
-      await device.sleep(26000, { signal });
-      assert.equal((await head(device, { signal })).seq, before.seq, 'an unpressed SYNC wrote a link');
-      /* pressed: the link carries the vector */
-      assert.equal(await part(0, Buffer.concat([sha(G), u32(268), u32(269)]), { text: true }), 'EDGE:00');
-      assert.equal(await part(1, Buffer.alloc(32, 0xab), { text: true }), 'EDGE:00');
-      const [r] = await part(2, Buffer.alloc(32), { press: true });
-      const [l] = await pickup(device, r.readUInt32LE(0), 1, { signal });
-      const f = chain.decodeLink(l.link);
-      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([20, APPROVE, 0, PRESS_OBSERVED, 0]), 'the sync link is not the spec layout');
-      assert.equal(Buffer.from(f.subject).toString('hex'), 'b3966f6a90ea2c6ed3ba38af8614de19e54c322bbbbd30dbfa161dcbc3cb2470', 'the key subject is not the shared vector');
-      assert.equal((await head(device, { signal })).owed, before.owed, 'a sync link made the key owe a ticket');
-      const at = (await list()).indexOf(G.toString('hex'));
-      await edge(device, PEER_REMOVE, Buffer.of(at), { signal, press: true });
-    });
-
-  /*
-   * R29 (P2b): another key that is yours, paired with a press. Subject =
-   * SHA256("OKEDGE-SIBLING-v1" || key X || Y || device id), computed here with
-   * node:crypto, not the lib. The key refuses itself, an id that is not the
-   * key's own, a known sibling; no press, no link; removal is a press too.
-   */
-  it('edge: SIBLING_ADD / SIBLING_REMOVE take a press and link the sibling (R29); itself, a wrong id, a known key are refused',
-    async ({ device, assert, signal }) => {
-      await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      const sha = (...b) => crypto.createHash('sha256').update(Buffer.concat(b)).digest();
-      const idOf = (key) => sha(Buffer.from('OKEDGE-DEVICE-v1'), key).subarray(0, 16);
-      const part = (n, bytes, opts) => edge(device, SIBLING_ADD, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
-      const add = async (key, id, opts) => {
-        assert.equal(await part(0, key.subarray(0, 32), { text: true }), 'EDGE:00', 'part 0 (X) was not staged');
-        return part(1, Buffer.concat([key.subarray(32), id]), opts);
-      };
-      const list = async () => {
-        const [h, ...slots] = await edge(device, SIBLING_LIST, null, { signal, reports: 5 });
-        return slots.slice(0, h[0]).map((r) => Buffer.from(r.subarray(0, 64)).toString('hex'));
-      };
-      for (let l = await list(); l.length; l = await list()) await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, press: true });
-      const e = crypto.createECDH('prime256v1'); e.generateKeys();
-      const key = e.getPublicKey().subarray(1);
-      const [own] = await edge(device, PUBKEY, null, { signal });
-      const self = Buffer.from(own.subarray(0, 64));
-      assert.equal(await add(self, idOf(self), { text: true }), 'EDGE:15', 'the key took itself as a sibling');
-      assert.equal(await add(key, Buffer.alloc(16, 9), { text: true }), 'EDGE:15', 'an id that is not the key\'s own was taken');
-      const before = await head(device, { signal });
-      await add(key, idOf(key), { text: true }).catch(() => null);
-      await device.sleep(26000, { signal });
-      assert.equal((await head(device, { signal })).seq, before.seq, 'an unpressed SIBLING_ADD wrote a link');
-      const [r] = await add(key, idOf(key), { press: true });
-      const [l] = await pickup(device, r.readUInt32LE(0), 1, { signal });
-      const f = chain.decodeLink(l.link);
-      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([17, APPROVE, 0, PRESS_OBSERVED, 0]), 'the sibling link is not the R29 layout');
-      assert.bytes(Buffer.from(f.subject), sha(Buffer.from('OKEDGE-SIBLING-v1'), key, idOf(key)));
-      assert.equal(JSON.stringify(await list()), JSON.stringify([key.toString('hex')]));
-      assert.equal(await add(key, idOf(key), { text: true }), 'EDGE:18', 'a known sibling was not refused');
-      const [rr] = await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, press: true });
-      const [lr] = await pickup(device, rr.readUInt32LE(0), 1, { signal });
-      const fr = chain.decodeLink(lr.link);
-      assert.equal(JSON.stringify([fr.op, fr.flags & PRESS_OBSERVED]), JSON.stringify([18, PRESS_OBSERVED]), 'the sibling-remove link is not the R29 layout');
-      assert.bytes(Buffer.from(fr.subject), sha(Buffer.from('OKEDGE-SIBLING-v1'), key, idOf(key)));
-      assert.equal((await list()).length, 0);
-      assert.equal(await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, text: true }), 'EDGE:1A');
-    });
-
-  /*
-   * R30 (P2c): an ANCHOR commits to a sibling's SIGNED checkpoint. The sibling
-   * here is a node:crypto P-256 key, paired with a press; its checkpoint is
-   * signed with node:crypto over SHA256("OKEDGE-CKPT-v1" || its id || seq ||
-   * head) - the same message the key signs its own. The key checks it (a bad
-   * one is EDGE:1B, nothing waits), then a press writes op 19, slot = the
-   * sibling's index, grant_id = its seq, subject = SHA256("OKEDGE-ANCHOR-v1" ||
-   * id || seq || head || signature). No sibling there is EDGE:1A, parts out of
-   * order EDGE:17.
-   */
-  it('edge: ANCHOR checks the sibling\'s signed checkpoint, takes a press and links op 19 (R30); a bad signature, no sibling, a part out of order are refused',
-    async ({ device, assert, signal }) => {
-      await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      const sha = (...b) => crypto.createHash('sha256').update(Buffer.concat(b)).digest();
-      const idOf = (key) => sha(Buffer.from('OKEDGE-DEVICE-v1'), key).subarray(0, 16);
-      const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
-      const list = async () => {
-        const [h, ...slots] = await edge(device, SIBLING_LIST, null, { signal, reports: 5 });
-        return slots.slice(0, h[0]).map((r) => Buffer.from(r.subarray(0, 64)).toString('hex'));
-      };
-      for (let l = await list(); l.length; l = await list()) await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, press: true });
-      const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-      const key = publicKey.export({ format: 'der', type: 'spki' }).subarray(-64);
-      const id = idOf(key);
-      const add = (n, bytes, opts) => edge(device, SIBLING_ADD, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
-      assert.equal(await add(0, key.subarray(0, 32), { text: true }), 'EDGE:00');
-      await add(1, Buffer.concat([key.subarray(32), id]), { press: true });
-      assert.equal((await list()).length, 1, 'the sibling was not paired');
-      const seq = 41;
-      const ckHead = crypto.randomBytes(32);
-      const sig = crypto.sign('sha256', Buffer.concat([Buffer.from('OKEDGE-CKPT-v1'), id, u32(seq), ckHead]), { key: privateKey, dsaEncoding: 'ieee-p1363' });
-      const part = (n, bytes, opts) => edge(device, ANCHOR, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
-      const send = async (index, signature, opts) => {
-        assert.equal(await part(0, Buffer.concat([Buffer.of(index), u32(seq), ckHead]), { text: true }), 'EDGE:00', 'part 0 was not staged');
-        assert.equal(await part(1, signature.subarray(0, 32), { text: true }), 'EDGE:00', 'part 1 was not staged');
-        return part(2, signature.subarray(32), opts);
-      };
-      assert.equal(await part(0, Buffer.concat([Buffer.of(1), u32(seq), ckHead]), { text: true }), 'EDGE:1A', 'an index with no sibling was taken');
-      assert.equal(await part(2, sig.subarray(32), { text: true }), 'EDGE:17', 'a last part with nothing staged was taken');
-      const bad = Buffer.from(sig); bad[5] ^= 1;
-      const before = await head(device, { signal });
-      assert.equal(await send(0, bad, { text: true }), 'EDGE:1B', 'a bad checkpoint signature was taken');
-      assert.equal((await head(device, { signal })).seq, before.seq, 'a refused anchor wrote a link');
-      const [r] = await send(0, sig, { press: true });
-      const [l] = await pickup(device, r.readUInt32LE(0), 1, { signal });
-      const fl = chain.decodeLink(l.link);
-      assert.equal(JSON.stringify([fl.op, fl.decision, fl.slot, fl.flags & PRESS_OBSERVED, fl.grantId]), JSON.stringify([19, APPROVE, 0, PRESS_OBSERVED, seq]), 'the anchor link is not the R30 layout');
-      assert.bytes(Buffer.from(fl.subject), sha(Buffer.from('OKEDGE-ANCHOR-v1'), id, u32(seq), ckHead, sig));
-      await edge(device, SIBLING_REMOVE, Buffer.of(0), { signal, press: true });
-      assert.equal((await list()).length, 0);
-    });
-
-  it('edge: PEER_ADD / PEER_REMOVE take a press and link the peer; PEER_LIST survives a restart; no press, no peer (R20)',
-    async ({ device, assert, signal }) => {
-      await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      const list = async () => {
-        const [h, ...slots] = await edge(device, PEER_LIST, null, { signal, reports: 5 });
-        return { n: h[0], k: h[1], max: h[2], keys: slots.slice(0, h[0]).map((r) => Buffer.from(r.subarray(0, 64)).toString('hex')) };
-      };
-      /* start from no peers: a run before this one may have left some */
-      for (let l = await list(); l.n > 0; l = await list()) await edge(device, PEER_REMOVE, Buffer.of(0), { signal, press: true });
-      const ecdh = () => { const e = crypto.createECDH('prime256v1'); e.generateKeys(); return e; };
-      const a = ecdh(), b = ecdh();
-      const xy = (e) => e.getPublicKey().subarray(1);
-      /* two parts: X staged (no press), then Y and the press */
-      const part = (n, bytes, opts) => edge(device, PEER_ADD, Buffer.concat([Buffer.of(n), bytes]), { signal, ...opts });
-      const add = async (e, opts) => {
-        assert.equal(await part(0, xy(e).subarray(0, 32), { text: true }), 'EDGE:00', 'part 0 (X) was not staged');
-        return part(1, xy(e).subarray(32), opts);
-      };
-      const before = await head(device, { signal });
-      /* nobody presses: past the key's 25 s wait nothing is linked and nothing listed */
-      await add(a, { text: true }).catch(() => null);
-      await device.sleep(26000, { signal });
-      assert.equal((await head(device, { signal })).seq, before.seq, 'an unpressed PEER_ADD wrote a link');
-      assert.equal((await list()).n, 0, 'an unpressed PEER_ADD listed a peer');
-      const [r] = await add(a, { press: true });
-      const [l] = await pickup(device, r.readUInt32LE(0), 1, { signal });
-      const f = chain.decodeLink(l.link);
-      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([9, APPROVE, 0, PRESS_OBSERVED, 0]), 'the peer-add link is not the spec layout');
-      assert.bytes(Buffer.from(f.subject), crypto.createHash('sha256').update(xy(a)).digest());
-      assert.equal(await add(a, { text: true }), 'EDGE:14', 'the same peer twice was not refused');
-      assert.equal(await part(0, Buffer.alloc(32, 0xee), { text: true }), 'EDGE:00');
-      assert.equal(await part(1, Buffer.alloc(32, 0xee), { text: true }), 'EDGE:15', 'a point off the curve was not refused');
-      assert.equal(await part(1, xy(b).subarray(32), { text: true }), 'EDGE:15', 'a Y without its X was not refused');
-      /*
-       * The spec (2026-10-05): the press binds the WHOLE key - a new X while
-       * another key waits for its press resets it. Key c's X and Y go in, its
-       * press is pending; b's X arrives, then b's Y and the press: the link is
-       * b's, and c is never listed.
-       */
-      const c = ecdh();
-      assert.equal(await part(0, xy(c).subarray(0, 32), { text: true }), 'EDGE:00');
-      device.sendVendor({ msg: OKEDGE, slot: PEER_ADD, payload: Buffer.concat([Buffer.of(1), xy(c).subarray(32)]) });
-      await device.sleep(800, { signal });
-      const [rb] = await add(b, { press: true });
-      const [lb] = await pickup(device, rb.readUInt32LE(0), 1, { signal });
-      assert.bytes(Buffer.from(chain.decodeLink(lb.link).subject), crypto.createHash('sha256').update(xy(b)).digest());
-      await device.restart({ signal });
-      await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      const kept = await list();
-      assert.equal(JSON.stringify([kept.n, kept.k, kept.max]), JSON.stringify([2, 0, 4]), 'the peer list did not survive a restart');
-      assert.equal(JSON.stringify(kept.keys), JSON.stringify([xy(a), xy(b)].map((k) => k.toString('hex'))));
-      const [rr] = await edge(device, PEER_REMOVE, Buffer.of(0), { signal, press: true });
-      const [lr] = await pickup(device, rr.readUInt32LE(0), 1, { signal });
-      const fr = chain.decodeLink(lr.link);
-      assert.equal(JSON.stringify([fr.op, fr.slot, fr.flags & PRESS_OBSERVED]), JSON.stringify([10, 0, PRESS_OBSERVED]), 'the peer-remove link is not the spec layout');
-      assert.bytes(Buffer.from(fr.subject), crypto.createHash('sha256').update(xy(a)).digest());
-      assert.equal(JSON.stringify((await list()).keys), JSON.stringify([xy(b).toString('hex')]), 'the later peer did not move down');
-      assert.equal(await edge(device, PEER_REMOVE, Buffer.of(3), { signal, text: true }), 'EDGE:16');
-      await edge(device, PEER_REMOVE, Buffer.of(0), { signal, press: true });
-    });
-
-  /*
-   * R11a (2026-10-02, found when Brad's GitHub login signed on slot 201): a
-   * budget on a derived code covers ONE identity. A budget for the test
-   * identity never pays for, or makes owe, a use of another identity on the
-   * same code - Brad's own logins on 201 stay his.
-   */
   it('edge: a budget on a derived code covers one identity - another identity on the same code is neither paid for nor made to owe (R11a)',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
@@ -1296,18 +1011,24 @@ module.exports = function register({ it }, ctx) {
       const hd = await head(device, { signal });
       assert.equal(JSON.stringify([hd.seq, hd.owed]), JSON.stringify([hb.seq, 0]), 'a direct press (either identity) wrote a link or owes');
 
-      /* a TX start for another identity's request: the budget cannot pay for it - refused (R13a), never self-pressed or pressed */
+      /*
+       * a TX start for another identity's request: no budget pays it, so the sign is an
+       * ordinary request - the press decides, no link, nothing owed (Brad, 2026-10-08:
+       * refusing it was a misreading of "budget or no go"). The TX start is spent there:
+       * our own TX start right after still works.
+       */
       const plOther = payloadAs('okt other identity, started', other);
       assert.equal(await txStartFor(device, hd.head, plOther, { signal }), 'EDGE:00');
-      assert.equal(await refusedSign(device, plOther, { signal }), 'EDGE:0D', 'a TX start for another identity\'s request was not refused');
-      assert.equal((await head(device, { signal })).seq, hd.seq, 'the refused sign wrote a link');
+      await sendDirect('theirs, started', plOther);
+      const ho = await head(device, { signal });
+      assert.equal(JSON.stringify([ho.seq, ho.owed]), JSON.stringify([hd.seq, 0]), 'an unpaid started sign wrote a link or owes');
       const pl = agentPayload('okt our identity, started');
       assert.equal(await txStartFor(device, (await head(device, { signal })).head, pl, { signal }), 'EDGE:00');
       const paid = await selfPressedSign(device, pl, { signal });
       const fp = await fieldsOf(paid.seq);
       log(trail([fp]));
       assert.equal(JSON.stringify([fp.decision, fp.grantId]), JSON.stringify([SELF_PRESS, b.grantId]), 'the budget did not pay for its own identity');
-      await ticket(device, paid.seq, 'okt: ours, started', { signal });
+      await receipt(device, paid.seq, 'okt: ours, started', { signal });
       assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:00');
     });
 
@@ -1334,11 +1055,11 @@ module.exports = function register({ it }, ctx) {
    * libstack), the phone's side in-process (approve.approveRequest), presses
    * by the emulator. A scratch repo: `git commit -S` inside `okedge exec`, an
    * ssh sign on the exec's endpoint bound to a pinned host - each a self-press
-   * paid by the budget, each ticketed. And the must-fail-safely checks
-   * (daily-loop §3): the shared endpoint is a press, a skipped ticket and a
+   * paid by the budget, each receipted. And the must-fail-safely checks
+   * (daily-loop §3): the shared endpoint is a press, a skipped receipt and a
    * stale head refuse the next exec before it runs, Hold refuses it too.
    */
-  it('edge: the agent service on the emulator - a signed commit and an ssh sign paid by the budget and ticketed; there is no shared endpoint; skipped ticket, stale head and Hold refuse the next exec',
+  it('edge: the agent service on the emulator - a signed commit and an ssh sign paid by the budget and receipted; there is no shared endpoint; skipped receipt, stale head and Hold refuse the next exec',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
@@ -1399,7 +1120,7 @@ module.exports = function register({ it }, ctx) {
         assert.equal(r.code, 0, r.lines.join('\n'));
         let head = r.lines.find((l) => l.startsWith('head = ')).slice(7);
 
-        /* A4: a signed commit inside okedge exec - a self-press paid by the budget, then its ticket */
+        /* A4: a signed commit inside okedge exec - a self-press paid by the budget, then its receipt */
         const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-edge-repo-'));
         execFileSync('git', ['-C', repo, 'init', '-q']);
         execFileSync('git', ['-C', repo, 'config', 'user.name', 'Claude (okt agent)']);
@@ -1410,7 +1131,7 @@ module.exports = function register({ it }, ctx) {
         assert.equal(JSON.stringify([f.decision, f.grantId !== 0]), JSON.stringify([codes.DECISION.SELF_PRESS, true]), 'the commit signature was not paid by the budget');
         assert.match(execFileSync('git', ['-C', repo, 'cat-file', 'commit', 'HEAD']).toString(), /\ngpgsig -----BEGIN PGP SIGNATURE-----/);
         let seq = Number(/link #(\d+)/.exec(r.lines.find((l) => l.startsWith('signed:')))[1]);
-        r = await run(['ticket', String(seq), '--msg', 'committed okt: signed by the agent']);
+        r = await run(['receipt', String(seq), '--msg', 'committed okt: signed by the agent']);
         head = r.lines.find((l) => l.startsWith('head = ')).slice(7);
 
         /* A4: an ssh sign on the exec's endpoint, bound to the pinned host */
@@ -1443,11 +1164,11 @@ module.exports = function register({ it }, ctx) {
         f = await lastLink();
         assert.equal(f.decision, codes.DECISION.SELF_PRESS);
 
-        /* must fail safely: a skipped ticket refuses the next exec before it runs */
-        r = await run(['exec', '--head', svc.agent.budget().head(), '--reason', 'skipped ticket', '--', 'git', '--version']);
+        /* must fail safely: a skipped receipt refuses the next exec before it runs */
+        r = await run(['exec', '--head', svc.agent.budget().head(), '--reason', 'skipped receipt', '--', 'git', '--version']);
         assert.equal(r.code, 1);
-        assert.match(r.lines.join('\n'), /ticket owed for #/);
-        r = await run(['ticket', String(sshLink.seq), '--msg', 'pushed okt']);
+        assert.match(r.lines.join('\n'), /receipt owed for #/);
+        r = await run(['receipt', String(sshLink.seq), '--msg', 'pushed okt']);
         head = r.lines.find((l) => l.startsWith('head = ')).slice(7);
 
         /* there is no shared endpoint (CLI.md §4, 2026-10-06): the agent's key is reached only through an exec, under the budget */
@@ -1482,9 +1203,9 @@ module.exports = function register({ it }, ctx) {
    */
   it('edge: a backup from another device starts this device\'s own chain - a continue link first, the debts carried, never a second writer (R28)',
     async ({ device, assert, signal, log, skip }) => {
-      /* read when this file was loaded: the R26 test above has since kept THIS run's backup */
+      /* read when this file was loaded: the same-device restore test above has since kept THIS run's backup */
       const kept = keptAtLoad;
-      if (!kept) skip('no backup kept by an earlier run yet - the R26 test keeps one; run this file again');
+      if (!kept) skip('no backup kept by an earlier run yet - the same-device restore test keeps one; run this file again');
       if (!kept.edge) skip('the kept backup predates R28 (it does not name its chain) - run this file again');
       const from = { deviceId: Buffer.from(kept.edge.deviceId, 'hex'), seq: kept.edge.seq, head: Buffer.from(kept.edge.head, 'hex'), owed: kept.edge.owed };
 
@@ -1492,7 +1213,7 @@ module.exports = function register({ it }, ctx) {
       const mine = deviceIdOf(await pubkey(device, { signal }));
       assert.ok(!Buffer.from(mine).equals(from.deviceId), 'this run has the same Edge device id as the last one - the salt is not per device');
 
-      /* the backup key the backup was made under, then the restore (config mode, as R26's) */
+      /* the backup key the backup was made under, then the restore (config mode) */
       await device.enterConfigMode(ctx.PINS.primary, { signal });
       let since = device.mark(ctx.IFACE.VENDOR);
       device.sendVendor({
@@ -1516,10 +1237,9 @@ module.exports = function register({ it }, ctx) {
       const h = await head(device, { signal });
       const pub = await pubkey(device, { signal });
       const id = deviceIdOf(pub);
-      log(`restored a backup of chain ${kept.edge.deviceId} at #${from.seq} (owed ${from.owed.join(',')}): now chain ${Buffer.from(id).toString('hex')} at #${h.seq}, owed ${h.owed}, restoring ${h.restoring}`);
+      log(`restored a backup of chain ${kept.edge.deviceId} at #${from.seq} (owed ${from.owed.join(',')}): now chain ${Buffer.from(id).toString('hex')} at #${h.seq}, owed ${h.owed}`);
       assert.ok(!Buffer.from(id).equals(from.deviceId), 'the restored key took the backup\'s chain id - it would be a second writer of that chain');
       /* not "the same id as before": a restore brings back the backup's K132, and the id is HKDF(this device's salt, K132) - what must hold is that it is never the backup's chain (checked above) */
-      assert.equal(h.restoring, 0, 'another device\'s backup put the key into R26 restoring - replay is for its own chain only');
       assert.equal(h.seq, from.seq + 1, 'the continue link is not the next seq after the backup\'s head');
       assert.equal(h.owed, from.owed.length, 'the debts did not carry into the new chain');
 

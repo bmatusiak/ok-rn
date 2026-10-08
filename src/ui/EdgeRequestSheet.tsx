@@ -30,19 +30,12 @@ const REFUSAL_TEXT: Record<string, string> = {
   declined: 'You declined. The agent was told "declined".',
   timeout: 'Nobody answered in time. The agent was told "timeout". Until you close this, new requests are refused without asking - nobody is here to answer them.',
   copy_unverified: 'This phone\'s copy of the chain does not verify, so nothing was sent to the key. The agent was told "copy_unverified".',
-  ticket_owed: 'A ticket is owed for an earlier use. The agent was told "ticket_owed".',
-  restoring: 'The key is finishing a restore. The agent was told "restoring".',
+  receipt_owed: 'A receipt is owed for an earlier use. The agent was told "receipt_owed".',
   invalid: 'The request could not be a budget. The agent was told "invalid".',
   busy: 'Another request was on the phone. The agent was told "busy" and may ask again.',
 };
 
-/* a place that keeps copies is a computer, not an agent (Brad, 2026-10-05) */
-const refusalText = (refusal: string, kind: string) => {
-  const t = REFUSAL_TEXT[refusal] ?? `Refused: ${refusal}`;
-  if (kind === 'anchor') return t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'Nothing could be anchored');
-  if (kind === 'sibling') return t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The keys could not be paired');
-  return kind === 'peer' || kind === 'sync' ? t.replace(/The agent was told/g, 'The computer was told').replace(/The request could not be a budget/, 'The computer could not be added') : t;
-};
+const refusalText = (refusal: string, _kind: string) => REFUSAL_TEXT[refusal] ?? `Refused: ${refusal}`;
 
 const opName = (op: string) => (op === 'sign' ? 'Sign' : op === 'decrypt' ? 'Decrypt' : op);
 
@@ -82,7 +75,7 @@ const mmss = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padSta
 /*
  * AFTER APPROVE (Brad, 2026-10-07): the new budget's progress card - the Edge tab's
  * own BudgetCard, live: it refreshes on every check of the chain, so its uses and
- * tickets move while the sheet is open - instead of a Close button. Tapped, it
+ * receipts move while the sheet is open - instead of a Close button. Tapped, it
  * opens the budget's details on the Edge tab; Back closes the sheet as before.
  */
 function ApprovedBudget({grantId}: {grantId: number}) {
@@ -174,55 +167,6 @@ export function EdgeRequestSheet() {
                   Check the computer prints the same key. Registering takes a press on the key, which records it in the chain. Once registered it may ask for budgets; each budget still shows here and needs your press. Until then its requests are refused unread.
                 </Text>
               </>
-            ) : a.kind === 'sync' ? (
-              <>
-                <Text style={[styles.title, {color: theme.warn}]}>Sync this phone's copy?</Text>
-                <Text style={styles.op}>{`From ${a.name}`}</Text>
-                <Text style={styles.op}>{`Key ${a.fingerprint}`}</Text>
-                {a.count ? (
-                  <Text style={styles.op}>
-                    {`${a.count} link${a.count === 1 ? '' : 's'}: ${a.ranges.map(([x, y]) => (x === y ? `#${x}` : `#${x}-#${y}`)).join(', ')}`}
-                  </Text>
-                ) : null}
-                {a.keychainIn || a.keychainOut ? (
-                  <Text style={styles.op}>
-                    {`Key Chain: ${a.keychainIn || 0} entr${a.keychainIn === 1 ? 'y' : 'ies'} to this phone, ${a.keychainOut || 0} to the computer (public keys only)`}
-                  </Text>
-                ) : null}
-                <Text style={styles.dim}>
-                  Links this phone's copy lacks, checked against the key before you see this, and the Key Chain lists merged both ways. A press records the sync in the chain. It brings history and public keys only - never budgets, debts, registrations or what is marked yours.
-                </Text>
-              </>
-            ) : a.kind === 'anchor' ? (
-              <>
-                <Text style={[styles.title, {color: theme.warn}]}>Anchor another key's chain?</Text>
-                <Text style={[styles.code, styles.codeName]} numberOfLines={1} adjustsFontSizeToFit>{a.name}</Text>
-                <Text style={styles.op}>{`Its chain up to #${a.seq}, checked against its signed checkpoint${a.count ? ` · ${a.count} new link${a.count === 1 ? '' : 's'} to keep` : ''}`}</Text>
-                <Text style={styles.dim}>{`Its key ${requestLib.fingerprint(a.sibling)} · from the computer ${a.place}`}</Text>
-                <Text style={styles.dim}>
-                  A press records, in this key's chain, that this phone has seen that chain up to there. If the other key ever goes back or changes what it showed, this phone will say so. History only - never budgets, debts or registrations.
-                </Text>
-              </>
-            ) : a.kind === 'sibling' ? (
-              <>
-                <Text style={[styles.title, {color: theme.warn}]}>Pair with another key of yours?</Text>
-                {/* the other device's name, then the code, each alone on its line and as wide as the sheet: the person reads them across two phones (Brad, 2026-10-05) */}
-                <Text style={[styles.code, styles.codeName]} numberOfLines={1} adjustsFontSizeToFit>{a.name}</Text>
-                <Text style={styles.code} numberOfLines={1} adjustsFontSizeToFit accessibilityLabel={`Code ${a.code}`}>{a.code}</Text>
-                <Text style={styles.dim}>{`Its key ${requestLib.fingerprint(a.sibling)} · asked by the computer ${a.place}`}</Text>
-                <Text style={styles.dim}>
-                  The other phone shows a code too. Pair only if both show the same code - a different code means a key was changed on the way. Pairing takes a press on the key, which records it in the chain. Paired keys are not in the backup: a restored key pairs again.
-                </Text>
-              </>
-            ) : a.kind === 'peer' ? (
-              <>
-                <Text style={[styles.title, {color: theme.warn}]}>Keep copies on this computer?</Text>
-                <Text style={styles.op}>{a.name}</Text>
-                <Text style={styles.op}>{`Key ${a.fingerprint}`}</Text>
-                <Text style={styles.dim}>
-                  Check the computer prints the same key. Adding it takes a press on the key, which records it in the chain. From then on a sync may send copies of the chain there - only to places added this way. A copy never carries budgets, debts or registrations.
-                </Text>
-              </>
             ) : (
               <>
                 <Text style={[styles.title, {color: theme.warn}]}>
@@ -272,14 +216,14 @@ export function EdgeRequestSheet() {
             ) : null}
             {/* the tap registered: say so at once - the phone syncs and checks its copy before the key asks for the press (the 'lag', Brad 2026-10-04) */}
             {s.phase === 'ask' && acting ? (
-              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : a.kind === 'peer' ? 'Adding - getting the key ready…' : a.kind === 'sync' ? 'Syncing - getting the key ready…' : a.kind === 'sibling' ? 'Pairing - getting the key ready…' : a.kind === 'anchor' ? 'Anchoring - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
+              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
             ) : null}
             {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
             {s.phase === 'ask' && !confirming && !acting ? (
               <View style={styles.row}>
                 <Btn
                   large
-                  title={a.kind === 'register' ? 'Register' : a.kind === 'peer' ? 'Add' : a.kind === 'sync' ? 'Sync' : a.kind === 'sibling' ? 'Pair' : a.kind === 'anchor' ? 'Anchor' : 'Approve'}
+                  title={a.kind === 'register' ? 'Register' : 'Approve'}
                   tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
                   disabled={off || refusal !== null || (a.kind === 'request' && !!a.blocked)}
                   onPress={consent(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}

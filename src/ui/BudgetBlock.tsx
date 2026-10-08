@@ -8,7 +8,7 @@
  * What it shows, at a glance: which budget, what for, for whom; the links it
  * spans (#first-#last); when it opened and how long it lasted, against its
  * lifetime; how much it spent (a bar, the count, the %), each identity's own
- * count; whether every use got its ticket; how it ended. Tap it for its links.
+ * count; whether every use got its receipt; how it ended. Tap it for its links.
  *
  * Times are this phone's clock (the chain carries none); "time unknown" when
  * the phone did not see it end.
@@ -42,7 +42,7 @@ function Bar({used, total}: {used: number; total: number}) {
 export function BudgetBlock({b, status, onPress}: {b: EdgeBudget; status?: BudgetStatus; onPress?: () => void}) {
   const pct = b.uses ? Math.round((100 * b.used) / b.uses) : 0;
   const lasted = b.openedAt && b.endedAt ? span((b.endedAt - b.openedAt) / 60000) : null;
-  const owed = Math.max(0, b.used - (b.ticketsFiled ?? 0));
+  const owed = Math.max(0, b.used - (b.receiptsFiled ?? 0));
   const ended = b.endedHow ?? 'live';
   const body = (
     <View style={styles.block}>
@@ -73,7 +73,7 @@ export function BudgetBlock({b, status, onPress}: {b: EdgeBudget; status?: Budge
         </View>
       ))}
       <Text style={[styles.line, {color: owed ? theme.warn : theme.ok}]}>
-        {b.used === 0 ? 'no uses' : owed ? `tickets ${b.ticketsFiled ?? 0} of ${b.used} - ${owed} owed` : `tickets ${b.used} of ${b.used} ✓`}
+        {b.used === 0 ? 'no uses' : owed ? `receipts ${b.receiptsFiled ?? 0} of ${b.used} - ${owed} owed` : `receipts ${b.used} of ${b.used} ✓`}
       </Text>
     </View>
   );

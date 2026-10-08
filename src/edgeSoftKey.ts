@@ -13,19 +13,19 @@
  * chain's own self-press links.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {approve as approveLib, chain, codes, request as requestLib, tickets} from 'node-onlykey-lib/edge';
+import {approve as approveLib, chain, codes, request as requestLib, receipts} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
 import {chainState, loadMirror} from './edgeStore';
-import type {EdgeBudget, EdgeCopyCheck, EdgeCopyKey, EdgeEnded, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeReplay, EdgeRequest, EdgeSource} from './edgeFake';
+import type {EdgeBudget, EdgeCopyCheck, EdgeCopyKey, EdgeEnded, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeRequest, EdgeSource} from './edgeFake';
 import {edgeKey} from './net';
 
 const {DECISION, OP} = codes;
 
-/* how many of these uses have a ticket in the copy (a ticket link names the use it answers) */
-function ticketed(mirror: {links: {link: Uint8Array}[]}, uses: number[]): number {
-  const answered = new Set(mirror.links.map(r => chain.decodeLink(r.link)).filter(f => f.op === OP.TICKET).map(f => (f as {refSeq?: number}).refSeq));
+/* how many of these uses have a receipt in the copy (a receipt link names the use it answers) */
+function receipted(mirror: {links: {link: Uint8Array}[]}, uses: number[]): number {
+  const answered = new Set(mirror.links.map(r => chain.decodeLink(r.link)).filter(f => f.op === OP.RECEIPT).map(f => (f as {refSeq?: number}).refSeq));
   return uses.filter(q => answered.has(q)).length;
 }
 const PICKUP_MAX = 8;
@@ -55,7 +55,7 @@ type Kept = {
 };
 const DEFAULT_LIFETIME_MINUTES = 12 * 60;
 
-type SameHead = {key: string; raw: any; checkpoint?: any; vouch?: any};
+type SameHead = {key: string; raw: any; checkpoint?: any};
 /* per key: the answers the key gave for its current head, and its Edge public key - this session's memory only */
 const sameHeads = new Map<string, SameHead>();
 const publicKeys = new Map<string, Uint8Array>();
@@ -70,7 +70,7 @@ const publicKeys = new Map<string, Uint8Array>();
 const openingsKept = new Map<string, Map<number, unknown>>();
 function openingOf(kept: Kept) {
   return {
-    scopes: kept.scopes, reasonHash: tickets.messageHash(kept.reason), genesis: fromHex(kept.genesis),
+    scopes: kept.scopes, reasonHash: receipts.messageHash(kept.reason), genesis: fromHex(kept.genesis),
     uses: kept.uses, lifetime: kept.lifetime ?? 0, signature: fromHex(kept.signature ?? ''),
   };
 }
@@ -104,7 +104,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   /*
    * THE KEY'S ANSWERS FOR ONE HEAD (Brad, 2026-10-06): its checkpoint (a signature
-   * the key makes, ~0.6 s) and its vouch tag are reused only while the head the
+   * the key makes, ~0.6 s) is reused only while the head the
    * key last gave is unchanged. Every sync still reads the head from the key
    * first; a new head drops them. Memory only - a restart clears them.
    */
@@ -224,10 +224,10 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       exact: exact || spent.length === 0,
       genesis: new Uint8Array(0),
       endsAt: kept?.opened ? kept.opened + (kept.lifetime || DEFAULT_LIFETIME_MINUTES) * 60000 : undefined,
-      /* the audit log (budget history): when it opened, its lifetime, and how many uses got their ticket */
+      /* the audit log (budget history): when it opened, its lifetime, and how many uses got their receipt */
       ...(kept?.opened ? {openedAt: kept.opened} : {}),
       lifetime: kept?.lifetime || DEFAULT_LIFETIME_MINUTES,
-      ticketsFiled: ticketed(mirror, spent.map(f => f.seq)),
+      receiptsFiled: receipted(mirror, spent.map(f => f.seq)),
       ...(kept?.endedAt ? {endedAt: kept.endedAt} : {}),
       ...(kept?.agent ? {agent: kept.from} : {}),
     };
@@ -275,10 +275,10 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       const raw = await AsyncStorage.getItem(k);
       const b = this.budgetFrom(id, raw ? JSON.parse(raw) : null, mirror);
       b.endedHow = ends.has(id) ? 'ended' : b.used >= b.uses ? 'used up' : b.endsAt && Date.now() > b.endsAt ? 'expired' : 'lost when the key locked or restarted';
-      /* like a block: the links it spans - its opening to the last link that names it (a use, its end) or answers one of its uses (a ticket) */
+      /* like a block: the links it spans - its opening to the last link that names it (a use, its end) or answers one of its uses (a receipt) */
       const decoded = mirror.links.map(r => chain.decodeLink(r.link));
-      const useSeqs = new Set(decoded.filter(f => f.grantId === id && f.op !== OP.TICKET).map(f => f.seq));
-      const mine = decoded.filter(f => (f.op !== OP.TICKET && f.grantId === id) || (f.op === OP.TICKET && useSeqs.has((f as {refSeq?: number}).refSeq as number)));
+      const useSeqs = new Set(decoded.filter(f => f.grantId === id && f.op !== OP.RECEIPT).map(f => f.seq));
+      const mine = decoded.filter(f => (f.op !== OP.RECEIPT && f.grantId === id) || (f.op === OP.RECEIPT && useSeqs.has((f as {refSeq?: number}).refSeq as number)));
       if (mine.length) {
         b.firstSeq = mine[0].seq;
         b.lastSeq = mine[mine.length - 1].seq;
@@ -299,7 +299,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   async messages() {
-    return {}; /* ticket messages arrive by sync (the Worker, E5); none from the key */
+    return {}; /* receipt messages arrive by sync (the Worker, E5); none from the key */
   }
 
   /* rule 8 (Brad, 2026-10-06): the person's Revoke and Hold go to the front of the key's lane (urgent) - never behind an agent */
@@ -309,7 +309,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   async state(): Promise<EdgeKeyState> {
     const h = await this.keyHead();
-    return {owed: h.owed, overflow: h.overflow, held: h.held, restoring: h.restoring, refusedTx: h.refusedTx ?? 0};
+    return {owed: h.owed, overflow: h.overflow, held: h.held, refusedTx: h.refusedTx ?? 0};
   }
 
   async hold(grantId: number) {
@@ -327,121 +327,31 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     this.pressWanted = null;
   }
 
-  /* R30 (P2c): anchor the sibling at `index` at its signed checkpoint - the sheet, Yes, a PHYSICAL press (approve.approveAnchor) */
-  async approveAnchor(o: {peer: string; name: string; index: number; chain: Uint8Array; checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array}; count: number; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
-    const r: any = await approveLib.approveAnchor({
-      ...o,
-      edge: this.edge,
-      onPress: () => {
-        this.pressWanted = () => undefined;
-        o.onPress?.();
-      },
-      timeoutMs: 30000,
-    });
-    this.pressWanted = null;
-    return r;
-  }
-
-  /* R29: the other keys of yours this key is paired with - X || Y and device id, hex (no press) */
-  async siblings(): Promise<{index: number; key: string; deviceId: string}[]> {
-    const l = await this.edge.siblings();
-    return l.siblings.map((s: any) => ({index: s.index, key: toHex(s.publicKey), deviceId: toHex(s.deviceId)}));
-  }
-
-  /*
-   * R29 (spec, 2026-10-05): unpairing starts on the phone - the list, Remove,
-   * a PHYSICAL press - never from a computer; each phone unpairs its own key.
-   * The key links it (sibling-remove, op 18).
-   */
-  async removeSibling(index: number, onPress?: () => void) {
-    await this.edge.siblingRemove(index, {onPress: this.pressing(onPress), timeoutMs: 30000});
-    this.pressWanted = null;
-  }
-
-  /*
-   * R26: hand the restoring key this phone's copy, from the link after its
-   * restored head, in order, each with the head the copy stored after it. The
-   * key takes a link only if it welds there; the first one it refuses is the
-   * fork (or, if the copy itself skips a seq, a gap) - stop and say so, never
-   * smooth it over. The Edge Worker's copy comes next, once it exists.
-   */
   async acceptLoss(from: number, to: number, onPress?: () => void) {
     await this.edge.loss({from, to, onPress: this.pressing(onPress)});
     this.pressWanted = null;
   }
 
-  async vouch() {
-    if (this.sameHead && this.sameHead.vouch) return this.sameHead.vouch;
-    try {
-      const v = await this.edge.vouch();
-      const out = {seq: v.seq, head: v.head, tag: v.tag};
-      if (this.sameHead) this.sameHead.vouch = out;
-      return out;
-    } catch (e: any) {
-      if (e && e.status === 'restoring') return null;
-      throw e;
-    }
-  }
-
-  async replayCopy(): Promise<EdgeReplay> {
-    const mirror = await loadMirror(this.deviceId);
-    const h = await this.edge.head();
-    const keyWas = h.seq === null ? -1 : h.seq;
-    const newest = mirror.links.length ? chain.decodeLink(mirror.links[mirror.links.length - 1].link).seq : -1;
-    /* R26: replay only up to the newest head the key vouched for - nothing after it can be committed */
-    const vouchedTo = mirror.vouch && mirror.vouch.seq > keyWas ? mirror.vouch.seq : -1;
-    let at = keyWas;
-    for (const r of mirror.links) {
-      const seq = chain.decodeLink(r.link).seq;
-      if (seq <= at) continue;
-      if (seq > vouchedTo) break;
-      if (seq !== at + 1) return {keyWas, replayedTo: at, newest, vouchedTo, stop: {why: 'gap', at: at + 1}};
-      try {
-        await this.edge.replay(r.link, r.head);
-      } catch (e: any) {
-        if (e && e.status === 'replay-mismatch') {
-          const kh = (await this.edge.head()).head;
-          const mine = mirror.links.find(x => chain.decodeLink(x.link).seq === at);
-          return {keyWas, replayedTo: at, newest, vouchedTo, stop: {why: 'fork', at, keyHead: toHex(kh), copyHead: mine ? toHex(mine.head) : ''}};
-        }
-        throw e;
-      }
-      at = seq;
-    }
-    return {keyWas, replayedTo: at, newest, vouchedTo, stop: {why: 'end'}};
-  }
-
-  /*
-   * R26: the press over "restored to #N". The key commits the replay only with
-   * its own vouch tag for exactly the replayed head; without one (this phone
-   * holds no vouch past the backup) it throws the replay away and records
-   * everything since the backup as lost - said on the card before the press.
+  /**
+   * The owner statement (Brad, 2026-10-08): the key signs its own fingerprint and this
+   * phone's NAMETAG with its owner key - no press, no link. Another device of yours checks
+   * it with its own owner key (lib devices.classify); so does this phone, against the
+   * statements that arrive with offered logs.
    */
-  async finishRestore(newestSeq: number, onPress?: () => void) {
-    const mirror = await loadMirror(this.deviceId);
-    const v = mirror.vouch;
-    try {
-      await this.edge.replayDone({
-        seq: v ? v.seq : 0, tag: v ? v.tag : new Uint8Array(16),
-        newestSeq: Math.max(0, newestSeq), onPress: this.pressing(onPress),
-      });
-    } catch (e: any) {
-      if (!(e && e.status === 'not-vouched')) throw e; /* the LOSS is linked; the restore is over */
-    } finally {
-      this.pressWanted = null;
-    }
+  async statement(nametag: string) {
+    return this.edge.statement(nametag);
   }
 
   /*
    * TESTING MODE: what an agent does through ssh/gpg - an agent-derived P-256
    * sign (OKSIGN 222), pressed on the soft key's own button the way the e2e
-   * does it, and no ticket after it. It leaves a debt on the key (R16), so the
+   * does it, and no receipt after it. It leaves a debt on the key (R16), so the
    * tab's owed banner and Waive can be seen without a CLI or an MCP server.
    */
   async agentSign(text: string) {
     const app = await getOnlyKey('embedded');
-    const message = tickets.messageHash(`okrn testing ${text} ${Date.now()}`);
-    const identity = tickets.messageHash('okrn testing identity');
+    const message = receipts.messageHash(`okrn testing ${text} ${Date.now()}`);
+    const identity = receipts.messageHash('okrn testing identity');
     const timer = setTimeout(() => { void OkEmu.pressQueue('1'); }, 1500);
     try {
       await app.okcrypto.agent.sign(identity, message, {keyType: 2, version: 2});
@@ -588,7 +498,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     const id = toHex(this.deviceId);
     const publicKey = publicKeys.get(id) ?? (await this.edge.publicKey()).publicKey;
     publicKeys.set(id, publicKey);
-    /* the key's latest checkpoint; a restoring key refuses CHECKPOINT (R26), so then none - once per action */
+    /* the key's latest checkpoint - once per action */
     const cached = this.sameHead && 'checkpoint' in this.sameHead ? this.sameHead.checkpoint : undefined;
     const checkpoint = this.snap && 'checkpoint' in this.snap ? this.snap.checkpoint : cached !== undefined ? cached : want ? await this.edge.checkpoint().catch(() => null) : null;
     if (want && this.snap) this.snap.checkpoint = checkpoint;
@@ -598,7 +508,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   /**
    * R27: the library's verdict on this phone's copy, against the key's live head.
-   * A DISPLAY: keyTail lets the key's newest links (an agent's ticket written
+   * A DISPLAY: keyTail lets the key's newest links (an agent's receipt written
    * after the last sync) be checked from the key in memory instead of read as a
    * gap - on the A13 that gap sent every check to the full 13-16 s one. The
    * approval (answerAgent verifyCopy) and the library's create/resume stay strict.
@@ -626,7 +536,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   async approve(id: number, onPress?: () => void) {
     const r = this.requests.find(x => x.id === id);
     if (!r) throw new Error(`edge: no request ${id}`);
-    const reasonHash = tickets.messageHash(r.reason);
+    const reasonHash = receipts.messageHash(r.reason);
     const g = await this.edge.grant({
       verifiedHead: await this.verifiedHead(),
       scopes: r.scopes,
@@ -708,80 +618,6 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       edge: this.edge,
       registered: o.registered,
       seen: o.seen,
-      ask: o.ask,
-      onPress: () => {
-        this.pressWanted = () => undefined;
-        o.onPress?.();
-      },
-      timeoutMs: 30000,
-    });
-    this.pressWanted = null;
-    return r;
-  }
-
-  /**
-   * R20 (okedge sync phase 2, P2a): a place that keeps copies asks to be on the
-   * KEY's list (EDGE_PEER_ADD) - the person's Yes on the sheet, then a PHYSICAL
-   * press; the key adds it and links it (peer-add). The list is the key's, not
-   * this phone's: a sync goes only to places on it.
-   */
-  async addPeer(msg: any, o: {seen: Set<string>; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
-    const r: any = await approveLib.approvePeerAdd(msg, {
-      edge: this.edge,
-      seen: o.seen,
-      ask: o.ask,
-      onPress: () => {
-        this.pressWanted = () => undefined;
-        o.onPress?.();
-      },
-      timeoutMs: 30000,
-    });
-    this.pressWanted = null;
-    return r;
-  }
-
-  /**
-   * R29 (okedge sync phase 2, P2b): a place on the key's list asks to pair this
-   * key with another key of yours (EDGE_SIBLING_ADD) - the sheet shows the code
-   * made from both keys, the person's Yes, then a PHYSICAL press; the key links
-   * it (sibling-add).
-   */
-  async addSibling(msg: any, o: {seen: Set<string>; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
-    const r: any = await approveLib.approveSibling(msg, {
-      edge: this.edge,
-      seen: o.seen,
-      ask: o.ask,
-      onPress: () => {
-        this.pressWanted = () => undefined;
-        o.onPress?.();
-      },
-      timeoutMs: 30000,
-    });
-    this.pressWanted = null;
-    return r;
-  }
-
-  /** R20: the key's own list of places that keep copies (no press) - X || Y hex. */
-  async peerKeys(): Promise<string[]> {
-    const l = await this.edge.peers();
-    return l.peers.map((p: any) => toHex(p.publicKey));
-  }
-
-  /**
-   * okedge sync phase 2: links a place on the key's list offers for this
-   * phone's copy, already merged and checked by the caller - the sheet, Yes,
-   * a PHYSICAL press, and the key's `sync` link (approve.approveSync).
-   */
-  async approveSync(o: {peer: string; name: string; added: any[]; head: Uint8Array; keychainHash?: Uint8Array | null; keychainIn?: number; keychainOut?: number; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
-    const r: any = await approveLib.approveSync({
-      peer: o.peer,
-      name: o.name,
-      added: o.added,
-      head: o.head, /* the copy's head after the merge - part of the sync's subject (spec, 2026-10-05) */
-      keychainHash: o.keychainHash ?? null,
-      keychainIn: o.keychainIn ?? 0,
-      keychainOut: o.keychainOut ?? 0,
-      edge: this.edge,
       ask: o.ask,
       onPress: () => {
         this.pressWanted = () => undefined;

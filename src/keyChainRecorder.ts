@@ -15,7 +15,7 @@
  *
  * Never "yours": the own-identities mark is set only in the Edge tab, with its
  * confirm (list.createEntry drops it anyway). A derive is not a use - nothing
- * here touches Edge tickets or budgets.
+ * here touches Edge receipts or budgets.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NativeOkEmu from '../specs/NativeOkEmu';

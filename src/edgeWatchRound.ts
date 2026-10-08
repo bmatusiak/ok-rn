@@ -12,7 +12,7 @@
  * no sync. A moved head still syncs at once (the copy must catch every link
  * while the key still has it - the reason this watch exists).
  *
- * The alarms are not all about the head: a ticket owed past 10 minutes, a budget
+ * The alarms are not all about the head: a receipt owed past 10 minutes, a budget
  * that expired, a sibling that stopped syncing - those change with the clock
  * while the head stands still. So they run after every round that saw a change,
  * and otherwise on their own slower clock (alarmEveryMs), never not at all.

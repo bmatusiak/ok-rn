@@ -3,7 +3,7 @@
  *
  * WHY (A13, 2026-10-07): a sync spent ~1 s in JS crypto under Hermes - SHA-256
  * over the stored copy and the budgets' hash chains, P-256 on checkpoints, the
- * ticket message hashes - while this app already links OpenSSL 3.5 for its KDF
+ * receipt message hashes - while this app already links OpenSSL 3.5 for its KDF
  * and RSA. Brad: "try not to use JS crypto if okssl can provide it as a faster
  * version". node-onlykey-lib takes a crypto provider (src/crypto/provider.js);
  * this plugs okssl in, once, at start (index.js imports it third).

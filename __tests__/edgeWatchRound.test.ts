@@ -27,7 +27,7 @@ test('nothing moved: one sync, then head-only rounds; the alarms on their own cl
   for (const ms of [0, 15000, 30000, 45000]) { at(ms); await round.run(); }
   expect(calls).toEqual({validity: 4, synced: 1, alarms: 1});
   at(60000); await round.run();
-  expect(calls.alarms).toBe(2); /* an owed ticket or an expired budget still gets seen */
+  expect(calls.alarms).toBe(2); /* an owed receipt or an expired budget still gets seen */
 });
 
 test('a new link: synced and its alarms at once, whatever the alarm clock says', async () => {
