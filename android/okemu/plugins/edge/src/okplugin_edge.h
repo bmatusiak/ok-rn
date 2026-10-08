@@ -42,6 +42,7 @@
 #define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts; refused while restoring */
 #define OKEDGE_REPLAY_DONE 0x24  /* R26: {seq, tag, newest}, press; commits only a vouched replay; replies seq . head . tag or EDGE:11 */
 #define OKEDGE_REPLAY_INTENT 0x25 /* R13b: {intent 16}, while restoring - the next REPLAY of a self-press link welds it into bytes 47-62 */
+#define OKEDGE_WIPE_DEBUG 0x7E   /* R31: DEBUG builds only - the Edge region erased (state, pairs, salt); no key outside it touched */
 /* HEAD byte 61: what this build understands (R13b: TX start {token, intent}) */
 #define OKEDGE_CAP_INTENT 0x01
 /* R3 (2026-10-06): byte 63 of every link this build writes - 0 = the links before it (no version), still readable */

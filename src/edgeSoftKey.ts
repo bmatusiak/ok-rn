@@ -39,6 +39,8 @@ const REGISTRY = (): string => edgeKey('budgets.');
  * verify.
  */
 type Kept = {
+  /* 1 since the clean start (Brad, 2026-10-07; the old chain's records went with it, edgeV1.ts) */
+  v?: number;
   reason: string; scopes: EdgeRequest['scopes']; uses: number; genesis: string; from: string; signature?: string;
   /* R15b: the lifetime it was opened with (minutes, 0 = the key's 12 h) and when (the phone's clock) - for Continue */
   lifetime?: number; opened?: number;
@@ -648,6 +650,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    */
   async keepOpening(g: any, o: {reason: string; scopes: any[]; from: string; lifetime: number; agent?: string}) {
     const kept: Kept = {
+      v: 1,
       reason: o.reason, scopes: o.scopes, uses: g.uses, genesis: typeof g.genesis === 'string' ? g.genesis : toHex(g.genesis), from: o.from,
       signature: typeof g.checkpoint.signature === 'string' ? g.checkpoint.signature : toHex(g.checkpoint.signature),
       lifetime: o.lifetime, opened: Date.now(), ...(o.agent ? {agent: o.agent} : {}),

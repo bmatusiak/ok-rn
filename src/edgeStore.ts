@@ -24,6 +24,8 @@ const KEY_PREFIX = (): string => edgeKey('mirror.');
 const READ_BATCH = 16;
 
 type StoredMirror = {
+  /* 1 since the clean start (Brad, 2026-10-07); a copy without it is the old chain's and is not read */
+  v?: number;
   deviceId: string;
   links: {link: string; head: string; reveal?: string}[];
   messages: Record<string, string>;
@@ -206,6 +208,11 @@ async function readMirror(deviceId: Uint8Array): Promise<Mirror> {
   else storedText.delete(toHex(deviceId));
   if (!raw) return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: [], seen: {}, reasons: {}, refusals: []};
   const s = JSON.parse(raw) as StoredMirror;
+  if (s.v !== 1) {
+    /* the old chain's copy (before the clean start, edgeV1.ts): not read - this key starts again */
+    storedText.delete(toHex(deviceId));
+    return {deviceId, links: [], messages: {}, lastSeen: null, lastSync: null, vouch: null, setAside: [], seen: {}, reasons: {}, refusals: []};
+  }
   return {
     deviceId: fromHex(s.deviceId),
     links: s.links.map(l => {
@@ -231,6 +238,7 @@ async function readMirror(deviceId: Uint8Array): Promise<Mirror> {
 export async function saveMirror(m: Mirror): Promise<void> {
   const id = toHex(m.deviceId);
   const s: StoredMirror = {
+    v: 1,
     deviceId: toHex(m.deviceId),
     links: m.links.map(storedOf),
     messages: Object.fromEntries(Object.entries(m.messages).map(([k, v]) => [String(k), v])),

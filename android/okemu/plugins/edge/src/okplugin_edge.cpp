@@ -89,15 +89,17 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 
 /*
  * magic . gen . seq . head . owed_n . overflow . restoring . replay_closed .
- * owed x4 (seq, head) . last_link . replayed_to . check.
- * "06": the owed list replaced 05's one-use flag (the spec change, onlykey-edge
- * c7c30dd). "07" adds R26's replay state (replay_closed, replayed_to); a 06
- * record is still read (its replay state is "nothing replayed past seq"), so a
- * soft key keeps its chain across this change. A 05 record is not read: Edge
- * never shipped.
- * "08" adds R28: salted . cont . salt 32 . cont_id 16 (see ensure_identity). A
- * 07 record reads as unsalted, which is exactly what makes the device move to
- * its own chain with a continue link on the first Edge request.
+ * owed x4 (seq, head) . last_link . replayed_to . salted . cont . salt 32 .
+ * cont_id 16 . check.
+ *
+ * VERSION 1 - THE CLEAN START (Brad, 2026-10-07: "we change all the schemas to V1,
+ * because we are doing a reset, and edge is still v1 with its protocal and
+ * schemas"). This is the layout that was "08" (the owed list, R26's replay state,
+ * R28's salt), renumbered 01; nothing older is read. A key that finds an older
+ * record (OKEDGE06/07/08) starts fresh instead: every Edge sector is erased - the
+ * pairs record too - and the next Edge request draws a new salt, so a new device
+ * id and a new genesis (fresh_start_if_old). Only the Edge region is touched:
+ * every private key stays where it is (R31).
  */
 #define STATE_BYTES 320 /* a multiple of 4: flash takes words (318 lost the check bytes) */
 #define STATE_CHECKED 316 /* 314..315 zero padding */
@@ -105,15 +107,10 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define CONT_AT 265
 #define SALT_AT 266
 #define CONT_ID_AT 298
-#define STATE07_CHECKED 264
-#define STATE06_BYTES 264
-#define STATE06_CHECKED 260
 #define OWED_AT 52
 #define LAST_AT (OWED_AT + OWED_MAX * 36)
 #define REPLAYED_AT (LAST_AT + LINK_BYTES)
-static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '8'};
-static const uint8_t MAGIC07[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '7'};
-static const uint8_t MAGIC06[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '6'};
+static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', '0', '1'};
 
 struct owed_use { uint32_t seq; uint8_t head[32]; }; /* head[seq]: what its ticket subject names */
 
@@ -138,12 +135,11 @@ struct edge_state {
    * another device id: its own chain from the first link, never a second writer.
    */
   uint8_t salted;
-  uint8_t cont;                  /* a continue link is owed: CONT_FROM_ID (cont_id) or CONT_FROM_UNSALTED */
+  uint8_t cont;                  /* a continue link is owed: CONT_FROM_ID (cont_id) */
   uint8_t salt[32];
   uint8_t cont_id[ID_BYTES];     /* CONT_FROM_ID: the chain the debts come from */
 };
-#define CONT_FROM_ID 1
-#define CONT_FROM_UNSALTED 2 /* a pre-R28 chain: its id is the unsalted one, from K132 */
+#define CONT_FROM_ID 1 /* the only continue since v1: another device's backup restored here */
 static struct edge_state st;
 static uint8_t loaded;
 
@@ -412,36 +408,26 @@ static void state_encode(uint8_t rec[STATE_BYTES]) {
 
 static int state_decode(const uint8_t rec[STATE_BYTES], struct edge_state *s) {
   uint8_t check[32];
-  int v06 = memcmp(rec, MAGIC06, 8) == 0;
-  int v07 = memcmp(rec, MAGIC07, 8) == 0;
-  if (!v06 && !v07 && memcmp(rec, MAGIC, 8) != 0) return 0;
-  int checked = v06 ? STATE06_CHECKED : v07 ? STATE07_CHECKED : STATE_CHECKED;
-  H(check, NULL, rec, checked, NULL, 0, NULL, 0);
-  if (memcmp(rec + checked, check, 4) != 0) return 0; /* torn write: the other copy wins */
+  if (memcmp(rec, MAGIC, 8) != 0) return 0;
+  H(check, NULL, rec, STATE_CHECKED, NULL, 0, NULL, 0);
+  if (memcmp(rec + STATE_CHECKED, check, 4) != 0) return 0; /* torn write: the other copy wins */
   s->gen = get32(rec + 8);
   s->seq = get32(rec + 12);
   memcpy(s->head, rec + 16, 32);
   s->owed_n = rec[48] > OWED_MAX ? OWED_MAX : rec[48];
   s->overflow = rec[49];
   s->restored = rec[50];
-  s->replay_closed = v06 ? 0 : rec[51];
+  s->replay_closed = rec[51];
   for (int i = 0; i < OWED_MAX; i++) {
     s->owed[i].seq = get32(rec + OWED_AT + 36 * i);
     memcpy(s->owed[i].head, rec + OWED_AT + 36 * i + 4, 32);
   }
   memcpy(s->last_link, rec + LAST_AT, LINK_BYTES);
-  s->replayed_to = v06 ? s->seq : get32(rec + REPLAYED_AT);
-  /* 06 / 07: no salt yet (R28) - ensure_identity moves the device to its own chain */
-  int v08 = !v06 && !v07;
-  s->salted = v08 ? (rec[SALTED_AT] == 1) : 0;
-  s->cont = v08 ? rec[CONT_AT] : 0;
-  if (v08) {
-    memcpy(s->salt, rec + SALT_AT, 32);
-    memcpy(s->cont_id, rec + CONT_ID_AT, ID_BYTES);
-  } else {
-    memset(s->salt, 0, 32);
-    memset(s->cont_id, 0, ID_BYTES);
-  }
+  s->replayed_to = get32(rec + REPLAYED_AT);
+  s->salted = rec[SALTED_AT] == 1;
+  s->cont = rec[CONT_AT] == CONT_FROM_ID ? CONT_FROM_ID : 0;
+  memcpy(s->salt, rec + SALT_AT, 32);
+  memcpy(s->cont_id, rec + CONT_ID_AT, ID_BYTES);
   return 1;
 }
 
@@ -462,17 +448,28 @@ static void hold(uint32_t seq, const uint8_t link[LINK_BYTES], const uint8_t hea
   if (reveal) memcpy(h->reveal, reveal, 32); else memset(h->reveal, 0, 32);
 }
 
+/* an Edge record of a version before the clean start (OKEDGE06, 07, 08) */
+static int old_record(const uint8_t rec[8]) {
+  return memcmp(rec, "OKEDGE0", 7) == 0 && rec[7] != '1';
+}
+
+static void fresh_start(void); /* below, beside the pairs record it also erases */
+
 static void state_load(void) {
   if (loaded) return;
   uint8_t rec[STATE_BYTES];
   struct edge_state a, b;
   okcore_flashget_common(rec, (unsigned long *)EDGE_STATE_A, STATE_BYTES);
   int ha = state_decode(rec, &a);
+  int olda = old_record(rec);
   okcore_flashget_common(rec, (unsigned long *)EDGE_STATE_B, STATE_BYTES);
   int hb = state_decode(rec, &b);
+  int oldb = old_record(rec);
   if (ha && (!hb || a.gen > b.gen)) st = a;
   else if (hb) st = b;
   else {
+    /* THE CLEAN START (v1): a record from before it - the whole Edge region goes, the pairs too */
+    if (olda || oldb) fresh_start();
     memset(&st, 0, sizeof(st));
     st.seq = SEQ_NONE;
   }
@@ -513,12 +510,12 @@ static int edge_secret(const char *info, uint8_t out[32]) { return edge_secret_s
  * R28: the Edge checkpoint key - and so the device id and the genesis - is
  * HKDF(salt = 0x28 . this device's salt, K132, "onlykey/edge/v1"). ONLY this
  * key takes the salt: every derived identity (SSH, PGP, the agents' keys) is
- * K132's alone and stays the same across R28 (tested before == after). Without
- * a salt (a pre-R28 record) it is the old unsalted key, which is how the
- * continue link names the chain it came from.
+ * K132's alone and stays the same across R28 (tested before == after). Since
+ * the clean start (v1) there is no Edge key without a salt: ensure_identity
+ * draws one before anything asks for the key.
  */
 static int edge_key_with(const struct edge_state *s, uint8_t priv[32]) {
-  if (!s->salted) return edge_secret("onlykey/edge/v1", priv);
+  if (!s->salted) return 0;
   uint8_t salt33[33];
   salt33[0] = 0x28;
   memcpy(salt33 + 1, s->salt, 32);
@@ -625,30 +622,23 @@ static int ensure_identity(void) {
   state_load();
   if (ident.ok) return 1;
   /*
-   * R28: no salt yet - a new key, a key wiped and restored, or a pre-R28 record.
-   * The salt is made now. A chain that already has links (pre-R28, or restored
-   * from a backup made before R28) is continued from its unsalted id.
+   * R28: no salt yet - a new key, a key after the clean start, or another
+   * device's backup restored here (which then continues that chain, CONT_FROM_ID).
+   * The salt is made now. Since v1 there is no unsalted chain to continue.
    */
   if (!st.salted) {
     uint8_t t = 0;
     okeeprom_eeget_ecckey(&t, 132);
     if (profilemode == NONENCRYPTEDPROFILE || t == 0) return 0; /* no K132 yet: nothing to salt for */
-    if (st.seq != SEQ_NONE && !st.cont) st.cont = CONT_FROM_UNSALTED;
     RNG2(st.salt, 32);
     st.salted = 1;
     state_save();
   }
   if (!identity_of(&st, ident.pub, ident.device_id)) return 0;
   ident.ok = 1;
-  if (st.cont) {
-    uint8_t old_pub[64], old_id[ID_BYTES];
-    if (st.cont == CONT_FROM_ID) memcpy(old_id, st.cont_id, ID_BYTES);
-    else {
-      struct edge_state unsalted = st;
-      unsalted.salted = 0;
-      if (!identity_of(&unsalted, old_pub, old_id)) { ident.ok = 0; return 0; }
-      memset(&unsalted, 0, sizeof(unsalted));
-    }
+  if (st.cont == CONT_FROM_ID) {
+    uint8_t old_id[ID_BYTES];
+    memcpy(old_id, st.cont_id, ID_BYTES);
     write_continue(old_id);
     return 1;
   }
@@ -1531,8 +1521,12 @@ int okplugin_edge_refused(void) {
   return 0;
 }
 
-/* wipeflashdata(): the record goes and live budgets end; a new K132 makes the key a new device */
-void okplugin_edge_wipe(void) {
+/*
+ * The Edge region erased: both state copies and both pairs copies (only the Edge
+ * region - no key, slot or setting outside it). The clean start (v1, state_load)
+ * and every wipe end here.
+ */
+static void fresh_start(void) {
   uint8_t blank[4] = {0xff, 0xff, 0xff, 0xff};
   okcore_flashsector(blank, (unsigned long *)EDGE_STATE_A, 4);
   okcore_flashsector(blank, (unsigned long *)EDGE_STATE_B, 4);
@@ -1541,6 +1535,11 @@ void okplugin_edge_wipe(void) {
   okcore_flashsector(blank, (unsigned long *)PAIRS_B, 4);
   memset(&pairs, 0, sizeof(pairs));
   pairs_loaded = 1;
+}
+
+/* wipeflashdata(): the record goes and live budgets end; a new K132 makes the key a new device */
+void okplugin_edge_wipe(void) {
+  fresh_start();
   memset(budgets, 0, sizeof(budgets));
   memset(held, 0, sizeof(held));
   memset(&ident, 0, sizeof(ident));
@@ -1557,23 +1556,23 @@ void okplugin_edge_wipe(void) {
 /* ------------------------------------------------------------ backup (DESIGN.md 6) */
 
 /*
- * The plugin backup section (node-onlykey-lib/cli/firmware-plugins.js):
- *   2 . seq u32 . head 32 . owed_n . overflow . owed_n x (seq u32, head 32)
+ * The plugin backup section (node-onlykey-lib/cli/firmware-plugins.js), version 1
+ * since the clean start (it was 3; Brad, 2026-10-07: every schema v1):
+ *   1 . seq u32 . head 32 . owed_n . overflow . owed_n x (seq u32, head 32) . device id 16
  * The debts travel with the backup, because R16 lets only a ticket or a waive
- * pay them - a restore must not be a way to forgive them. The device id and
- * the Edge key come back with K132, which the backup already carries; budgets
- * end at a restore anyway (their seeds were never stored); the links
- * themselves are the hosts'. Version 1 (37 bytes, no debts) still restores.
- * Version 3 (R28) adds the chain's device id after the debts, so a restore can
- * tell its own chain (R26 replay) from another device's (a continue link). The
- * SALT IS NEVER HERE: a backup restored onto another device must not become it.
+ * pay them - a restore must not be a way to forgive them. The device id says
+ * whose chain it is, so a restore can tell its own chain (R26 replay) from
+ * another device's (a continue link). Budgets end at a restore anyway (their
+ * seeds were never stored); the links themselves are the hosts'. The SALT IS
+ * NEVER HERE: a backup restored onto another device must not become it. A
+ * section from before the clean start is not restored (that chain is gone).
  */
 int okplugin_edge_backup(uint8_t *out, int max) {
   state_load();
   if (!ensure_identity()) return 0;
   int len = 39 + 36 * st.owed_n + ID_BYTES;
   if (max < len || st.seq == SEQ_NONE) return 0; /* no chain yet: nothing to keep */
-  out[0] = 3;
+  out[0] = 1;
   put32(out + 1, st.seq);
   memcpy(out + 5, st.head, 32);
   out[37] = st.owed_n;
@@ -1587,13 +1586,9 @@ int okplugin_edge_backup(uint8_t *out, int max) {
 }
 
 void okplugin_edge_restore(const uint8_t *in, int len) {
-  if (len < 37 || in[0] < 1 || in[0] > 3) return; /* a version this build does not know: keep what it has */
-  uint8_t n = 0;
-  if (in[0] >= 2) {
-    if (len < 39) return;
-    n = in[37] > OWED_MAX ? OWED_MAX : in[37];
-    if (len < 39 + 36 * n + (in[0] == 3 ? ID_BYTES : 0)) return;
-  }
+  if (len < 39 || in[0] != 1) return; /* a version this build does not know (or one from before the clean start): keep what it has */
+  uint8_t n = in[37] > OWED_MAX ? OWED_MAX : in[37];
+  if (len < 39 + 36 * n + ID_BYTES) return;
   /*
    * Keep the record generation counting UP: the newer of the two sectors wins at
    * boot, so a restore that started again at 1 lost to the older record left in
@@ -1606,7 +1601,7 @@ void okplugin_edge_restore(const uint8_t *in, int len) {
   uint8_t salted = st.salted, salt[32];
   memcpy(salt, st.salt, 32);
   int own_chain = 0;
-  if (in[0] == 3 && salted && ensure_identity()) own_chain = memcmp(in + 39 + 36 * n, ident.device_id, ID_BYTES) == 0;
+  if (salted && ensure_identity()) own_chain = memcmp(in + 39 + 36 * n, ident.device_id, ID_BYTES) == 0;
   memset(&st, 0, sizeof(st));
   memset(&ident, 0, sizeof(ident));
   st.gen = gen;
@@ -1615,24 +1610,22 @@ void okplugin_edge_restore(const uint8_t *in, int len) {
   memset(salt, 0, 32);
   st.seq = get32(in + 1);
   memcpy(st.head, in + 5, 32);
-  if (in[0] >= 2) {
-    st.owed_n = n;
-    st.overflow = in[38] ? 1 : 0;
-    for (int i = 0; i < n; i++) {
-      st.owed[i].seq = get32(in + 39 + 36 * i);
-      memcpy(st.owed[i].head, in + 39 + 36 * i + 4, 32);
-    }
+  st.owed_n = n;
+  st.overflow = in[38] ? 1 : 0;
+  for (int i = 0; i < n; i++) {
+    st.owed[i].seq = get32(in + 39 + 36 * i);
+    memcpy(st.owed[i].head, in + 39 + 36 * i + 4, 32);
   }
   /*
-   * R26 replay only onto the device's OWN chain. Another device's backup (or
-   * one from before R28): this device continues it on a chain of its own - the
-   * continue link is written on the first Edge request, carrying the debts.
+   * R26 replay only onto the device's OWN chain. Another device's backup: this
+   * device continues it on a chain of its own - the continue link is written on
+   * the first Edge request, carrying the debts.
    */
   if (own_chain) st.restored = 1; /* R26: restoring - replay, then REPLAY_DONE with a press */
-  else if (in[0] == 3) {
+  else {
     st.cont = CONT_FROM_ID;
     memcpy(st.cont_id, in + 39 + 36 * n, ID_BYTES);
-  } else st.cont = CONT_FROM_UNSALTED;
+  }
   tent_active = 0;
   st.replay_closed = 0;
   st.replayed_to = st.seq;
@@ -1727,6 +1720,18 @@ void okplugin_edge_recv(uint8_t *buffer) {
       status(EDGE_OK);
       return;
     }
+#ifdef DEBUG
+    /*
+     * DEBUG BUILDS ONLY (R31, the clean start's rehearsals): the Edge region erased -
+     * state, pairs, salt - so the next Edge request starts a new chain with a new
+     * device id. Every private key stays (only the Edge region is written). A
+     * production build has no such case: it falls to "unknown sub-op".
+     */
+    case OKEDGE_WIPE_DEBUG:
+      okplugin_edge_wipe();
+      status(EDGE_OK);
+      return;
+#endif
     case OKEDGE_GRANT_HOLD: {
       /* R15a: no press - it only makes the key stricter. Holding a held budget links nothing. */
       uint32_t id = get32(buffer + 6);

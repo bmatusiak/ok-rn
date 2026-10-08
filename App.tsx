@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {Alert, AppState, KeyboardAvoidingView, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {currentNet, onNet, type Net} from './src/net';
 import {clearIfScheduled} from './src/testnet';
+import {resetEdgeStoreOnce} from './src/edgeV1';
 import {errText} from './src/logSafe';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
@@ -892,7 +893,13 @@ function Shell() {
    * it answers, a blank key goes to setup and any other to the PIN - the same
    * choice the button makes when the key is already running.
    */
-  /* a Clear testnet asked from the testnet: done now, before the login screen starts any soft key (src/testnet.ts) */
+  /*
+   * Before the login screen starts any soft key: the clean start's phone side, once
+   * (src/edgeV1.ts), then a Clear testnet asked from the testnet (src/testnet.ts).
+   */
+  useEffect(() => {
+    void resetEdgeStoreOnce().catch((e: unknown) => console.log('[edge] the clean start did not finish: ' + String(e)));
+  }, []);
   useEffect(() => {
     void clearIfScheduled().catch((e: unknown) => console.log(`[testnet] the scheduled clear failed: ${String(e)}`));
   }, []);
