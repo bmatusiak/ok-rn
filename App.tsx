@@ -1,5 +1,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {AppState, KeyboardAvoidingView, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
+import {Alert, AppState, KeyboardAvoidingView, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
+import {currentNet, onNet, type Net} from './src/net';
+import {clearIfScheduled} from './src/testnet';
 import {errText} from './src/logSafe';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
@@ -885,6 +887,30 @@ function Shell() {
    * half-spread. Leaving it waits for this AND for the firmware to settle.
    */
   const [splashDone, setSplashDone] = useState(SPLASH_SEEN);
+  /*
+   * LOG IN STARTS THE SOFT KEY (a build with testing mode; Brad, 2026-10-07): once
+   * it answers, a blank key goes to setup and any other to the PIN - the same
+   * choice the button makes when the key is already running.
+   */
+  /* a Clear testnet asked from the testnet: done now, before the login screen starts any soft key (src/testnet.ts) */
+  useEffect(() => {
+    void clearIfScheduled().catch((e: unknown) => console.log(`[testnet] the scheduled clear failed: ${String(e)}`));
+  }, []);
+  const [continuing, setContinuing] = useState(false);
+  /* the chain the soft key runs on (src/net.ts) - set when it starts, for the TESTNET banner */
+  const [net, setNetShown] = useState<Net>(currentNet());
+  useEffect(() => onNet(setNetShown), []);
+  useEffect(() => {
+    if (!continuing) return;
+    if (emu.device === 'uninitialized') setPhase('setup');
+    else if (emu.device === 'locked' || emu.device === 'unlocked') setPhase('pin');
+    else return;
+    setContinuing(false);
+  }, [continuing, emu.device]);
+  /* a firmware already running keeps its net; switching needs the app restarted (src/net.ts) */
+  const warnNet = (want: Net) => (got: Net) => {
+    if (got !== want) Alert.alert(got === 'test' ? 'The soft key is on the testnet' : 'The soft key is on the live chain', 'A started soft key cannot change its storage. Restart the app to switch.');
+  };
 
   /*
    * The door opens and closes on what the DEVICE says, not on a local flag.
@@ -917,8 +943,13 @@ function Shell() {
       return;
     }
     setPhase(prev => {
-      // Leaving the splash needs the firmware settled, either way it went.
-      if (prev === 'splash' && splashDone && emu.state !== 'stopped' && emu.state !== 'starting') {
+      /*
+       * Leaving the splash needs the firmware settled, either way it went - except
+       * in a build with testing mode, where nothing starts until the login screen's
+       * Log in or Enter testing mode picks the net (useOkEmu ensureStarted, Brad
+       * 2026-10-07): there 'stopped' is the settled state.
+       */
+      if (prev === 'splash' && splashDone && (emu.state !== 'stopped' || __DEV__) && emu.state !== 'starting') {
         return 'login';
       }
       // It relocked while we were inside.
@@ -1072,6 +1103,19 @@ function Shell() {
           </View>
         ) : null}
 
+        {/*
+          THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07): the soft key runs on its own
+          storage slot - a throwaway key with its own Edge chain. Said on every screen,
+          so a testnet budget or block is never taken for a live one.
+        */}
+        {net === 'test' ? (
+          <View style={[styles.testing, {borderColor: theme.io}]}>
+            <Text style={[styles.testingText, {color: theme.io}]}>
+              TESTNET - a throwaway soft key with its own Edge chain; nothing here is live
+            </Text>
+          </View>
+        ) : null}
+
         {/* `__DEV__` inline so Metro folds the branch out of a release bundle. */}
         {__DEV__ && testing.enabled ? (
           <View style={[styles.testing, devLoginShown && styles.testingRow]}>
@@ -1212,13 +1256,21 @@ function Shell() {
                 only reason the button exists.
               */
               onTesting={() => {
+                /* the testnet's own soft key (src/net.ts): started here, before anything reads it */
+                if (keys.backend === 'embedded') void keys.soft.ensureStarted('test').then(warnNet('test'));
                 testing.toggle();
                 setTab(TESTING_TAB);
               }}
-              onContinue={() =>
+              onContinue={() => {
+                if (keys.backend === 'embedded' && keys.soft.state === 'stopped') {
+                  /* start the live soft key; the effect above picks setup or PIN once it answers */
+                  setContinuing(true);
+                  void keys.soft.ensureStarted('live').then(warnNet('live'));
+                  return;
+                }
                 // A blank key has no PIN to enter; it needs one chosen.
-                setPhase(emu.device === 'uninitialized' ? 'setup' : 'pin')
-              }
+                setPhase(emu.device === 'uninitialized' ? 'setup' : 'pin');
+              }}
             />
           ) : phase === 'setup' ? (
             <SetupScreen
@@ -1229,6 +1281,7 @@ function Shell() {
             />
           ) : phase === 'pin' ? (
             <PinScreen
+              onBypass={keys.backend === 'embedded' && keys.soft.state === 'running' ? () => void devLogin() : undefined}
               onPress={emu.press}
               onPressRun={emu.pressRun}
               canPress={emu.canPress}

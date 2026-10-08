@@ -23,6 +23,7 @@ import {chainState, type EdgeView} from '../edgeStore';
 import type {EdgeBudget} from '../edgeFake';
 import {budgetStatus} from '../budgetStatus';
 import {openBudget} from '../edgeNav';
+import {currentNet} from '../net';
 
 /* what each typed refusal means, in the person's words (the agent gets the code) */
 const REFUSAL_TEXT: Record<string, string> = {
@@ -162,6 +163,8 @@ export function EdgeRequestSheet() {
       <View style={styles.backdrop}>
         <View style={styles.sheet}>
           <ScrollView contentContainerStyle={styles.body}>
+            {/* the testnet (src/net.ts): a throwaway key - said before anything is approved */}
+            {currentNet() === 'test' ? <Text style={[styles.title, {color: theme.io}]}>TESTNET</Text> : null}
             {a.kind === 'register' ? (
               <>
                 <Text style={[styles.title, {color: theme.warn}]}>Register an agent?</Text>

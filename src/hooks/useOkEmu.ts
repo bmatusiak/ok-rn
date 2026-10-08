@@ -13,6 +13,7 @@ import {buildInfo} from '../buildInfo';
  * relying on a default to say something this file means outright.
  */
 import type {LogLevel} from './useLog';
+import {currentNet, type Net} from '../net';
 
 /*
  * No protocol lives in this file any more.
@@ -440,11 +441,11 @@ export function useOkEmu({log, autoStart = false}: Options) {
     };
   }, [log]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (net: Net = 'live') => {
     setBusy(true);
     setState('starting');
     try {
-      const result = await OkEmu.start();
+      const result = await OkEmu.start(net);
       setStorageDir(result.storageDir);
       if (result.started) {
         setState('running');
@@ -1002,16 +1003,17 @@ export function useOkEmu({log, autoStart = false}: Options) {
    * Mirrored to console.log so it reaches logcat: this runs at launch, before
    * anyone has necessarily looked at the screen.
    */
-  useEffect(() => {
-    if (!autoStart || started.current) {
-      return;
-    }
-    if (!OkEmu.isAvailable()) {
-      return;
-    }
-    started.current = true;
-
-    (async () => {
+  /*
+   * WHO STARTS IT (Brad, 2026-10-07): "auto start firmware should be on if test
+   * mode is not built into the app; if testing mode is built in, auto start is
+   * disabled, so the login screen will need to start the firmware if i click login
+   * or testing mode button". A build with testing mode (useKey passes autoStart
+   * false) boots nothing here - the login screen calls ensureStarted('live') for
+   * Log in, ensureStarted('test') for Enter testing mode (src/net.ts). A firmware
+   * already running (a JS reload, a swiped-away activity) is adopted either way.
+   */
+  const bootAndConnect = useCallback(async (net: Net) => {
+    {
       /*
        * A FIRMWARE THAT IS ALREADY RUNNING MUST BE ADOPTED, NOT SKIPPED.
        *
@@ -1033,10 +1035,11 @@ export function useOkEmu({log, autoStart = false}: Options) {
        * So: adopt it. The OKCONNECT below then tells us what it actually is.
        */
       if (OkEmu.isRunning()) {
-        setState('running');
-        console.log('[softkey] adopting a firmware that is already running');
+        /* asks anyway: the answer names the folder it runs on, which sets the net */
+        await start(net);
+        console.log(`[softkey] adopting a firmware that is already running (${currentNet()})`);
       } else {
-        await start();
+        await start(net);
         if (!OkEmu.isRunning()) {
           console.log('[softkey] firmware did not start');
           return;
@@ -1049,11 +1052,35 @@ export function useOkEmu({log, autoStart = false}: Options) {
       const result = await connect();
       console.log(
         result
-          ? `[softkey] OKCONNECT ok: "${String(result.status ?? '').trim()}"`
+          ? `[softkey] OKCONNECT ok on ${currentNet()}: "${String(result.status ?? '').trim()}"`
           : '[softkey] OKCONNECT got no reply - the flash mapping is suspect',
       );
-    })();
-  }, [autoStart, start, connect]);
+    }
+  }, [start, connect]);
+
+  useEffect(() => {
+    if (started.current || !OkEmu.isAvailable()) {
+      return;
+    }
+    if (!autoStart && !OkEmu.isRunning()) {
+      return; /* a build with testing mode: the login screen starts it */
+    }
+    started.current = true;
+    void bootAndConnect('live');
+  }, [autoStart, bootAndConnect]);
+
+  /**
+   * Start the soft key on `net` if nothing runs yet (the login screen's two
+   * buttons). -> the net it runs on: a firmware already running keeps its net,
+   * and switching needs an app restart (a started firmware cannot change storage).
+   */
+  const ensureStarted = useCallback(async (net: Net): Promise<Net> => {
+    if (!started.current && OkEmu.isAvailable()) {
+      started.current = true;
+      await bootAndConnect(net);
+    }
+    return currentNet();
+  }, [bootAndConnect]);
 
   /*
    * SETTLING IS NOT READ FROM THE LED ANY MORE, and the reason is worth
@@ -1097,6 +1124,7 @@ export function useOkEmu({log, autoStart = false}: Options) {
     settling,
     busy,
     start,
+    ensureStarted,
     stop,
     restart,
     connect,

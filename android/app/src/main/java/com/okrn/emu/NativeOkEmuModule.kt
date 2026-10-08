@@ -111,10 +111,16 @@ class NativeOkEmuModule(
       return result(false, "libokemu.so is not available for this ABI", dir)
     }
     if (OkEmuNative.nativeIsRunning()) {
-      return result(false, "already running", dir)
+      /*
+       * The folder it RUNS on, not the one asked for: after a JS reload the app
+       * asks again and must learn which net (live or testnet) it is on
+       * (ok-rn src/net.ts). Asking for the other slot does not move it.
+       */
+      return result(false, "already running", runningDir ?: dir)
     }
     val error = OkEmuNative.nativeStart(dir.absolutePath, this)
     return if (error.isEmpty()) {
+      runningDir = dir
       result(true, "", dir)
     } else {
       result(false, error, dir)
@@ -125,6 +131,7 @@ class NativeOkEmuModule(
     executor.execute {
       try {
         if (OkEmuNative.isLoaded()) OkEmuNative.nativeStop()
+        runningDir = null
         promise.resolve(null)
       } catch (e: Exception) {
         promise.reject(ERR_STOP, e.message ?: "stop failed", e)
@@ -163,6 +170,32 @@ class NativeOkEmuModule(
         "only exits through the AIRCR trap. Restart the app process instead - " +
         "flash.bin and eeprom.bin persist, so device state is preserved.",
     )
+  }
+
+  /*
+   * CLEAR TESTNET (BLOCKS.md §5; Brad, 2026-10-07: "everthing for test is
+   * throwaway"): delete a testnet slot's folder. Only a slot whose name ends in
+   * "test" (buildInfo.testStorageSlot), so no call can reach the live key's
+   * flash, and never the folder the firmware is running on.
+   */
+  override fun deleteSlot(storageSlot: String, promise: Promise) {
+    executor.execute {
+      try {
+        if (storageSlot.isEmpty() || !slotIsPlain(storageSlot) || !storageSlot.endsWith("test")) {
+          promise.reject(ERR_RESET, "only a testnet slot can be deleted, not \"$storageSlot\"")
+          return@execute
+        }
+        val dir = File(File(reactContext.filesDir, "okemu"), storageSlot)
+        if (OkEmuNative.isLoaded() && OkEmuNative.nativeIsRunning() && runningDir?.absolutePath == dir.absolutePath) {
+          promise.reject(ERR_RESET, "the firmware is running on the testnet - restart the app and clear it from the live chain")
+          return@execute
+        }
+        dir.deleteRecursively()
+        promise.resolve(null)
+      } catch (e: Exception) {
+        promise.reject(ERR_RESET, e.message ?: "deleteSlot failed", e)
+      }
+    }
   }
 
   override fun factoryReset(promise: Promise) {
@@ -500,6 +533,8 @@ class NativeOkEmuModule(
   companion object {
     /** the splash has played in this process (a JS reload keeps native memory) */
     @Volatile @JvmStatic private var splashDone = false
+    /** the folder the firmware runs on, kept across a JS reload (net.ts reads it back) */
+    @Volatile @JvmStatic private var runningDir: File? = null
     private const val ERR_START = "ERR_EMU_START"
     private const val ERR_STOP = "ERR_EMU_STOP"
     private const val ERR_RESET = "ERR_EMU_RESET"

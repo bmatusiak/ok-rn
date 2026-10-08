@@ -12,6 +12,8 @@ import type {HardKeySession} from '../hooks/useHardKey';
 import {getOnlyKey} from '../onlykey';
 import type {UsbSession} from '../hooks/useUsbHid';
 import type {LogEntry} from '../hooks/useLog';
+import {currentNet} from '../net';
+import {clearTestnet, scheduleClearAndRestart} from '../testnet';
 
 /** Digits are button numbers, so each must be 1-6, and the firmware wants 7-10. */
 const TEST_PIN = '1234561';
@@ -77,6 +79,8 @@ export function TestingScreen({
 }) {
   const [armed, setArmed] = useState(false);
   const [armedHard, setArmedHard] = useState(false);
+  const [armedTestnet, setArmedTestnet] = useState(false);
+  const [testnetSaid, setTestnetSaid] = useState<string | null>(null);
   const [hardWipe, setHardWipe] = useState<string | null>(null);
 
   /*
@@ -299,6 +303,44 @@ export function TestingScreen({
             </View>
           ) : null}
         </View>
+      </Section>
+
+      {/*
+        THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07: "everthing for test is
+        throwaway"). Enter testing mode on the login screen starts the soft key on its
+        own storage slot; this deletes that slot and every record the phone kept for it.
+        Only from the live chain: the firmware cannot run on a folder being deleted.
+      */}
+      <Section title="Testnet">
+        <Text style={styles.note}>
+          {currentNet() === 'test'
+            ? 'This soft key is the testnet\'s: a throwaway key with its own Edge chain. Clear testnet restarts the app and deletes it before any soft key starts - its flash and EEPROM, every Edge record and Key Chain entry the phone kept for it. The live chain is not touched.'
+            : 'Deletes the testnet\'s soft key (its own flash and EEPROM) and every Edge record and Key Chain entry the phone kept for it. The live chain is not touched.'}
+        </Text>
+        <View style={styles.row}>
+          <View style={styles.cell}>
+            <Btn
+              title={armedTestnet ? 'Really clear the testnet' : currentNet() === 'test' ? 'Clear testnet (restarts the app)' : 'Clear testnet'}
+              tone={armedTestnet ? 'danger' : 'default'}
+              onPress={() => {
+                if (!armedTestnet) {
+                  setArmedTestnet(true);
+                  return;
+                }
+                setArmedTestnet(false);
+                if (currentNet() === 'test') {
+                  void scheduleClearAndRestart().catch((e: unknown) => setTestnetSaid(String(e)));
+                  return;
+                }
+                void clearTestnet().then(
+                  r => setTestnetSaid(`Testnet cleared: its soft key and ${r.removed} record(s).`),
+                  (e: unknown) => setTestnetSaid(String(e)),
+                );
+              }}
+            />
+          </View>
+        </View>
+        {testnetSaid ? <Text style={styles.note}>{testnetSaid}</Text> : null}
       </Section>
 
       {/*

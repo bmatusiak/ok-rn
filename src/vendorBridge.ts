@@ -43,6 +43,7 @@ import type {OnlyKeyApp} from './onlykey';
 import type {LogLevel} from './hooks/useLog';
 import {testingModeOn} from './debugGuard';
 import {ioPulse} from './btActivity';
+import {currentNet} from './net';
 
 /*
  * ONE MEASURING ROUND ON THE A13 (Brad, 2026-10-06): pings are answered in a
@@ -578,7 +579,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       const pong = pingAllowed ? edgePing.answerPing(got.message, {firstAt: fp.at, rxAt}) : null;
       if (pong) {
         /* times and counts only: how long the ping took to arrive, and its echo to go out */
-        const frames = edgeWire.encode(edgeWire.KIND.ANSWER, edgeWire.answerEnvelope(got.message, pong, {dev: myDev}));
+        const frames = edgeWire.encode(edgeWire.KIND.ANSWER, edgeWire.answerEnvelope(got.message, pong, {dev: myDev, net: currentNet()}));
         const t0 = Date.now();
         console.log(`[edge] ping in: ${fp.pieces} pieces in ${t0 - fp.at} ms`);
         for (const frame of frames) push(frame, from);
@@ -594,6 +595,19 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       return;
     }
     if (!onEdgeRequest) return;
+    /*
+     * THE OTHER CHAIN IS REFUSED BEFORE ANYTHING (BLOCKS.md §5; Brad, 2026-10-07):
+     * a computer on the testnet (onlykey-js edge --test-mode) never opens a sheet on
+     * the live chain, and the other way round. A request with no net is an older
+     * computer's: live.
+     */
+    const asked = (got.message as {wire?: {net?: string}})?.wire?.net ?? 'live';
+    if (asked !== currentNet()) {
+      log('info', `[edge] refused a ${asked} request - this phone is on the ${currentNet()} chain`);
+      const refusal = {ok: false, refusal: 'net', detail: currentNet() === 'test' ? 'this phone is on the testnet - add --test-mode' : 'this phone is on the live chain - drop --test-mode'};
+      for (const frame of edgeWire.encode(edgeWire.KIND.ANSWER, edgeWire.answerEnvelope(got.message, refusal, {dev: myDev, net: currentNet()}))) push(frame, from);
+      return;
+    }
     log('rx', `[edge] a request from ${from} - kept for the app, not sent to the key`);
     void onEdgeRequest(got.message, from)
       .then(answer => {
@@ -607,7 +621,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
           return;
         }
         /* the envelope (Brad, 2026-10-06): this answer names the request it answers */
-        for (const frame of edgeWire.encode(edgeWire.KIND.ANSWER, edgeWire.answerEnvelope(got.message, answer, {dev: myDev}))) push(frame, from);
+        for (const frame of edgeWire.encode(edgeWire.KIND.ANSWER, edgeWire.answerEnvelope(got.message, answer, {dev: myDev, net: currentNet()}))) push(frame, from);
       })
       .catch((err: unknown) => log('error', `[edge] the request failed: ${String(err)}`));
   }

@@ -8,13 +8,14 @@
  * loses nothing that matters: the row falls back to the fingerprint.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {currentNet, TEST_PREFIX} from './net';
 
-const KEY = 'edge.siblingNames';
+const KEY = (): string => (currentNet() === 'test' ? TEST_PREFIX + 'siblingNames' : 'edge.siblingNames');
 
 /** key (X || Y hex, lower case) -> the name the sheet showed */
 export async function siblingNames(): Promise<Record<string, string>> {
   try {
-    const raw = await AsyncStorage.getItem(KEY);
+    const raw = await AsyncStorage.getItem(KEY());
     const all = raw ? JSON.parse(raw) : {};
     return all && typeof all === 'object' ? all : {};
   } catch {
@@ -25,5 +26,5 @@ export async function siblingNames(): Promise<Record<string, string>> {
 export async function rememberSiblingName(key: string, name: string): Promise<void> {
   const all = await siblingNames();
   all[key.toLowerCase()] = String(name).slice(0, 255);
-  await AsyncStorage.setItem(KEY, JSON.stringify(all));
+  await AsyncStorage.setItem(KEY(), JSON.stringify(all));
 }

@@ -557,6 +557,23 @@ describe('an agent\'s budget request', () => {
     off();
   });
 
+  /* THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07): a computer on the other chain never reaches the app */
+  test('a request from the other chain is refused before the app sees it; the same chain is answered, naming its net', async () => {
+    const {got, off} = startEdge(async () => ({ok: true}));
+    await send({...MSG, wire: {dev: 'pc-1', id: '0123456789abcdef', ts: 1, net: 'test'}});
+    await settle();
+    await settle();
+    expect(got).toHaveLength(0);
+    expect(answered().message).toMatchObject({ok: false, refusal: 'net', detail: 'this phone is on the live chain - drop --test-mode', wire: {net: 'live', re: {dev: 'pc-1', id: '0123456789abcdef'}}});
+    mockSendVendorReport.mockClear();
+    await send({...MSG, wire: {dev: 'pc-1', id: 'fedcba9876543210', ts: 2, net: 'live'}});
+    await settle();
+    await settle();
+    expect(got).toHaveLength(1);
+    expect(answered().message).toMatchObject({ok: true, wire: {net: 'live', re: {id: 'fedcba9876543210'}}});
+    off();
+  });
+
   test('dropped (null) is answered with nothing', async () => {
     const {fake, off} = startEdge(async () => null);
     await send(MSG);

@@ -13,7 +13,7 @@ import NativeSecrets from '../../specs/NativeSecrets';
 import NativeShare from '../../specs/NativeShare';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const keychain = require('node-onlykey-lib/keychain');
-import {KEYCHAIN_LIST_KEY, onKeyChainRecorded} from '../keyChainRecorder';
+import {keychainListKey, onKeyChainRecorded} from '../keyChainRecorder';
 import {
   type Probe, type Entry, type Job, type DeviceType, type HostType, type RemoveTarget, SLOTS, slotName, DEVICE_TYPES, KIND_TITLE,
   TYPE_INFO, KIND_INFO, SCHEME_INFO, labelText, slotOutcome, Choice, type Progress, ProgressList,
@@ -44,7 +44,8 @@ import {KeyChainRemove} from './keychain/KeyChainRemove';
  */
 
 /* shared with the derive recorder (src/keyChainRecorder.ts) */
-const LIST_KEY = KEYCHAIN_LIST_KEY;
+/* the list on the current net (keyChainRecorder keychainListKey), read when used */
+const LIST_KEY = (): string => keychainListKey();
 const CACHE_KEY = 'okrn.keychain.slots';
 const PENDING_KEY = 'okrn.keychain.pending';
 /*
@@ -185,7 +186,7 @@ export function KeyChainScreen({
 
   /* a derive the soft key answered was recorded (src/keyChainRecorder.ts): read the list again */
   useEffect(() => onKeyChainRecorded(() => {
-    AsyncStorage.getItem(LIST_KEY)
+    AsyncStorage.getItem(LIST_KEY())
       .then(raw => raw && setEntries(keychain.list.parse(raw)))
       .catch(() => {});
   }), []);
@@ -193,7 +194,7 @@ export function KeyChainScreen({
   const saveEntries = useCallback(async (next: Entry[]) => {
     setEntries(next);
     try {
-      await AsyncStorage.setItem(LIST_KEY, keychain.list.serialize(next));
+      await AsyncStorage.setItem(LIST_KEY(), keychain.list.serialize(next));
     } catch {
       /* the list stays in memory for this visit */
     }
@@ -226,7 +227,7 @@ export function KeyChainScreen({
       setCopies(await loadJson<Copy[]>(COPIES_KEY, []));
       setPgpTodo(await loadJson<PgpTodo | null>(PGP_TODO_KEY, null));
       try {
-        const raw = await AsyncStorage.getItem(LIST_KEY);
+        const raw = await AsyncStorage.getItem(LIST_KEY());
         if (raw) setEntries(keychain.list.parse(raw));
       } catch (e) {
         setError(`The Key Chain list on this phone could not be read: ${String((e as Error)?.message ?? e)}`);

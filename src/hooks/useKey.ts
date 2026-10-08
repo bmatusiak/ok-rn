@@ -66,7 +66,8 @@ export function useKey({
   /** The FIDO ceremony in progress, if any - its end starts the settling timer. */
   fidoPending?: unknown;
 }) {
-  const soft = useOkEmu({log: softLog, autoStart: true});
+  /* a build with testing mode boots nothing at launch: the login screen starts it (useOkEmu ensureStarted, Brad 2026-10-07) */
+  const soft = useOkEmu({log: softLog, autoStart: !__DEV__});
   const hard = useHardKey({log: hardLog});
 
   /*

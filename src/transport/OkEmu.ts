@@ -1,7 +1,8 @@
 import {bytes as okbytes, device, transport} from 'node-onlykey-lib';
 import NativeOkEmu from '../../specs/NativeOkEmu';
 import type {LedEvent, StartResult, StreamEvent} from '../../specs/NativeOkEmu';
-import {storageSlot} from '../buildInfo';
+import {storageSlot, testStorageSlot} from '../buildInfo';
+import {netOfStorageDir, setNet, type Net} from '../net';
 
 
 export type {LedEvent, StartResult, StreamEvent};
@@ -134,10 +135,23 @@ class OkEmuClient {
    * would be a dozen places that could pass a different one - a device booting
    * against the wrong flash, looking perfectly healthy. `storageSlot` is
    * derived once, beside the version it comes from.
+   *
+   * THE NET is the one choice a caller makes (Brad, 2026-10-07:
+   * "firmware.start(testmode ? testStorageSlot : storageSlot)"): live or the
+   * testnet's own slot, both derived in buildInfo. The folder the firmware
+   * actually runs on - which, after a JS reload, may not be the one asked for -
+   * decides src/net.ts.
    */
-  async start(): Promise<StartResult> {
+  async start(net: Net = 'live'): Promise<StartResult> {
     this.ensureSubscribed();
-    return NativeOkEmu.start(storageSlot);
+    const result = await NativeOkEmu.start(net === 'test' ? testStorageSlot : storageSlot);
+    setNet(netOfStorageDir(result.storageDir));
+    return result;
+  }
+
+  /** Clear the testnet: delete its slot's folder (refused natively for any other slot, and while it runs). */
+  deleteTestSlot(): Promise<void> {
+    return NativeOkEmu.deleteSlot(testStorageSlot);
   }
 
   stop(): Promise<void> {

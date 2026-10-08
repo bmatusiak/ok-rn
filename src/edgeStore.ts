@@ -18,8 +18,9 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
 import {computerHeldMs} from './vendorBridge';
+import {currentNet, edgeKey} from './net';
 
-const KEY_PREFIX = 'okrn.edge.mirror.';
+const KEY_PREFIX = (): string => edgeKey('mirror.');
 const READ_BATCH = 16;
 
 type StoredMirror = {
@@ -149,7 +150,7 @@ export type EdgeRow = {
   note?: {agent: string; text: string; at: number};
 };
 
-const storageKey = (deviceId: Uint8Array) => KEY_PREFIX + toHex(deviceId);
+const storageKey = (deviceId: Uint8Array) => KEY_PREFIX() + toHex(deviceId);
 
 /*
  * THE COPY IN MEMORY FOR THE SESSION (option A; Brad, 2026-10-07: "option A is good").
@@ -444,10 +445,10 @@ async function continuedFrom(mirror: Mirror): Promise<ContinueCheck | null> {
   try { f = first ? chain.decodeLink(first.link) : null; } catch { return null; }
   if (!f || f.op !== OP_CONTINUE) return null;
   const own = toHex(mirror.deviceId);
-  const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith(KEY_PREFIX) && k !== KEY_PREFIX + own);
+  const keys = (await AsyncStorage.getAllKeys()).filter(k => k.startsWith(KEY_PREFIX()) && k !== KEY_PREFIX() + own);
   let unverifiable: ContinueCheck | null = null;
   for (const k of keys) {
-    const old = await loadMirror(fromHex(k.slice(KEY_PREFIX.length)));
+    const old = await loadMirror(fromHex(k.slice(KEY_PREFIX().length)));
     const r = copy.checkContinue(first.link, {deviceId: old.deviceId, links: old.links});
     if (r.ok) return {ok: true, fromDeviceId: toHex(old.deviceId), oldSeq: r.oldSeq ?? f.seq - 1, debtsChecked: r.debtsChecked};
     if (r.reason === 'unverifiable') unverifiable = {ok: false, fromDeviceId: toHex(old.deviceId), oldSeq: r.oldSeq ?? f.seq - 1, reason: 'unverifiable'};
@@ -985,7 +986,7 @@ export async function blocksOf(deviceId: Uint8Array, siblingIds: string[]): Prom
   const mirror = await loadMirror(deviceId);
   const seen = (await Promise.all(siblingIds.map(async sid => ((await loadMirror(fromHex(sid))).anchors ?? [])
     .map(a => ({deviceId: fromHex(sid), seq: a.seq, head: a.head, signature: a.signature}))))).flat();
-  const r = block.blocksFrom({net: 'live', deviceId, records: mirror.links, seals: mirror.seals ?? [], seen});
+  const r = block.blocksFrom({net: currentNet(), deviceId, records: mirror.links, seals: mirror.seals ?? [], seen});
   let bad = 0;
   r.blocks.forEach((b: any, i: number) => {
     const v = mirror.publicKey ? block.verifyBlock(b, mirror.publicKey, i ? r.blocks[i - 1] : null) : {ok: false};

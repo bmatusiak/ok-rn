@@ -18,10 +18,11 @@ import {fromHex} from 'node-onlykey-lib/bytes';
 import {loadMirror} from './edgeStore';
 import {siblingNames} from './edgeSiblingNames';
 import NativeEdgeAlert from '../specs/NativeEdgeAlert';
+import {edgeKey, netTag} from './net';
 
-const HOURS_KEY = 'okrn.edge.siblingAlarmHours';
-const SINCE_KEY = 'okrn.edge.siblingSince';
-const POSTED_KEY = 'okrn.edge.siblingAlarmed';
+const HOURS_KEY = (): string => edgeKey('siblingAlarmHours');
+const SINCE_KEY = (): string => edgeKey('siblingSince');
+const POSTED_KEY = (): string => edgeKey('siblingAlarmed');
 export const ALARM_HOURS = [12, 24, 48, 72] as const;
 export const DEFAULT_ALARM_HOURS = 24;
 const HOUR = 3600_000;
@@ -29,18 +30,18 @@ const HOUR = 3600_000;
 const SEQ_BASE = 1_200_000_000;
 
 export async function alarmHours(): Promise<number> {
-  const h = Number(await AsyncStorage.getItem(HOURS_KEY).catch(() => null));
+  const h = Number(await AsyncStorage.getItem(HOURS_KEY()).catch(() => null));
   return (ALARM_HOURS as readonly number[]).includes(h) ? h : DEFAULT_ALARM_HOURS;
 }
 export async function setAlarmHours(h: number): Promise<void> {
-  if ((ALARM_HOURS as readonly number[]).includes(h)) await AsyncStorage.setItem(HOURS_KEY, String(h));
+  if ((ALARM_HOURS as readonly number[]).includes(h)) await AsyncStorage.setItem(HOURS_KEY(), String(h));
 }
 
 /** A pairing completed here: its clock starts now (called by the sibling sheet's handler). */
 export async function markPaired(key: string, now = Date.now()): Promise<void> {
-  const all = JSON.parse((await AsyncStorage.getItem(SINCE_KEY)) ?? '{}');
+  const all = JSON.parse((await AsyncStorage.getItem(SINCE_KEY())) ?? '{}');
   all[key.toLowerCase()] = now;
-  await AsyncStorage.setItem(SINCE_KEY, JSON.stringify(all));
+  await AsyncStorage.setItem(SINCE_KEY(), JSON.stringify(all));
 }
 
 /** The reminder comes 4 h before the alarm (20 h of 24), never before half the time. */
@@ -73,8 +74,8 @@ export async function raiseSiblingAlarms(siblings: {key: string; deviceId: strin
   if (!siblings.length || !NativeEdgeAlert) return;
   const hours = await alarmHours();
   const names = await siblingNames();
-  const since: Record<string, number> = JSON.parse((await AsyncStorage.getItem(SINCE_KEY)) ?? '{}');
-  const posted: Record<string, {from: number; stage: number}> = JSON.parse((await AsyncStorage.getItem(POSTED_KEY)) ?? '{}');
+  const since: Record<string, number> = JSON.parse((await AsyncStorage.getItem(SINCE_KEY())) ?? '{}');
+  const posted: Record<string, {from: number; stage: number}> = JSON.parse((await AsyncStorage.getItem(POSTED_KEY())) ?? '{}');
   let changed = false;
   for (const s of siblings) {
     const key = s.key.toLowerCase();
@@ -91,11 +92,11 @@ export async function raiseSiblingAlarms(siblings: {key: string; deviceId: strin
     const name = names[key] ?? `the key ${key.slice(0, 8)}…`;
     const when = new Date(from).toLocaleString([], {weekday: 'short', hour: 'numeric', minute: '2-digit'});
     if (stage === 2) {
-      NativeEdgeAlert.post(idOf(key), `Edge: ${name} has not synced for ${hours} h`,
+      NativeEdgeAlert.post(idOf(key), netTag() + `Edge: ${name} has not synced for ${hours} h`,
         `This key last anchored ${name} ${ago(now - from)} ago (${when}). A key that stops syncing could be hiding uses - sync them now (okedge sync --with), or find out why.`,
         'Edge alarm · a paired key went quiet', false);
     } else {
-      NativeEdgeAlert.post(idOf(key), `Edge: sync with ${name} soon`,
+      NativeEdgeAlert.post(idOf(key), netTag() + `Edge: sync with ${name} soon`,
         `This key last anchored ${name} ${ago(now - from)} ago (${when}). At ${hours} h it becomes an alarm. Nothing syncs on its own: run okedge sync --with, then Anchor on both phones.`,
         'Edge · a sync is due', true);
     }
@@ -103,7 +104,7 @@ export async function raiseSiblingAlarms(siblings: {key: string; deviceId: strin
     changed = true;
   }
   if (changed) {
-    await AsyncStorage.setItem(SINCE_KEY, JSON.stringify(since));
-    await AsyncStorage.setItem(POSTED_KEY, JSON.stringify(posted));
+    await AsyncStorage.setItem(SINCE_KEY(), JSON.stringify(since));
+    await AsyncStorage.setItem(POSTED_KEY(), JSON.stringify(posted));
   }
 }

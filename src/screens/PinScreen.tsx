@@ -53,6 +53,7 @@ export function PinScreen({
   onPress,
   onPressRun,
   onBack,
+  onBypass,
   configMode = false,
   onCheckConfig,
   checking = false,
@@ -89,6 +90,12 @@ export function PinScreen({
    */
   onPressRun?: (buttons: string) => Promise<void> | void;
   onBack?: () => void;
+  /**
+   * LOGIN BYPASS ON THE LIVE KEY (Brad, 2026-10-08): on a build with testing mode the
+   * testing bar's Login Bypass is on the testnet only (Enter testing mode starts the test
+   * key), so the PIN screen offers the same dev PIN for the live key. __DEV__ only.
+   */
+  onBypass?: () => void;
   /** At PRE: the key locked entering config mode and will not report the unlock. */
   configMode?: boolean;
   onCheckConfig?: () => void;
@@ -317,6 +324,7 @@ export function PinScreen({
           {onBack ? (
             <View style={styles.footer}>
               <Btn title="Back" onPress={onBack} />
+              {__DEV__ && onBypass ? <Btn title="Login Bypass" tone="primary" onPress={onBypass} /> : null}
             </View>
           ) : null}
         </>
@@ -388,6 +396,8 @@ export function PinScreen({
       <View style={styles.footer}>
         <Btn title="Restart app" onPress={() => OkEmu.restartApp()} />
         {onBack ? <Btn title="Back" onPress={onBack} /> : null}
+        {/* debug builds only (__DEV__ folds it out of a release): the dev PIN on the LIVE key (Brad, 2026-10-08) */}
+        {__DEV__ && onBypass ? <Btn title="Login Bypass" tone="primary" onPress={onBypass} /> : null}
       </View>
       </>
       )}

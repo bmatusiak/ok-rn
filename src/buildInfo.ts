@@ -268,3 +268,15 @@ export const storageSlot: string = (() => {
   const suffix = 'plugins-' + [...buildInfo.slotPlugins].sort().join('.');
   return model ? `${model}-${suffix}` : suffix;
 })();
+
+/*
+ * THE TESTNET'S SOFT KEY (BLOCKS.md §5; Brad, 2026-10-07: "--test-mode where edge
+ * blockchain files are seperated from live and test (like how bitcoin does it)";
+ * "technically we change the storageSlot then for testnet"). The same firmware,
+ * started on its own flash.bin/eeprom.bin: a whole separate, throwaway key with
+ * its own keys, salt, device id and Edge chain - live and test can never mix, and
+ * clearing the testnet is deleting this folder. Derived here, beside storageSlot,
+ * for the same reason storageSlot is: one place, so no caller boots the wrong flash.
+ * A slot must start with a letter or digit (NativeOkEmuModule.slotIsPlain).
+ */
+export const testStorageSlot: string = storageSlot ? `${storageSlot}-test` : 'test';

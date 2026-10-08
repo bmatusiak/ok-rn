@@ -28,14 +28,15 @@ import {markPaired} from './edgeSiblingAlarm';
 import {setTestIdentities} from './debugGuard';
 import {btTransit} from './btTransit';
 import NativeOkEmu from '../specs/NativeOkEmu';
+import {edgeKey} from './net';
 
-const AGENTS = 'okrn.edge.agents';
-const SEEN = 'okrn.edge.seenNonces';
-const OWN = 'okrn.edge.ownIdentities';
+const AGENTS = (): string => edgeKey('agents');
+const SEEN = (): string => edgeKey('seenNonces');
+const OWN = (): string => edgeKey('ownIdentities');
 /* rule 10: identities Brad marked as test on this phone - only the Agents drawer writes this */
-const TEST_IDS = 'okrn.edge.testIdentities';
-const LAST = 'okrn.edge.agentLast';
-const ON = 'okrn.edge.agentRequests';
+const TEST_IDS = (): string => edgeKey('testIdentities');
+const LAST = (): string => edgeKey('agentLast');
+const ON = (): string => edgeKey('agentRequests');
 const SEEN_KEPT = 2000;
 export const DEFAULT_OWN_IDENTITIES = ['ssh://bmatusiak@localhost'];
 /* how long the sheet waits for the person before the agent is told 'timeout' -
@@ -55,7 +56,7 @@ export const PRESS_WAIT_MS = 20000;
 export type Agent = {key: string; name: string; registered: number; seq?: number};
 
 export async function loadAgents(): Promise<Agent[]> {
-  return JSON.parse((await AsyncStorage.getItem(AGENTS)) || '[]');
+  return JSON.parse((await AsyncStorage.getItem(AGENTS())) || '[]');
 }
 /*
  * The agents that COUNT (R15c): those whose AGENT_ADD link - made at a press -
@@ -84,24 +85,24 @@ async function pressedAgents(): Promise<Agent[]> {
   return (await verifiedAgents()).filter(a => a.inCopy !== null);
 }
 export async function forgetAgent(key: string) {
-  await AsyncStorage.setItem(AGENTS, JSON.stringify((await loadAgents()).filter(a => a.key !== key)));
+  await AsyncStorage.setItem(AGENTS(), JSON.stringify((await loadAgents()).filter(a => a.key !== key)));
 }
 export async function loadOwnIdentities(): Promise<string[]> {
-  const raw = await AsyncStorage.getItem(OWN);
+  const raw = await AsyncStorage.getItem(OWN());
   return raw ? JSON.parse(raw) : [...DEFAULT_OWN_IDENTITIES];
 }
 export async function saveOwnIdentities(names: string[]) {
-  await AsyncStorage.setItem(OWN, JSON.stringify(names));
+  await AsyncStorage.setItem(OWN(), JSON.stringify(names));
 }
 export async function loadTestIdentities(): Promise<string[]> {
-  const raw = await AsyncStorage.getItem(TEST_IDS);
+  const raw = await AsyncStorage.getItem(TEST_IDS());
   const names: string[] = raw ? JSON.parse(raw) : [];
   setTestIdentities(names);
   return names;
 }
 /* the caller (the drawer) refuses ADDING while debugging is on; removing is always allowed (stricter) */
 export async function saveTestIdentities(names: string[]) {
-  await AsyncStorage.setItem(TEST_IDS, JSON.stringify(names));
+  await AsyncStorage.setItem(TEST_IDS(), JSON.stringify(names));
   setTestIdentities(names);
 }
 /* loaded once at start, so the sheet and the Edge tab can check without waiting */
@@ -109,21 +110,21 @@ void loadTestIdentities().catch(() => {});
 
 /* the Agents card's "Requests" switch: off = every agent request is refused unread (a quick "stop all agents") */
 export async function agentRequestsOn(): Promise<boolean> {
-  return (await AsyncStorage.getItem(ON)) !== 'off';
+  return (await AsyncStorage.getItem(ON())) !== 'off';
 }
 export async function setAgentRequestsOn(on: boolean) {
-  await AsyncStorage.setItem(ON, on ? 'on' : 'off');
+  await AsyncStorage.setItem(ON(), on ? 'on' : 'off');
 }
 
 /* each agent's last request, for the Agents card: when, its reason, what it got */
 export type LastRequest = {at: number; reason: string; result: string};
 export async function loadLastRequests(): Promise<Record<string, LastRequest>> {
-  return JSON.parse((await AsyncStorage.getItem(LAST)) || '{}');
+  return JSON.parse((await AsyncStorage.getItem(LAST())) || '{}');
 }
 async function noteLast(agent: string, reason: string, result: string) {
   const all = await loadLastRequests();
   all[agent] = {at: Date.now(), reason, result};
-  await AsyncStorage.setItem(LAST, JSON.stringify(all));
+  await AsyncStorage.setItem(LAST(), JSON.stringify(all));
 }
 
 /**
@@ -152,10 +153,10 @@ export async function liveAgentBudgets() {
 }
 
 async function loadSeen(): Promise<Set<string>> {
-  return new Set(JSON.parse((await AsyncStorage.getItem(SEEN)) || '[]'));
+  return new Set(JSON.parse((await AsyncStorage.getItem(SEEN())) || '[]'));
 }
 async function saveSeen(seen: Set<string>) {
-  await AsyncStorage.setItem(SEEN, JSON.stringify([...seen].slice(-SEEN_KEPT)));
+  await AsyncStorage.setItem(SEEN(), JSON.stringify([...seen].slice(-SEEN_KEPT)));
 }
 
 /* ---------------------------------------------------------------- the sheet */
@@ -600,7 +601,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       if (r.ok && !r.already) {
         await syncCopy(soft).catch(() => undefined); /* the agent-add link, into the tab's copy */
         const others = (await loadAgents()).filter(a => a.key !== r.agent);
-        await AsyncStorage.setItem(AGENTS, JSON.stringify([...others, {key: r.agent, name: r.name, registered: Date.now(), seq: r.seq}]));
+        await AsyncStorage.setItem(AGENTS(), JSON.stringify([...others, {key: r.agent, name: r.name, registered: Date.now(), seq: r.seq}]));
       }
       if (asked) show({phase: 'done', ask: asked, result: r.ok ? {ok: true, text: `${r.name} is registered (the key linked it as #${r.seq})`} : r});
       return r;

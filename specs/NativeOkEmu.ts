@@ -162,6 +162,14 @@ export interface Spec extends TurboModule {
   factoryReset(): Promise<void>;
 
   /**
+   * Delete a TESTNET slot's folder (flash.bin, eeprom.bin): "clear testnet"
+   * (BLOCKS.md §5; Brad, 2026-10-07: "everthing for test is throwaway"). Refused
+   * for any slot that is not a testnet slot (a name ending in "test"), and while
+   * the firmware runs on it.
+   */
+  deleteSlot(storageSlot: string): Promise<void>;
+
+  /**
    * Relaunch the app process.
    *
    * The only way back from a firmware that has ended itself. Its thread exits

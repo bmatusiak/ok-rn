@@ -19,6 +19,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NativeOkEmu from '../specs/NativeOkEmu';
+import {currentNet} from './net';
 
 const keychain = require('node-onlykey-lib/keychain');
 const {sha256} = require('node-onlykey-lib/vendor/@noble/hashes/sha2.js');
@@ -37,8 +38,15 @@ export function noteRpId(rpId: string): void {
   while (rpIds.size > 64) rpIds.delete(rpIds.keys().next().value as string);
 }
 
-/* the Key Chain tab's own storage (KeyChainScreen LIST_KEY) */
+/* the Key Chain tab's own storage (KeyChainScreen) - the live key's name */
 export const KEYCHAIN_LIST_KEY = 'okrn.keychain.list';
+/*
+ * The list on the current net (src/net.ts): the testnet's soft key is another key
+ * with other keys, so its list is its own and is cleared with the testnet.
+ */
+export function keychainListKey(): string {
+  return currentNet() === 'test' ? 'okrn.keychain.test.list' : KEYCHAIN_LIST_KEY;
+}
 
 const CODE_SCHEME: Record<number, string> = {132: 'agent-v1', 232: 'agent-v2', 128: 'web'};
 /* agent derivation keytypes (okcrypto OKGETPUBKEY) */
@@ -117,7 +125,7 @@ export function recordDerive(r: DeriveRecord): Promise<void> {
     const now = new Date().toISOString();
     const e = deriveEntry(r, now);
     if (!e) return;
-    const raw = await AsyncStorage.getItem(KEYCHAIN_LIST_KEY);
+    const raw = await AsyncStorage.getItem(keychainListKey());
     const entries: any[] = raw ? keychain.list.parse(raw) : [];
     /* the same key already here by its name (imported from a computer): that entry, not a second one */
     const old = entries.find(x => x.id === e.id) || (keychain.list.findTwin ? keychain.list.findTwin(entries, e) : null);
@@ -130,7 +138,7 @@ export function recordDerive(r: DeriveRecord): Promise<void> {
     } else {
       entries.push(e);
     }
-    await AsyncStorage.setItem(KEYCHAIN_LIST_KEY, keychain.list.serialize(entries));
+    await AsyncStorage.setItem(keychainListKey(), keychain.list.serialize(entries));
     for (const l of listeners) l();
   });
   queue = run.catch(() => {});
@@ -139,7 +147,7 @@ export function recordDerive(r: DeriveRecord): Promise<void> {
 
 /** This phone's Key Chain list as it is now (public entries). */
 export async function readKeyChainList(): Promise<any[]> {
-  const raw = await AsyncStorage.getItem(KEYCHAIN_LIST_KEY);
+  const raw = await AsyncStorage.getItem(keychainListKey());
   return raw ? keychain.list.parse(raw) : [];
 }
 
@@ -160,7 +168,7 @@ export function keepMergedKeyChain(merged: any[]): Promise<void> {
     const now = await readKeyChainList();
     const ids = new Set(merged.map((e: any) => e.id));
     const since = now.filter((e: any) => !ids.has(e.id) && !keychain.list.findTwin(merged, e));
-    await AsyncStorage.setItem(KEYCHAIN_LIST_KEY, keychain.list.serialize([...merged, ...since]));
+    await AsyncStorage.setItem(keychainListKey(), keychain.list.serialize([...merged, ...since]));
     for (const l of listeners) l();
   });
   queue = run.catch(() => {});

@@ -1,3 +1,4 @@
+import type {Net} from '../net';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {bytes as okbytes, device as device_, protocol, transport as oktransport} from 'node-onlykey-lib';
 import {errText, scrub} from '../logSafe';
@@ -552,6 +553,8 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
     restart,
 
     start,
+    /* a hard key has no testnet: the testnet is a soft key on its own storage slot (src/net.ts) */
+    ensureStarted: async (_net: Net): Promise<Net> => 'live',
     stop,
     connect,
     send,

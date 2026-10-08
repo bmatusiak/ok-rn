@@ -116,9 +116,11 @@ jest.mock('./specs/NativeOkEmu', () => ({
     markSplashDone: jest.fn(),
     splashDoneThisProcess: jest.fn(() => false),
     debuggingOn: jest.fn(() => false),
-    start: jest.fn(() =>
-      Promise.resolve({started: true, message: '', storageDir: '/mock/okemu'}),
+    /* the folder of the slot it was given, as the native module answers (src/net.ts reads the net from it) */
+    start: jest.fn(slot =>
+      Promise.resolve({started: true, message: '', storageDir: slot ? '/mock/okemu/' + slot : '/mock/okemu'}),
     ),
+    deleteSlot: jest.fn(() => Promise.resolve()),
     stop: jest.fn(() => Promise.resolve()),
     factoryReset: jest.fn(() => Promise.resolve()),
     // Never resolves in the app either - the process is gone.

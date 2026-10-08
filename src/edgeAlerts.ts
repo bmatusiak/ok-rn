@@ -19,8 +19,9 @@ import {codes, live} from 'node-onlykey-lib/edge';
 import {toHex} from 'node-onlykey-lib/bytes';
 import NativeEdgeAlert from '../specs/NativeEdgeAlert';
 import type {EdgeView, Mirror} from './edgeStore';
+import {edgeKey, netTag} from './net';
 
-const KEY_PREFIX = 'okrn.edge.alerted.';
+const KEY_PREFIX = (): string => edgeKey('alerted.');
 const {OP} = codes;
 
 export type EdgeAlarm = {seq: number; title: string; text: string; budget?: number};
@@ -55,7 +56,7 @@ export function alarmsAfter(view: EdgeView, after: number): EdgeAlarm[] {
 /** After a sync: post what is new, then remember how far this phone has looked. */
 export async function raiseAlarms(mirror: Mirror, view: EdgeView, live: number[] = []): Promise<void> {
   if (!view.rows.length) return;
-  const key = KEY_PREFIX + toHex(mirror.deviceId);
+  const key = KEY_PREFIX() + toHex(mirror.deviceId);
   const newest = view.rows[0].seq;
   const kept = await AsyncStorage.getItem(key);
   if (kept === null) {
@@ -64,7 +65,7 @@ export async function raiseAlarms(mirror: Mirror, view: EdgeView, live: number[]
   }
   const after = Number(kept);
   if (!(newest > after)) return;
-  for (const a of alarmsAfter(view, after)) NativeEdgeAlert?.post(a.seq, a.title, a.text, lockText(a.budget, live), false);
+  for (const a of alarmsAfter(view, after)) NativeEdgeAlert?.post(a.seq, netTag() + a.title, a.text, lockText(a.budget, live), false);
   await AsyncStorage.setItem(key, String(newest));
 }
 
@@ -97,9 +98,9 @@ function lockText(budget: number | undefined, live: number[]): string {
  */
 const OWED_RED_MS = 10 * 60 * 1000;
 /* the stored name keeps the old word: renaming it would make every phone forget the count it last saw and alert once for old refusals */
-const TX_REFUSED_KEY = 'okrn.edge.refusedArms.';
-const OWED_KEY = 'okrn.edge.owedAlerted.';
-const ENDED_KEY = 'okrn.edge.endedNoticed.';
+const TX_REFUSED_KEY = (): string => edgeKey('refusedArms.');
+const OWED_KEY = (): string => edgeKey('owedAlerted.');
+const ENDED_KEY = (): string => edgeKey('endedNoticed.');
 
 export type WatchState = {refusedTx?: number; live: number[]; past: {grantId: number; endedHow?: string; uses: number; used: number}[]};
 
@@ -107,37 +108,37 @@ export async function raiseWatchAlarms(mirror: Mirror, view: EdgeView, st: Watch
   const dev = toHex(mirror.deviceId);
   /* the key's refused TX starts since it started: a rise is news; a drop is a restart (a new count) */
   const refused = st.refusedTx ?? 0;
-  const lastRefused = Number((await AsyncStorage.getItem(TX_REFUSED_KEY + dev)) ?? '0');
+  const lastRefused = Number((await AsyncStorage.getItem(TX_REFUSED_KEY() + dev)) ?? '0');
   if (refused > lastRefused) {
-    NativeEdgeAlert?.post(view.rows[0]?.seq ?? 0, 'Edge: the key refused a TX start',
+    NativeEdgeAlert?.post(view.rows[0]?.seq ?? 0, netTag() + 'Edge: the key refused a TX start',
       `The key refused ${refused - lastRefused} TX start${refused - lastRefused === 1 ? '' : 's'} (${refused} since it started). A refused TX start writes no link - if you did not expect it, hold the budget.`,
       lockText(undefined, st.live), false);
   }
-  if (refused !== lastRefused) await AsyncStorage.setItem(TX_REFUSED_KEY + dev, String(refused));
+  if (refused !== lastRefused) await AsyncStorage.setItem(TX_REFUSED_KEY() + dev, String(refused));
 
   /* a ticket owed past 10 minutes: once per use */
-  const owedDone: number[] = JSON.parse((await AsyncStorage.getItem(OWED_KEY + dev)) ?? '[]');
+  const owedDone: number[] = JSON.parse((await AsyncStorage.getItem(OWED_KEY() + dev)) ?? '[]');
   const owedNew = view.rows.filter(r => r.ticket?.status === 'waiting' && r.seenAt && now - r.seenAt > OWED_RED_MS && !owedDone.includes(r.seq));
   for (const r of owedNew) {
-    NativeEdgeAlert?.post(r.seq, 'Edge: a ticket is owed too long',
+    NativeEdgeAlert?.post(r.seq, netTag() + 'Edge: a ticket is owed too long',
       `#${r.seq} has waited over 10 minutes for its ticket. Nothing automatic happens until it is ticketed or waived.`,
       lockText(r.fields.grantId || undefined, st.live), false);
   }
-  if (owedNew.length) await AsyncStorage.setItem(OWED_KEY + dev, JSON.stringify([...owedDone, ...owedNew.map(r => r.seq)].slice(-100)));
+  if (owedNew.length) await AsyncStorage.setItem(OWED_KEY() + dev, JSON.stringify([...owedDone, ...owedNew.map(r => r.seq)].slice(-100)));
 
   /* used up / expired: quiet, once per budget; the first look on a phone only records */
   const ended = st.past.filter(b => b.endedHow === 'used up' || b.endedHow === 'expired');
-  const keptEnded = await AsyncStorage.getItem(ENDED_KEY + dev);
+  const keptEnded = await AsyncStorage.getItem(ENDED_KEY() + dev);
   const endedDone: number[] = keptEnded === null ? ended.map(b => b.grantId) : JSON.parse(keptEnded);
   for (const b of ended.filter(x => !endedDone.includes(x.grantId))) {
-    NativeEdgeAlert?.post(b.grantId, `Edge: budget ${b.grantId} ${b.endedHow === 'expired' ? 'expired' : 'spent'}`,
+    NativeEdgeAlert?.post(b.grantId, netTag() + `Edge: budget ${b.grantId} ${b.endedHow === 'expired' ? 'expired' : 'spent'}`,
       b.endedHow === 'expired'
         ? `Budget ${b.grantId} expired with ${Math.max(0, b.uses - b.used)} of ${b.uses} uses left: expect a continue request.`
         : `Budget ${b.grantId} used all ${b.uses} uses: expect a continue request.`,
       `budget ${b.grantId}`, true);
   }
   if (keptEnded === null || ended.some(x => !endedDone.includes(x.grantId))) {
-    await AsyncStorage.setItem(ENDED_KEY + dev, JSON.stringify([...new Set([...endedDone, ...ended.map(b => b.grantId)])].slice(-100)));
+    await AsyncStorage.setItem(ENDED_KEY() + dev, JSON.stringify([...new Set([...endedDone, ...ended.map(b => b.grantId)])].slice(-100)));
   }
 }
 
