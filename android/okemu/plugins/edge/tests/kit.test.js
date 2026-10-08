@@ -1330,7 +1330,7 @@ module.exports = function register({ it }, ctx) {
   /*
    * THE AGENT SERVICE ON THE REAL EDGE FIRMWARE (Edge Phase 2, build step 1 -
    * onlykey-edge daily-loop.md §5: "emulator first, no hardware"). The lib's
-   * own edge-agent (cli/edge-agent.js) over the kit's emulator (the kit's
+   * own edge-agent (edge/cli/agent.js) over the kit's emulator (the kit's
    * libstack), the phone's side in-process (approve.approveRequest), presses
    * by the emulator. A scratch repo: `git commit -S` inside `okedge exec`, an
    * ssh sign on the exec's endpoint bound to a pinned host - each a self-press
@@ -1386,7 +1386,7 @@ module.exports = function register({ it }, ctx) {
         const config = { ssh: 'ssh://claude@okt', gpgUid: 'Claude (okt agent) <claude@okt>', committer: { name: 'Claude (okt agent)', email: 'claude@okt' }, pins: [bindLib.fingerprint(hostBlob)] };
         svc = await startEdgeAgent({
           okcrypto, client: c, edge: edgeSvc, config, openpgp: ctx.requireLib('node-onlykey-lib/crypto/pgp'),
-          shimCommand: path.join(path.dirname(ctx.resolveLib('node-onlykey-lib/package.json')), 'cli', 'edge-gpg-shim.js').split(path.sep).join('/'),
+          shimCommand: ctx.resolveLib('node-onlykey-lib/edge/cli/gpg-shim').split(path.sep).join('/'),
           log, confirm: pressSoon, /* the certificate's two signatures, and any plain sign: a press */
         });
         log(`ssh key: ${svc.sshLine}`);
