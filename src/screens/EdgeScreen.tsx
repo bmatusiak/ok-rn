@@ -736,6 +736,27 @@ function RestoreCard({edge}: {edge: ReturnType<typeof useEdge>}) {
  * (App.tsx shows it only then), and the key's testing controls below check it
  * themselves too, so they stay hidden when the tab ships to everyone.
  */
+/*
+ * BLOCKS (BLOCKS.md §3, Brad 2026-10-07: "we use hash of a json"): the chain as
+ * canonical JSON blocks - one per closed budget, each sealed by the key - exported as
+ * a .json file anyone can check with SHA-256 and this key's public key.
+ */
+function BlocksCard({edge}: {edge: ReturnType<typeof useEdge>}) {
+  const [line, setLine] = useState<string | null>(null);
+  return (
+    <Section title="Blocks">
+      <Text style={styles.dim}>
+        The chain as JSON blocks: one per closed budget, each sealed by the key. Anyone can check them with SHA-256 and this
+        key's public key.
+      </Text>
+      <View style={styles.row}>
+        <Btn title="Export blocks" onPress={() => { setLine('…'); void edge.exportBlocks().then(setLine, (e: unknown) => setLine(String(e))); }} disabled={edge.busy} />
+      </View>
+      {line ? <Text style={styles.dim}>{line}</Text> : null}
+    </Section>
+  );
+}
+
 export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, openGrantId = null, onBudgetOpened}: {testingMode?: boolean; focusSeq?: number | null; onFocused?: () => void; openGrantId?: number | null; onBudgetOpened?: () => void}) {
   const edge = useEdge();
   /* R30: the paired keys' chains this phone holds - the one timeline (above every early return) */
@@ -1090,6 +1111,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
       <BottomDrawer title="Edge Management">
         {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} inDrawer testingMode={testingMode} />}
         {edge.isFake ? null : <EdgeSiblingsCard edge={edge} />}
+        {edge.isFake ? null : <BlocksCard edge={edge} />}
         {!testingMode ? null : edge.isFake ? (
           <Section title="Fake key (testing)">
             <Text style={styles.dim}>

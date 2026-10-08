@@ -407,7 +407,19 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     const from = mirror.links.filter((r: any) => seqOfLink(r) >= p.from);
     const batch = from.slice(0, syncLib.BATCH);
     const hex = (b: Uint8Array) => toHexId(b);
-    return {ok: true, links: batch.map((r: any) => [hex(r.link), hex(r.head), r.reveal ? hex(r.reveal) : null]), next: from.length > batch.length ? seqOfLink(from[batch.length]) : null};
+    const next = from.length > batch.length ? seqOfLink(from[batch.length]) : null;
+    /*
+     * BLOCKS (BLOCKS.md §3, Brad 2026-10-07): with the last batch, the key's seals
+     * (the checkpoints that close each block) and the sibling checkpoints this
+     * chain anchored - what a place needs to cut its copy into JSON blocks. Each is
+     * checked there against the key's own public key; nothing here is trusted.
+     */
+    const blocks = next === null ? {
+      seals: (mirror.seals ?? []).map(s => [s.seq, hex(s.head), hex(s.signature)]),
+      seen: (await Promise.all((await soft.siblings()).map(async s => ((await loadMirror(fromHexId(s.deviceId))).anchors ?? [])
+        .map(a => [s.deviceId, a.seq, hex(a.head), hex(a.signature)])))).flat(),
+    } : {};
+    return {ok: true, links: batch.map((r: any) => [hex(r.link), hex(r.head), r.reveal ? hex(r.reveal) : null]), next, ...blocks};
   }
   /* R30: HAVE / LINKS / ANCHOR for a SIBLING's chain - only a key paired with this one */
   const sibling = p.chain ? (await soft.siblings()).find(s => s.deviceId === String(p.chain).toLowerCase()) ?? null : null;

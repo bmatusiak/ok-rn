@@ -14,7 +14,8 @@ import {SoftKeyEdge} from '../edgeSoftKey';
 import {computerHoldsKey, onKeyFree} from '../vendorBridge';
 import {hasSoftKeyPlugin} from '../buildInfo';
 import {useBackend} from './KeyContext';
-import {chainState, evaluate, forgetVerifiedFor, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
+import {blocksOf, chainState, evaluate, forgetVerifiedFor, liveView, loadMirror, sync as syncMirror, tamper as tamperMirror, type EdgeView, type Tamper} from '../edgeStore';
+import NativeShare from '../../specs/NativeShare';
 
 type Source = EdgeSource & EdgeInbox;
 
@@ -118,6 +119,20 @@ export function useEdge() {
     }),
     [run],
   );
+  /*
+   * BLOCKS (BLOCKS.md §3, Brad 2026-10-07): this key's copy as canonical JSON blocks,
+   * shared as a .json file - what anyone can check with SHA-256 and the key's public key.
+   * -> a line for the tab: how many blocks, how many links still open, any that did not verify
+   */
+  const exportBlocks = useCallback(async (): Promise<string> => {
+    const s = await source();
+    if (!s) return 'the key did not answer';
+    const sibs = ((await (s as unknown as {siblings?: () => Promise<{deviceId: string}[]>}).siblings?.()) ?? []).map(x => x.deviceId);
+    const r = await blocksOf(s.deviceId, sibs);
+    if (!r.count) return r.reason ? 'no blocks: ' + r.reason : 'no blocks yet - a block closes when a budget ends';
+    await NativeShare.shareFile('onlykey-edge-blocks-' + new Date().toISOString().slice(0, 10) + '.json', r.json, 'application/json', 'Edge blocks');
+    return r.count + ' block(s), ' + r.open + ' link(s) after the last seal' + (r.bad ? ' - ' + r.bad + ' did not verify' : ', all verified');
+  }, [source]);
   /** A fake-key action (agent use, ticket, lock), then a sync, as the app would after relaying it. */
   const act = useCallback((fn: (k: FakeEdgeKey) => void) => {
     if (!fake || wantReal) return Promise.resolve();
@@ -306,6 +321,6 @@ export function useEdge() {
   return {
     view, budgets, past, requests, busy, stopping, error, pressFor, copyCheck, keyState, replay, ended, isFake: !wantReal, fullSync,
     sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
-    hold, resume, waive, siblings, removeSibling, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss,
+    hold, resume, waive, siblings, removeSibling, replayCopy, finishRestore, agentSign, continueBudget, dismissEnded, acceptLoss, exportBlocks,
   };
 }

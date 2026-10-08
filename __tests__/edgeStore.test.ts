@@ -557,3 +557,23 @@ test('option A: the Sync button reads the stored copy at once', async () => {
   forgetVerifiedFor(k.deviceId);
   expect((await sync(k)).view.verdict.kind).toBe('tampered');
 });
+
+import {blocksOf} from '../src/edgeStore';
+import {block as edgeBlock} from 'node-onlykey-lib/edge';
+
+test('blocks (BLOCKS.md §3): a budget end closes a block; blocksOf exports it as JSON that verifies with the key\'s public key', async () => {
+  const k = signedDemo();
+  await sync(k);
+  expect((await blocksOf(k.deviceId, [])).count).toBe(0); /* no budget has ended: nothing closed yet */
+  await endOne(k);
+  await sync(k);
+  k.use('commit 3000'); /* after the seal: an open link, in no block yet */
+  await sync(k);
+  const r = await blocksOf(k.deviceId, []);
+  expect(r).toMatchObject({count: 1, bad: 0});
+  expect(r.open).toBeGreaterThan(0);
+  const [b] = JSON.parse(r.json);
+  const m = await loadMirror(k.deviceId);
+  expect(edgeBlock.verifyBlock(b, m.publicKey!)).toMatchObject({ok: true, id: edgeBlock.blockId(b)});
+  expect(b.checkpoint.seq).toBe(m.seals![0].seq);
+});

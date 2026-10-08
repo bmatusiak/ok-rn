@@ -13,7 +13,7 @@
  *     hashes to its ticket link.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {chain, codes, copy, sync as syncLib, tickets} from 'node-onlykey-lib/edge';
+import {block, chain, codes, copy, sync as syncLib, tickets} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
@@ -678,7 +678,8 @@ function takeSeal(mirror: Mirror, head: {seq: number; head: Uint8Array}, cp: {se
   if (!sealDue(mirror, live)) return;
   const ended = grantIdsIn(mirror).filter(id => !live.includes(id));
   const before = new Set(last ? last.ended : []);
-  mirror.seals = [...seals, {seq: cp.seq, head: cp.head, signature: cp.signature, ended}].slice(-8);
+  /* every seal is kept: each closes a block, and the blocks (BLOCKS.md §3) need all of them (one seal ~ 200 bytes) */
+  mirror.seals = [...seals, {seq: cp.seq, head: cp.head, signature: cp.signature, ended}];
   console.log(`[edge] sealed #${cp.seq}: budget ${ended.filter(id => !before.has(id)).join(', ')} ended - its block is closed`);
 }
 
@@ -970,4 +971,25 @@ async function tamperNow(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
   if (how === 'truncate') m.links.splice(m.links.length - 2, 2);
   await saveMirror(m);
   return m;
+}
+
+/*
+ * BLOCKS (BLOCKS.md §3, Brad 2026-10-07: "we use hash of a json"): this key's copy
+ * cut at its seals into canonical JSON blocks - one per closed budget, each sealed
+ * by the key's signed checkpoint - for Export. `seen` is what this chain anchored
+ * of each sibling (kept in that sibling's mirror). Each block is checked against the
+ * key's public key kept with the copy and the block before it; one that does not
+ * verify is still exported (that is the evidence), and counted.
+ */
+export async function blocksOf(deviceId: Uint8Array, siblingIds: string[]): Promise<{json: string; count: number; open: number; bad: number; reason?: string}> {
+  const mirror = await loadMirror(deviceId);
+  const seen = (await Promise.all(siblingIds.map(async sid => ((await loadMirror(fromHex(sid))).anchors ?? [])
+    .map(a => ({deviceId: fromHex(sid), seq: a.seq, head: a.head, signature: a.signature}))))).flat();
+  const r = block.blocksFrom({net: 'live', deviceId, records: mirror.links, seals: mirror.seals ?? [], seen});
+  let bad = 0;
+  r.blocks.forEach((b: any, i: number) => {
+    const v = mirror.publicKey ? block.verifyBlock(b, mirror.publicKey, i ? r.blocks[i - 1] : null) : {ok: false};
+    if (!v.ok) bad += 1;
+  });
+  return {json: JSON.stringify(r.blocks, null, 2) + '\n', count: r.blocks.length, open: r.open, bad, ...(r.reason ? {reason: r.reason} : {})};
 }
