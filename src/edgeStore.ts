@@ -601,6 +601,18 @@ async function keepMergedNow(chainId: Uint8Array, publicKey: Uint8Array, added: 
   await saveMirror(mirror);
 }
 
+/** Another device's own seen times (its clock) for the links of its log this phone holds - so its log reads the same here as on that device. */
+export function keepSeen(deviceId: Uint8Array, seen: Record<string, number>): Promise<void> {
+  const run = syncing.then(() => keepSeenNow(deviceId, seen), () => keepSeenNow(deviceId, seen));
+  syncing = run.catch(() => undefined);
+  return run;
+}
+async function keepSeenNow(deviceId: Uint8Array, seen: Record<string, number>): Promise<void> {
+  const mirror = await loadMirror(deviceId);
+  for (const [k, v] of Object.entries(seen)) if (Number.isFinite(v) && v > 0) mirror.seen[Number(k)] = v;
+  await saveMirror(mirror);
+}
+
 export function keepOffered(deviceId: Uint8Array, added: EdgeLinkRecord[], now = Date.now()): Promise<void> {
   const run = syncing.then(() => keepOfferedNow(deviceId, added, now), () => keepOfferedNow(deviceId, added, now));
   syncing = run.catch(() => undefined);

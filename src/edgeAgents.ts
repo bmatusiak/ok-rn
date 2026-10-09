@@ -295,6 +295,10 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     const blocks = next === null ? {
       seals: (mirror.seals ?? []).map(s => [s.seq, hex(s.head), hex(s.signature)]),
       ...(own ? {statement: {deviceId: own.deviceId, publicKey: own.publicKey, seq: own.seq, nametag: own.nametag, signature: own.signature}} : {}),
+      /* the budgets' opening words: full cards on your other devices, checked there against this log (2026-10-09) */
+      openings: await soft.openingWords().catch(() => []),
+      /* its notes - the intent of each use, each receipt's message - checked against the chain's hashes wherever shown */
+      notes: {reasons: Object.fromEntries(Object.entries(mirror.reasons ?? {}).map(([k, v]) => [k, (v as {text: string}).text])), messages: mirror.messages ?? {}, seen: mirror.seen ?? {}},
     } : {};
     return {ok: true, links: batch.map((r: any) => [hex(r.link), hex(r.head), r.reveal ? hex(r.reveal) : null]), next, ...blocks};
   }
@@ -354,6 +358,8 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
       checkpoint: {seq: c.seq, head: fromHexId(c.head), signature: fromHexId(c.signature)},
       statement: {deviceId: fromHexId(String(p.chain)), publicKey: fromHexId(st2.publicKey), seq: st2.seq ?? null, nametag: st2.nametag, signature: fromHexId(st2.signature)},
       from: syncNames.get(peer) ?? 'a computer',
+      openings: Array.isArray(p.openings) ? p.openings : [],
+      notes: p.notes && typeof p.notes === 'object' ? p.notes : null,
     });
     return {ok: true, held: r.held, count: offered.length};
   }

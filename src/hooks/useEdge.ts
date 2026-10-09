@@ -30,6 +30,12 @@ export function useEdge() {
   const [view, setView] = useState<EdgeView | null>(null);
   const [budgets, setBudgets] = useState<EdgeBudget[]>([]);
   const [past, setPast] = useState<EdgeBudget[]>([]);
+  /* your other devices' budgets (full cards, Brad 2026-10-09) - their own list: each phone numbers its budgets from 1 */
+  const [others, setOthers] = useState<EdgeBudget[]>([]);
+  /* this phone's nametag, for its own cards' corner */
+  const [ownName, setOwnName] = useState<string | null>(null);
+  /* each of your other devices' chain views, by device id - drawn with this phone's own rows */
+  const [deviceViews, setDeviceViews] = useState<Record<string, EdgeView>>({});
   const [requests, setRequests] = useState<EdgeRequest[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +82,22 @@ export function useEdge() {
       const src = s as unknown as {pastBudgets?: () => Promise<EdgeBudget[]>};
       setPast(src.pastBudgets ? await src.pastBudgets().catch(() => []) : []);
       lap('past');
+      const dv = s as unknown as {deviceBudgets?: (id: string, name: string) => Promise<EdgeBudget[]>};
+      if (dv.deviceBudgets) {
+        const {loadDevices, nametagOf, ownStatement} = require('../edgeDevices');
+        const all: EdgeBudget[] = [];
+        const views: Record<string, EdgeView> = {};
+        const dview = s as unknown as {deviceView?: (id: string) => Promise<EdgeView>};
+        for (const d of await loadDevices().catch(() => [])) {
+          const n = await nametagOf(d).catch(() => null);
+          const view = dview.deviceView ? await dview.deviceView(d.deviceId).catch(() => null) : null;
+          if (view) views[String(d.deviceId).toLowerCase()] = view;
+          all.push(...(await dv.deviceBudgets(d.deviceId, n?.nametag ?? `device ${String(d.deviceId).slice(0, 8)}`).catch(() => [])));
+        }
+        setOthers(all);
+        setDeviceViews(views);
+        setOwnName((await ownStatement().catch(() => null))?.nametag ?? null);
+      }
       setKeyState(s.state ? await s.state() : null);
       setEnded(s.ended ? await s.ended() : []);
       lap('state+ended');
@@ -98,6 +120,12 @@ export function useEdge() {
 
   /** B1: HEAD, READ what is new, store, verify everything. */
   const sync = useCallback(() => run(async s => (await syncMirror(s)).view), [run]);
+  /* a merge or a nametag change (edgeDevices): your other devices' cards and logs are read again at once - no pull needed */
+  useEffect(() => {
+    if (!wantReal) return undefined;
+    const {onDevicesChanged} = require('../edgeDevices');
+    return onDevicesChanged(() => { void sync(); });
+  }, [sync, wantReal]);
   /**
    * The Sync button: a full check from the root (Brad, 2026-10-06) - this session's
    * remembered results are dropped first. Pull-down, presses and the 4 s poll use sync.
@@ -275,7 +303,7 @@ export function useEdge() {
   }, [wantReal, source, sync]);
 
   return {
-    view, budgets, past, requests, busy, stopping, error, pressFor, copyCheck, keyState, ended, available: wantReal, fullSync,
+    view, budgets, past, others, ownName, deviceViews, requests, busy, stopping, error, pressFor, copyCheck, keyState, ended, available: wantReal, fullSync,
     sync, verify, tamper, request, revoke, approve, press, decline,
     hold, resume, waive, agentSign, continueBudget, dismissEnded, acceptLoss, exportBlocks,
   };

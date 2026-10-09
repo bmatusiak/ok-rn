@@ -45,6 +45,13 @@ export function budgetStatus(b: EdgeBudget, live: boolean, view: EdgeView | null
   return view?.verdict.kind === 'verified' && allChecked ? {kind: 'validated', unused: b.used === 0} : {kind: 'unchecked'};
 }
 
+/*
+ * ANOTHER DEVICE'S BUDGET is judged the same way, from ITS chain view - this phone re-verifies the
+ * incoming log under that device's key and checkpoint, receipts paired and checked (Brad,
+ * 2026-10-09: "the incoming data must be re-verified"; a shortcut that counted receipts showed
+ * Validated before the receipts themselves had arrived). No view: Not checked yet.
+ */
+
 /** the words the cards show */
 export function budgetStatusText(s: BudgetStatus): string {
   if (s.kind === 'validated') return s.unused ? 'Validated · unused' : 'Validated';

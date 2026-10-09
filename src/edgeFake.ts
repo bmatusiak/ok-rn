@@ -25,6 +25,9 @@ export type EdgeCopyCheck = {ok: true} | {ok: false; reason: string; seq?: numbe
 export type EdgeBudget = {
   /* B7 stage 2: the pairing id of the computer it was opened for - a note shows only from it (no agent key since 2026-10-08) */
   computerId?: string;
+  /* another device's budget (full cards, 2026-10-09): its nametag and device id - the card's corner */
+  device?: string;
+  deviceId?: string;
   grantId: number;
   reason: string;
   uses: number;

@@ -16,16 +16,20 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 const {p256} = require('../node_modules/node-onlykey-lib/src/vendor/exports/@noble/curves/nist.js');
 const {fakeKey, edgeOver} = require('../node_modules/node-onlykey-lib/edge/test/helpers/fake-edge-key');
 
-async function device({ownerSecret, links = 2}: {ownerSecret?: Uint8Array; links?: number} = {}) {
+/* the fake starts with one use owing its result (#0); a complete device files it, with a message (2026-10-09) */
+const DONE0 = 'done #0';
+const {receipts} = require('../node_modules/node-onlykey-lib/edge/src');
+async function device({ownerSecret, links = 2, result = true}: {ownerSecret?: Uint8Array; links?: number; result?: boolean} = {}) {
   const t = fakeKey({secret: p256.utils.randomSecretKey(), ...(ownerSecret ? {ownerSecret} : {})});
   const e = edgeOver(t);
+  if (result) await e.receipt(0, 0, receipts.messageHash(DONE0));
   for (let i = 0; i < links; i += 1) t.edgeRecord();
   return {t, e};
 }
 async function offer(d: {e: any}, nametag: string, from = 'NITRO16') {
   const {publicKey, deviceId} = await d.e.publicKey();
   const h = await d.e.head();
-  return holdLog({deviceId, publicKey, records: await d.e.pickup(0, h.seq + 1), checkpoint: await d.e.checkpoint(), statement: await d.e.statement(nametag), from});
+  return holdLog({deviceId, publicKey, records: await d.e.pickup(0, h.seq + 1), checkpoint: await d.e.checkpoint(), statement: await d.e.statement(nametag), from, notes: {messages: {0: DONE0}}});
 }
 const hex = (b: Uint8Array) => toHex(b);
 
@@ -133,4 +137,31 @@ test('the banner names the computer and the device (Brad, 2026-10-08: "nitro16 w
   expect(await bannerLine()).toBeNull();
   await offer(await device(), 'Pixel', 'nitro16');
   expect(await bannerLine()).toBe('nitro16 wants to merge a unknown backup device Pixel');
+});
+
+test('after a key reset (a new device id) the old statement is signed again, the nametag kept (2026-10-08)', async () => {
+  const before = await device();
+  await setNametag(before.e, 'work phone');
+  const after = await device(); /* the same key after its Edge reset: a new device id */
+  const {deviceId} = await after.e.publicKey();
+  const s = await ensureNametag({statement: (n: string) => after.e.statement(n), deviceId});
+  expect(s?.nametag).toBe('work phone');
+  expect(s?.deviceId).toBe(hex(deviceId));
+  expect((await ownStatement())?.deviceId).toBe(hex(deviceId));
+});
+
+/*
+ * COMPLETE BEFORE IT IS MERGED (Brad, 2026-10-09: "a data store must contain all info about the
+ * usage of the credental, including the result"): a log with a use still waiting for its result
+ * is held, the sheet says what is missing, and the merge refuses it.
+ */
+test('a log missing a use\'s result is not merged - the sheet says what is missing', async () => {
+  const me = await device();
+  await setNametag(me.e, 'A13');
+  const waiting = await device({links: 1, result: false});
+  await offer(waiting, 'hard key');
+  const [v] = await reviewHeld();
+  expect(v.complete).toBe(false);
+  expect(v.missing.join(' ')).toMatch(/#0: no result/);
+  await expect(approveHeld(v.deviceId, {isMine: true})).rejects.toThrow(/not complete - nothing merged/);
 });

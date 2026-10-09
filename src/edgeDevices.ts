@@ -21,7 +21,7 @@
  * name per fingerprint and never 'unknown'.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {devices as devicesLib} from 'node-onlykey-lib/edge';
+import {devices as devicesLib, sync as syncLib} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import NativeEdgeAlert from '../specs/NativeEdgeAlert';
 import {keepMerged, loadMirror} from './edgeStore';
@@ -43,6 +43,10 @@ export type HeldLog = {
   publicKey: string;
   from: string;
   at: number;
+  /* the budgets' opening words it came with - checked against the log only at the merge (2026-10-09) */
+  openings?: unknown[];
+  /* its notes: {reasons: {seq: text}, messages: {seq: text}} - checked against the chain where shown */
+  notes?: {reasons?: Record<string, string>; messages?: Record<string, string>; seen?: Record<string, number>} | null;
   records: [string, string, string | null][];
   checkpoint: {seq: number; head: string; signature: string};
   statement: StoredStatement;
@@ -50,7 +54,7 @@ export type HeldLog = {
   leak?: boolean;
 };
 /** What the Approve sheet shows for one held device. */
-export type HeldView = {deviceId: string; nametag: string | null; claimed: string; class: 'mine-known' | 'mine-new' | 'forged'; count: number; from: string; at: number; checkOk: boolean; alarm: string | null; declined: boolean; leak: boolean};
+export type HeldView = {complete: boolean; missing: string[]; deviceId: string; nametag: string | null; claimed: string; class: 'mine-known' | 'mine-new' | 'forged'; count: number; from: string; at: number; checkOk: boolean; alarm: string | null; declined: boolean; leak: boolean};
 
 const toStatement = (s: StoredStatement): Statement => ({deviceId: fromHex(s.deviceId), publicKey: fromHex(s.publicKey), seq: s.seq ?? null, nametag: s.nametag, signature: fromHex(s.signature)});
 const store = (s: Statement & {ownerKey?: Uint8Array}): StoredStatement => ({
@@ -108,8 +112,21 @@ export async function deviceName(): Promise<string> {
  * name the first time one is needed - the drawer opening, or a computer asking for its log.
  * A nametag set by hand is never replaced. -> this phone's statement, or null (no key, no name)
  */
-export async function ensureNametag(soft: {statement(nametag: string): Promise<any>} | null): Promise<StoredStatement | null> {
+export async function ensureNametag(soft: {statement(nametag: string): Promise<any>; deviceId?: Uint8Array} | null): Promise<StoredStatement | null> {
   const have = await ownStatement();
+  /*
+   * A STATEMENT FOR ANOTHER CHAIN IS SIGNED AGAIN (2026-10-08, walking the setup flow): after the
+   * key's Edge region was reset (or restored - a new device id), the phone kept giving the old
+   * chain's statement, and every computer refused it ("the statement does not name this device"),
+   * so this phone's log was never offered to your other devices. Same nametag, this chain.
+   */
+  if (have && soft?.deviceId && have.deviceId.toLowerCase() !== toHex(soft.deviceId).toLowerCase()) {
+    try {
+      return await setNametag(soft, have.nametag);
+    } catch {
+      return null;
+    }
+  }
   if (have || !soft) return have;
   const name = await deviceName();
   if (!name) return null;
@@ -155,7 +172,7 @@ async function saveHeld(list: HeldLog[]): Promise<void> {
  * A log offered by a computer: HELD, never merged here. A newer offer of the same device
  * replaces an older one; an older one never replaces a newer one. -> {held, count}
  */
-export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; records: EdgeLinkRecord[]; checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array}; statement: Statement; from: string}, now = Date.now()): Promise<{held: boolean; count: number}> {
+export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; records: EdgeLinkRecord[]; checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array}; statement: Statement; from: string; openings?: unknown[]; notes?: HeldLog['notes']}, now = Date.now()): Promise<{held: boolean; count: number}> {
   const id = toHex(o.deviceId);
   const list = await loadHeld();
   const was = list.find(h => h.deviceId === id);
@@ -165,6 +182,8 @@ export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; r
     records: o.records.map(r => [toHex(r.link), toHex(r.head), r.reveal ? toHex(r.reveal) : null]),
     checkpoint: {seq: o.checkpoint.seq, head: toHex(o.checkpoint.head), signature: toHex(o.checkpoint.signature)},
     statement: store(o.statement),
+    ...(o.openings && o.openings.length ? {openings: o.openings.slice(0, 500)} : {}),
+    ...(o.notes ? {notes: o.notes} : {}),
   };
   await saveHeld([...list.filter(h => h.deviceId !== id), entry]);
   return {held: true, count: entry.records.length};
@@ -188,6 +207,7 @@ export async function reviewHeld(): Promise<HeldView[]> {
     out.push({
       deviceId: h.deviceId, nametag: c.nametag, claimed: h.statement.nametag, class: c.class as HeldView['class'], count: h.records.length, from: h.from, at: h.at,
       checkOk: !!c.check.ok, alarm: c.check.ok ? null : c.check.alarm ?? 'bad', declined: !!h.declined, leak: !!h.leak,
+      ...(await completenessOf(h)),
     });
   }
   return out;
@@ -230,12 +250,70 @@ export async function approveHeld(deviceId: string, {isMine = false}: {isMine?: 
   if (view.class === 'forged') throw new Error('not made with your OnlyKey - it is kept as evidence, never merged');
   if (!view.checkOk) throw new Error(`its chain does not check (${view.alarm}) - kept, not merged`);
   if (view.class === 'mine-new' && !isMine) throw new Error('say whether this device is yours first');
+  if (!view.complete) throw new Error(`not complete - nothing merged: ${view.missing.slice(0, 3).join('; ')}`);
   const log = logOf(h);
   await keepMerged(log.deviceId, log.publicKey, log.records, {seq: h.checkpoint.seq, head: log.checkpoint.head, signature: log.checkpoint.signature, at: Date.now()});
   const known = devicesLib.remember(await loadDevices(), log.statement);
   await AsyncStorage.setItem(DEVICES(), JSON.stringify(known));
+  await keepOpenings(id, log.publicKey, h.openings ?? []);
+  await keepNotes(log.deviceId, h.notes ?? null);
   await saveHeld(list.filter(x => x.deviceId !== id));
   return {merged: log.records.length};
+}
+
+/*
+ * FULL CARDS FOR YOUR OTHER DEVICES (Brad, 2026-10-09: "full cards, i want to see them in the
+ * budget history list"): the openings that came with a merged log, checked against that log as
+ * this phone now holds it (devices.checkOpenings - the grant-create subject, the weld, the key's
+ * signature from the press) and filed like this phone's own budget records, under that device.
+ * Words that do not check are dropped. A record kept before keeps its local fields.
+ */
+async function keepOpenings(deviceIdHex: string, publicKey: Uint8Array, openings: unknown[]): Promise<number> {
+  if (!openings.length) return 0;
+  const {budgetRecordKey} = require('./edgeSoftKey');
+  const records = (await loadMirror(fromHex(deviceIdHex))).links;
+  const good = (devicesLib as any).checkOpenings({deviceId: fromHex(deviceIdHex), publicKey, records, openings}) as any[];
+  for (const o of good) {
+    const key = budgetRecordKey(deviceIdHex, o.grantId);
+    const was = JSON.parse((await AsyncStorage.getItem(key)) || 'null');
+    await AsyncStorage.setItem(key, JSON.stringify({
+      ...(was ?? {}), v: 1, reason: o.reason, scopes: o.scopes, uses: o.uses, genesis: o.genesis, signature: o.signature,
+      lifetime: o.lifetime, ...(o.opened ? {opened: o.opened} : {}), from: o.from ?? '',
+    }));
+  }
+  return good.length;
+}
+
+/* that device's notes into this phone's copy of its log - drawn, and checked against the chain's hashes, exactly as on that device */
+async function keepNotes(deviceId: Uint8Array, notes: HeldLog['notes']): Promise<void> {
+  if (!notes) return;
+  const {addNote} = require('./edgeStore');
+  for (const [k, text] of Object.entries(notes.reasons ?? {})) if (typeof text === 'string') await addNote(deviceId, {computer: '', seq: Number(k), reason: text});
+  for (const [k, text] of Object.entries(notes.messages ?? {})) if (typeof text === 'string') await addNote(deviceId, {computer: '', seq: Number(k), receiptMsg: text});
+  /* that device's own seen times - its log reads the same here as there */
+  if (notes.seen) await require('./edgeStore').keepSeen(deviceId, notes.seen);
+}
+
+/*
+ * COMPLETE BEFORE IT ENTERS THIS PHONE'S STORE (Brad, 2026-10-09: "dont use shortcut to validate
+ * syncd data, before mergering into another data store"; "a data store must contain all info
+ * about the usage of the credental, including the result"). What this phone would hold after the
+ * merge - its copy of that device plus the incoming links, opening words and notes - checked as a
+ * whole against the chain (devices.completeness): every budget's words, every use's intent, every
+ * use's result with its message. Missing or wrong anywhere: not merged, and the sheet says what.
+ */
+async function completenessOf(h: HeldLog): Promise<{complete: boolean; missing: string[]}> {
+  try {
+    const mirror = await loadMirror(fromHex(h.deviceId));
+    const records = syncLib.merge(mirror.links, recordsOf(h)).links;
+    const reasons: Record<string, string> = {};
+    for (const [k, v] of Object.entries(mirror.reasons ?? {})) reasons[k] = (v as {text: string}).text;
+    const notes = {reasons: {...reasons, ...(h.notes?.reasons ?? {})}, messages: {...(mirror.messages ?? {}), ...(h.notes?.messages ?? {})}};
+    const r = (devicesLib as any).completeness({deviceId: fromHex(h.deviceId), publicKey: fromHex(h.publicKey), records, openings: h.openings ?? [], notes});
+    return r.ok ? {complete: true, missing: []} : {complete: false, missing: r.missing};
+  } catch (e: any) {
+    return {complete: false, missing: [`could not be checked: ${String(e?.message ?? e)}`]};
+  }
 }
 
 /** Decline: kept as evidence, out of your view. */

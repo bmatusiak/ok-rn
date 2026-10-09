@@ -39,7 +39,8 @@ function Bar({used, total}: {used: number; total: number}) {
   );
 }
 
-export function BudgetBlock({b, status, onPress}: {b: EdgeBudget; status?: BudgetStatus; onPress?: () => void}) {
+/* device: the device that opened it, at the bottom right (Brad, 2026-10-09: "in the bottom right of a list item, we can have the device name") */
+export function BudgetBlock({b, status, onPress, device}: {b: EdgeBudget; status?: BudgetStatus; onPress?: () => void; device?: string | null}) {
   const pct = b.uses ? Math.round((100 * b.used) / b.uses) : 0;
   const lasted = b.openedAt && b.endedAt ? span((b.endedAt - b.openedAt) / 60000) : null;
   const owed = Math.max(0, b.used - (b.receiptsFiled ?? 0));
@@ -72,9 +73,12 @@ export function BudgetBlock({b, status, onPress}: {b: EdgeBudget; status?: Budge
           <Text style={styles.mono}>{b.exact !== false ? `${sc.used} / ${sc.cap}` : `– / ${sc.cap}`}</Text>
         </View>
       ))}
-      <Text style={[styles.line, {color: owed ? theme.warn : theme.ok}]}>
-        {b.used === 0 ? 'no uses' : owed ? `receipts ${b.receiptsFiled ?? 0} of ${b.used} - ${owed} owed` : `receipts ${b.used} of ${b.used} ✓`}
-      </Text>
+      <View style={styles.head}>
+        <Text style={[styles.line, {color: owed ? theme.warn : theme.ok}]}>
+          {b.used === 0 ? 'no uses' : owed ? `receipts ${b.receiptsFiled ?? 0} of ${b.used} - ${owed} owed` : `receipts ${b.used} of ${b.used} ✓`}
+        </Text>
+        {device ?? b.device ? <Text style={styles.device} numberOfLines={1}>{device ?? b.device}</Text> : null}
+      </View>
     </View>
   );
   return onPress ? (
@@ -90,6 +94,7 @@ export function BudgetBlock({b, status, onPress}: {b: EdgeBudget; status?: Budge
 const styles = StyleSheet.create({
   block: {paddingHorizontal: 16, paddingVertical: 12, gap: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.border},
   head: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8},
+  device: {color: theme.textDim, fontSize: 13, flexShrink: 1, textAlign: 'right'},
   id: {color: theme.text, fontWeight: '700', fontSize: 15},
   status: {color: theme.textDim, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5},
   reason: {color: theme.text, fontSize: 14, lineHeight: 19},

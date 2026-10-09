@@ -62,6 +62,12 @@ export function MergeSheet({visible, onClose}: {visible: boolean; onClose: () =>
                     <Text style={[styles.op, {color: theme.error}]}>Not made with your OnlyKey - this computer sent a forged log. Kept as evidence, never merged.</Text>
                     <View style={styles.row}><Btn title="Keep as evidence" onPress={act(() => declineHeld(r.deviceId), 'Kept as evidence.')} disabled={busy} /></View>
                   </>
+                ) : !r.complete ? (
+                  <>
+                    {/* complete before it is merged (Brad, 2026-10-09): every use of the credential, with its result */}
+                    <Text style={[styles.op, {color: theme.error}]}>{`Not complete - nothing merged. ${r.missing.slice(0, 4).join('; ')}${r.missing.length > 4 ? ` (+${r.missing.length - 4} more)` : ''}`}</Text>
+                    <View style={styles.row}><Btn title="Decline" onPress={act(() => declineHeld(r.deviceId), 'Declined - kept, not merged.')} disabled={busy} /></View>
+                  </>
                 ) : !r.checkOk ? (
                   <>
                     <Text style={[styles.op, {color: theme.error}]}>{`Made with your OnlyKey, but its chain does not check (${r.alarm}). Kept, not merged.`}</Text>

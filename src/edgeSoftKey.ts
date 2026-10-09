@@ -17,7 +17,7 @@ import {approve as approveLib, chain, codes, request as requestLib, receipts} fr
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import {getOnlyKey} from './onlykey';
 import OkEmu from './transport/OkEmu';
-import {chainState, loadMirror} from './edgeStore';
+import {chainState, evaluate, loadMirror, type EdgeView} from './edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeCopyKey, EdgeEnded, EdgeInbox, EdgeKeyState, EdgeLinkRecord, EdgeRequest, EdgeSource} from './edgeFake';
 import {edgeKey} from './net';
 
@@ -30,6 +30,8 @@ function receipted(mirror: {links: {link: Uint8Array}[]}, uses: number[]): numbe
 }
 const PICKUP_MAX = 8;
 const REGISTRY = (): string => edgeKey('budgets.');
+/* one budget's record on this phone - its own budgets, and (since 2026-10-09) your other devices' checked openings */
+export const budgetRecordKey = (deviceIdHex: string, grantId: number): string => REGISTRY() + deviceIdHex.toLowerCase() + '.' + grantId;
 
 /*
  * What this phone keeps of a budget it approved: the request, G, and the
@@ -199,7 +201,8 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return (this.snap.keys ??= await AsyncStorage.getAllKeys());
   }
 
-  private budgetFrom(id: number, kept: Kept | null, mirror: Awaited<ReturnType<typeof loadMirror>>): EdgeBudget {
+  /* other: another device's budget - its opening's from names who asked (no pairing id travels) */
+  private budgetFrom(id: number, kept: Kept | null, mirror: Awaited<ReturnType<typeof loadMirror>>, other = false): EdgeBudget {
     const spentRows = mirror.links
       .map(r => ({f: chain.decodeLink(r.link), scope: (r.link as Uint8Array)[46] || 0}))
       .filter(x => x.f.grantId === id && x.f.decision === DECISION.SELF_PRESS);
@@ -237,7 +240,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       lifetime: kept?.lifetime || DEFAULT_LIFETIME_MINUTES,
       receiptsFiled: receipted(mirror, spent.map(f => f.seq)),
       ...(kept?.endedAt ? {endedAt: kept.endedAt} : {}),
-      ...(kept?.computer ? {agent: kept.from} : {}),
+      ...(kept?.computer || (other && kept?.from) ? {agent: kept!.from} : {}),
     };
   }
 
@@ -271,17 +274,52 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    */
   async pastBudgets(): Promise<EdgeBudget[]> {
     const h = await this.keyHead();
-    const mirror = await this.mirrorNow();
-    const prefix = REGISTRY() + toHex(this.deviceId) + '.';
+    return this.historyOf(toHex(this.deviceId), await this.mirrorNow(), new Set(h.live as number[]));
+  }
+
+  /*
+   * YOUR OTHER DEVICES' BUDGETS (Brad, 2026-10-09: "full cards, i want to see them in the budget
+   * history list"): the same cards, built the same way from that device's merged log and the
+   * opening words it sent - kept only after they checked against the log (edgeDevices
+   * approveHeld). Its live budgets are not known here: one not ended in the log shows as it
+   * stood at the last merge. device: its nametag, for the card's corner.
+   */
+  async deviceBudgets(deviceIdHex: string, device: string): Promise<EdgeBudget[]> {
+    const out = await this.historyOf(deviceIdHex, await loadMirror(fromHex(deviceIdHex)), new Set(), true);
+    return out.map(b => ({...b, device, deviceId: deviceIdHex.toLowerCase()}));
+  }
+
+  /**
+   * ANOTHER DEVICE'S CHAIN VIEW (Brad, 2026-10-09: "all the data i see on the a13 should be just
+   * like on the pixel"): its merged log, checked under its own key against the last checkpoint
+   * merged, with its openings and notes - the same rows (receipts paired, intents checked) its
+   * own phone draws.
+   */
+  async deviceView(deviceIdHex: string): Promise<EdgeView> {
+    const mirror = await loadMirror(fromHex(deviceIdHex));
+    const last = (mirror.merged ?? [])[(mirror.merged ?? []).length - 1];
+    if (!last || !mirror.publicKey) return evaluate(mirror, null);
+    const prefix = REGISTRY() + deviceIdHex.toLowerCase() + '.';
+    const keys = (await this.storageKeys()).filter(key => key.startsWith(prefix));
+    const openings: Record<number, unknown> = {};
+    for (const [key, raw] of Object.entries(await AsyncStorage.getMany([...keys]))) {
+      const rec: Kept | null = JSON.parse(raw || 'null');
+      if (rec && rec.signature) openings[Number(key.slice(prefix.length))] = openingOf(rec);
+    }
+    return evaluate(mirror, {seq: last.seq, head: last.head, ringFrom: last.seq + 1}, [], {publicKey: mirror.publicKey, openings, checkpoint: {seq: last.seq, head: last.head, signature: last.signature}});
+  }
+
+  /* every budget with a record on this phone for that device and not live now, newest first */
+  private async historyOf(deviceIdHex: string, mirror: Awaited<ReturnType<typeof loadMirror>>, live: Set<number>, other = false): Promise<EdgeBudget[]> {
+    const prefix = REGISTRY() + deviceIdHex.toLowerCase() + '.';
     const keys = (await this.storageKeys()).filter(k => k.startsWith(prefix));
-    const live = new Set(h.live as number[]);
     const ends = new Set(mirror.links.map(r => chain.decodeLink(r.link)).filter(f => f.op === OP.GRANT_END).map(f => f.grantId));
     const out: EdgeBudget[] = [];
     for (const k of keys) {
       const id = Number(k.slice(prefix.length));
       if (!Number.isInteger(id) || live.has(id)) continue;
       const raw = await AsyncStorage.getItem(k);
-      const b = this.budgetFrom(id, raw ? JSON.parse(raw) : null, mirror);
+      const b = this.budgetFrom(id, raw ? JSON.parse(raw) : null, mirror, other);
       b.endedHow = ends.has(id) ? 'ended' : b.used >= b.uses ? 'used up' : b.endsAt && Date.now() > b.endsAt ? 'expired' : 'lost when the key locked or restarted';
       /* like a block: the links it spans - its opening to the last link that names it (a use, its end) or answers one of its uses (a receipt) */
       const decoded = mirror.links.map(r => chain.decodeLink(r.link));
@@ -304,6 +342,26 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       out.push(b);
     }
     return out.sort((a, b2) => b2.grantId - a.grantId);
+  }
+
+  /**
+   * THIS PHONE'S BUDGET OPENINGS, as they travel with its log (GIVE): the words and the press's
+   * checkpoint signature - what lets your other devices show full cards after checking them
+   * against this log (devices.checkOpenings). Only openings kept with their signature.
+   */
+  async openingWords(): Promise<Record<string, unknown>[]> {
+    const prefix = REGISTRY() + toHex(this.deviceId) + '.';
+    const keys = (await this.storageKeys()).filter(key => key.startsWith(prefix));
+    const out: Record<string, unknown>[] = [];
+    for (const [key, raw] of Object.entries(await AsyncStorage.getMany([...keys]))) {
+      const kept: Kept | null = JSON.parse(raw || 'null');
+      if (!kept || !kept.signature) continue;
+      out.push({
+        grantId: Number(key.slice(prefix.length)), reason: kept.reason, scopes: kept.scopes, uses: kept.uses, lifetime: kept.lifetime ?? 0,
+        genesis: kept.genesis, signature: kept.signature, ...(kept.opened ? {opened: kept.opened} : {}), ...(kept.from ? {from: kept.from} : {}),
+      });
+    }
+    return out;
   }
 
   async messages() {

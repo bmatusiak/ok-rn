@@ -529,13 +529,38 @@ function PendingCard({r, busy, waiting, blocked, onApprove, onPress, onDecline}:
  * are the budget's own links: its grant-create, every self-press it paid for
  * (each with its receipt), and its end. Its steps must run 1, 2, 3...
  */
-function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof useEdge>; onBack: () => void}) {
+/*
+ * ANOTHER DEVICE'S BUDGET (Brad, 2026-10-09: "full cards"): its card - words checked against its
+ * log at the merge - and its links as merged from that device, newest first. Nothing here reads
+ * this phone's chain: that device numbers its budgets from 1 as this one does.
+ */
+function DeviceBudgetView({b, device, onBack}: {b: EdgeBudget; device: YourDevice | undefined; onBack: () => void}) {
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { onBack(); return true; });
+    return () => sub.remove();
+  }, [onBack]);
+  const links = (device?.links ?? []).filter(l => l.grantId === b.grantId);
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <View style={styles.row}>
+        <Btn title="‹ Back" onPress={onBack} />
+      </View>
+      <BudgetCard b={b} busy={false} heading={`Budget ${b.grantId}`} status={budgetStatus(b, false, null)} footer={
+        <Text style={styles.dim}>{`On ${b.device ?? 'another device'}${device?.mergedUpTo !== null && device?.mergedUpTo !== undefined ? ` · merged up to #${device.mergedUpTo}` : ''}`}</Text>
+      } />
+      {device ? links.map(l => <DeviceRow key={l.seq} device={device} link={l} />) : null}
+    </ScrollView>
+  );
+}
+
+/* other: another device's budget - its own chain view, read-only (no Waive, no copy tools), its name on the card */
+function BudgetView({b, edge, onBack, other}: {b: EdgeBudget; edge: ReturnType<typeof useEdge>; onBack: () => void; other?: {view: EdgeView; name: string}}) {
   /* the phone's own Back (button or gesture) goes back too, as the ‹ Back button does (Brad, 2026-10-07) */
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => { onBack(); return true; });
     return () => sub.remove();
   }, [onBack]);
-  const v = edge.view;
+  const v = other ? other.view : edge.view;
   const line = v ? verdictLine(v.verdict) : {text: 'Reading…', color: theme.textDim};
   /* oldest first, only to check its steps ran 1, 2, 3; the view lists its presses newest first,
      like the Presses tab, so a pending receipt shows at once (Brad, 2026-10-06) */
@@ -548,20 +573,20 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
   const verifiedAt = new Map(all.map(r => [r.seq, r.verified]));
   const attached = new Set<number>();
   for (const r of all) if (r.receipt?.receipt) attached.add(r.receipt.receipt.seq);
-  const liveUses = new Map(edge.budgets.map(x => [x.grantId, x.uses]));
+  const liveUses = other ? new Map<number, number>() : new Map(edge.budgets.map(x => [x.grantId, x.uses]));
   const notesFrom = new Map<string, number>();
   for (const r of all) {
     if (r.note && !(notesFrom.get(r.note.computer)! <= r.note.at)) notesFrom.set(r.note.computer, Math.min(r.note.at, r.seenAt ?? r.note.at));
   }
-  const agentOf = new Map([...edge.past, ...edge.budgets].filter(x => x.computerId).map(x => [x.grantId, String(x.computerId)]));
-  const presses: EdgeListItem[] = [{key: 's-presses', kind: 'section', title: 'Presses'}];
+  const agentOf = other ? new Map<number, string>() : new Map([...edge.past, ...edge.budgets].filter(x => x.computerId).map(x => [x.grantId, String(x.computerId)]));
+  const presses: EdgeListItem[] = [{key: 's-presses', kind: 'section', title: other ? `Presses on ${other.name}` : 'Presses'}];
   for (const r of all) {
     if (r.fields.grantId !== b.grantId) continue;
     if (r.fields.op === OP.RECEIPT && attached.has(r.seq)) continue; /* it hangs under its use */
     presses.push({key: `h${r.seq}`, kind: 'node', bare: true, render: () => (
       <View style={styles.historyRow}>
         {/* edge: an owed receipt shows the Waive controls under it, as the old list did */}
-        <LinkRow row={r} edge={edge} continued={v?.continued} budgetUses={liveUses} agentOf={agentOf} notesFrom={notesFrom} receiptVerified={r.receipt?.receipt ? verifiedAt.get(r.receipt.receipt.seq) !== false : true} />
+        <LinkRow row={r} edge={other ? undefined : edge} continued={v?.continued} budgetUses={liveUses} agentOf={agentOf} notesFrom={notesFrom} receiptVerified={r.receipt?.receipt ? verifiedAt.get(r.receipt.receipt.seq) !== false : true} />
       </View>
     )});
   }
@@ -571,7 +596,7 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
       <View style={styles.row}>
         <Btn title="‹ Back" onPress={onBack} />
       </View>
-      <BudgetCard b={b} busy={false} heading={`Budget ${b.grantId}`} status={budgetStatus(b, edge.budgets.some(x => x.grantId === b.grantId), v)} footer={
+      <BudgetCard b={b} busy={false} heading={`Budget ${b.grantId}`} status={budgetStatus(b, !other && edge.budgets.some(x => x.grantId === b.grantId), v)} footer={
         <Text style={[styles.dim, {color: inOrder ? theme.textDim : theme.error}]}>
           {steps.length === 0
             ? 'Nothing spent from it yet.'
@@ -587,8 +612,9 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
         {v?.lastSync ? ` · last sync ${new Date(v.lastSync).toLocaleTimeString()} (phone clock)` : ''}
       </Text>
       {edge.error ? <Text style={[styles.dim, {color: theme.error}]}>{edge.error}</Text> : null}
+      {other ? <Text style={styles.dim}>{`On ${other.name}`}</Text> : null}
       {presses.map(it => <EdgeListEntry key={it.key} item={it} />)}
-      <Section title="This phone's copy (testing)">
+      {other ? null : <Section title="This phone's copy (testing)">
         <Text style={styles.dim}>
           Edits change only this phone's copy of the chain, the way an attacker could. Verify shows what they break; Sync heals
           what the key still holds.
@@ -603,7 +629,7 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
           <Btn title="Forget copy" onPress={() => edge.tamper('forget')} disabled={edge.busy} />
           <Btn title="Store a stray reply" tone="danger" onPress={() => edge.tamper('stray')} disabled={edge.busy} />
         </View>
-      </Section>
+      </Section>}
     </ScrollView>
   );
 }
@@ -730,6 +756,13 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
      * when the budget was opened: budget 351 on the A13, opened with nothing spent,
      * read "0 of 4 uses spent" after its four uses and its end (Brad, 2026-10-06).
      */
+    /* another device's budget: its own view - its card and its links from that device's merged log, never this phone's chain */
+    if (open.deviceId) {
+      const ob = edge.others.find(x => x.deviceId === open.deviceId && x.grantId === open.grantId) ?? open;
+      const dv = edge.deviceViews[String(open.deviceId).toLowerCase()];
+      if (dv) return <BudgetView b={ob} edge={edge} onBack={() => setOpen(null)} other={{view: dv, name: ob.device ?? 'another device'}} />;
+      return <DeviceBudgetView b={ob} device={devices.find(d => d.deviceId === open.deviceId)} onBack={() => setOpen(null)} />;
+    }
     const b = edge.budgets.find(x => x.grantId === open.grantId) ?? edge.past.find(x => x.grantId === open.grantId) ?? open;
     return <BudgetView b={b} edge={edge} onBack={() => setOpen(null)} />;
   }
@@ -932,10 +965,14 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
     </>
   )});
   /* BUDGET HISTORY (Brad, 2026-10-04): every budget this phone opened that is not live now - tap one for its chain */
-  if (done.length) {
-    items.push({key: 's-past', kind: 'section', title: 'Past budgets', right: `${done.length}`});
-    for (const b of done) {
-      items.push({key: `p${b.grantId}`, kind: 'node', bare: true, render: () => <BudgetBlock b={b} status={budgetStatus(b, false, edge.view)} onPress={() => setOpen(b)} />});
+  /* and your other devices' budgets, full cards (Brad, 2026-10-09: "i want to see them in the budget history list"), newest first */
+  const history = [...done, ...edge.others].sort((a, b2) => (b2.openedAt ?? 0) - (a.openedAt ?? 0));
+  if (history.length) {
+    items.push({key: 's-past', kind: 'section', title: 'Past budgets', right: `${history.length}`});
+    for (const b of history) {
+      items.push({key: b.deviceId ? `o${b.deviceId}-${b.grantId}` : `p${b.grantId}`, kind: 'node', bare: true, render: () => (
+        <BudgetBlock b={b} status={budgetStatus(b, false, b.deviceId ? edge.deviceViews[b.deviceId] ?? null : edge.view)} device={b.deviceId ? b.device : edge.ownName} onPress={() => setOpen(b)} />
+      )});
     }
   }
   const rows = edge.view?.rows ?? [];
@@ -1006,19 +1043,41 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
    */
   for (const d of devices) {
     if (!d.links.length) continue;
+    if (!edge.deviceViews[String(d.deviceId).toLowerCase()]) continue;
     items.push({key: `dv-${d.deviceId}`, kind: 'node', bare: true, render: () => (
       <View style={styles.historyRow}>
         <Text style={[styles.dim, styles.siblingHead]}>{`${deviceName(d)} · device ${d.deviceId.slice(0, 8)}…${d.mergedUpTo !== null ? ` · merged up to #${d.mergedUpTo}` : ''}`}</Text>
       </View>
     )});
-    const shown = allOf.has(d.deviceId) ? d.links : d.links.slice(0, SIBLING_FIRST);
-    for (const l of shown) items.push({key: `dv-${d.deviceId}-${l.seq}`, kind: 'node', bare: true, render: () => <DeviceRow device={d} link={l} />});
-    if (d.links.length > SIBLING_FIRST) {
+    /* the same rows this phone draws for its own chain: receipts under their use, intents checked against the chain (Brad, 2026-10-09: "all the data i see on the a13 should be just like on the pixel") */
+    const dv = edge.deviceViews[String(d.deviceId).toLowerCase()];
+    const dvRows = dv?.rows ?? [];
+    const dvAttached = new Set<number>();
+    for (const r of dvRows) if (r.receipt?.receipt) dvAttached.add(r.receipt.receipt.seq);
+    const dvVerified = new Map(dvRows.map(r => [r.seq, r.verified]));
+    const dvUses = new Map<number, number>(); /* its budgets are not live here: no "left", as on that device for an ended one */
+    const dvShown = dvRows.filter(r => !(r.fields.op === OP.RECEIPT && dvAttached.has(r.seq)));
+    const shownRows = allOf.has(d.deviceId) ? dvShown : dvShown.slice(0, SIBLING_FIRST);
+    for (const r of shownRows) {
+      /* a press of another device opens its budget's full card (Brad, 2026-10-09: "and by pressing the presses history") */
+      const card = r.fields.grantId ? edge.others.find(x => x.deviceId === String(d.deviceId).toLowerCase() && x.grantId === r.fields.grantId) : undefined;
+      items.push({key: `dv-${d.deviceId}-${r.seq}`, kind: 'node', bare: true, render: () => {
+        const body = (
+          <View style={styles.historyRow}>
+            <LinkRow row={r} continued={dv?.continued} budgetUses={dvUses} receiptVerified={r.receipt?.receipt ? dvVerified.get(r.receipt.receipt.seq) !== false : true} />
+          </View>
+        );
+        return card ? (
+          <Pressable onPress={() => setOpen(card)} accessibilityRole="button" accessibilityLabel={`Open budget ${card.grantId} of ${deviceName(d)}`}>{body}</Pressable>
+        ) : body;
+      }});
+    }
+    if (dvShown.length > SIBLING_FIRST) {
       const isOpen = allOf.has(d.deviceId);
       items.push({key: `dv-${d.deviceId}-more`, kind: 'node', bare: true, render: () => (
         <Pressable style={[styles.historyRow, styles.siblingRow]} accessibilityRole="button"
           onPress={() => setAllOf(prev => { const n = new Set(prev); if (isOpen) n.delete(d.deviceId); else n.add(d.deviceId); return n; })}>
-          <Text style={[styles.op, {color: SIBLING_RING, paddingVertical: 8}]}>{isOpen ? 'Show fewer' : `Show all ${d.links.length}`}</Text>
+          <Text style={[styles.op, {color: SIBLING_RING, paddingVertical: 8}]}>{isOpen ? 'Show fewer' : `Show all ${dvShown.length}`}</Text>
         </Pressable>
       )});
     }
