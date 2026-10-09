@@ -46,12 +46,11 @@ const debugging = (on: boolean) => (NativeOkEmu.debuggingOn as jest.Mock).mockRe
 const KINDS: Record<string, {ask: any; button: string}> = {
   request: {
     button: 'Approve',
-    ask: {kind: 'request', agentName: 'claude', blocked: null, at: Date.now(), view: {
-      agent: 'aa'.repeat(32), continues: null, reason: 'TEST: one check', uses: 1, lifetime: 10, covered: [], ownWarning: false,
+    ask: {kind: 'request', computer: 'NITRO16', blocked: null, at: Date.now(), view: {
+      continues: null, reason: 'TEST: one check', uses: 1, lifetime: 10, covered: [],
       scopes: [{op: 'sign', slot: 221, cap: 1, identity: 'ssh://test@nitro16'}],
     }},
   },
-  register: {button: 'Register', ask: {kind: 'register', agent: 'bb'.repeat(32), name: 'claude', fingerprint: 'bbbbbbbb…bbbbbbbb'}},
 };
 
 test('the kinds list names every SheetAsk kind (a new kind - a sibling - must be added here)', () => {
@@ -128,7 +127,6 @@ const PATHS: {path: string; file: string; anchor: RegExp}[] = [
   /* the soft key's Confirm panel when an EDGE press waits (the FIDO Confirm above it is a passkey press, not an Edge consent) */
   {path: 'the key\'s Confirm panel (Edge)', file: 'App.tsx', anchor: /title="Confirm" tone="primary" onPress=\{\(\) => \{ if \(keyWaiting\.what === 'edge'[^\n]*/},
   {path: 'resume a held budget', file: 'src/screens/EdgeScreen.tsx', anchor: /title="Resume"[^\n]*/},
-  {path: 'Mark as test', file: 'src/ui/EdgeAgentsCard.tsx', anchor: /title="Mark as test"[\s\S]{0,400}?setTestRefused\(true\)/},
   {path: 'the sheet (budget, registration)', file: 'src/ui/EdgeRequestSheet.tsx', anchor: /const consent = [^\n]*\n[^\n]*/},
   /* 2026-10-08: merging a log a sync brought - every button of the banner's sheet goes through act() */
   {path: 'merge a held log (the banner sheet)', file: 'src/ui/MergeSheet.tsx', anchor: /const act = [\s\S]{0,120}?consentRefusal\(\)/},

@@ -596,6 +596,15 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     }
     if (!onEdgeRequest) return;
     /*
+     * ONLY INSIDE A PAIRED COMPUTER'S ENCRYPTED SESSION (Brad, 2026-10-08: "so the claude key thing
+     * is overkill"): the pairing is who asks now - no agent key signs a request - so a message that
+     * did not arrive sealed, all of it, never reaches Edge - not even the other-chain refusal below. Silence, like anything unknown.
+     */
+    if (!wasSealed) {
+      log('info', `[edge] a request from ${from} - not encrypted (not a paired computer's session); dropped`);
+      return;
+    }
+    /*
      * THE OTHER CHAIN IS REFUSED BEFORE ANYTHING (BLOCKS.md §5; Brad, 2026-10-07):
      * a computer on the testnet (onlykey-js edge --test-mode) never opens a sheet on
      * the live chain, and the other way round. A request with no net is an older
@@ -612,7 +621,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
     void onEdgeRequest(got.message, from)
       .then(answer => {
         if (answer === null || answer === undefined) {
-          log('info', '[edge] dropped without an answer (not registered, bad signature, or replayed)');
+          log('info', '[edge] dropped without an answer (not a paired computer, malformed, or replayed)');
           return;
         }
         /* the gates again: the person may have turned API off, or changed target, while the sheet was up */

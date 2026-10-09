@@ -29,7 +29,7 @@
 #define OKEDGE_RECEIPT 0x20       /* replies seq . head */
 #define OKEDGE_WAIVE 0x21        /* R18: press; replies seq . head */
 #define OKEDGE_TX_START 0x22          /* R13a: TX start {head} */
-#define OKEDGE_AGENT_ADD 0x15    /* mcp-service 4.7a: {agent key 32}, press; an agent-add link, subject = SHA256("OKEDGE-AGENT-v1" || key) */
+/* 0x15 was AGENT_ADD: retired 2026-10-08 (a computer is trusted by its Bluetooth pairing); answers EDGE_UNKNOWN_REQUEST */
 #define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts */
 #define OKEDGE_WIPE_DEBUG 0x7E   /* R31: DEBUG builds only - the Edge region erased (state, pairs, salt); no key outside it touched */
 /* R3 (2026-10-06): byte 63 of every link this build writes - 0 = the links before it (no version), still readable */

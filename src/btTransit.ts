@@ -540,6 +540,18 @@ export function createBtTransit(deps: Deps = {}) {
     },
 
     /**
+     * The paired computer behind a link - its pairing id and name - or null when the link is
+     * not a paired one. WHO ASKS for an Edge budget (Brad, 2026-10-08: "so the claude key thing
+     * is overkill"): the pairing proves the computer; the id ties a continue to the same one.
+     */
+    async computer(address: string): Promise<{id: string; name: string} | null> {
+      const s = await load();
+      const x = sessions.get(address);
+      const rec = (x && s.records.find(r => r.id === x.id)) || s.records.find(r => r.mac !== null && r.mac.toLowerCase() === address.toLowerCase());
+      return rec ? {id: String(rec.id), name: rec.name} : null;
+    },
+
+    /**
      * Sessions open now: a paired computer between its hello and its goodbye (the
      * status bar's ⚿ green). activeWithinMs: only those with traffic that recently -
      * Brad's fallback (2026-10-07) for a command killed without its goodbye, whose

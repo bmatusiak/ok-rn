@@ -29,15 +29,23 @@ const noop = () => {};
  * throw naming the error. The dump is written on the device and read back;
  * `-o -` is not supported on every Android version.
  */
+/*
+ * EIGHT TRIES, A PAUSE BETWEEN (2026-10-08): uiautomator reads the screen only in a quiet moment,
+ * and the Edge request sheet counts down every second - three tries back to back often all fell
+ * on a repaint, so Approve was "not found" and the request timed out on the Pixel. The ticks leave
+ * gaps; more tries, spread out, land in one.
+ */
+const DUMP_TRIES = 8;
 function dumpUi({trace = noop} = {}) {
   let said = '';
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    adb(['shell', 'rm', '-f', DUMP_FILE]);
-    said = adb(['shell', 'uiautomator', 'dump', DUMP_FILE]).trim();
+  for (let attempt = 1; attempt <= DUMP_TRIES; attempt++) {
+    if (attempt > 1) require('child_process').spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},' + (150 + Math.floor(Math.random() * 350)) + ')']);
+    /* a failed read makes adb exit non-zero, and adb() throws - caught, so the next try still runs */
+    try { adb(['shell', 'rm', '-f', DUMP_FILE]); said = adb(['shell', 'uiautomator', 'dump', DUMP_FILE]).trim(); } catch (e) { said = String((e && e.message) || e).split(/\r?\n/)[0]; }
     if (/dumped to/i.test(said)) {
       return adb(['shell', 'cat', DUMP_FILE]);
     }
-    trace(`ui dump ${attempt}/3 failed: ${said || '(no output)'}`);
+    trace(`ui dump ${attempt}/${DUMP_TRIES} failed: ${said || '(no output)'}`);
   }
   throw new Error(
     `the screen could not be read: uiautomator said "${said}". It needs a second ` +

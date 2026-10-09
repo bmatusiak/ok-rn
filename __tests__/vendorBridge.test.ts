@@ -546,31 +546,21 @@ describe('an agent\'s budget request', () => {
   };
   const MSG = {type: 'EDGE_REQUEST', reason: 'push bm-ok/ok-rn - a reason long enough to need several reports', scopes: [{op: 'sign', slot: 222, cap: 5, identity: 'ssh://agent@nitro16'}], lifetime: 60};
 
-  test('it is gathered for the app and never written to the key; the answer goes back as OKEDGE_REQUEST reports', async () => {
+  /*
+   * NOT ENCRYPTED = NOT A PAIRED COMPUTER (Brad, 2026-10-08: "so the claude key thing is overkill"):
+   * no agent key signs a request any more, so one that did not come inside a pairing's encrypted
+   * session never reaches the app - no answer, nothing written to the key. The sealed path is in
+   * the pairing gate's tests below.
+   */
+  test('an unencrypted request never reaches the app: no answer, nothing written to the key', async () => {
     const {fake, got, off} = startEdge(async () => ({ok: false, refusal: 'declined'}));
     await send(MSG);
-    await settle();
-    await settle();
-    expect(fake.writes).toHaveLength(0);
-    expect(got).toEqual([{msg: MSG, from: TARGET}]);
-    expect(answered()).toEqual({kind: wire.KIND.ANSWER, message: {ok: false, refusal: 'declined'}});
-    off();
-  });
-
-  /* THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07): a computer on the other chain never reaches the app */
-  test('a request from the other chain is refused before the app sees it; the same chain is answered, naming its net', async () => {
-    const {got, off} = startEdge(async () => ({ok: true}));
     await send({...MSG, wire: {dev: 'pc-1', id: '0123456789abcdef', ts: 1, net: 'test'}});
     await settle();
     await settle();
+    expect(fake.writes).toHaveLength(0);
     expect(got).toHaveLength(0);
-    expect(answered().message).toMatchObject({ok: false, refusal: 'net', detail: 'this phone is on the live chain - drop --test-mode', wire: {net: 'live', re: {dev: 'pc-1', id: '0123456789abcdef'}}});
-    mockSendVendorReport.mockClear();
-    await send({...MSG, wire: {dev: 'pc-1', id: 'fedcba9876543210', ts: 2, net: 'live'}});
-    await settle();
-    await settle();
-    expect(got).toHaveLength(1);
-    expect(answered().message).toMatchObject({ok: true, wire: {net: 'live', re: {id: 'fedcba9876543210'}}});
+    expect(answered()).toBeNull();
     off();
   });
 
@@ -607,7 +597,7 @@ describe('the pairing gate (Part T)', () => {
   const fromHex = (h: string) => Uint8Array.from(h.match(/../g)!.map(x => parseInt(x, 16)));
   const hexOf = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
 
-  function startGated() {
+  function startGated(onEdgeRequest?: (msg: any, from: string) => Promise<unknown | null>) {
     const fake = fakeTransport();
     const m = new Map<string, string>();
     const gate = createBtTransit({
@@ -620,6 +610,7 @@ describe('the pairing gate (Part T)', () => {
       getKey: async () => ({transport: fake.transport} as never),
       getTarget: () => TARGET,
       transit: gate,
+      onEdgeRequest,
     });
     return {fake, gate, off};
   }
@@ -631,6 +622,72 @@ describe('the pairing gate (Part T)', () => {
     const f = [...mockFrames].reverse().find(x => x.cmd === cmd);
     return f ? fromHex(f.hex) : null;
   };
+
+  /* pair with the 6-digit code, say hello: the encrypted session an Edge request must come in */
+  async function pairedSession(gate: any) {
+    const cli = bt.generateIdentity();
+    gate.openPairWindow();
+    const s1 = bt.cliPairStart({identity: cli, name: 'NITRO16'});
+    await send(0x05, s1.msg);
+    const s2 = bt.cliPairOnKeys(s1.state, lastFrame(0x85));
+    await send(0x05, s2.msg);
+    gate.approvePairing();
+    await settle();
+    const s3 = bt.cliPairOnDone(s2.state, lastFrame(0x85), Date.now());
+    await send(0x05, s3.msg);
+    const h = bt.cliHello(s3.record, {name: 'NITRO16'});
+    await send(0x05, h.msg);
+    return bt.cliOnHelloOk(h.state, lastFrame(0x85));
+  }
+  const sendEdgeSealed = async (session: any, msg: unknown) => {
+    const {wire} = jest.requireActual('node-onlykey-lib/edge');
+    for (const frame of wire.encode(wire.KIND.REQUEST, msg)) await send(0x04, bt.seal(session, Uint8Array.from([0x01, ...frame])));
+    await settle();
+  };
+  const sealedAnswer = (session: any) => {
+    const {wire} = jest.requireActual('node-onlykey-lib/edge');
+    const asm = wire.createAssembler();
+    let got: any = null;
+    for (const fr of mockFrames.filter(x => x.cmd === 0x84)) {
+      const pt = bt.open(session, fromHex(fr.hex));
+      if (pt[0] === 0x01) got = asm.push(pt.slice(1)) || got;
+    }
+    return got;
+  };
+  const EDGE_MSG = {type: 'EDGE_REQUEST', reason: 'push bm-ok/ok-rn - a reason long enough to need several reports', scopes: [{op: 'sign', slot: 222, cap: 5, identity: 'ssh://agent@nitro16'}], lifetime: 60};
+
+  /* WHO ASKS IS THE PAIRING (Brad, 2026-10-08): inside the paired session, a budget request reaches the app; nothing of it is written to the key */
+  test('an Edge request inside a paired session reaches the app, never the key; the answer goes back sealed', async () => {
+    const got: any[] = [];
+    const {fake, gate, off} = startGated(async (msg, from) => { got.push({msg, from}); return {ok: false, refusal: 'declined'}; });
+    const session = await pairedSession(gate);
+    mockFrames.length = 0;
+    await sendEdgeSealed(session, EDGE_MSG);
+    await settle();
+    expect(fake.writes).toHaveLength(0);
+    expect(got).toEqual([{msg: EDGE_MSG, from: TARGET}]);
+    expect(sealedAnswer(session)).toEqual({kind: 2, message: {ok: false, refusal: 'declined'}});
+    expect(mockSendVendorReport).not.toHaveBeenCalled(); /* nothing went out in plaintext */
+    off();
+  });
+
+  /* THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07): a computer on the other chain never reaches the app */
+  test('a request from the other chain is refused before the app sees it; the same chain is answered, naming its net', async () => {
+    const got: any[] = [];
+    const {gate, off} = startGated(async msg => { got.push(msg); return {ok: true}; });
+    const session = await pairedSession(gate);
+    mockFrames.length = 0;
+    await sendEdgeSealed(session, {...EDGE_MSG, wire: {dev: 'pc-1', id: '0123456789abcdef', ts: 1, net: 'test'}});
+    await settle();
+    expect(got).toHaveLength(0);
+    expect(sealedAnswer(session).message).toMatchObject({ok: false, refusal: 'net', detail: 'this phone is on the live chain - drop --test-mode', wire: {net: 'live', re: {dev: 'pc-1', id: '0123456789abcdef'}}});
+    mockFrames.length = 0;
+    await sendEdgeSealed(session, {...EDGE_MSG, wire: {dev: 'pc-1', id: 'fedcba9876543210', ts: 2, net: 'live'}});
+    await settle();
+    expect(got).toHaveLength(1);
+    expect(sealedAnswer(session).message).toMatchObject({ok: true, wire: {net: 'live', re: {id: 'fedcba9876543210'}}});
+    off();
+  });
 
   test('plaintext gets nothing: not written to the key, nothing sent back', async () => {
     const {fake, off} = startGated();

@@ -50,8 +50,8 @@ type Kept = {
   endedAt?: number;
   /* 4.7a: an ended agent budget's card dismissed (nothing on the key changes) */
   dismissed?: boolean;
-  /* opened for an agent's EDGE_REQUEST: its registered key (hex) - a continue must come from the same agent */
-  agent?: string;
+  /* opened for an EDGE_REQUEST from a paired computer: its pairing id - a continue must come from the same computer (no agent key since 2026-10-08) */
+  computer?: string;
 };
 const DEFAULT_LIFETIME_MINUTES = 12 * 60;
 
@@ -99,7 +99,15 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     /* 4 s: right after start the background sync's chain reads go first (lib client.js deviceIdentity, 2026-10-04) */
     if ((await app.edge.probe({timeoutMs: 4000})) !== 'edge') return null;
     const {deviceId} = await app.edge.publicKey();
-    return new SoftKeyEdge(app.edge, deviceId);
+    const soft = new SoftKeyEdge(app.edge, deviceId);
+    /*
+     * THE DEFAULT NAMETAG, MADE EARLY (Brad, 2026-10-08: "i still had to click change name tag"):
+     * the first time the app reaches the key after login (the background sync does, within
+     * seconds), a phone with no nametag signs its device name - so it is there before anyone
+     * opens Edge Management. Once per phone; a nametag set by hand is never replaced.
+     */
+    void require('./edgeDevices').ensureNametag(soft).catch(() => undefined);
+    return soft;
   }
 
   /*
@@ -216,7 +224,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return {
       grantId: id,
       reason: kept ? kept.reason : `Budget ${id} (opened elsewhere)`,
-      agentKey: kept?.agent,
+      computerId: kept?.computer,
       uses: kept ? kept.uses : spent.length,
       used: Math.max(stepsSpent, spent.length),
       scopes,
@@ -229,7 +237,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       lifetime: kept?.lifetime || DEFAULT_LIFETIME_MINUTES,
       receiptsFiled: receipted(mirror, spent.map(f => f.seq)),
       ...(kept?.endedAt ? {endedAt: kept.endedAt} : {}),
-      ...(kept?.agent ? {agent: kept.from} : {}),
+      ...(kept?.computer ? {agent: kept.from} : {}),
     };
   }
 
@@ -387,7 +395,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       const lifetime = kept.lifetime || DEFAULT_LIFETIME_MINUTES;
       const minutesLeft = Math.floor(lifetime - (Date.now() - kept.opened) / 60000);
       if (!scopes.length || minutesLeft < 1) continue;
-      out.push({grantId, reason: kept.reason, scopes, usesLeft: scopes.reduce((n, sc) => n + sc.cap, 0), minutesLeft, ...(kept.agent ? {agent: kept.from} : {})});
+      out.push({grantId, reason: kept.reason, scopes, usesLeft: scopes.reduce((n, sc) => n + sc.cap, 0), minutesLeft, ...(kept.computer ? {agent: kept.from} : {})});
     }
     return out;
   }
@@ -401,12 +409,12 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   /**
    * 4.7a: the LIVE budgets that already cover what a request names - same op,
    * slot and identity - with uses left and when each ends ("this agent already
-   * has N uses left on <identity> until <time>"). sameAgent: opened for the
-   * agent that asks.
+   * has N uses left on <identity> until <time>"). sameComputer: opened for the
+   * paired computer that asks.
    */
-  async coverOf(msg: any) {
+  async coverOf(msg: any, computer: string | null = null) {
     const live = await this.budgets();
-    const out: {identity?: string; slot: number; usesLeft: number; endsAt?: number; grantId: number; sameAgent: boolean}[] = [];
+    const out: {identity?: string; slot: number; usesLeft: number; endsAt?: number; grantId: number; sameComputer: boolean}[] = [];
     for (const b of live) {
       const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(REGISTRY() + toHex(this.deviceId) + '.' + b.grantId)) || 'null');
       for (const want of msg.scopes as any[]) {
@@ -415,19 +423,9 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
         if (!sc) continue;
         out.push({
           ...(want.identity ? {identity: want.identity} : {}), slot: want.slot, usesLeft: Math.max(0, sc.cap - sc.used),
-          endsAt: b.endsAt, grantId: b.grantId, sameAgent: !!kept?.agent && kept.agent === String(msg.agent).toLowerCase(),
+          endsAt: b.endsAt, grantId: b.grantId, sameComputer: !!kept?.computer && kept.computer === computer,
         });
       }
-    }
-    return out;
-  }
-
-  /** The agent budgets live on the key, for the Agents card: by agent key. */
-  async liveAgentBudgets(): Promise<Record<string, EdgeBudget[]>> {
-    const out: Record<string, EdgeBudget[]> = {};
-    for (const b of await this.budgets()) {
-      const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(REGISTRY() + toHex(this.deviceId) + '.' + b.grantId)) || 'null');
-      if (kept?.agent) (out[kept.agent] ??= []).push(b);
     }
     return out;
   }
@@ -558,32 +556,31 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * copy stops verifying at its grant-create link: the tab's Approve, an
    * agent's request, and the e2e suite (ctx.edgeCopy).
    */
-  async keepOpening(g: any, o: {reason: string; scopes: any[]; from: string; lifetime: number; agent?: string}) {
+  async keepOpening(g: any, o: {reason: string; scopes: any[]; from: string; lifetime: number; computer?: string}) {
     const kept: Kept = {
       v: 1,
       reason: o.reason, scopes: o.scopes, uses: g.uses, genesis: typeof g.genesis === 'string' ? g.genesis : toHex(g.genesis), from: o.from,
       signature: typeof g.checkpoint.signature === 'string' ? g.checkpoint.signature : toHex(g.checkpoint.signature),
-      lifetime: o.lifetime, opened: Date.now(), ...(o.agent ? {agent: o.agent} : {}),
+      lifetime: o.lifetime, opened: Date.now(), ...(o.computer ? {computer: o.computer} : {}),
     };
     await AsyncStorage.setItem(REGISTRY() + toHex(this.deviceId) + '.' + g.grantId, JSON.stringify(kept));
     openingsKept.get(toHex(this.deviceId))?.set(g.grantId, openingOf(kept)); /* the memory follows our own write */
   }
 
   /**
-   * An agent's EDGE_REQUEST (mcp-service.md 4.7a), from the vendor bridge: the
-   * library's one implementation decides (approve.approveRequest - drop the
-   * unregistered and replayed, check caps and lifetime, ask the person, labels
+   * An EDGE_REQUEST from a paired computer (mcp-service.md 4.7a), from the vendor
+   * bridge: the library's one implementation decides (approve.approveRequest - drop the
+   * malformed and replayed, check caps and lifetime, ask the person, labels
    * and the reason hash made HERE from the names and the text, R27 on this
    * phone's copy, GRANT_LABEL + GRANT_CREATE, the press). An opened budget is
    * kept like one approved on the tab, so the copy keeps verifying and the
    * tab lists it.
    */
-  async answerAgent(msg: any, o: {registered: string[]; seen: Set<string>; ownIdentities: string[]; from: string; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout' | 'copy_unverified'>; onPress?: () => void}) {
+  async answerAgent(msg: any, o: {seen: Set<string>; from: string; computer: string | null; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout' | 'copy_unverified'>; onPress?: () => void}) {
     const r: any = await approveLib.approveRequest(msg, {
       edge: this.edge,
-      registered: o.registered,
+      from: o.computer,
       seen: o.seen,
-      ownIdentities: o.ownIdentities,
       ask: o.ask,
       /* the one chain state, strict: only a verified copy gives a head (okrn-edge-tab.md S3a) */
       verifyCopy: async () => {
@@ -592,7 +589,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
         return a.ok && a.head ? {ok: true, head: a.head.head} : {ok: false, head: new Uint8Array(0)};
       },
       budgetOf: (id: number) => this.keptSync.get(id) ?? null,
-      coverOf: (m: any) => this.coverOf(m),
+      coverOf: (m: any) => this.coverOf(m, o.computer),
       onPress: () => {
         this.pressWanted = () => undefined;
         o.onPress?.();
@@ -602,45 +599,24 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     this.pressWanted = null;
     if (r.ok) {
       await this.keepOpening(r.budget, {
-        reason: msg.reason, scopes: requestLib.grantScopes(msg), from: o.from, lifetime: msg.lifetime, agent: String(msg.agent).toLowerCase(),
+        reason: msg.reason, scopes: requestLib.grantScopes(msg), from: o.from, lifetime: msg.lifetime, ...(o.computer ? {computer: o.computer} : {}),
       });
     }
     return r;
   }
 
-  /**
-   * An agent's EDGE_REGISTER: the person's Yes on the sheet, then a PHYSICAL
-   * press - the key links it (AGENT_ADD, mcp-service.md 4.7a; like a known
-   * peer, R20). The list of agents stays this phone's (edgeAgents.ts).
-   */
-  async registerAgent(msg: any, o: {registered: string[]; seen: Set<string>; ask: (view: any) => Promise<'approve' | 'decline' | 'timeout'>; onPress?: () => void}) {
-    const r: any = await approveLib.approveRegister(msg, {
-      edge: this.edge,
-      registered: o.registered,
-      seen: o.seen,
-      ask: o.ask,
-      onPress: () => {
-        this.pressWanted = () => undefined;
-        o.onPress?.();
-      },
-      timeoutMs: 30000,
-    });
-    this.pressWanted = null;
-    return r;
-  }
-
-  /* the agent budgets this phone opened, for a continue: {agent, scopes} by id (loaded by loadAgentBudgets) */
-  private keptSync = new Map<number, {agent: string; scopes: any[]}>();
+  /* the budgets this phone opened for a paired computer, for a continue: {from, scopes} by id (loaded by loadAgentBudgets) */
+  private keptSync = new Map<number, {from: string; scopes: any[]}>();
   async loadAgentBudgets() {
     const prefix = REGISTRY() + toHex(this.deviceId) + '.';
     this.keptSync.clear();
     for (const k of await AsyncStorage.getAllKeys()) {
       if (!k.startsWith(prefix)) continue;
       const kept: Kept | null = JSON.parse((await AsyncStorage.getItem(k)) || 'null');
-      if (kept?.agent) {
+      if (kept?.computer) {
         /* the request's own words for the ops: a continue's scopes are compared with them */
         const scopes = kept.scopes.map((sc: any) => ({...sc, op: sc.op === codes.OP.SIGN ? 'sign' : sc.op === codes.OP.DECRYPT ? 'decrypt' : sc.op}));
-        this.keptSync.set(Number(k.slice(prefix.length)), {agent: kept.agent, scopes});
+        this.keptSync.set(Number(k.slice(prefix.length)), {from: kept.computer, scopes});
       }
     }
   }

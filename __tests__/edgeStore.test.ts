@@ -191,17 +191,17 @@ test('a note\'s reason lands on its row; its receipt message shows only when it 
   k.receipt(0x00, 'pushed ok-rn');
   k.messages = async () => ({}); /* as the soft key: no messages from the key */
   await sync(k);
-  await addNote(k.deviceId, {agent: 'AB'.repeat(32), seq, reason: 'git push origin master'});
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq: 999, txRefused: 'receipt_owed'});
+  await addNote(k.deviceId, {computer: 'pair-1', seq, reason: 'git push origin master'});
+  await addNote(k.deviceId, {computer: 'pair-1', seq: 999, txRefused: 'receipt_owed'});
   let {view} = await sync(k);
   let row = view.rows.find(r => r.seq === seq)!;
-  expect(row.note).toMatchObject({agent: 'ab'.repeat(32), text: 'git push origin master'});
+  expect(row.note).toMatchObject({computer: 'pair-1', text: 'git push origin master'});
   expect(row.receipt?.messageStatus).toBe('none');
   expect(view.refusals).toMatchObject([{seq: 999, status: 'receipt_owed'}]);
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, receiptMsg: 'not what was receipted'});
+  await addNote(k.deviceId, {computer: 'pair-1', seq, receiptMsg: 'not what was receipted'});
   row = (await sync(k)).view.rows.find(r => r.seq === seq)!;
   expect(row.receipt?.messageStatus).toBe('mismatch');
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, receiptMsg: 'pushed ok-rn'});
+  await addNote(k.deviceId, {computer: 'pair-1', seq, receiptMsg: 'pushed ok-rn'});
   row = (await sync(k)).view.rows.find(r => r.seq === seq)!;
   expect(row.receipt).toMatchObject({messageStatus: 'match', message: 'pushed ok-rn'});
 });
@@ -511,7 +511,7 @@ test('the pairing memo: an edited stored message pairs again and shows its misma
   k.receipt(0x00, 'pushed ok-rn');
   k.messages = async () => ({});
   await sync(k);
-  await addNote(k.deviceId, {agent: 'ab'.repeat(32), seq, receiptMsg: 'pushed ok-rn'});
+  await addNote(k.deviceId, {computer: 'pair-1', seq, receiptMsg: 'pushed ok-rn'});
   expect((await sync(k)).view.rows.find(r => r.seq === seq)!.receipt?.messageStatus).toBe('match');
   expect((await sync(k)).view.rows.find(r => r.seq === seq)!.receipt?.messageStatus).toBe('match');
   const m = await loadMirror(k.deviceId);

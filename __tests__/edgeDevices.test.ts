@@ -7,7 +7,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NativeEdgeAlert from '../specs/NativeEdgeAlert';
 import {
-  approveHeld, approveKeychain, declineHeld, holdKeychain, holdLog, loadDevices, nametagOf, notMine, ownStatement, ownerKey, reviewHeld, setNametag, waitingCount,
+  approveHeld, bannerLine, declineHeld, ensureNametag, holdLog, loadDevices, nametagOf, notMine, ownStatement, ownerKey, reviewHeld, setNametag, waitingCount,
 } from '../src/edgeDevices';
 import {loadMirror} from '../src/edgeStore';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
@@ -116,11 +116,21 @@ test('an older offer never replaces a newer held one', async () => {
   expect((await holdLog(oldOffer)).held).toBe(false);
 });
 
-test('a Key Chain list that would change this phone\'s waits in the same sheet and counts on the banner', async () => {
-  await holdKeychain({from: 'NITRO16', at: 1, merged: [{name: 'k'}], in: 1, out: 0});
-  expect(await waitingCount()).toBe(1);
-  const kept: any[] = [];
-  expect(await approveKeychain(async m => { kept.push(...m); })).toBe(1);
-  expect(kept).toEqual([{name: 'k'}]);
-  expect(await waitingCount()).toBe(0);
+test('the device name is the nametag until one is set by hand (Brad, 2026-10-08)', async () => {
+  const NativeBtKeyboard = require('../specs/NativeBtKeyboard').default;
+  (NativeBtKeyboard.localName as jest.Mock).mockResolvedValueOnce("Bradley's A13");
+  const me = await device();
+  expect((await ensureNametag(me.e))?.nametag).toBe("Bradley's A13");
+  await setNametag(me.e, 'work phone');
+  (NativeBtKeyboard.localName as jest.Mock).mockResolvedValueOnce("Bradley's A13");
+  expect((await ensureNametag(me.e))?.nametag).toBe('work phone');
+  expect(await ensureNametag(null)).not.toBeNull();
+});
+
+test('the banner names the computer and the device (Brad, 2026-10-08: "nitro16 wants to merge a unknown backup device Pixel")', async () => {
+  const me = await device();
+  await setNametag(me.e, 'A13');
+  expect(await bannerLine()).toBeNull();
+  await offer(await device(), 'Pixel', 'nitro16');
+  expect(await bannerLine()).toBe('nitro16 wants to merge a unknown backup device Pixel');
 });

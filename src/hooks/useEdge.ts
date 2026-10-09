@@ -3,13 +3,13 @@
  *
  * WHICH KEY: the soft key, when this build staged the edge firmware plugin
  * (OKEMU_PLUGINS=edge, buildInfo.hasSoftKeyPlugin) and the soft key is the
- * active key; otherwise the FAKE key (src/edgeFake.ts), which builds a real
- * chain with the library so every screen can be exercised without firmware.
- * Both answer the same EdgeSource / EdgeInbox calls. One instance per app
+ * active key; otherwise there is no Edge here and the tab says so (the fake key
+ * that stood in went 2026-10-08 - the testnet soft key is the real thing; it stays
+ * only as a test fixture). One instance per app
  * session, kept outside React so switching tabs keeps it.
  */
 import {useCallback, useEffect, useRef, useState} from 'react';
-import {FakeEdgeKey, type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type EdgeInbox, type EdgeKeyState, type EdgeRequest, type EdgeSource} from '../edgeFake';
+import {type EdgeBudget, type EdgeCopyCheck, type EdgeEnded, type EdgeInbox, type EdgeKeyState, type EdgeRequest, type EdgeSource} from '../edgeFake';
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {computerHoldsKey, onKeyFree} from '../vendorBridge';
 import {hasSoftKeyPlugin} from '../buildInfo';
@@ -22,7 +22,6 @@ type Source = EdgeSource & EdgeInbox;
 /* how often the open Edge tab checks whether the key's chain moved */
 const HEAD_POLL_MS = 4000;
 
-let fake: FakeEdgeKey | null = null;
 let real: SoftKeyEdge | null = null;
 
 export function useEdge() {
@@ -46,9 +45,9 @@ export function useEdge() {
   /* R27: whether a budget may be asked for from this phone's copy (Yes is off, with the reason, until it may) */
   const [copyCheck, setCopyCheck] = useState<EdgeCopyCheck | null>(null);
 
-  /* the key to talk to; null = this build has Edge but the soft key did not answer (locked?) */
+  /* the key to talk to; null = no Edge here (not the soft key with the Edge plugin), or it did not answer (locked?) */
   const source = useCallback(async (): Promise<Source | null> => {
-    if (!wantReal) return (fake ??= FakeEdgeKey.demo());
+    if (!wantReal) return null;
     if (!real) real = await SoftKeyEdge.open();
     return real;
   }, [wantReal]);
@@ -91,7 +90,7 @@ export function useEdge() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      const s = real ?? fake;
+      const s = real;
       (s as unknown as {endRun?: () => void} | null)?.endRun?.();
       setBusy(false);
     }
@@ -130,12 +129,6 @@ export function useEdge() {
     await NativeShare.shareFile('onlykey-edge-blocks-' + new Date().toISOString().slice(0, 10) + '.json', r.json, 'application/json', 'Edge blocks');
     return r.count + ' block(s), ' + r.open + ' link(s) after the last seal' + (r.bad ? ' - ' + r.bad + ' did not verify' : ', all verified');
   }, [source]);
-  /** A fake-key action (agent use, receipt, lock), then a sync, as the app would after relaying it. */
-  const act = useCallback((fn: (k: FakeEdgeKey) => void) => {
-    if (!fake || wantReal) return Promise.resolve();
-    fn(fake);
-    return sync();
-  }, [sync, wantReal]);
   /** An agent asks for a budget (testing mode, on either key). */
   const request = useCallback(async (from: string, reason: string, scopes: EdgeRequest['scopes']) => {
     const s = await source();
@@ -229,13 +222,6 @@ export function useEdge() {
     await s.decline(id);
     return (await chainState.validity(s)).view;
   }), [run]);
-  const resetFake = useCallback(async () => {
-    if (wantReal) return;
-    await tamperMirror((fake ??= FakeEdgeKey.demo()).deviceId, 'forget');
-    fake = FakeEdgeKey.demo();
-    await run(async s => evaluate(await loadMirror(s.deviceId), null));
-  }, [run, wantReal]);
-
   /* the tab opens: sync (B1) */
   useEffect(() => {
     void sync();
@@ -289,8 +275,8 @@ export function useEdge() {
   }, [wantReal, source, sync]);
 
   return {
-    view, budgets, past, requests, busy, stopping, error, pressFor, copyCheck, keyState, ended, isFake: !wantReal, fullSync,
-    sync, verify, tamper, act, request, revoke, approve, press, decline, resetFake,
+    view, budgets, past, requests, busy, stopping, error, pressFor, copyCheck, keyState, ended, available: wantReal, fullSync,
+    sync, verify, tamper, request, revoke, approve, press, decline,
     hold, resume, waive, agentSign, continueBudget, dismissEnded, acceptLoss, exportBlocks,
   };
 }

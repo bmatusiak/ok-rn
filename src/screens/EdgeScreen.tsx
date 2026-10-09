@@ -4,7 +4,7 @@
  *   1. the verdict card - verified / gap / tampered / not synced
  *   2. budgets - what an agent may still do without a press
  *   3. the chain - newest first, each use with its receipt hanging from it
- *   4. (testing) the fake key's controls
+ *   4. (testing) the soft key's test controls
  *
  * Driven by a FAKE key until the soft key's Edge plugin exists (E3), so the
  * whole tab is testing-mode only. Receipt messages are written by an agent:
@@ -27,7 +27,7 @@ import {consentRefusal} from '../debugGuard';
 import {YourDevicesCard} from '../ui/YourDevicesCard';
 import {MergeSheet} from '../ui/MergeSheet';
 import {useYourDevices, type DeviceLink, type YourDevice} from '../hooks/useYourDevices';
-import {onDevicesChanged, waitingCount} from '../edgeDevices';
+import {bannerLine, onDevicesChanged, waitingCount} from '../edgeDevices';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
 import type {EdgeRow, EdgeView, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
@@ -253,7 +253,7 @@ function LinkRow({row, receiptVerified, budgetUses, agentOf, notesFrom, continue
         }
         const agent = row.fields.grantId ? agentOf?.get(row.fields.grantId) : undefined;
         if (!agent) return null;
-        if (row.note && row.note.agent === agent) {
+        if (row.note && row.note.computer === agent) {
           return <Text style={styles.reason}>{`no intent · the agent says: “${row.note.text}”`}</Text>;
         }
         /* only once this agent sends notes at all: uses from before EDGE_NOTE are not "no reason" */
@@ -294,11 +294,11 @@ function LinkRow({row, receiptVerified, budgetUses, agentOf, notesFrom, continue
           <Text style={styles.dim}>{`Budget ${row.fields.grantId} is closed - nothing more can spend from it.`}</Text>
         </View>
       ) : null}
-      {/* blue: your press registered an agent; red: history gone (a loss you accepted, a wipe) - always visible to an audit */}
+      {/* blue: an old agent registration (retired 2026-10-08 - a chain that has one still reads); red: history gone (a loss you accepted, a wipe) - always visible to an audit */}
       {row.fields.op === OP.AGENT_ADD ? (
         <View style={[styles.receipt, {borderLeftColor: theme.link}]}>
-          <Text style={[styles.receiptTitle, {color: theme.link}]}>Agent registered</Text>
-          <Text style={styles.dim}>An agent may now ask for budgets - registered with your press.</Text>
+          <Text style={[styles.receiptTitle, {color: theme.link}]}>Agent registered (old)</Text>
+          <Text style={styles.dim}>From before agents stopped registering: a paired computer may ask for budgets, no registration needed.</Text>
         </View>
       ) : null}
       {row.fields.op === OP.LOSS ? (
@@ -477,11 +477,10 @@ function budgetRows(rows: EdgeRow[], grantId: number): EdgeRow[] {
  * clasp (spec 4.3): Yes here, then a press on the key - no press, no budget.
  * Declining sends nothing to the key.
  */
-function PendingCard({r, busy, waiting, fake, blocked, onApprove, onPress, onDecline}: {
+function PendingCard({r, busy, waiting, blocked, onApprove, onPress, onDecline}: {
   r: EdgeRequest;
   busy: boolean;
   waiting: boolean;
-  fake: boolean;
   /** R27: why Approve is off - this phone's copy does not verify */
   blocked: string | null;
   onApprove: () => void;
@@ -503,13 +502,11 @@ function PendingCard({r, busy, waiting, fake, blocked, onApprove, onPress, onDec
         <>
           <Text style={[styles.op, {color: theme.warn}]}>Press the key to confirm</Text>
           <Text style={styles.dim}>
-            {fake
-              ? 'The fake key stands in for the keypad.'
-              : 'This phone is also the key, so its press proves less than a hard key\'s. The key stops waiting after 20 s.'}
+            {'This phone is also the key, so its press proves less than a hard key\'s. The key stops waiting after 20 s.'}
           </Text>
           <View style={styles.row}>
             {/* not disabled while busy: the request IS what is in flight, waiting for this */}
-            <Btn title={fake ? 'Press (fake key)' : 'Press the soft key'} tone="primary" onPress={onPress} />
+            <Btn title="Press the soft key" tone="primary" disabled={consentRefusal() !== null} onPress={() => { if (!consentRefusal()) onPress(); }} />
           </View>
         </>
       ) : (
@@ -554,9 +551,9 @@ function BudgetView({b, edge, onBack}: {b: EdgeBudget; edge: ReturnType<typeof u
   const liveUses = new Map(edge.budgets.map(x => [x.grantId, x.uses]));
   const notesFrom = new Map<string, number>();
   for (const r of all) {
-    if (r.note && !(notesFrom.get(r.note.agent)! <= r.note.at)) notesFrom.set(r.note.agent, Math.min(r.note.at, r.seenAt ?? r.note.at));
+    if (r.note && !(notesFrom.get(r.note.computer)! <= r.note.at)) notesFrom.set(r.note.computer, Math.min(r.note.at, r.seenAt ?? r.note.at));
   }
-  const agentOf = new Map([...edge.past, ...edge.budgets].filter(x => x.agentKey).map(x => [x.grantId, String(x.agentKey).toLowerCase()]));
+  const agentOf = new Map([...edge.past, ...edge.budgets].filter(x => x.computerId).map(x => [x.grantId, String(x.computerId)]));
   const presses: EdgeListItem[] = [{key: 's-presses', kind: 'section', title: 'Presses'}];
   for (const r of all) {
     if (r.fields.grantId !== b.grantId) continue;
@@ -686,9 +683,13 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
   const [allOf, setAllOf] = useState<Set<string>>(new Set());
   /* THE SYNC BANNER (Brad, 2026-10-08): logs a sync brought, held until you answer - the sheet opens only from the banner */
   const [waiting, setWaiting] = useState(0);
+  const [bannerTitle, setBannerTitle] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
   useEffect(() => {
-    const read = () => { void waitingCount().then(setWaiting).catch(() => undefined); };
+    const read = () => {
+      void waitingCount().then(setWaiting).catch(() => undefined);
+      void bannerLine().then(setBannerTitle).catch(() => undefined);
+    };
     read();
     return onDevicesChanged(read);
   }, [edge.view?.headSeq]);
@@ -753,7 +754,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
    */
   const items: EdgeListItem[] = [];
   if (waiting > 0) {
-    items.push({key: 'merge-banner', kind: 'row', title: 'Sync wants to merge new devices', subtitle: `${waiting} waiting for your answer - tap to review`, tone: 'warn', onPress: () => setMergeOpen(true), accessibilityLabel: 'Review what a sync brought'});
+    items.push({key: 'merge-banner', kind: 'row', title: bannerTitle ?? 'Sync wants to merge new devices', subtitle: `${waiting} waiting for your answer - tap to review`, tone: 'warn', onPress: () => setMergeOpen(true), accessibilityLabel: 'Review what a sync brought'});
   }
   /*
    * PAST ITS LIFETIME = NOT LIVE, whatever the key still lists (Brad, 2026-10-06:
@@ -867,7 +868,6 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
               r={r}
               busy={edge.busy}
               waiting={edge.pressFor === `r${r.id}`}
-              fake={edge.isFake}
               blocked={copyProblem(edge.copyCheck)}
               onApprove={() => edge.approve(r.id)}
               onPress={edge.press}
@@ -946,16 +946,16 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
   /* each agent's first note (this phone's clock): "no reason given" counts from there */
   const notesFrom = new Map<string, number>();
   for (const r of edge.view?.rows ?? []) {
-    if (r.note && !(notesFrom.get(r.note.agent)! <= r.note.at)) notesFrom.set(r.note.agent, Math.min(r.note.at, r.seenAt ?? r.note.at));
+    if (r.note && !(notesFrom.get(r.note.computer)! <= r.note.at)) notesFrom.set(r.note.computer, Math.min(r.note.at, r.seenAt ?? r.note.at));
   }
-  const agentOf = new Map([...edge.past, ...edge.budgets].filter(b => b.agentKey).map(b => [b.grantId, String(b.agentKey).toLowerCase()]));
+  const agentOf = new Map([...edge.past, ...edge.budgets].filter(b => b.computerId).map(b => [b.grantId, String(b.computerId)]));
   /*
    * B7 stage 2: refused TX starts write no link. The key's own count since it started
    * (HEAD byte 60) is the evidence; the agents' notes say which and why (their word).
    */
   const refusedByKey = edge.keyState?.refusedTx ?? 0;
   const reported = (edge.view?.refusals ?? []).slice(-3).reverse();
-  if (!edge.isFake && (refusedByKey > 0 || reported.length)) {
+  if (refusedByKey > 0 || reported.length) {
     items.push({key: 'live-refused', kind: 'node', render: () => (
       <View style={[styles.mismatch, {borderColor: theme.error}]}>
         <Text style={[styles.receiptTitle, {color: theme.error}]}>
@@ -970,7 +970,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
   }
   /* B7: Hold one tap away while anything is live - stopping an agent never needs navigating */
   const liveNow = edge.budgets.filter(b => !(edge.keyState?.held ?? []).includes(b.grantId) && !(b.uses > 0 && b.used >= b.uses));
-  if (!edge.isFake && liveNow.length) {
+  if (liveNow.length) {
     items.push({key: 'live-hold', kind: 'node', render: () => (
       <View style={styles.holdBar}>
         {liveNow.map(b => (
@@ -1036,28 +1036,10 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
       <MergeSheet visible={mergeOpen} onClose={() => setMergeOpen(false)} />
       {/* Brad, 2026-10-05: the drawer holds more than agents now */}
       <BottomDrawer title="Edge Management">
-        {edge.isFake ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} inDrawer testingMode={testingMode} />}
-        {edge.isFake ? null : <YourDevicesCard headSeq={edge.view?.headSeq} />}
-        {edge.isFake ? null : <BlocksCard edge={edge} />}
-        {!testingMode ? null : edge.isFake ? (
-          <Section title="Fake key (testing)">
-            <Text style={styles.dim}>
-              A fake key - this build's soft key has no Edge. These do what an agent or the CLI would; the budgets update after each.
-            </Text>
-            <View style={styles.row}>
-              <Btn
-                title="Agent: request a budget"
-                onPress={() => edge.request('onlykey-js on NITRO16', 'Sign three commits on feature/edge', [{op: OP.SIGN, slot: 101, cap: 3}])}
-                disabled={edge.busy}
-              />
-              <Btn title="Agent: use + OK receipt" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); k.receipt(0x00, 'Used as stated; the target accepted it.'); })} disabled={edge.busy} />
-              <Btn title="Agent: use, no receipt" onPress={() => edge.act(k => { k.use(`commit ${Date.now() % 100000}`); })} disabled={edge.busy} />
-              <Btn title="Alarm receipt" onPress={() => edge.act(k => { k.use('tag'); k.receipt(0x82, 'Decrypted output may have been written to a shared folder.'); })} disabled={edge.busy} />
-              <Btn title="Lock (ends budgets)" onPress={() => edge.act(k => k.lock())} disabled={edge.busy} />
-              <Btn title="New fake key" onPress={edge.resetFake} disabled={edge.busy} />
-            </View>
-          </Section>
-        ) : (
+        {!edge.available ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} inDrawer testingMode={testingMode} />}
+        {!edge.available ? null : <YourDevicesCard headSeq={edge.view?.headSeq} />}
+        {!edge.available ? null : <BlocksCard edge={edge} />}
+        {!testingMode || !edge.available ? null : (
           <Section title="Soft key (testing)">
             <Text style={styles.dim}>
               The soft key has Edge. Until an agent's MCP server can send requests, this makes one; agent signs come from the CLI or the e2e test.

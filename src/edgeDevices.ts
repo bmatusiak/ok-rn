@@ -92,6 +92,34 @@ export async function setNametag(soft: {statement(nametag: string): Promise<any>
   return s;
 }
 
+/** The phone's own device name (its Bluetooth name, e.g. "Bradley's A13"), or '' when it cannot be read. */
+export async function deviceName(): Promise<string> {
+  try {
+    const NativeBtKeyboard = require('../specs/NativeBtKeyboard').default;
+    return String((await NativeBtKeyboard.localName()) ?? '').trim().slice(0, 64);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * THE DEFAULT NAMETAG (Brad, 2026-10-08: "use device name as default unless explicitly
+ * changed there in nametag input"): a phone with no nametag yet signs one with its device
+ * name the first time one is needed - the drawer opening, or a computer asking for its log.
+ * A nametag set by hand is never replaced. -> this phone's statement, or null (no key, no name)
+ */
+export async function ensureNametag(soft: {statement(nametag: string): Promise<any>} | null): Promise<StoredStatement | null> {
+  const have = await ownStatement();
+  if (have || !soft) return have;
+  const name = await deviceName();
+  if (!name) return null;
+  try {
+    return await setNametag(soft, name);
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------------------------ your devices */
 
 export async function loadDevices(): Promise<Device[]> {
@@ -167,7 +195,25 @@ export async function reviewHeld(): Promise<HeldView[]> {
 
 /** How many held items still wait for an answer (the banner): device logs, and a Key Chain list. */
 export async function waitingCount(): Promise<number> {
-  return (await loadHeld()).filter(h => !h.declined && !h.leak).length + ((await heldKeychain()) ? 1 : 0);
+  return (await loadHeld()).filter(h => !h.declined && !h.leak).length;
+}
+
+/**
+ * The Edge tab's banner: WHO wants to merge WHAT (Brad, 2026-10-08: "the banner should say
+ * {computer} wants to merge a unknown backup device {device_name}" - "nitro16 wants to merge a
+ * unknown backup device Pixel"). Names the first thing waiting; the subtitle keeps the count.
+ * The known-device and forged lines follow the same shape (not his words yet). No Key Chain
+ * line: the Key Chain list is not Edge's (Brad, 2026-10-08: "Move it out of Edge").
+ */
+export async function bannerLine(): Promise<string | null> {
+  const first = (await reviewHeld()).find(r => !r.declined && !r.leak);
+  if (first) {
+    const name = first.nametag ?? first.claimed;
+    if (first.class === 'forged') return `${first.from} sent a log not made with your OnlyKey`;
+    if (first.class === 'mine-new') return `${first.from} wants to merge a unknown backup device ${name}`;
+    return `${first.from} wants to merge new blocks from ${name}`;
+  }
+  return null;
 }
 
 /**
@@ -210,37 +256,6 @@ export async function notMine(deviceId: string): Promise<void> {
   await saveHeld(list.map(x => (x.deviceId === id ? {...x, leak: true} : x)));
   NativeEdgeAlert?.post(parseInt(id.slice(0, 6), 16), netTag() + 'Edge: someone else holds your OnlyKey',
     `A device made with your OnlyKey secret that is not yours ("${h.statement.nametag}", ${id.slice(0, 8)}…, from ${h.from}). Its log is kept as evidence.`, 'Edge alarm', false);
-}
-
-/* ------------------------------------------------ the Key Chain list a computer offered */
-
-/*
- * Brad, 2026-10-08 ("Own links direct, Key Chain held"): a computer's public Key Chain list
- * that would CHANGE this phone's list waits in the same Approve sheet, as one row. Entries
- * only the computer lacks need no approval - the phone just gives them (TAKE), like GIVE.
- */
-const HELD_KC = (): string => edgeKey('heldKeychain');
-export type HeldKeychain = {from: string; at: number; merged: any[]; in: number; out: number};
-
-export async function heldKeychain(): Promise<HeldKeychain | null> {
-  return readJson<HeldKeychain | null>(HELD_KC(), null);
-}
-export async function holdKeychain(k: HeldKeychain): Promise<void> {
-  await AsyncStorage.setItem(HELD_KC(), JSON.stringify(k));
-  notify();
-}
-/** Approve: the merged list becomes this phone's (keyChainRecorder.keepMergedKeyChain does the keeping). */
-export async function approveKeychain(keep: (merged: any[]) => Promise<void>): Promise<number> {
-  const k = await heldKeychain();
-  if (!k) return 0;
-  await keep(k.merged);
-  await AsyncStorage.removeItem(HELD_KC());
-  notify();
-  return k.in;
-}
-export async function declineKeychain(): Promise<void> {
-  await AsyncStorage.removeItem(HELD_KC());
-  notify();
 }
 
 /* ------------------------------------------------ change notices (the banner refreshes on them) */

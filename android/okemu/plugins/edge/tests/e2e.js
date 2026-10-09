@@ -74,7 +74,7 @@ module.exports = function register({it}, ctx) {
       await ctx.edgeCopy.sync();
       return r;
     };
-    for (const name of ['receipt', 'revoke', 'waive', 'hold', 'resume', 'agentAdd', 'loss']) edge[name] = after(name);
+    for (const name of ['receipt', 'revoke', 'waive', 'hold', 'resume', 'loss']) edge[name] = after(name);
     edge.grant = async ({reason, ...o}) => {
       const g = await app.edge.grant({...o, reasonHash: sha256(reason)});
       await ctx.edgeCopy.keep(g, {reason, scopes: o.scopes, lifetime: o.ttlMinutes ?? 0});

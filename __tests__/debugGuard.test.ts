@@ -28,21 +28,6 @@ test('only a leading TEST: marks a test', () => {
   expect(isTestLabel(undefined)).toBe(false);
 });
 
-test('a request is a test only if EVERY identity it names is marked test on the phone - not by its reason', () => {
-  const {setTestIdentities, scopesAreTest, setTestingMode} = require('../src/debugGuard');
-  setTestIdentities(['ssh://test@nitro16']);
-  setTestingMode(false); /* outside testing mode the list does not count at all */
-  expect(scopesAreTest([{identity: 'ssh://test@nitro16'}])).toBe(false);
-  setTestingMode(true);
-  expect(scopesAreTest([{identity: 'ssh://test@nitro16'}])).toBe(true);
-  expect(scopesAreTest([{identity: 'ssh://claude@nitro16'}])).toBe(false); /* a "TEST:" reason changes nothing */
-  expect(scopesAreTest([{identity: 'ssh://test@nitro16'}, {identity: 'ssh://claude@nitro16'}])).toBe(false);
-  expect(scopesAreTest([{}])).toBe(false); /* a slot scope names no identity */
-  expect(scopesAreTest([])).toBe(false);
-  setTestIdentities([]);
-  expect(scopesAreTest([{identity: 'ssh://test@nitro16'}])).toBe(false);
-  setTestingMode(false);
-});
 
 /*
  * Option 1 (Brad, 2026-10-04): the lock applies only outside testing mode, and

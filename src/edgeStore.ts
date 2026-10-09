@@ -33,8 +33,8 @@ type StoredMirror = {
   lastSync: number | null;
   setAside?: {link: string; head: string; at: number}[];
   seen?: Record<string, number>;
-  reasons?: Record<string, {agent: string; text: string; at: number}>;
-  refusals?: {agent: string; seq: number; status: string; at: number}[];
+  reasons?: Record<string, {computer: string; text: string; at: number}>;
+  refusals?: {computer: string; seq: number; status: string; at: number}[];
   publicKey?: string;
   continued?: ContinueCheck | null;
   merged?: {seq: number; head: string; signature: string; at: number}[];
@@ -77,9 +77,9 @@ export type Mirror = {
    * (checked at display: a note can come before its link is synced). They change
    * nothing - no state, no debts, no budgets.
    */
-  reasons: Record<number, {agent: string; text: string; at: number}>;
+  reasons: Record<number, {computer: string; text: string; at: number}>;
   /* refused TX starts as the agents reported them (their word; the key's own count is HEAD's), newest 50 */
-  refusals: {agent: string; seq: number; status: string; at: number}[];
+  refusals: {computer: string; seq: number; status: string; at: number}[];
   /*
    * R28 (spec: "keep the old checkpoint public key with the old copy"): the key's
    * checkpoint public key, saved at each sync - so after the key moves to its own
@@ -142,7 +142,7 @@ export type EdgeRow = {
   /** when this phone first stored the link (its clock; links carry no time) */
   seenAt?: number;
   /** B7 stage 2: the reason an agent's note gave for this seq (not yet checked against the budget's agent) */
-  note?: {agent: string; text: string; at: number};
+  note?: {computer: string; text: string; at: number};
 };
 
 const storageKey = (deviceId: Uint8Array) => KEY_PREFIX() + toHex(deviceId);
@@ -421,7 +421,8 @@ export function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mir
  * that its key was registered with a press). In the sync queue, so a note and a
  * sync never save over each other.
  */
-export type EdgeNote = {agent: string; seq: number; reason?: string; receiptMsg?: string; txRefused?: string};
+/* computer: the pairing id of the computer that sent it (no agent key since 2026-10-08) */
+export type EdgeNote = {computer: string; seq: number; reason?: string; receiptMsg?: string; txRefused?: string};
 export function addNote(deviceId: Uint8Array, n: EdgeNote, now = Date.now()): Promise<void> {
   const run = syncing.then(() => addNoteNow(deviceId, n, now), () => addNoteNow(deviceId, n, now));
   syncing = run.catch(() => undefined);
@@ -429,11 +430,11 @@ export function addNote(deviceId: Uint8Array, n: EdgeNote, now = Date.now()): Pr
 }
 async function addNoteNow(deviceId: Uint8Array, n: EdgeNote, now: number): Promise<void> {
   const m = await loadMirror(deviceId);
-  const agent = n.agent.toLowerCase();
-  if (n.reason !== undefined) m.reasons[n.seq] = {agent, text: n.reason, at: now};
+  const computer = n.computer;
+  if (n.reason !== undefined) m.reasons[n.seq] = {computer, text: n.reason, at: now};
   /* by the use's seq, as receipts.pairReceipts reads it: shown only if it hashes to the receipt */
   if (n.receiptMsg !== undefined) m.messages[n.seq] = n.receiptMsg;
-  if (n.txRefused !== undefined) m.refusals = [...m.refusals, {agent, seq: n.seq, status: n.txRefused, at: now}].slice(-50);
+  if (n.txRefused !== undefined) m.refusals = [...m.refusals, {computer, seq: n.seq, status: n.txRefused, at: now}].slice(-50);
   await saveMirror(m);
 }
 

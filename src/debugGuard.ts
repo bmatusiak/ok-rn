@@ -58,31 +58,3 @@ export function consentRefusal(): string | null {
   return !testingMode && buildInfo.debugLock && debuggingOn() ? DEBUG_REFUSAL : null;
 }
 
-/*
- * TEST IDENTITIES (rule 10, 2026-10-04): what makes a request a test is not its
- * reason text - the agent writes that - but the identities it names. Brad marks
- * test identities on this phone (Agents drawer), like "yours"; the CLI, agents
- * and imported files cannot set or clear the mark. The list exists only in testing
- * mode, where the lock is off (option 1, Brad 2026-10-04). Kept here in
- * memory for the render-time checks; src/edgeAgents.ts loads and saves the list.
- */
-let testIdentities = new Set<string>();
-/*
- * TESTING MODE ONLY (Brad, 2026-10-04): "if i use this app to manage security
- * infrastructure... a testing panel should ALWAYS be under testing mode". Outside
- * testing mode the list does not exist as far as consent goes: with debugging on,
- * every approve / press / waive / accept loss is refused, no exceptions. A release
- * build cannot turn testing mode on (useTestingMode is a no-op outside __DEV__), so
- * a production phone never has test identities at all. App.tsx sets testingMode
- * (declared above, with the lock). In testing mode the lock is off anyway; the list
- * still names what is a test for the scripts' own seatbelt.
- */
-export function setTestIdentities(names: string[]): void {
-  testIdentities = new Set(names.map(n => n.trim()).filter(Boolean));
-}
-export const isTestIdentity = (id: string | null | undefined) => testingMode && !!id && testIdentities.has(String(id).trim());
-/** A request or a budget is a test only if it names identities and EVERY one is marked test. */
-export function scopesAreTest(scopes: {identity?: string}[] | null | undefined): boolean {
-  return !!scopes && scopes.length > 0 && scopes.every(sc => isTestIdentity(sc.identity));
-}
-

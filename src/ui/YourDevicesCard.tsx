@@ -11,7 +11,7 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, View} from 'react-native';
 import {grants} from 'node-onlykey-lib/edge';
-import {forgetDevice, onDevicesChanged, ownStatement, setNametag, type StoredStatement} from '../edgeDevices';
+import {deviceName, ensureNametag, forgetDevice, onDevicesChanged, ownStatement, setNametag, type StoredStatement} from '../edgeDevices';
 import {SoftKeyEdge} from '../edgeSoftKey';
 import {useYourDevices} from '../hooks/useYourDevices';
 import {Btn, Section} from './components';
@@ -27,7 +27,14 @@ export function YourDevicesCard({headSeq}: {headSeq: number | null | undefined})
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
   const devices = useYourDevices(headSeq);
-  const load = useCallback(async () => setOwn(await ownStatement()), []);
+  const [devName, setDevName] = useState('');
+  /* the device name is the nametag until one is set by hand (Brad, 2026-10-08) */
+  const load = useCallback(async () => {
+    setOwn(await ownStatement());
+    setDevName(await deviceName());
+    const s = await ensureNametag(await SoftKeyEdge.open().catch(() => null));
+    if (s) setOwn(s);
+  }, []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => onDevicesChanged(() => { void load(); }), [load]);
 
@@ -50,12 +57,13 @@ export function YourDevicesCard({headSeq}: {headSeq: number | null | undefined})
   return (
     <>
       <Section title="This phone">
-        <Text style={styles.op}>{own ? own.nametag : 'No nametag yet'}</Text>
+        {/* while the default is being signed, the device name it will be - never a bare 'No nametag yet' to tap at (2026-10-08) */}
+        <Text style={styles.op}>{own ? own.nametag : devName ? `${devName} (signing…)` : 'No nametag yet'}</Text>
         {own ? <Text style={styles.dim}>{`Device ${short(own.deviceId)}`}</Text> : null}
         <Text style={styles.dim}>Your other devices see this phone by its nametag. The key signs it; no press.</Text>
         {error ? <Text style={[styles.op, {color: theme.error}]}>{error}</Text> : null}
         <View style={styles.row}>
-          <Btn title={own ? 'Change nametag…' : 'Set nametag…'} onPress={() => { setDraft(own?.nametag ?? ''); setEditing(true); }} disabled={busy} />
+          <Btn title={own ? 'Change nametag…' : 'Set nametag…'} onPress={() => { setDraft(own?.nametag ?? devName); setEditing(true); }} disabled={busy} />
         </View>
       </Section>
       <Section title={`Your devices${devices.length ? ` (${devices.length})` : ''}`}>
@@ -82,7 +90,7 @@ export function YourDevicesCard({headSeq}: {headSeq: number | null | undefined})
           <View style={styles.dialog}>
             <Text style={styles.op}>This phone's nametag</Text>
             <Text style={styles.dim}>A name or a tag your other devices will see for this phone.</Text>
-            <TextInput style={styles.input} value={draft} onChangeText={setDraft} placeholder="e.g. A13" placeholderTextColor={theme.textDim} maxLength={64} autoFocus />
+            <TextInput style={styles.input} value={draft} onChangeText={setDraft} placeholder={devName || 'a name or a tag'} placeholderTextColor={theme.textDim} maxLength={64} autoFocus />
             {error ? <Text style={[styles.op, {color: theme.error}]}>{error}</Text> : null}
             <View style={styles.row}>
               <Btn title="Save" tone="primary" disabled={!draft.trim() || busy} onPress={() => { void save(); }} />

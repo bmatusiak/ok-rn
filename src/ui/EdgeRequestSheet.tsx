@@ -13,7 +13,6 @@
 import React, {useEffect, useState} from 'react';
 import {Modal, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {answerSheet, closeSheet, onSheet, pressFromSheet, type SheetState} from '../edgeAgents';
-import {request as requestLib} from 'node-onlykey-lib/edge';
 import {Btn} from './components';
 import {theme} from './theme';
 import {consentRefusal} from '../debugGuard';
@@ -108,12 +107,8 @@ function ApprovedBudget({grantId}: {grantId: number}) {
 
 export function EdgeRequestSheet() {
   const [s, setS] = useState<SheetState | null>(null);
-  /* the second confirm, for a request naming the person's own identity */
-  const [confirming, setConfirming] = useState(false);
-  useEffect(() => onSheet(next => {
-    setS(next);
-    if (!next || next.phase !== 'ask') setConfirming(false);
-  }), []);
+  /* no second confirm since 2026-10-08: no "yours" mark - the identities asked for are on the sheet (Brad) */
+  useEffect(() => onSheet(next => { setS(next); }), []);
   const left = useSecondsLeft(s && (s.phase === 'ask' || s.phase === 'press') ? s.until : null);
   /*
    * NO DOUBLE TAPS (Brad, 2026-10-04: a tap on Approve took a moment to register, the
@@ -128,7 +123,7 @@ export function EdgeRequestSheet() {
     setActing(false);
     const t = setTimeout(() => setReady(true), 1000);
     return () => clearTimeout(t);
-  }, [s?.phase, s?.ask, confirming]);
+  }, [s?.phase, s?.ask]);
   const off = !ready || acting;
   const act = (fn: () => void) => () => {
     if (off) return;
@@ -158,22 +153,14 @@ export function EdgeRequestSheet() {
           <ScrollView contentContainerStyle={styles.body}>
             {/* the testnet (src/net.ts): a throwaway key - said before anything is approved */}
             {currentNet() === 'test' ? <Text style={[styles.title, {color: theme.io}]}>TESTNET</Text> : null}
-            {a.kind === 'register' ? (
-              <>
-                <Text style={[styles.title, {color: theme.warn}]}>Register an agent?</Text>
-                <Text style={styles.op}>{a.name}</Text>
-                <Text style={styles.op}>{`Key ${a.fingerprint}`}</Text>
-                <Text style={styles.dim}>
-                  Check the computer prints the same key. Registering takes a press on the key, which records it in the chain. Once registered it may ask for budgets; each budget still shows here and needs your press. Until then its requests are refused unread.
-                </Text>
-              </>
-            ) : (
+            {(
               <>
                 <Text style={[styles.title, {color: theme.warn}]}>
                   {a.view.continues !== null ? `Continues budget ${a.view.continues}` : 'An agent asks for a budget'}
                 </Text>
                 <Text style={styles.dim}>
-                  {a.computer ? `From ${a.computer} · ${a.agentName}` : `Asked by ${a.agentName} · key ${requestLib.fingerprint(a.view.agent)}`}
+                  {/* who asks: the paired computer (Brad, 2026-10-08: no agent key - the pairing says who) */}
+                  {`From ${a.computer ?? 'a paired computer'}`}
                 </Text>
                 {opened ? null : (<>
                 <View style={styles.reason}>
@@ -190,25 +177,17 @@ export function EdgeRequestSheet() {
                 <Text style={styles.dim}>{`${a.view.uses} use${a.view.uses === 1 ? '' : 's'} without a press · for ${until(a.view.lifetime, a.at)}`}</Text>
                 {(a.view.covered || []).map((c: any, i: number) => (
                   <Text key={`c${i}`} style={[styles.dim, {color: theme.warn}]}>
-                    {`${c.sameAgent ? 'This agent already has' : 'A budget already has'} ${c.usesLeft} use${c.usesLeft === 1 ? '' : 's'} left on ${c.identity || `slot ${c.slot}`}${c.endsAt ? ` until ${clock(c.endsAt)}` : ''} (budget ${c.grantId}).`}
+                    {`${c.sameComputer ? 'This computer already has' : 'A budget already has'} ${c.usesLeft} use${c.usesLeft === 1 ? '' : 's'} left on ${c.identity || `slot ${c.slot}`}${c.endsAt ? ` until ${clock(c.endsAt)}` : ''} (budget ${c.grantId}).`}
                   </Text>
                 ))}
                 {a.view.continues !== null ? (
                   <Text style={styles.dim}>{`The same scopes as budget ${a.view.continues}, with new uses and a new lifetime. It opens with a press, like a new budget.`}</Text>
                 ) : null}
-                {a.view.ownWarning ? (
-                  <View style={styles.warning}>
-                    <Text style={styles.warningTitle}>This would let an agent sign as you</Text>
-                    <Text style={styles.warningText}>
-                      {`It names your own identity: ${a.view.scopes.filter((sc: any) => sc.own).map((sc: any) => sc.identity).join(', ')}. Anything signed with it looks like you signed it.`}
-                    </Text>
-                  </View>
-                ) : null}
                 </>)}
               </>
             )}
 
-            {s.phase === 'ask' && !confirming && a.kind === 'request' && a.blocked ? (
+            {s.phase === 'ask' && a.blocked ? (
               <Text style={[styles.dim, {color: theme.error}]}>{`Approve is off: ${a.blocked} Nothing is sent to the key.`}</Text>
             ) : null}
             {s.phase === 'ask' && left !== null ? (
@@ -216,30 +195,20 @@ export function EdgeRequestSheet() {
             ) : null}
             {/* the tap registered: say so at once - the phone syncs and checks its copy before the key asks for the press (the 'lag', Brad 2026-10-04) */}
             {s.phase === 'ask' && acting ? (
-              <Text style={[styles.op, {color: theme.warn}]}>{a.kind === 'register' ? 'Registering - getting the key ready…' : 'Approved - getting the key ready…'}</Text>
+              <Text style={[styles.op, {color: theme.warn}]}>Approved - getting the key ready…</Text>
             ) : null}
             {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
-            {s.phase === 'ask' && !confirming && !acting ? (
+            {s.phase === 'ask' && !acting ? (
               <View style={styles.row}>
                 <Btn
                   large
-                  title={a.kind === 'register' ? 'Register' : 'Approve'}
-                  tone={a.kind === 'request' && a.view.ownWarning ? 'danger' : 'primary'}
-                  disabled={off || refusal !== null || (a.kind === 'request' && !!a.blocked)}
-                  onPress={consent(() => (a.kind === 'request' && a.view.ownWarning ? setConfirming(true) : answerSheet('approve')))}
+                  title="Approve"
+                  tone="primary"
+                  disabled={off || refusal !== null || !!a.blocked}
+                  onPress={consent(() => answerSheet('approve'))}
                 />
                 <Btn large title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
               </View>
-            ) : null}
-            {s.phase === 'ask' && confirming ? (
-              <>
-                <Text style={[styles.op, {color: theme.error}]}>Are you sure? The agent could sign as you until this budget ends.</Text>
-                <View style={styles.row}>
-                  <Btn large title="Yes, let it sign as me" tone="danger" disabled={off || refusal !== null} onPress={consent(() => answerSheet('approve'))} />
-                  <Btn large title="Back" disabled={off} onPress={act(() => setConfirming(false))} />
-                  <Btn large title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
-                </View>
-              </>
             ) : null}
             {s.phase === 'press' ? (
               <>

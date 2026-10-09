@@ -26,7 +26,7 @@ const CHECKPOINT = 0x03;
 const PUBKEY = 0x04;
 const STATEMENT = 0x06;  /* {nametag hash 32}, no press, no link: seq . nametag hash, owner key, signature (2026-10-08) */
 const LOSS = 0x34;
-const AGENT_ADD = 0x15; /* mcp-service 4.7a: {agent key 32}, press */
+const RETIRED_AGENT_ADD = 0x15; /* retired 2026-10-08: refused as unknown */
 const GRANT_CREATE = 0x10;
 const GRANT_LABEL = 0x11; /* R11a: {scope index, label 32}, no press - a derived code's identity */
 const GRANT_REVOKE = 0x12;
@@ -959,25 +959,17 @@ module.exports = function register({ it }, ctx) {
     });
 
   /*
-   * mcp-service.md 4.7a (2026-10-03): an agent's key is registered once, WITH A
-   * PRESS - like a known peer (R20). The key links it: op agent-add (15), the
-   * press flag, subject = SHA256("OKEDGE-AGENT-v1" || key). No press, no link.
+   * Agent registration is gone (Brad, 2026-10-08: "so the claude key thing is overkill"; "lets
+   * cut it out"): a computer is trusted by its Bluetooth pairing, the key keeps no agent. The old
+   * AGENT_ADD sub-op (0x15) is an unknown request now: refused at once, no press asked, no link.
    */
-  it('edge: AGENT_ADD takes a press and links the agent key; no press, no link (4.7a)',
+  it('edge: the retired AGENT_ADD (0x15) is refused as unknown - no press, no link',
     async ({ device, assert, signal }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
-      const key = crypto.randomBytes(32);
       const before = await head(device, { signal });
-      /* nobody presses: whatever the key answers (a timeout, or nothing), past its 25 s wait nothing is linked */
-      await edge(device, AGENT_ADD, key, { signal, text: true }).catch(() => null);
-      await device.sleep(26000, { signal });
-      assert.equal((await head(device, { signal })).seq, before.seq, 'an unpressed AGENT_ADD wrote a link');
-      const [r] = await edge(device, AGENT_ADD, key, { signal, press: true });
-      const seq = r.readUInt32LE(0);
-      const [l] = await pickup(device, seq, 1, { signal });
-      const f = chain.decodeLink(l.link);
-      assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.flags & PRESS_OBSERVED, f.grantId]), JSON.stringify([15, APPROVE, 0, PRESS_OBSERVED, 0]), 'the agent-add link is not the spec layout');
-      assert.bytes(Buffer.from(f.subject), Buffer.from(grants.agentSubject(key)));
+      const t = await edge(device, RETIRED_AGENT_ADD, crypto.randomBytes(32), { signal, text: true });
+      assert.match(t, /^EDGE:0A/i, 'the retired AGENT_ADD was not refused as unknown');
+      assert.equal((await head(device, { signal })).seq, before.seq, 'the retired AGENT_ADD wrote a link');
     });
 
   it('edge: a budget on a derived code covers one identity - another identity on the same code is neither paid for nor made to owe (R11a)',
@@ -1087,19 +1079,18 @@ module.exports = function register({ it }, ctx) {
         let edgeSvc = null;
         ctx.requireLib('node-onlykey-lib/plugins/edge')({ transport }, (err, s) => { if (err) throw err; edgeSvc = s.edge; });
 
-        /* the phone, in-process: a registered agent key, Yes, and the press the key waits for */
-        const agentKey = request.signerFromSecret(crypto.randomBytes(32));
+        /* the phone, in-process: a paired computer (no agent key since 2026-10-08 - the pairing says who), Yes, and the press the key waits for */
         const seen = new Set();
         const channel = {
           async send(msg) {
             const r = await approve.approveRequest(msg, {
-              edge: edgeSvc, registered: [hexOf(agentKey.publicKey)], seen, ask: async () => 'approve',
+              edge: edgeSvc, from: 'pc-okt', seen, ask: async () => 'approve',
               verifyCopy: async () => ({ ok: true, head: (await edgeSvc.head()).head }), onPress: pressSoon, timeoutMs: 30000,
             });
             return r.dropped ? null : r;
           },
         };
-        const c = client.createEdgeClient({ edge: edgeSvc, channel, signer: agentKey });
+        const c = client.createEdgeClient({ edge: edgeSvc, channel });
 
         /* a host key standing in for github.com, pinned */
         const hk = crypto.generateKeyPairSync('ed25519');

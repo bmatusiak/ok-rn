@@ -5,13 +5,13 @@
  * we should hold these blocks in the app until approved and merged".
  *
  * Opened only from the Edge tab's banner. One row per held device log (edgeDevices
- * reviewHeld, sorted by the lib with this key's owner key), and the held Key Chain list.
+ * reviewHeld, sorted by the lib with this key's owner key). The Key Chain list is not here:
+ * it is the Key Chain plugin's (Brad, 2026-10-08: "Move it out of Edge").
  * Nothing here needs the key's press: pairing and sync are all app.
  */
 import React, {useCallback, useEffect, useState} from 'react';
 import {Modal, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {approveHeld, approveKeychain, declineHeld, declineKeychain, heldKeychain, notMine, onDevicesChanged, reviewHeld, type HeldKeychain, type HeldView} from '../edgeDevices';
-import {keepMergedKeyChain} from '../keyChainRecorder';
+import {approveHeld, declineHeld, notMine, onDevicesChanged, reviewHeld, type HeldView} from '../edgeDevices';
 import {consentRefusal} from '../debugGuard';
 import {netTag} from '../net';
 import {Btn} from './components';
@@ -21,12 +21,10 @@ const short = (id: string) => `${id.slice(0, 8)}…${id.slice(-8)}`;
 
 export function MergeSheet({visible, onClose}: {visible: boolean; onClose: () => void}) {
   const [rows, setRows] = useState<HeldView[]>([]);
-  const [kc, setKc] = useState<HeldKeychain | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const load = useCallback(async () => {
     setRows(await reviewHeld());
-    setKc(await heldKeychain());
   }, []);
   useEffect(() => { if (visible) { setNote(null); void load(); } }, [visible, load]);
   useEffect(() => onDevicesChanged(() => { void load(); }), [load]);
@@ -57,7 +55,8 @@ export function MergeSheet({visible, onClose}: {visible: boolean; onClose: () =>
             {waiting.map(r => (
               <View key={r.deviceId} style={styles.item}>
                 <Text style={styles.op}>{r.nametag ?? `"${r.claimed}"`}</Text>
-                <Text style={styles.dim}>{`Device ${short(r.deviceId)} · ${r.count} link${r.count === 1 ? '' : 's'} · from ${r.from}`}</Text>
+                {/* from the DEVICE that made the blocks (Brad, 2026-10-08: "the nitro16 didnt make the blocks so it should say from pixel"); only a forged log names the computer that sent it */}
+                <Text style={styles.dim}>{`${r.count} link${r.count === 1 ? '' : 's'} · from ${r.class === 'forged' ? `the computer ${r.from}` : r.nametag ?? `device ${short(r.deviceId)}`} · device ${short(r.deviceId)}`}</Text>
                 {r.class === 'forged' ? (
                   <>
                     <Text style={[styles.op, {color: theme.error}]}>Not made with your OnlyKey - this computer sent a forged log. Kept as evidence, never merged.</Text>
@@ -84,17 +83,7 @@ export function MergeSheet({visible, onClose}: {visible: boolean; onClose: () =>
                 )}
               </View>
             ))}
-            {kc ? (
-              <View style={styles.item}>
-                <Text style={styles.op}>Key Chain list</Text>
-                <Text style={styles.dim}>{`From ${kc.from}: ${kc.in} entr${kc.in === 1 ? 'y' : 'ies'} this phone does not have yet.`}</Text>
-                <View style={styles.row}>
-                  <Btn title="Approve - merge" tone="primary" onPress={act(() => approveKeychain(keepMergedKeyChain), 'Key Chain list merged.')} disabled={busy} />
-                  <Btn title="Decline" onPress={act(() => declineKeychain(), 'Key Chain list declined.')} disabled={busy} />
-                </View>
-              </View>
-            ) : null}
-            {!waiting.length && !kc ? <Text style={[styles.op, {marginTop: 12}]}>Nothing waits to be merged.</Text> : null}
+            {!waiting.length ? <Text style={[styles.op, {marginTop: 12}]}>Nothing waits to be merged.</Text> : null}
             {kept ? <Text style={[styles.dim, {marginTop: 12}]}>{`${kept} log${kept === 1 ? '' : 's'} kept as evidence on this phone.`}</Text> : null}
             {note ? <Text style={[styles.op, {marginTop: 10}]}>{note}</Text> : null}
             <View style={[styles.row, {marginTop: 14}]}><Btn title="Close" onPress={onClose} /></View>
