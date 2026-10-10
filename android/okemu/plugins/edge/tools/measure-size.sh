@@ -3,13 +3,13 @@
 #
 # Compiles src/okplugin_edge.cpp alone with the Teensy 1.6.5-r5 toolchain
 # (Cortex-M4 Thumb, -Os, the firmware's flags) inside the toolchain image, and
-# prints code / constants / RAM and each function's size. Run it on the Pi
-# (the build station), from a copy of this folder:
+# prints code / constants / RAM and each function's size. Run it on a Linux machine with
+# Docker, from this folder or a copy of it:
 #
-#   scp -r ok-rn/android/okemu/plugins/edge 192.168.51.162:scratch/
-#   ssh 192.168.51.162 'bash scratch/edge/tools/measure-size.sh'
+#   bash tools/measure-size.sh
 #
-# ARDUINO and LIBS default to the Pi's checkouts (3.1.0 libraries in ok-latest).
+# ARDUINO (the Teensy 1.6.5-r5 Arduino tree), LIBS (the 3.1.0 firmware libraries) and FW (the
+# OnlyKey-Firmware tree) name the inputs; set them when they are not at the defaults below.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 ARDUINO="${ARDUINO:-$HOME/projects/ok-firmware/arduino-1.6.5-r5-teensy_127}"

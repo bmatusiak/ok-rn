@@ -1,7 +1,7 @@
 # OnlyKey Edge: the firmware
 
-**A whitepaper on the Edge firmware plugin.** 2026-10-10, for the v1 firmware (the first release) at ok-rn `e3a90ac`.
-**Code:** `ok-rn/android/okemu/plugins/edge/src/okplugin_edge.cpp` (cited as `cpp:LINE`), `okplugin_edge.h` (`h:LINE`), `plugin.js`. Every line number is as of ok-rn `e3a90ac`.
+**A whitepaper on the Edge firmware plugin.** 2026-10-10, for the v1 firmware (the first release) at ok-rn `99d88cc`.
+**Code:** `ok-rn/android/okemu/plugins/edge/src/okplugin_edge.cpp` (cited as `cpp:LINE`), `okplugin_edge.h` (`h:LINE`), `plugin.js`. Every line number is as of ok-rn `99d88cc`.
 **Rules:** [`SPEC.md`](SPEC.md) (R-numbers), [`BLOCKS.md`](BLOCKS.md), [`RECEIPT-CODES.md`](RECEIPT-CODES.md).
 **Host side, for cross-reference:** `node-onlykey-lib/edge/plugin/index.js` (the wire calls) and `node-onlykey-lib/edge/src/` (`chain.js`, `grants.js`, `receipts.js`, `codes.js`).
 
@@ -661,11 +661,11 @@ With the backup and its passphrase they hold K132: the derived identities and th
 
 ## 14. Code vs spec
 
-[SPEC.md](SPEC.md) describes this code as of ok-rn `c3d98d4` and after; no difference between them is known. When code and spec disagree, the code is the truth and the spec is fixed.
+[SPEC.md](SPEC.md) describes this code as of ok-rn `99d88cc`; no difference between them is known. When code and spec disagree, the code is the truth and the spec is fixed.
 
 ## 15. Appendix: file and function map
 
-`okplugin_edge.cpp`, in file order (ok-rn after `c3d98d4`).
+`okplugin_edge.cpp`, in file order, as of ok-rn `99d88cc`.
 
 | Function | What it does | Line |
 |---|---|---|
