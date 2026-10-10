@@ -57,10 +57,10 @@ test('the watcher: refused TX starts rising (once), a receipt owed over 10 min (
   const now = 1_000_000_000;
   const waiting: EdgeRow = {...rows[2], seenAt: now - 11 * 60 * 1000, receipt: {seq: 12, status: 'waiting'} as any};
   const v = view([rows[0], rows[1], waiting]);
-  const past1 = [{grantId: 9, endedHow: 'used up', uses: 1, used: 1}];
+  const past1 = [{grantId: 9, endedHow: 'completed', uses: 1, used: 1}];
   await raiseWatchAlarms(mirror, v, {refusedTx: 0, live: [], past: past1}, now);
   expect(post.mock.calls.map(c => c[1])).toEqual(['Edge: a receipt is owed too long']);
-  await raiseWatchAlarms(mirror, v, {refusedTx: 2, live: [5], past: [...past1, {grantId: 20, endedHow: 'used up', uses: 3, used: 3}]}, now);
+  await raiseWatchAlarms(mirror, v, {refusedTx: 2, live: [5], past: [...past1, {grantId: 20, endedHow: 'completed', uses: 3, used: 3}]}, now);
   expect(post.mock.calls.slice(1).map(c => [c[1], c[3], c[4]])).toEqual([
     ['Edge: the key refused a TX start', 'budget 5', false],
     ['Edge: budget 20 spent', 'budget 20', true],

@@ -29,10 +29,10 @@ export function budgetStatus(b: EdgeBudget, live: boolean, view: EdgeView | null
   const uses = rows.filter(r => r.fields.grantId === b.grantId && r.fields.decision === codes.DECISION.SELF_PRESS);
   type Paired = {status?: string; receipt?: {seq: number} | null};
   const answered = (r: (typeof rows)[number]) => (r.receipt as Paired | undefined)?.receipt ?? null;
-  /* a use with no receipt and no waive, that owes one */
+  /* a use with no receipt and no settle, that owes one */
   const owedRows = uses.filter(r => {
     const t = r.receipt as Paired | undefined;
-    return !answered(r) && t?.status !== 'no-receipt-owed' && t?.status !== 'waived' && t?.status !== 'waived-unlisted';
+    return !answered(r) && t?.status !== 'no-receipt-owed' && t?.status !== 'settled' && t?.status !== 'settled-unlisted';
   });
   const owed = Math.max(owedRows.length, b.used - (b.receiptsFiled ?? 0));
   /* nothing more can be spent: every use gone, or the budget is no longer live (ended, expired, a lock) */

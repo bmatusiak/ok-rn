@@ -92,8 +92,8 @@ const elapsed = (ms: number) => {
 
 function approval(row: EdgeRow): string {
   const f = row.fields;
-  /* a WAIVE (code 0x8F + the press flag): your press accepted uses without their receipts */
-  if (f.op === OP.RECEIPT && f.code === 0x8f && (f.flags & FLAG.PRESS_OBSERVED)) return `waive · pressed (from #${f.refSeq})`;
+  /* a SETTLE (code 0x8F + the press flag): your press accepted uses without their receipts */
+  if (f.op === OP.RECEIPT && f.code === 0x8f && (f.flags & FLAG.PRESS_OBSERVED)) return `settle · pressed (from #${f.refSeq})`;
   if (f.op === OP.RECEIPT) return `answers no request (#${f.refSeq})`; // only orphans are drawn as rows
   if (f.decision === DECISION.SELF_PRESS) return `self-press · budget ${f.grantId} step ${f.grantStep}`;
   if (f.flags & FLAG.PRESS_OBSERVED) return 'pressed';
@@ -113,7 +113,7 @@ function Progress({used, total, thick}: {used: number; total: number; thick?: bo
 
 function ReceiptHook({t, verified, seq, since, edge}: {t: NonNullable<EdgeRow['receipt']>; verified: boolean; seq: number; since?: number; edge?: ReturnType<typeof useEdge>}) {
   if (t.status === 'no-receipt-owed') return null;
-  /* WHERE THE RECEIPT WILL HANG (Brad, 2026-10-06): under the use it waits for, not a box above it; Waive is here in the budget's view */
+  /* WHERE THE RECEIPT WILL HANG (Brad, 2026-10-06): under the use it waits for, not a box above it; Settle is here in the budget's view */
   if (t.status === 'waiting') return <WaitingReceipt seq={seq} since={since} edge={edge} />;
   if (t.status === 'missing') {
     return (
@@ -124,16 +124,16 @@ function ReceiptHook({t, verified, seq, since, edge}: {t: NonNullable<EdgeRow['r
     );
   }
   /*
-   * Waived: you accepted the use without its receipt (a pressed WAIVE link) - there
-   * is no receipt to show. Crashed the tab before (the Pixel, 2026-10-04: a waive
+   * Settled: you accepted the use without its receipt (a pressed SETTLE link) - there
+   * is no receipt to show. Crashed the tab before (the Pixel, 2026-10-04: a settle
    * during the B7 watcher test - t.receipt was null).
    */
-  if (t.status === 'waived' || t.status === 'waived-unlisted' || !t.receipt) {
-    const by = (t as any).waivedBy as number | null | undefined;
+  if (t.status === 'settled' || t.status === 'settled-unlisted' || !t.receipt) {
+    const by = (t as any).settledBy as number | null | undefined;
     return (
       <View style={[styles.receipt, {borderLeftColor: theme.warn}]}>
-        <Text style={[styles.receiptTitle, {color: theme.warn}]}>Waived</Text>
-        <Text style={styles.dim}>{`You accepted this use without its receipt${by ? ` (waive #${by})` : ''}.`}</Text>
+        <Text style={[styles.receiptTitle, {color: theme.warn}]}>Settled</Text>
+        <Text style={styles.dim}>{`You accepted this use without its receipt${by ? ` (settle #${by})` : ''}.`}</Text>
       </View>
     );
   }
@@ -177,8 +177,8 @@ function WaitingReceipt({seq, since, edge}: {seq: number; since?: number; edge?:
         {since ? `${now - since > OWED_RED_MS ? '⚠ ' : ''}Waiting for receipt · owed ${elapsed(now - since)}` : 'Waiting for receipt'}
       </Text>
       <Text style={styles.dim}>{`The agent has not yet said what it did with #${seq}.`}</Text>
-      {/* the waive lives here, at the use that owes (Brad, 2026-10-06: "move the waive button there") - not as a banner on the budgets list */}
-      {edge ? <WaiveControls edge={edge} /> : null}
+      {/* the settle lives here, at the use that owes (Brad, 2026-10-06: "move the waive button there") - not as a banner on the budgets list */}
+      {edge ? <SettleControls edge={edge} /> : null}
     </View>
   );
 }
@@ -553,7 +553,7 @@ function DeviceBudgetView({b, device, onBack}: {b: EdgeBudget; device: YourDevic
   );
 }
 
-/* other: another device's budget - its own chain view, read-only (no Waive, no copy tools), its name on the card */
+/* other: another device's budget - its own chain view, read-only (no Settle, no copy tools), its name on the card */
 function BudgetView({b, edge, onBack, other}: {b: EdgeBudget; edge: ReturnType<typeof useEdge>; onBack: () => void; other?: {view: EdgeView; name: string}}) {
   /* the phone's own Back (button or gesture) goes back too, as the ‹ Back button does (Brad, 2026-10-07) */
   useEffect(() => {
@@ -585,7 +585,7 @@ function BudgetView({b, edge, onBack, other}: {b: EdgeBudget; edge: ReturnType<t
     if (r.fields.op === OP.RECEIPT && attached.has(r.seq)) continue; /* it hangs under its use */
     presses.push({key: `h${r.seq}`, kind: 'node', bare: true, render: () => (
       <View style={styles.historyRow}>
-        {/* edge: an owed receipt shows the Waive controls under it, as the old list did */}
+        {/* edge: an owed receipt shows the Settle controls under it, as the old list did */}
         <LinkRow row={r} edge={other ? undefined : edge} continued={v?.continued} budgetUses={liveUses} agentOf={agentOf} notesFrom={notesFrom} receiptVerified={r.receipt?.receipt ? verifiedAt.get(r.receipt.receipt.seq) !== false : true} />
       </View>
     )});
@@ -635,21 +635,23 @@ function BudgetView({b, edge, onBack, other}: {b: EdgeBudget; edge: ReturnType<t
 }
 
 /**
- * Receipts owed (firmware R16-R18): every approved use, pressed or self-pressed,
- * owes a receipt, and until each is filed or waived nothing automatic happens -
- * no budget, no resume, no self-press. Waive is the way out for uses nobody
- * will receipt: the person's Yes here first, then a press on the key.
+ * Receipts owed (firmware R16-R18): every budget use owes a receipt, and until each
+ * is filed or settled nothing automatic happens - no TX start, no new budget, no resume.
+ * Settle is the way out for uses nobody will receipt (a signer that died mid-stream):
+ * the person's Yes here first, then a press on the key.
  */
 /*
- * WAIVE (R18): the person accepts every owed use without its receipt - a press,
- * linked in the chain. In the budget's detail view, under the use that is
- * waiting for its receipt (Brad, 2026-10-06), no longer a banner on the list.
+ * SETTLE SETTLES THE BUDGET (Brad, 2026-10-10: "its more secure to just end the budget instead
+ * of allowing it to be continue to be used; this will force a new budget to be created by the
+ * agent"): the key ends every live budget, each with its end link, then links the settle - the
+ * person accepts every owed use without its receipt. In the budget's detail view, under the use
+ * that is waiting for its receipt (Brad, 2026-10-06), not a banner on the list.
  */
-function WaiveControls({edge}: {edge: ReturnType<typeof useEdge>}) {
+function SettleControls({edge}: {edge: ReturnType<typeof useEdge>}) {
   const [confirming, setConfirming] = useState(false);
-  return edge.pressFor === 'waive' ? (
+  return edge.pressFor === 'settle' ? (
     <>
-      <Text style={[styles.op, {color: theme.warn}]}>Press the key to waive</Text>
+      <Text style={[styles.op, {color: theme.warn}]}>Press the key to settle</Text>
       {consentRefusal() ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal()}</Text> : null}
       <View style={styles.row}>
         <Btn title="Press the soft key" tone="primary" disabled={consentRefusal() !== null} onPress={() => { if (!consentRefusal()) edge.press(); }} />
@@ -657,16 +659,16 @@ function WaiveControls({edge}: {edge: ReturnType<typeof useEdge>}) {
     </>
   ) : confirming ? (
     <>
-      <Text style={styles.dim}>Waive records, in the chain, that you accept every owed use without its receipt. It needs a press on the key.</Text>
+      <Text style={styles.dim}>Settling ends every live budget and records, in the chain, that you accept every owed use without its receipt. The agent then needs a new budget, which you approve again. It needs a press on the key.</Text>
       <View style={styles.row}>
         {consentRefusal() ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal()}</Text> : null}
-        <Btn title="Yes, waive" tone="danger" onPress={() => { if (consentRefusal()) return; setConfirming(false); void edge.waive(); }} disabled={edge.busy || consentRefusal() !== null} />
+        <Btn title="Yes, settle" tone="danger" onPress={() => { if (consentRefusal()) return; setConfirming(false); void edge.settle(); }} disabled={edge.busy || consentRefusal() !== null} />
         <Btn title="Cancel" onPress={() => setConfirming(false)} disabled={edge.busy} />
       </View>
     </>
   ) : (
     <View style={styles.row}>
-      <Btn title="Waive…" onPress={() => setConfirming(true)} disabled={edge.busy} />
+      <Btn title="Settle…" onPress={() => setConfirming(true)} disabled={edge.busy} />
     </View>
   );
 }
@@ -825,7 +827,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
               ) : gap && confirmLoss ? (
                 <>
                   <Text style={styles.dim}>
-                    {`No copy holds ${range}. Accepting records in the chain, with a press, that ${range} ${gap.from === gap.to ? 'is' : 'are'} gone for good. Budgets can be approved again after it; anything those links owed must still be receipted or waived.`}
+                    {`No copy holds ${range}. Accepting records in the chain, with a press, that ${range} ${gap.from === gap.to ? 'is' : 'are'} gone for good. Budgets can be approved again after it; anything those links owed must still be receipted or settled.`}
                   </Text>
                   <View style={styles.row}>
                     <Btn title={`Yes, accept loss of ${range}`} tone="danger" onPress={() => { if (consentRefusal()) return; setConfirmLoss(false); void edge.acceptLoss(gap.from, gap.to); }} disabled={edge.busy} />

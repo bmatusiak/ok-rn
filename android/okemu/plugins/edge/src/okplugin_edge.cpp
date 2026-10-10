@@ -12,7 +12,7 @@
  *     press that opens a budget is answered with a checkpoint over its grant-create link,
  *     whose subject commits to the budget's genesis;
  *   4 the debts: every budget use owes a receipt, and while one is owed no TX start, budget
- *     opening or resume is accepted, until a receipt or a pressed WAIVE pays it.
+ *     opening or resume is accepted, until a receipt or a pressed SETTLE pays it.
  * A second key, the owner key, signs a statement about this device for the host to show
  * which devices were made from the same OnlyKey secret.
  *
@@ -54,7 +54,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 /* op 15 is not written and not reused */
 #define OP_CONTINUE 16 /* the first link of a restored device's own chain, carrying the backup's debts */
 #define DECISION_SELF_PRESS 4
-#define CODE_NEEDS_REVIEW 0x8F /* a WAIVE is linked as a receipt with this code and the press flag */
+#define CODE_NEEDS_REVIEW 0x8F /* a SETTLE is linked as a receipt with this code and the press flag */
 #define FLAG_PRESS_OBSERVED 0x01
 #define FLAG_BUDGET_SPENT 0x02
 #define FLAG_OWES_RECEIPT 0x10 /* this use owes a receipt */
@@ -104,7 +104,7 @@ struct edge_state {
   uint32_t seq;               /* SEQ_NONE = no link yet */
   uint8_t head[32];           /* head[seq]; the genesis while seq == SEQ_NONE */
   uint8_t owed_n;             /* uses owing a receipt, oldest first in owed[] */
-  uint8_t overflow;           /* an older owed use fell off the list - only a WAIVE clears it */
+  uint8_t overflow;           /* an older owed use fell off the list - only a SETTLE clears it */
   struct owed_use owed[OWED_MAX];
   uint8_t last_link[LINK_BYTES]; /* the latest link, so a restart never loses it */
   /*
@@ -225,10 +225,10 @@ static struct {
 } pend;
 
 /*
- * An OKEDGE request waiting for its physical press: opening a budget, resuming one, waiving
+ * An OKEDGE request waiting for its physical press: opening a budget, resuming one, settling
  * the debts or accepting a loss. One at a time; a new one replaces it.
  */
-enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_LOSS };
+enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_SETTLE, PRESS_LOSS };
 static struct {
   uint8_t what;
   unsigned long since;
@@ -295,7 +295,7 @@ static void reply(const uint8_t *data, int len) {
   send_transport_response(r, 64, false, false);
 }
 
-/* seq . head: the answer of RECEIPT, WAIVE and LOSS - the head the next TX start must name */
+/* seq . head: the answer of RECEIPT, SETTLE and LOSS - the head the next TX start must name */
 static void reply_seq_head(void) {
   uint8_t r[36];
   put32(r, st.seq);
@@ -455,7 +455,7 @@ static int identity_of(const struct edge_state *s, uint8_t pub[64], uint8_t id[I
  *   person), grant_id = the number of debts carried,
  *   subject = SHA256("OKEDGE-CONTINUE-v1" || old device_id 16 || old seq u32 ||
  *             old head 32 || each carried debt's seq u32, oldest first)
- * The debts (seq + head) stay owed here and are paid by receipt or waive on this chain; the
+ * The debts (seq + head) stay owed here and are paid by receipt or settle on this chain; the
  * host keeps the old chain and its checkpoint key beside it, so the old history stays
  * checkable up to the head this names. Live budgets end.
  */
@@ -558,12 +558,12 @@ static void statement(const uint8_t nametag_hash[32]) {
 
 /* ------------------------------------------------------------ the weld */
 
-/* SHA256("OKEDGE-WAIVE-v1" || each owed seq (u32 LE, oldest first) || overflow) (lib receipts.waiveSubject) */
-static void waive_subject(const struct edge_state *s, uint8_t out[32]) {
+/* SHA256("OKEDGE-SETTLE-v1" || each owed seq (u32 LE, oldest first) || overflow) (lib receipts.settleSubject) */
+static void settle_subject(const struct edge_state *s, uint8_t out[32]) {
   uint8_t seq4[4], ov = s->overflow ? 1 : 0;
   SHA256_CTX ctx;
   sha256_init(&ctx);
-  sha256_update(&ctx, (const unsigned char *)"OKEDGE-WAIVE-v1", 15);
+  sha256_update(&ctx, (const unsigned char *)"OKEDGE-SETTLE-v1", sizeof("OKEDGE-SETTLE-v1") - 1);
   for (int i = 0; i < s->owed_n; i++) {
     put32(seq4, s->owed[i].seq);
     sha256_update(&ctx, seq4, 4);
@@ -578,8 +578,8 @@ static void waive_subject(const struct edge_state *s, uint8_t out[32]) {
  * then the debts (lib receipts.keyDebts follows the same rule):
  *   - an approved or self-pressed sign/decrypt whose link carries FLAG_OWES_RECEIPT owes a
  *     receipt. The list keeps the latest OWED_MAX; one more pushes the oldest off for good
- *     (overflow: only a WAIVE clears it);
- *   - a WAIVE - a receipt with code 0x8F, the press flag and the subject over exactly this
+ *     (overflow: only a SETTLE clears it);
+ *   - a SETTLE - a receipt with code 0x8F, the press flag and the subject over exactly this
  *     list and overflow - clears the list and the overflow;
  *   - any other receipt pays its ref_seq (bytes 40-43), if that use is still on the list.
  * The record is saved before the operation's result is released.
@@ -602,7 +602,7 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
       s->owed_n++;
     }
   } else if (op == OP_RECEIPT) {
-    waive_subject(s, w);
+    settle_subject(s, w);
     if (decision == CODE_NEEDS_REVIEW && (link[7] & FLAG_PRESS_OBSERVED) && memcmp(link + 8, w, 32) == 0) {
       s->owed_n = 0;
       s->overflow = 0;
@@ -730,6 +730,33 @@ static int any_budget_payable(void) {
 static struct budget *live_budget(uint32_t id) {
   for (int i = 0; i < MAX_LIVE; i++) if (id && budgets[i].id == id && alive(&budgets[i])) return &budgets[i];
   return NULL;
+}
+
+/*
+ * How a budget ended - byte 5 (decision) of its grant-end link. Expiry and a lock or reboot
+ * write no link: the budget is simply gone from RAM.
+ */
+#define END_COMPLETED 1 /* every use made and receipted: the key ends it itself */
+#define END_REVOKED 2   /* ended early by GRANT_REVOKE */
+#define END_SETTLED 3   /* ended early by a settle - incomplete; the settle receipt after it names the open uses */
+
+/* ends a live budget: its RAM is cleared and a grant-end link names it and how it ended */
+static void end_budget(struct budget *b, uint8_t how) {
+  uint8_t zero[32] = {0};
+  uint32_t id = b->id;
+  memset(b, 0, sizeof(*b));
+  append(OP_GRANT_END, how, 0, 0, zero, id, 0, NULL);
+}
+
+/*
+ * A fulfilled budget completes itself: once nothing is owed, every live budget whose uses are
+ * all made ends with END_COMPLETED - no host step, so a spent budget never sits live until it
+ * expires. Called after each receipt.
+ */
+static void complete_fulfilled(void) {
+  if (owes()) return;
+  for (int i = 0; i < MAX_LIVE; i++)
+    if (alive(&budgets[i]) && budgets[i].used >= budgets[i].uses) end_budget(&budgets[i], END_COMPLETED);
 }
 
 static void press_drop(void) {
@@ -872,17 +899,23 @@ static void resume_pressed(void) {
 
 /*
  * The way out for debts nobody will receipt: one press clears them all. Linked as a receipt,
- * code 0x8F (needs review), the press flag, grant_id = the oldest seq it waives, and
- *   subject = SHA256("OKEDGE-WAIVE-v1" || each waived seq (u32 LE, oldest first) || overflow)
- * (lib receipts.waiveSubject). With overflow and an empty list (every listed debt was
- * receipted, older ones fell off), grant_id is the waive's own seq: the host then reads every
- * older unpaid use as "waived, not listed".
+ * code 0x8F (needs review), the press flag, grant_id = the oldest seq it settles, and
+ *   subject = SHA256("OKEDGE-SETTLE-v1" || each settled seq (u32 LE, oldest first) || overflow)
+ * (lib receipts.settleSubject). With overflow and an empty list (every listed debt was
+ * receipted, older ones fell off), grant_id is the settle's own seq: the host then reads every
+ * older unpaid use as "settled, not listed".
  */
-static void waive_pressed(void) {
+static void settle_pressed(void) {
   if (!owes()) { status(EDGE_NO_RECEIPT_WAITING); return; } /* paid while it waited */
+  /*
+   * A settle ends every live budget first, held or not, each with its grant-end link: a debt
+   * cleared by a press must not leave a budget that goes on paying. More uses take a new budget
+   * and its own press.
+   */
+  for (int i = 0; i < MAX_LIVE; i++) if (alive(&budgets[i])) end_budget(&budgets[i], END_SETTLED);
   uint8_t subject[32];
   uint32_t oldest = st.owed_n ? st.owed[0].seq : (st.seq == SEQ_NONE ? 0 : st.seq + 1);
-  waive_subject(&st, subject);
+  settle_subject(&st, subject);
   append(OP_RECEIPT, CODE_NEEDS_REVIEW, 0, FLAG_PRESS_OBSERVED, subject, oldest, 0, NULL); /* the weld clears the debts */
   reply_seq_head();
 }
@@ -915,7 +948,7 @@ static void loss_subject(uint32_t to, uint8_t subject[32]) {
  * LOSS {from, to}, at a press: the person accepts #from..#to as unrecoverable - no copy
  * anywhere holds it. One link: op = loss, decision approve, slot 0, the press flag,
  * grant_id = from, subject = loss_subject(to). It records the acceptance and pays no debt
- * (only a receipt or a waive does); a host then accepts a gap covered by it.
+ * (only a receipt or a settle does); a host then accepts a gap covered by it.
  * reply: seq . head after it.
  */
 static void loss_pressed(void) {
@@ -940,7 +973,7 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   pend.active = 0;
   pend.budget = -1;
   if (opcode == OKEDGE) {
-    user_input_mode = USER_INPUT_PRESS; /* a grant, resume, waive or loss always takes a physical press */
+    user_input_mode = USER_INPUT_PRESS; /* a grant, resume, settle or loss always takes a physical press */
     return;
   }
   if (opcode != OKSIGN && opcode != OKDECRYPT) return;
@@ -1006,7 +1039,7 @@ void okplugin_edge_decision(int decision) {
     if (!ensure_identity()) { press_drop(); status(EDGE_NEED_PIN); return; }
     if (what == PRESS_GRANT) grant_pressed();
     else if (what == PRESS_RESUME) resume_pressed();
-    else if (what == PRESS_WAIVE) waive_pressed();
+    else if (what == PRESS_SETTLE) settle_pressed();
     else if (what == PRESS_LOSS) loss_pressed();
     press_drop();
     return;
@@ -1085,7 +1118,7 @@ void okplugin_edge_wipe(void) {
 /*
  * The plugin backup section (the loader: node-onlykey-lib/cli/firmware-plugins.js), version 1:
  *   1 . seq u32 . head 32 . owed_n . overflow . owed_n x (seq u32, head 32) . device id 16
- * The debts travel with the backup, because only a receipt or a waive may pay them - a
+ * The debts travel with the backup, because only a receipt or a settle may pay them - a
  * restore must not forgive them. The device id names the chain the restored key continues
  * (its continue link). Budgets end at a restore (their seeds are never stored); the links
  * themselves are the host's. The SALT IS NEVER HERE: a restored key must never become the
@@ -1210,12 +1243,9 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     case OKEDGE_GRANT_REVOKE: {
       /* ends a live budget, held or not; the debts it made stay owed */
-      uint32_t id = get32(buffer + 6);
-      struct budget *b = live_budget(id);
+      struct budget *b = live_budget(get32(buffer + 6));
       if (!b) { status(EDGE_NO_SUCH_BUDGET); return; }
-      uint8_t zero[32] = {0};
-      memset(b, 0, sizeof(*b));
-      append(OP_GRANT_END, OKEDGE_DECISION_APPROVE, 0, 0, zero, id, 0, NULL);
+      end_budget(b, END_REVOKED);
       status(EDGE_OK);
       return;
     }
@@ -1263,7 +1293,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
        * ref_seq u32 . code u8 . msg_hash 32, for any owed use:
        *   SHA256("OKEDGE-RECEIPT-v1" || ref_seq || head[ref_seq] || code || msg_hash)
        * (lib receipts.receiptSubject), head[ref_seq] from the owed list. The message itself
-       * never reaches the key. reply: seq . head after the receipt link.
+       * never reaches the key. reply: seq . head after the receipt link - and after its budget's
+       * grant-end link when this receipt completed it.
        */
       uint32_t ref = get32(buffer + 6);
       uint8_t code = buffer[10];
@@ -1281,16 +1312,17 @@ void okplugin_edge_recv(uint8_t *buffer) {
       sha256_update(&ctx, buffer + 11, 32);
       sha256_final(&ctx, subject);
       append(OP_RECEIPT, code, 0, 0, subject, ref, 0, NULL); /* the weld pays ref */
+      complete_fulfilled(); /* its budget, if this was its last open use */
       reply_seq_head();
       return;
     }
-    case OKEDGE_WAIVE: {
-      /* a physical press clears every debt */
+    case OKEDGE_SETTLE: {
+      /* a physical press ends every live budget and clears every debt (settle_pressed) */
       uint8_t what[32];
       press_drop();
       if (!owes()) { status(EDGE_NO_RECEIPT_WAITING); return; }
-      H(what, "OKEDGE-WAIVE", st.head, 32, NULL, 0, NULL, 0);
-      press_wait(PRESS_WAIVE, what);
+      H(what, "OKEDGE-SETTLE", st.head, 32, NULL, 0, NULL, 0);
+      press_wait(PRESS_SETTLE, what);
       return;
     }
     case OKEDGE_TX_START: {

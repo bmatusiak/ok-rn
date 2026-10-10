@@ -75,7 +75,7 @@ export interface EdgeSource {
   /** R15a: resume it - the copy check (R27), then a physical press. */
   resume?(grantId: number, onPress?: () => void): Promise<void>;
   /** R18: clear every owed receipt - a physical press. */
-  waive?(onPress?: () => void): Promise<void>;
+  settle?(onPress?: () => void): Promise<void>;
   /** R24: accept #from..#to as gone for good - a physical press; the key links a LOSS. */
   acceptLoss?(from: number, to: number, onPress?: () => void): Promise<void>;
   /** Budgets a lock or reboot ended, with uses and time left (Continue). */

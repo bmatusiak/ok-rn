@@ -11,7 +11,7 @@
  * and slot (onlykey-edge firmware.md R16; the key sets bits 4/5 of the link at
  * decision time). Nothing automatic happens while one is owed (R18): a test
  * that opens a budget first clears what earlier ones left owed, with a pressed
- * WAIVE.
+ * SETTLE.
  *
  * Everything from the app comes in through `ctx` (no relative imports into
  * ok-rn): getOnlyKey, OkEmu, IFACE, protocol, PIN, pressDigits, lib (edge,
@@ -74,7 +74,7 @@ module.exports = function register({it}, ctx) {
       await ctx.edgeCopy.sync();
       return r;
     };
-    for (const name of ['receipt', 'revoke', 'waive', 'hold', 'resume', 'loss']) edge[name] = after(name);
+    for (const name of ['receipt', 'revoke', 'settle', 'hold', 'resume', 'loss']) edge[name] = after(name);
     edge.grant = async ({reason, ...o}) => {
       const g = await app.edge.grant({...o, reasonHash: sha256(reason)});
       await ctx.edgeCopy.keep(g, {reason, scopes: o.scopes, lifetime: o.ttlMinutes ?? 0});
@@ -119,12 +119,12 @@ module.exports = function register({it}, ctx) {
   /* the name of the EdgeError a call ends in (null when it succeeds) - the harness has no assert.rejects */
   const refusal = (p) => p.then(() => null, (e) => e.status || String(e.message || e));
 
-  /* clear whatever is owed: a pressed WAIVE (R18) */
+  /* clear whatever is owed: a pressed SETTLE (R18) */
   async function clearDebts(app, log) {
     const h = await app.edge.head();
     if (!h.owed && !h.overflow) return;
-    await app.edge.waive({onPress: pressSoon});
-    log(`waived ${h.owed} owed${h.overflow ? ' + overflow' : ''}`);
+    await app.edge.settle({onPress: pressSoon});
+    log(`settled ${h.owed} owed${h.overflow ? ' + overflow' : ''}`);
   }
 
   /* the decision is linked: the head moves past `seq` (polled, not slept) */

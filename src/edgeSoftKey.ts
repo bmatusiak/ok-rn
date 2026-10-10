@@ -77,6 +77,15 @@ function openingOf(kept: Kept) {
   };
 }
 
+/*
+ * A grant-end link's decision byte, in words (node-onlykey-lib edge codes.END; Brad, 2026-10-10:
+ * "budgets should auto complete once fufilled"): completed - every use made and receipted, the
+ * key ended it itself; revoked - ended early; settled - ended early by a settle, incomplete.
+ */
+function endName(decision: number | undefined): string {
+  return decision === codes.END.COMPLETED ? 'completed' : decision === codes.END.SETTLED ? 'settled (incomplete)' : decision === codes.END.REVOKED ? 'revoked' : 'ended';
+}
+
 export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   readonly deviceId: Uint8Array;
   private edge: any;
@@ -313,14 +322,15 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   private async historyOf(deviceIdHex: string, mirror: Awaited<ReturnType<typeof loadMirror>>, live: Set<number>, other = false): Promise<EdgeBudget[]> {
     const prefix = REGISTRY() + deviceIdHex.toLowerCase() + '.';
     const keys = (await this.storageKeys()).filter(k => k.startsWith(prefix));
-    const ends = new Set(mirror.links.map(r => chain.decodeLink(r.link)).filter(f => f.op === OP.GRANT_END).map(f => f.grantId));
+    /* how each budget ended, from its grant-end link's decision byte (the key writes completed / revoked / settled) */
+    const ends = new Map(mirror.links.map(r => chain.decodeLink(r.link)).filter(f => f.op === OP.GRANT_END).map(f => [f.grantId, f.decision] as const));
     const out: EdgeBudget[] = [];
     for (const k of keys) {
       const id = Number(k.slice(prefix.length));
       if (!Number.isInteger(id) || live.has(id)) continue;
       const raw = await AsyncStorage.getItem(k);
       const b = this.budgetFrom(id, raw ? JSON.parse(raw) : null, mirror, other);
-      b.endedHow = ends.has(id) ? 'ended' : b.used >= b.uses ? 'used up' : b.endsAt && Date.now() > b.endsAt ? 'expired' : 'lost when the key locked or restarted';
+      b.endedHow = ends.has(id) ? endName(ends.get(id)) : b.endsAt && Date.now() > b.endsAt ? 'expired' : 'lost when the key locked or restarted';
       /* like a block: the links it spans - its opening to the last link that names it (a use, its end) or answers one of its uses (a receipt) */
       const decoded = mirror.links.map(r => chain.decodeLink(r.link));
       const useSeqs = new Set(decoded.filter(f => f.grantId === id && f.op !== OP.RECEIPT).map(f => f.seq));
@@ -388,8 +398,8 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     this.pressWanted = null;
   }
 
-  async waive(onPress?: () => void) {
-    await this.edge.waive({onPress: this.pressing(onPress)});
+  async settle(onPress?: () => void) {
+    await this.edge.settle({onPress: this.pressing(onPress)});
     this.pressWanted = null;
   }
 
@@ -412,7 +422,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * TESTING MODE: what an agent does through ssh/gpg - an agent-derived P-256
    * sign (OKSIGN 222), pressed on the soft key's own button the way the e2e
    * does it, and no receipt after it. It leaves a debt on the key (R16), so the
-   * tab's owed banner and Waive can be seen without a CLI or an MCP server.
+   * tab's owed banner and Settle can be seen without a CLI or an MCP server.
    */
   async agentSign(text: string) {
     const app = await getOnlyKey('embedded');

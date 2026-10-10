@@ -1,7 +1,7 @@
 /**
  * ONE CHECK FOR EVERY CONSENT (Brad, 2026-10-05): "the new peer sheet must follow
  * the same rule as budgets and registrations: one shared check, not a per-sheet
- * rule". Every approve / press / waive / accept-loss path asks
+ * rule". Every approve / press / settle / accept-loss path asks
  * debugGuard.consentRefusal() - no argument, so nothing a path knows about its
  * request can loosen the lock; only testing mode does (option 1, 2026-10-04).
  *
@@ -9,7 +9,7 @@
  *  1. the request sheet RENDERED for each kind it shows (budget, registration,
  *     place that keeps copies) with debugging on: refused outside testing mode,
  *     allowed inside it - the same answer for every kind;
- *  2. the source: every other path (waive, accept loss, the key's Confirm panel,
+ *  2. the source: every other path (settle, accept loss, the key's Confirm panel,
  *     the press buttons, Mark as test) calls the shared check, no file but
  *     debugGuard reads the debugging state, and no call passes an argument.
  * A sibling (P2b, R29) is a sheet kind when it lands: the kinds list below must
@@ -122,7 +122,7 @@ test('no call passes anything to the shared check - nothing a path knows can loo
  * the shared check (the line with the button or the handler).
  */
 const PATHS: {path: string; file: string; anchor: RegExp}[] = [
-  {path: 'waive', file: 'src/screens/EdgeScreen.tsx', anchor: /title="Yes, waive"[^\n]*/},
+  {path: 'settle', file: 'src/screens/EdgeScreen.tsx', anchor: /title="Yes, settle"[^\n]*/},
   {path: 'accept loss (a gap)', file: 'src/screens/EdgeScreen.tsx', anchor: /title=\{`Yes, accept loss of \$\{range\}`\}[^\n]*/},
   /* the press sheet when an EDGE press waits (2026-10-10: it replaced the Confirm panel; every button of it presses through press()) */
   {path: 'the press sheet (Edge)', file: 'src/ui/PressSheet.tsx', anchor: /onPress=\{\(button: string\) => \{\n[^\n]*\n[^\n]*/},

@@ -37,9 +37,9 @@ export function alarmsAfter(view: EdgeView, after: number): EdgeAlarm[] {
       out.push({seq: r.seq, title: `Edge: alarm receipt ${name}`, text: `The agent's receipt for #${r.seq} is an alarm (#${t.receipt.seq}). Open Edge to look, or hold the budget.`, budget: f.grantId || undefined});
     }
     /* a receipt answering no use the copy holds, with an alarm code */
-    /* a WAIVE (code 0x8F + the press flag, receipts.js) is your press, not an agent's alarm receipt */
-    const isWaive = f.op === OP.RECEIPT && f.code === 0x8f && (f.flags & codes.FLAG.PRESS_OBSERVED) !== 0;
-    if (f.op === OP.RECEIPT && f.code !== undefined && !isWaive && r.seq > after && !r.receipt) {
+    /* a SETTLE (code 0x8F + the press flag, receipts.js) is your press, not an agent's alarm receipt */
+    const isSettle = f.op === OP.RECEIPT && f.code === 0x8f && (f.flags & codes.FLAG.PRESS_OBSERVED) !== 0;
+    if (f.op === OP.RECEIPT && f.code !== undefined && !isSettle && r.seq > after && !r.receipt) {
       const c = codes.receiptCode(f.code);
       if (c.alarm) out.push({seq: r.seq, title: `Edge: alarm receipt ${c.name ?? `0x${f.code.toString(16)}`}`, text: `Receipt #${r.seq} for #${f.refSeq} is an alarm.`});
     }
@@ -115,13 +115,13 @@ export async function raiseWatchAlarms(mirror: Mirror, view: EdgeView, st: Watch
   const owedNew = view.rows.filter(r => r.receipt?.status === 'waiting' && r.seenAt && now - r.seenAt > OWED_RED_MS && !owedDone.includes(r.seq));
   for (const r of owedNew) {
     NativeEdgeAlert?.post(r.seq, netTag() + 'Edge: a receipt is owed too long',
-      `#${r.seq} has waited over 10 minutes for its receipt. Nothing automatic happens until it is receipted or waived.`,
+      `#${r.seq} has waited over 10 minutes for its receipt. Nothing automatic happens until it is receipted or settled.`,
       lockText(r.fields.grantId || undefined, st.live), false);
   }
   if (owedNew.length) await AsyncStorage.setItem(OWED_KEY() + dev, JSON.stringify([...owedDone, ...owedNew.map(r => r.seq)].slice(-100)));
 
   /* used up / expired: quiet, once per budget; the first look on a phone only records */
-  const ended = st.past.filter(b => b.endedHow === 'used up' || b.endedHow === 'expired');
+  const ended = st.past.filter(b => b.endedHow === 'completed' || b.endedHow === 'expired');
   const keptEnded = await AsyncStorage.getItem(ENDED_KEY() + dev);
   const endedDone: number[] = keptEnded === null ? ended.map(b => b.grantId) : JSON.parse(keptEnded);
   for (const b of ended.filter(x => !endedDone.includes(x.grantId))) {

@@ -7,13 +7,13 @@
  * The firmware is a notary (DESIGN.md section 0); the truth is the LIBRARY's
  * reading of what it writes (node-onlykey-lib/edge, through ctx.requireLib -
  * the kit's own pinned lib): every link, weld, budget signature, reveal,
- * receipt, waive and checkpoint must check out there. The rules are
+ * receipt, settle and checkpoint must check out there. The rules are
  * onlykey-edge/build/firmware.md's; verification row 5 lists what these prove.
  *
  * Only budget uses owe a receipt (R16, 2026-10-06: an ordinary press is not Edge and
  * writes no link) and nothing automatic happens while
  * one is owed (R18), so a test that opens a budget first clears what earlier
- * tests left owed - with a pressed WAIVE, the same way out a person has.
+ * tests left owed - with a pressed SETTLE, the same way out a person has.
  *
  * Everything from the kit comes through ctx: IFACE, okmsg, PINS, requireLib.
  */
@@ -33,7 +33,7 @@ const GRANT_REVOKE = 0x12;
 const GRANT_HOLD = 0x13;
 const GRANT_RESUME = 0x14;
 const RECEIPT = 0x20;
-const WAIVE = 0x21;
+const SETTLE = 0x21;
 const TX_START = 0x22;
 const SEQ_NONE = 0xffffffff;
 /* lib codes.js */
@@ -47,6 +47,10 @@ const APPROVE = 1;
 const TIMEOUT = 3;
 const SELF_PRESS = 4;
 const NEEDS_REVIEW = 0x8f;
+/* how a budget ended: its grant-end link's decision byte */
+const END_COMPLETED = 1;
+const END_REVOKED = 2;
+const END_SETTLED = 3;
 const PRESS_OBSERVED = 0x01;
 const OWES_RECEIPT = 0x10; /* R16: set by the key at decision time - this use owes a receipt */
 /* the console line that says a confirmation is primed (14-stored-keys uses it too) */
@@ -77,7 +81,7 @@ module.exports = function register({ it }, ctx) {
     const since = device.mark(ctx.IFACE.VENDOR);
     device.sendVendor({ msg: OKEDGE, slot: sub, payload: args || Buffer.alloc(0) });
     if (press) {
-      /* the physical press a grant, resume or waive waits for */
+      /* the physical press a grant, resume or settle waits for */
       await device.sleep(800, { signal });
       device.press(1);
     }
@@ -105,7 +109,7 @@ module.exports = function register({ it }, ctx) {
     };
   }
 
-  /* RECEIPT and WAIVE answer seq . head - what the next TX start passes (R13a) */
+  /* RECEIPT and SETTLE answer seq . head - what the next TX start passes (R13a) */
   const seqHead = (r) => ({ seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)) });
 
   async function receipt(device, ref, msg, opts) {
@@ -122,12 +126,12 @@ module.exports = function register({ it }, ctx) {
   const txStartFor = (device, headBytes, payload, opts) =>
     edge(device, TX_START, Buffer.from(grants.txToken({ head: headBytes, subject: grants.requestSubject(new Uint8Array(payload)) })), { ...opts, text: true });
 
-  /* clear whatever earlier tests left owed: a pressed WAIVE (R18) */
+  /* clear whatever earlier tests left owed: a pressed SETTLE (R18) */
   async function clearDebts(device, { signal, log }) {
     const h = await head(device, { signal });
     if (!h.owed && !h.overflow) return;
-    await edge(device, WAIVE, null, { signal, press: true });
-    if (log) log(`waived ${h.owed} owed${h.overflow ? ' + overflow' : ''} left by earlier tests`);
+    await edge(device, SETTLE, null, { signal, press: true });
+    if (log) log(`settled ${h.owed} owed${h.overflow ? ' + overflow' : ''} left by earlier tests`);
   }
 
   /*
@@ -383,7 +387,12 @@ module.exports = function register({ it }, ctx) {
       const use = receipts.pairReceipts(links, { [paid.seq]: msg }).uses.find((u) => u.seq === paid.seq);
       assert.equal(use.status, 'receipted');
       assert.equal(use.message, msg, 'the receipt\'s message does not match its link');
+      /* one of its two uses left: not fulfilled, so still live - a revoke ends it, and its link says revoked */
+      assert.ok((await head(device, { signal })).live.includes(b.grantId), 'a half-used budget ended at its receipt');
       assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:00');
+      const hv = await head(device, { signal });
+      const [rv] = (await pickup(device, hv.seq, 1, { signal })).map((r) => chain.decodeLink(r.link));
+      assert.equal(JSON.stringify([rv.op, rv.grantId, rv.decision]), JSON.stringify([7, b.grantId, END_REVOKED]), 'the revoke\'s link does not say revoked');
     });
 
   it('edge: a budget signed at a press pays only started uses; a TX start pays for its own request only, and nothing starts while a receipt is owed (R10, R13, R13a, R18)',
@@ -483,8 +492,11 @@ module.exports = function register({ it }, ctx) {
       const paired = receipts.pairReceipts(links);
       for (const s of [s1, s2]) assert.equal(paired.uses.find((u) => u.seq === s.seq).status, 'receipted', `use #${s.seq}`);
 
-      assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:00');
-      assert.ok(!(await head(device, { signal })).live.includes(b.grantId), 'a revoked budget is still listed as live');
+      /* fulfilled - both uses made and receipted: the key ended it itself at the last receipt (completed), no revoke */
+      const done = f[f.length - 1];
+      assert.equal(JSON.stringify([done.op, done.grantId, done.decision]), JSON.stringify([7, b.grantId, END_COMPLETED]), 'the key did not complete the fulfilled budget');
+      assert.ok(!(await head(device, { signal })).live.includes(b.grantId), 'a completed budget is still listed as live');
+      assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:07', 'a completed budget could still be revoked');
     });
 
   it('edge: a held budget pays for nothing; resume takes a press and waits for owed receipts (R15a)',
@@ -536,15 +548,15 @@ module.exports = function register({ it }, ctx) {
   /*
    * Only budget uses owe (spec session, 2026-10-06) and nothing TX starts while one is
    * owed (R18), so the key owes at most one receipt at a time: the old "past 4 owed,
-   * the overflow" case cannot arise any more. One owed budget use is waived.
+   * the overflow" case cannot arise any more. One owed budget use is settled.
    */
-  it('edge: WAIVE takes a press; a restart keeps the debt; an unpressed waive does nothing (R16, R18)',
+  it('edge: SETTLE takes a press; a restart keeps the debt; an unpressed settle does nothing (R16, R18)',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
       const before = await head(device, { signal });
-      await openBudget(device, 1, 'okt: one use, to be waived', { signal }); /* the restart ends it; the debt stays */
-      const plw = agentPayload('okt waive 0');
+      await openBudget(device, 1, 'okt: one use, to be settled', { signal }); /* the restart ends it; the debt stays */
+      const plw = agentPayload('okt settle 0');
       assert.equal(await txStartFor(device, (await head(device, { signal })).head, plw, { signal }), 'EDGE:00');
       const uses = [await selfPressedSign(device, plw, { signal })];
       let h = await head(device, { signal });
@@ -559,15 +571,15 @@ module.exports = function register({ it }, ctx) {
       h = await head(device, { signal });
       assert.equal(JSON.stringify([h.owed, h.overflow]), '[1,0]', 'the restart cleared the debt');
 
-      /* unpressed, the waive does nothing */
+      /* unpressed, the settle does nothing */
       const primed = device.log.count(PRIMED);
-      device.sendVendor({ msg: OKEDGE, slot: WAIVE, payload: Buffer.alloc(0) });
+      device.sendVendor({ msg: OKEDGE, slot: SETTLE, payload: Buffer.alloc(0) });
       await device.log.waitForCount(PRIMED, primed + 1, { timeoutMs: 20000, signal }).catch(() => {});
       await device.sleep(23000, { signal });
       h = await head(device, { signal });
-      assert.equal(h.owed, 1, 'a waive nobody pressed cleared the debt');
+      assert.equal(h.owed, 1, 'a settle nobody pressed cleared the debt');
 
-      const [w] = await edge(device, WAIVE, null, { signal, press: true });
+      const [w] = await edge(device, SETTLE, null, { signal, press: true });
       const ws = seqHead(w);
       h = await head(device, { signal });
       assert.equal(JSON.stringify([h.owed, h.overflow]), '[0,0]');
@@ -579,9 +591,38 @@ module.exports = function register({ it }, ctx) {
       const wl = chain.decodeLink(links[links.length - 1].link);
       log(trail([wl]));
       assert.equal(JSON.stringify([wl.op, wl.decision, wl.flags & PRESS_OBSERVED, wl.grantId]), JSON.stringify([OP_RECEIPT, NEEDS_REVIEW, PRESS_OBSERVED, uses[0].seq]));
-      assert.bytes(Buffer.from(wl.subject), Buffer.from(receipts.waiveSubject(uses.map((u) => u.seq), false)), 'the waive subject does not list what it waived');
+      assert.bytes(Buffer.from(wl.subject), Buffer.from(receipts.settleSubject(uses.map((u) => u.seq), false)), 'the settle subject does not list what it settled');
       const paired = receipts.pairReceipts(links);
-      assert.equal(paired.uses.find((u) => u.seq === uses[0].seq).status, 'waived', `use #${uses[0].seq}`);
+      assert.equal(paired.uses.find((u) => u.seq === uses[0].seq).status, 'settled', `use #${uses[0].seq}`);
+    });
+
+  /*
+   * SETTLE ENDS THE BUDGET (Brad, 2026-10-10: "its more secure to just end the budget instead
+   * of allowing it to be continue to be used; this will force a new budget to be created by the
+   * agent"). Settled while the budget is still live - a signer that died mid-stream - the key ends
+   * it first, with its grant-end link, then writes the settle; the old budget pays for nothing.
+   */
+  it('edge: a SETTLE while a budget is live ends it first (grant-end link, then the settle); its uses are over',
+    async ({ device, assert, signal, log }) => {
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+      const b = await openBudget(device, 2, 'okt: two uses, settled after one', { signal });
+      const pl = agentPayload('okt settle live 0');
+      assert.equal(await txStartFor(device, (await head(device, { signal })).head, pl, { signal }), 'EDGE:00');
+      const use = await selfPressedSign(device, pl, { signal });
+      let h = await head(device, { signal });
+      assert.ok(h.live.includes(b.grantId) && h.owed === 1, 'one use made and owed, the budget still live');
+
+      const [w] = await edge(device, SETTLE, null, { signal, press: true });
+      const ws = seqHead(w);
+      h = await head(device, { signal });
+      assert.equal(JSON.stringify([h.owed, h.overflow, h.live.includes(b.grantId)]), '[0,0,false]', 'the settle left the budget live');
+      const [end, settled] = (await pickup(device, ws.seq - 1, 2, { signal })).map((r) => chain.decodeLink(r.link));
+      log(trail([end, settled]));
+      assert.equal(JSON.stringify([end.op, end.grantId, end.decision]), JSON.stringify([7, b.grantId, END_SETTLED]), 'no grant-end link (settled) for the settled budget');
+      assert.equal(JSON.stringify([settled.op, settled.decision, settled.grantId]), JSON.stringify([OP_RECEIPT, NEEDS_REVIEW, use.seq]));
+      /* the agent's next use needs a new budget: nothing can pay now */
+      assert.equal(await txStartFor(device, h.head, agentPayload('okt settle live 1'), { signal }), 'EDGE:0D');
     });
 
   /*

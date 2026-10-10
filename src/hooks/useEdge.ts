@@ -41,7 +41,7 @@ export function useEdge() {
   const [error, setError] = useState<string | null>(null);
   /*
    * What the key is waiting for a PHYSICAL press on: a request ('r<id>'), a
-   * resume ('resume:<id>') or a waive ('waive').
+   * resume ('resume:<id>') or a settle ('settle').
    */
   const [pressFor, setPressFor] = useState<string | null>(null);
   /* debts and holds, from HEAD (keys that have them) */
@@ -209,9 +209,9 @@ export function useEdge() {
     return (await syncMirror(s)).view;
   }), [run]);
   /* R18: the person's Yes on screen first (EdgeScreen), then the press */
-  const waive = useCallback(() => run(async s => {
+  const settle = useCallback(() => run(async s => {
     try {
-      await s.waive?.(() => setPressFor('waive'));
+      await s.settle?.(() => setPressFor('settle'));
     } finally {
       setPressFor(null);
     }
@@ -305,6 +305,6 @@ export function useEdge() {
   return {
     view, budgets, past, others, ownName, deviceViews, requests, busy, stopping, error, pressFor, copyCheck, keyState, ended, available: wantReal, fullSync,
     sync, verify, tamper, request, revoke, approve, press, decline,
-    hold, resume, waive, agentSign, continueBudget, dismissEnded, acceptLoss, exportBlocks,
+    hold, resume, settle, agentSign, continueBudget, dismissEnded, acceptLoss, exportBlocks,
   };
 }

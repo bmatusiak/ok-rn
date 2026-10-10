@@ -24,8 +24,8 @@
 #define OKEDGE_GRANT_REVOKE 0x12  /* no press: ends a live budget */
 #define OKEDGE_GRANT_HOLD 0x13    /* no press: a live budget pays for nothing until resumed */
 #define OKEDGE_GRANT_RESUME 0x14  /* a press: a held budget pays again */
-#define OKEDGE_RECEIPT 0x20       /* replies seq . head */
-#define OKEDGE_WAIVE 0x21         /* a press: clears every owed receipt; replies seq . head */
+#define OKEDGE_RECEIPT 0x20       /* replies seq . head; the last open use of a budget ends it (completed) */
+#define OKEDGE_SETTLE 0x21        /* a press: ends every live budget, then clears every owed receipt; replies seq . head */
 #define OKEDGE_TX_START 0x22      /* {token 32, intent 16}: starts one budget self-press */
 #define OKEDGE_LOSS 0x34          /* {from, to}, a press: records a range of links as lost */
 #define OKEDGE_WIPE_DEBUG 0x7E    /* DEBUG builds only: erases the Edge state; no key outside it is touched */
@@ -43,7 +43,7 @@
 #define EDGE_LIVE_FULL 0x05          /* 4 budgets already live */
 #define EDGE_SIGN_FAILED 0x06        /* the Edge key could not sign */
 #define EDGE_NO_SUCH_BUDGET 0x07     /* no live budget with that id */
-#define EDGE_NO_RECEIPT_WAITING 0x08 /* receipt: that use owes nothing; waive: nothing owed */
+#define EDGE_NO_RECEIPT_WAITING 0x08 /* receipt: that use owes nothing; settle: nothing owed */
 #define EDGE_NOT_HELD 0x09           /* pickup: that link is no longer held */
 #define EDGE_UNKNOWN_REQUEST 0x0A
 #define EDGE_STALE_HEAD 0x0B         /* the head the host verified is not the key's head */
