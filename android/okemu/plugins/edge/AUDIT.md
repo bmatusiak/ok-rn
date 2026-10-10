@@ -95,7 +95,7 @@ emulator · a backup from another device. `tests/e2e.js` runs on the phone.
 
 ## Byte cost on a hard key's CPU
 
-Measured 2026-10-10 with `tools/measure-size.sh` on the Pi: the plugin alone, Teensy 1.6.5-r5
+Measured 2026-10-10 with `tools/measure-size.sh` on a Raspberry Pi: the plugin alone, Teensy 1.6.5-r5
 toolchain, `-Os -mcpu=cortex-m4 -mthumb`, board `__MK20DX256__` (Teensy 3.2), 3.1.0 libraries.
 The SHA-256, uECC, HKDF, RNG, flash and press code it calls is already in the firmware.
 

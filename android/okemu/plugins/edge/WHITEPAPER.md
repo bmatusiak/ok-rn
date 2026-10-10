@@ -2,7 +2,7 @@
 
 **A whitepaper on the Edge firmware plugin.** 2026-10-10, for the v1 firmware (the first release) at ok-rn `e3a90ac`.
 **Code:** `ok-rn/android/okemu/plugins/edge/src/okplugin_edge.cpp` (cited as `cpp:LINE`), `okplugin_edge.h` (`h:LINE`), `plugin.js`. Every line number is as of ok-rn `e3a90ac`.
-**Rules:** [`SPEC.md`](SPEC.md) (R-numbers), [`BLOCKS.md`](BLOCKS.md), [`RECEIPT-CODES.md`](RECEIPT-CODES.md); not built: [`LATER.md`](LATER.md); decisions: [`DECISIONS.md`](DECISIONS.md).
+**Rules:** [`SPEC.md`](SPEC.md) (R-numbers), [`BLOCKS.md`](BLOCKS.md), [`RECEIPT-CODES.md`](RECEIPT-CODES.md).
 **Host side, for cross-reference:** `node-onlykey-lib/edge/plugin/index.js` (the wire calls) and `node-onlykey-lib/edge/src/` (`chain.js`, `grants.js`, `receipts.js`, `codes.js`).
 
 The code is the source of truth here. Where the code and the spec disagree, §14 names both.
@@ -29,11 +29,11 @@ The code is the source of truth here. Where the code and the spec disagree, §14
 
 ## 1. Abstract
 
-OnlyKey Edge lets an AI agent use an OnlyKey without handing it the key. The rule is **budget or no go** (Brad, 2026-10-06). The owner opens a **budget** on the phone: Yes in the app, then a press on the key. The budget says what may be used (an operation and a slot, and for derived keys one identity), how many times, and for how long. Inside it, the key presses for the agent, one use at a time. Outside it, Edge pays for nothing and writes nothing.
+OnlyKey Edge lets an AI agent use an OnlyKey without handing it the key. The rule is **budget or no go**. The person opens a **budget** on the phone: Yes in the app, then a press on the key. The budget says what may be used (an operation and a slot, and for derived keys one identity), how many times, and for how long. Inside it, the key presses for the agent, one use at a time. Outside it, Edge pays for nothing and writes nothing.
 
 Every Edge record is a 64-byte **link** in a SHA-256 hash chain. The key keeps the head. Each budget use owes a **receipt**: a one-byte result code and a message hash, filed before the next use may start. The key signs **checkpoints** over its head with a P-256 key no ordinary sign request can reach. It also signs an **owner statement** that lets your other devices tell a log "made with our key". Hosts keep the full chain and verify it against those signatures.
 
-The firmware is deliberately small. It is a **notary** (`cpp:1-21`; owner, 2026-10-02: "the smallest minimal firmware addition, because a device can only hold so much logic"). It records facts it saw itself and decides the few things a host cannot be trusted to decide. Everything else (storing the chain, verifying it, pairing receipts, sync, screens, JSON blocks) is `node-onlykey-lib/edge` and the app's.
+The firmware is deliberately small. It is a **notary** (`cpp:1-21`): the smallest firmware addition that works, because a device can only hold so much logic. It records facts it saw itself and decides the few things a host cannot be trusted to decide. Everything else (storing the chain, verifying it, pairing receipts, sync, screens, JSON blocks) is `node-onlykey-lib/edge` and the app's.
 
 ## 2. How to use it
 
@@ -122,15 +122,15 @@ Hooks 5 and 7 only drop an Edge request that was waiting for its press. Neither 
 **Why not a hard key today.**
 
 - **Place.** The plugin's flash region is `base + 0x1000`, computed as `factorysectoradr - 0x4800` (`cpp:76`). The code says: "Soft key and desktop emulator only: the flash it uses (base+0x1000) is the bootloader's on a real Teensy, and file-backed and unused on the emulators" (`cpp:26-27`). On a hard key there is no free flash sector today (SPEC.md).
-- **Size.** The plugin adds no crypto of its own: SHA-256, uECC, HKDF, RNG, flash and the press flow are the firmware's. Since v1 it calls only `uECC_compute_public_key` and `uECC_sign`, never a verify, so whether a hard-key build carries uECC's verify no longer matters to Edge. The published size numbers predate v1 and the cuts (§13). Tim decides any port.
+- **Size.** The plugin adds no crypto of its own: SHA-256, uECC, HKDF, RNG, flash and the press flow are the firmware's. It calls only `uECC_compute_public_key` and `uECC_sign`, never a verify, so Edge does not need uECC's verify in a hard-key build. The measured size is in §13. Any port is for the firmware maintainers to decide.
 
 What the soft key means for trust is in §12.3: the key is a process on the phone, so the phone's OS is part of what is trusted.
 
 ## 4. Vocabulary
 
-Brad's words (BLOCKS.md), mapped to the code.
+The terms of BLOCKS.md, mapped to the code.
 
-| Brad's word | What it is | In the code |
+| Term | What it is | In the code |
 |---|---|---|
 | **Transaction** (TX) | one budget use: announced (TX start), signed, then receipted. One link | `OKEDGE_TX_START` (`h:28`), `okplugin_edge_primed` (`cpp:939`), the self-press link (`cpp:1028`) |
 | **TX start** | the agent tells the key the exact request it is about to make | `started`, `tx_token`, `tx_intent` (`cpp:172-189`) |
@@ -171,11 +171,11 @@ One record, magic `OKEDGEv1`, 208 bytes, double-buffered in two 2 KB sectors: `b
 
 **When it is saved.** Every link saves before anything else happens (`weld_in`, `cpp:595-598`). The approve hook runs first in `okcore_run_pending_op()`, so a self-press link is on flash before the signature is released (R4). Drawing the salt (`cpp:486`), the genesis (`cpp:499`) and a restore (`cpp:1141`) also save.
 
-**The other two sectors.** `base+0x2000` and `base+0x2800` held the pairs record until 2026-10-08. Nothing reads, writes or erases them.
+**The other two sectors.** `base+0x2000` and `base+0x2800` are unused. Nothing reads, writes or erases them.
 
 ### 5.2 The clean start (v1)
 
-Brad, 2026-10-08: "v0 turns to v1, v1 = first release of the protocol and schemas". Nothing older is read. At load, if neither sector decodes as `OKEDGEv1` (`cpp:370-375`):
+v1 is the first release of the protocol and schemas. Nothing older is read. At load, if neither sector decodes as `OKEDGEv1` (`cpp:370-375`):
 
 - the state starts empty: no salt, no link. Nothing is erased: a record of another format is simply not read.
 
@@ -292,7 +292,7 @@ The self-press link's bytes 47-62 hold the intent when the TX start named one.
 
 ### 7.4 Hash labels
 
-Every label that goes into the chain or a signature is `-v1` (Brad, 2026-10-06; SPEC.md). None says TICKET: the rename to receipt reached the labels (`cpp:1270` notes it).
+Every label that goes into the chain or a signature is `-v1` (SPEC.md). Receipt labels say RECEIPT, never TICKET (`cpp:1270`).
 
 | Label | Use | Code |
 |---|---|---|
@@ -330,7 +330,7 @@ The reply is two reports: `seq · head`, then the signature. S is not normalised
 
 ### 7.6 The owner statement
 
-Brad, 2026-10-08: "if it has the private ecc key to sign the block, then i want the log"; a device gives "its own name for its device fingerprint in the block", its **nametag**. `STATEMENT` (0x06, `cpp:533-549`) takes the nametag hash and signs a statement about the key itself:
+A device that holds the private ECC key to sign the block is one whose log is wanted. Each device gives its own name for its device fingerprint in the block: its **nametag**. `STATEMENT` (0x06, `cpp:533-549`) takes the nametag hash and signs a statement about the key itself:
 
 ```
 nametag hash = SHA256("OKEDGE-NAMETAG-v1" || nametag)                       (host: grants.nametagHash)
@@ -343,7 +343,7 @@ sig          = P-256 ECDSA (uECC_sign) with the owner key over the digest, r||s 
 
 ## 8. Budgets
 
-**Who asks is the host's business.** A budget request reaches the key from whatever host speaks to it. Since 2026-10-08 the app accepts requests only from a Bluetooth-paired computer it has approved; the key never sees an agent identity and keeps no agent list (R15c retired; Brad: "so the claude key thing is overkill"; "lets cut it out"). The person's Yes and the key's press are what open a budget.
+**Who asks is the host's business.** A budget request reaches the key from whatever host speaks to it. The app accepts requests only from a Bluetooth-paired computer it has approved; the key never sees an agent identity and keeps no agent list (R15c is retired). The person's Yes and the key's press are what open a budget.
 
 ### 8.1 Opening one: GRANT_CREATE (0x10)
 
@@ -382,9 +382,9 @@ subject = SHA256("OKEDGE-GRANT-v1" || scope count || scopes || reason_hash || G
 
 It records `opened = millis()` and the lifetime, writes the grant-create link, and replies `id u32 · uses u16 · G 32 · seq u32` (42 bytes), then a checkpoint over that link (two reports). A host checks the opening on its own with `grants.verifyBudgetOpening`: the subject commits to G, the weld reaches the signed head, and the signature verifies.
 
-### 8.3 Uses, caps and the provable series
+### 8.3 Uses, caps and the hash series
 
-Each budget is its own `bmatusiak/provable` series (`cpp:23-24`). Use *i* reveals `v_i = H^(n-i)(seed)` (`cpp:1026`). Anyone can check `H^i(v_i) == G`, and nobody without the seed can make the next value (a SHA-256 preimage). The key enforces each scope's cap and the budget's total (`budget_for`, `cpp:678-692`). The reveal is held beside the link for PICKUP. The firmware sends no MAC; `HMAC(v_i, subject)` is the host's to compute where a proof wants it (R13).
+Each budget is its own hash series (`cpp:23-24`). Use *i* reveals `v_i = H^(n-i)(seed)` (`cpp:1026`). Anyone can check `H^i(v_i) == G`, and nobody without the seed can make the next value (a SHA-256 preimage). The key enforces each scope's cap and the budget's total (`budget_for`, `cpp:678-692`). The reveal is held beside the link for PICKUP. The firmware sends no MAC; `HMAC(v_i, subject)` is the host's to compute where a proof wants it (R13).
 
 ### 8.4 Lifetime, hold, resume, revoke
 
@@ -393,7 +393,7 @@ Each budget is its own `bmatusiak/provable` series (`cpp:23-24`). Use *i* reveal
 - **Resume** (0x14, `cpp:1240-1254`, `cpp:858-869`). `id [6..9] · the full 32-byte verified head [10..41]`. Refused while owed (`EDGE:0C`) or on a stale head (`EDGE:0B`), checked on arrival and again at the press. Needs a press. A grant-resume link, only if the budget was on hold.
 - **Revoke** (0x12, `cpp:1208-1215`). `id [6..9]`. No press, allowed while owed. The budget is zeroed and a grant-end link is written. Debts it made stay owed.
 
-**What ends a budget:** being fulfilled (linked, completed), revoke (linked), a settle (every live budget, linked, before the settle; §9.5), expiry (not linked), lock or reboot (RAM lost, not linked), a restore (`cpp:1138`), the continue link (`cpp:461`), a wipe (`cpp:1072`). A fulfilled budget, every use made and receipted, ends itself at that last receipt (`complete_fulfilled`, `cpp:727`): no host step, so a spent budget never sits live until it expires. Brad, 2026-10-10: "budgets should auto complete once fufilled". Every grant-end link's decision byte says how the budget ended: `1` completed, `2` revoked, `3` settled (ended early, incomplete; the settle receipt after it names the open uses).
+**What ends a budget:** being fulfilled (linked, completed), revoke (linked), a settle (every live budget, linked, before the settle; §9.5), expiry (not linked), lock or reboot (RAM lost, not linked), a restore (`cpp:1138`), the continue link (`cpp:461`), a wipe (`cpp:1072`). A fulfilled budget, every use made and receipted, ends itself at that last receipt (`complete_fulfilled`, `cpp:727`): no host step, so a spent budget never sits live until it expires. Every grant-end link's decision byte says how the budget ended: `1` completed, `2` revoked, `3` settled (ended early, incomplete; the settle receipt after it names the open uses).
 
 ## 9. A transaction end to end
 
@@ -442,7 +442,7 @@ The key refuses the start while anything is owed (`EDGE:0C`) or when no budget i
 
 1. **Started, token does not match** (another program slipped in, or a stale head): refused, `EDGE:1C`. The TX start is used up, the refusal count goes up, and the press mode is set to "none" so the core reaches `okplugin_edge_refused()` at once (`cpp:961-974`).
 2. **A budget pays** (`budget_for`: started, unlocked, out of config mode, nothing owed, alive, not held, room in a matching scope): press mode "none". The firmware's own no-press path runs it (`cpp:979-981`).
-3. **Started, the token matched, but no budget can pay now** (expired, held or ended in between): the TX start is spent, and the request is an ordinary one: the person's press decides, and an ordinary press writes no link (`cpp:982-990`). Brad dropped the old refusal on 2026-10-08 as a misreading of "budget or no go", which only means nothing goes on the chain without a budget behind it (SPEC.md R13a; Brad: "we are still developing, not fixing").
+3. **Started, the token matched, but no budget can pay now** (expired, held or ended in between): the TX start is spent, and the request is an ordinary one: the person's press decides, and an ordinary press writes no link (`cpp:982-990`). This case is not refused: **budget or no go** means only that nothing goes on the chain without a budget behind it (SPEC.md R13a).
 4. **Not started:** nothing changes. It is an ordinary ssh/gpg request and the person presses as on any OnlyKey.
 
 `okplugin_edge_refused()` runs first in `okcore_run_pending_op` (`cpp:1042-1061`). It refuses case 1 with `EDGE:1C`. It re-checks case 2: a request primed to be paid, with no press, that a budget can no longer pay is refused with `EDGE:0D`, because it must never run without a press and without a link. A refused request runs nothing and writes no link.
@@ -468,13 +468,13 @@ subject  = SHA256("OKEDGE-SETTLE-v1" || the owed seq (u32 LE))
 grant_id = the owed seq
 ```
 
-**A settle settles the budget** (`settle_pressed`, `cpp:876`; `end_budget`, `cpp:715`). At the press, before the settle link, the key ends every live budget, held or not: its RAM is cleared and a grant-end link names it, the same link a revoke writes. A debt cleared by a press never leaves a budget that goes on paying; the agent's next TX start finds nothing to pay (`EDGE:0D`) and must ask for a new budget, which takes its own press. Brad, 2026-10-10: "its more secure to just end the budget instead of allowing it to be continue to be used; this will force a new budget to be created by the agent".
+**A settle settles the budget** (`settle_pressed`, `cpp:876`; `end_budget`, `cpp:715`). At the press, before the settle link, the key ends every live budget, held or not: its RAM is cleared and a grant-end link names it, the same link a revoke writes. A debt cleared by a press never leaves a budget that goes on paying; the agent's next TX start finds nothing to pay (`EDGE:0D`) and must ask for a new budget, which takes its own press. Ending the budget is more secure than letting it be used again.
 
 The reply is `seq · head`. An agent cannot forge a settle through RECEIPT: the key writes RECEIPT links with flags 0, and the weld counts a settle only with the press flag (`cpp:585`).
 
 ### 9.6 What owes, and what is linked
 
-Only budget uses owe a receipt (R16, `cpp:1019-1032`). While one is owed nothing automatic happens: no TX start, no self-press, no GRANT_CREATE, no GRANT_RESUME (R18, `owes`, `cpp:125`). An ordinary ssh/gpg press, approved, denied or timed out, writes **no link** (`cpp:1034`, R1; the press is the person's own safeguard, as on any OnlyKey - a consequence Brad accepted on 2026-10-06, see DECISIONS.md). Brad, 2026-10-08: "no unattended press, unless its an approved budget that can be logged into the blockchain" (`cpp:1019`).
+Only budget uses owe a receipt (R16, `cpp:1019-1032`). While one is owed nothing automatic happens: no TX start, no self-press, no GRANT_CREATE, no GRANT_RESUME (R18, `owes`, `cpp:125`). An ordinary ssh/gpg press, approved, denied or timed out, writes **no link** (`cpp:1034`, R1; the press is the person's own safeguard, as on any OnlyKey). No press is unattended unless an approved budget pays for it and it is logged on the chain (`cpp:1019`).
 
 So **at most one use is ever owed**: a self-press needs nothing owed, and it makes exactly one. A restore carries the backup's debt, which came from the same rule. The key keeps that one use, not a list.
 
@@ -503,7 +503,7 @@ The loader writes one plugin section, `0xFB`, last in the encrypted backup; olde
 
 ### 10.2 Every restore draws a new salt
 
-Brad, 2026-10-08: "you cant reset bitcoin, so i cant reset our log"; restore-then-replay went as overkill. So every restore, onto another phone or onto the phone that made the backup, makes the restored key a device of its own (`cpp:1124-1141`):
+The log cannot be reset, just as a blockchain cannot. So every restore, onto another phone or onto the phone that made the backup, makes the restored key a device of its own (`cpp:1124-1141`):
 
 - it keeps only the record's generation counter, so the restored record wins at the next boot;
 - it clears the salt and the identity, so the next Edge request draws a **new salt**: a new Edge key, device id and genesis;
@@ -529,7 +529,7 @@ It takes the **next** seq after the chain it continues (so a carried debt's seq 
 
 ## 11. The wire
 
-`OKEDGE` = `TYPE_INIT | 0x78` = **0xF8** (`h:14`). Request: `[4]` = 0xF8, `[5]` = sub-op, `[6..]` = arguments, little-endian. Replies are 64-byte binary reports (`reply`, `cpp:289-294`, zero-padded) or the text `EDGE:xx` (two hex digits, nothing else, `cpp:275-279`; owner, 2026-10-02: "keep the return strings minimal in firmware"). The key answers only while initialized, unlocked and not in config mode; otherwise it says nothing (`cpp:1147`, R8). Without K132 every request answers `EDGE:01` (`cpp:1148`).
+`OKEDGE` = `TYPE_INIT | 0x78` = **0xF8** (`h:14`). Request: `[4]` = 0xF8, `[5]` = sub-op, `[6..]` = arguments, little-endian. Replies are 64-byte binary reports (`reply`, `cpp:289-294`, zero-padded) or the text `EDGE:xx` (two hex digits, nothing else, `cpp:275-279`; the firmware keeps its return strings minimal). The key answers only while initialized, unlocked and not in config mode; otherwise it says nothing (`cpp:1147`, R8). Without K132 every request answers `EDGE:01` (`cpp:1148`).
 
 A pressed request waits for the core's own confirmation, which gives up at 20 s (hook 5); the plugin also drops a waiting press after 25 s (`PRESS_MS`, `cpp:71`, `cpp:1149`, `cpp:1004`). One press-gated request waits at a time; a new one replaces it.
 
@@ -554,7 +554,7 @@ Every case in the switch (`okplugin_edge_recv`, `cpp:1146-1324`):
 | 0x7E | WIPE_DEBUG | - | **no** | no | `EDGE:00` | **DEBUG builds only** (`cpp:1216-1226`): erases the Edge region; a production build has no such case |
 | other | | | | | `EDGE:0A` | includes 0x15, the retired AGENT_ADD |
 
-**0x15** (was AGENT_ADD) is retired since 2026-10-08 (Brad: "so the claude key thing is overkill"; "lets cut it out"): it falls to `default:`, so it is answered as an unknown request, with no press and no link. The number is never reused (`h:28`).
+**0x15** (the retired AGENT_ADD) falls to `default:`, so it is answered as an unknown request, with no press and no link. The number is never reused (`h:28`).
 
 A pressed request that fails at the press, or a press with no K132, answers `EDGE:xx` like any refusal. `EDGE:1C` and the run-time `EDGE:0D` come from `okplugin_edge_refused()` at an OKSIGN or OKDECRYPT, not from an OKEDGE request (§9.3).
 
@@ -571,7 +571,7 @@ A pressed request that fails at the press, or a press with no K132, answers `EDG
 | [58] | reserved, 0 |
 | [59] | reserved, 0 |
 | [60] | refused TX starts since power-up |
-| [61] | zero (was the capability byte) |
+| [61] | reserved, 0 |
 
 **Status codes** (`h:38-53`; words in `codes.STATUS`):
 
@@ -627,7 +627,7 @@ Any host that speaks to the unlocked key: the agent's computer, or another progr
 
 The soft key is the OnlyKey firmware running as a process inside ok-rn. Its flash is a file in the app's storage, and its "physical press" is the app's keypad. So:
 
-- ok-rn shows the Yes sheet and takes the press. Malware that controls the app or the phone's OS could approve, and could read K132 from the soft key's memory. LATER.md names this limit and its fix (a trusted display on Edge hardware).
+- ok-rn shows the Yes sheet and takes the press. Malware that controls the app or the phone's OS could approve, and could read K132 from the soft key's memory. The fix for this limit is a trusted display on Edge hardware (not built).
 - The record's check bytes are not a MAC. Anyone who can write the flash file can rewrite seq, head or the debt and recompute them. What still holds: every checkpoint already in another copy pins history up to its head, so a rollback contradicts what the others recorded.
 - The salt is kept out of Android backup and device transfer by the app, not by the firmware (`cpp:109-111`).
 
@@ -639,7 +639,7 @@ With the backup and its passphrase they hold K132: the derived identities and th
 
 - **Copies and their check.** Storing and verifying copies before a budget is the host's (R27); the key checks only 6 head bytes on GRANT_CREATE and 32 on GRANT_RESUME.
 - **Who asks.** The Bluetooth-paired computer, checked by the app; the key never sees an agent identity (R15c retired).
-- **Sync and merge** are the app's and the lib's (R30; Brad, 2026-10-08: "pairing and sync is all app stuff, not firmware"); the app checks a synced log is complete before merging it.
+- **Sync and merge** are the app's and the lib's (R30): pairing and sync are app functions, not firmware; the app checks a synced log is complete before merging it.
 - **Receipt messages, intent text and nametag text**, and pairing receipts with uses (`receipts.pairReceipts`).
 - **The clasp sheet** that names the identity (R11a), and **blocks as JSON** (BLOCKS.md).
 
@@ -651,21 +651,21 @@ With the backup and its passphrase they hold K132: the derived identities and th
 
 | Item | State |
 |---|---|
-| **Hard-key fit.** No free flash sector; the region it uses is the bootloader's on a Teensy (`cpp:26-27`) | open; Tim decides the build ([FIRMWARE-RFC.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/FIRMWARE-RFC.md), [LATER.md](LATER.md)) |
+| **Hard-key fit.** No free flash sector; the region it uses is the bootloader's on a Teensy (`cpp:26-27`) | open; for the firmware maintainers to decide ([FIRMWARE-RFC.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/FIRMWARE-RFC.md)) |
 | **Size.** Measured 2026-10-10 for a Teensy 3.2: code 7,284 bytes, constants 275, RAM 2,761; the record 208 bytes, twice | [AUDIT.md](AUDIT.md) |
-| **Quantum-safe checkpoints** (hybrid ML-DSA-44 + P-256) | not built ([LATER.md](LATER.md)); hashes are quantum-safe, P-256 signatures are not |
+| **Quantum-safe checkpoints** (hybrid ML-DSA-44 + P-256) | not built; hashes are quantum-safe, P-256 signatures are not |
 | **The key seals a block itself** (grant-end and checkpoint in one step) | not built; the phone asks for a checkpoint after a budget ends ([BLOCKS.md](BLOCKS.md)) |
 | **Composite pairs** (R19) | not built; the second half is an ordinary press |
-| **One owed use.** The 4-entry owed list and its overflow flag went (Brad, 2026-10-10: "Drop the owed list = yes"); the record is 208 bytes; HEAD bytes 58, 59 and 61 are reserved, 0 | built |
+| **One owed use.** The key keeps one owed use, not a list; the record is 208 bytes; HEAD bytes 58, 59 and 61 are reserved, 0 | built |
 | **Agent sign codes in budgets** (201-203, 221-223) | built (R11a) |
 
 ## 14. Code vs spec
 
-[SPEC.md](SPEC.md) was written from this code on 2026-10-10 (ok-rn `c3d98d4` and after); no difference between them is known. The plugin's own `AUDIT.md` and `DESIGN.md` were rewritten the same day. When code and spec disagree, the code is the truth and the spec is fixed.
+[SPEC.md](SPEC.md) describes this code as of ok-rn `c3d98d4` and after; no difference between them is known. When code and spec disagree, the code is the truth and the spec is fixed.
 
 ## 15. Appendix: file and function map
 
-`okplugin_edge.cpp`, in file order, at the one-owed-use change (ok-rn after `c3d98d4`).
+`okplugin_edge.cpp`, in file order (ok-rn after `c3d98d4`).
 
 | Function | What it does | Line |
 |---|---|---|

@@ -3,9 +3,7 @@
 The rules OnlyKey Edge keeps, as the code keeps them. One line each. The key's half is in the soft
 key's firmware plugin (`ok-rn/android/okemu/plugins/edge`), described byte by byte in
 [WHITEPAPER.md](WHITEPAPER.md), in this folder beside the code; the host's half is `node-onlykey-lib/edge` and
-the phone app ([APP.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/APP.md), [BLOCKS.md](BLOCKS.md)). Why each rule is the way it is, in the
-words of the people who decided it: [DECISIONS.md](DECISIONS.md). What is not built: [LATER.md](LATER.md).
-
+the phone app ([APP.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/APP.md), [BLOCKS.md](BLOCKS.md)).
 Rule numbers are stable: code comments cite them. A rule that was dropped keeps its number as a
 tombstone.
 
@@ -44,14 +42,14 @@ Outside a budget, Edge pays for nothing and writes nothing.
 | R15 | A budget ends: **completed** - the key ends it itself when its last use is receipted; **revoked** - GRANT_REVOKE, no press; **settled** - by a settle (R18). Each writes a grant-end link whose decision byte says which (1, 2, 3). Expiry, a lock and a reboot end it silently (budgets live in RAM). |
 | R15a | Hold: no press, links a hold; a held budget pays nothing. Resume: a press, refused while owed, needs the verified head; links a resume. |
 | R15b | A lifetime in minutes, 0 = 12 hours, counted from the press by the key's own clock, and committed to in the grant subject. |
-| R15c | *Dropped 2026-10-08: agent registration.* Sub-op 0x15 is not handled; op 15 is never reused. |
+| R15c | *Dropped: agent registration.* Sub-op 0x15 is not handled; op 15 is never reused. |
 | R16 | Only budget uses owe a receipt. The key keeps one owed use (its seq and head) or none: nothing starts while one is owed. |
 | R17 | *Dropped: folded into R16 and R18.* |
 | R18 | While a receipt is owed: no TX start, no new budget, no resume. A **settle** (a press) ends every live budget first, each with its grant-end link, then links one receipt - code `0x8F` needs review, the press flag - whose subject `SHA256("OKEDGE-SETTLE-v1" ‖ the owed seq)` names the open use. More uses need a new budget. |
-| R19 | *Not built:* composite pairs ([LATER.md](LATER.md)). |
-| R20-R23 | *Dropped 2026-10-08: peers and copy-store receipts.* |
+| R19 | *Not built:* composite pairs. |
+| R20-R23 | *Dropped: peers and copy-store receipts.* |
 | R24 | LOSS {from, to}, at a press: the person accepts a range of links nobody holds. One link; it pays no debt. `EDGE:12` for a bad range. |
-| R25 | *Later: hardware* ([LATER.md](LATER.md)). |
+| R25 | *Later: hardware.* |
 | R26 | Every restore of a backup draws a new salt - a new device - and its first link is a **continue** naming the backup's chain, seq and head and carrying its debt, if any. The backup section (version 1) holds seq, head, the owed use (if any) and the device id, never the salt. |
 | R27 | A host verifies before it approves: the phone's copy of the chain must verify, or Approve is off (`copy_unverified`). The key checks the head the host verified on GRANT_CREATE (6 bytes) and GRANT_RESUME (32), on arrival and again at the press (`EDGE:0B`). |
 | R28 | One chain per physical device: the salt is drawn on first use and never leaves the device. Derived identities do not depend on it. |
@@ -90,15 +88,15 @@ Outside a budget, Edge pays for nothing and writes nothing.
 
 ## 5. Acceptance
 
-Brad's daily loop, measured against the transcript of 2026-10-02 (7 "waiting on you: push" stops,
-6 h 19 min waiting on him). Each check is read from the chain or the transcript, not from the
+A daily agent work loop, measured against a baseline session transcript (7 "waiting on you: push" stops,
+6 h 19 min waiting on the person). Each check is read from the chain or the transcript, not from the
 agent's own word.
 
 | # | Check | Pass |
 |---|---|---|
 | A1 | Approvals | One Yes + press for the work budget, one for the release budget; no other press while they cover the work |
 | A2 | Stops | 0 "waiting on you: push" stops while the work budget has room |
-| A3 | Waiting on Brad | only the two approvals |
+| A3 | Waiting on the person | only the two approvals |
 | A4 | Coverage | every push and signed commit is a use with its receipt; every receipt's message matches its hash; the phone's verdict is Verified |
 | A5 | Release | the release signatures under the release budget, each receipted; the budget completes itself |
 | A6 | Against the baseline | the day's pushes need 2 presses in all, not one or more per push |
