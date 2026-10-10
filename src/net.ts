@@ -1,6 +1,6 @@
 /**
  * WHICH CHAIN THIS PHONE'S SOFT KEY IS ON: the live one or the testnet
- * (BLOCKS.md §5; Brad, 2026-10-07: "everthing for test is throwaway").
+ * (BLOCKS.md; Brad, 2026-10-07: "everthing for test is throwaway").
  *
  * The net is decided once, when the firmware starts: the login screen's "Log in"
  * starts it on storageSlot, "Enter testing mode" on testStorageSlot (buildInfo.ts).

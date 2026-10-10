@@ -1,5 +1,5 @@
 /**
- * CLEAR THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07: "everthing for test is
+ * CLEAR THE TESTNET (BLOCKS.md; Brad, 2026-10-07: "everthing for test is
  * throwaway"): the testnet's soft key (its own storage slot - flash, EEPROM, keys,
  * Edge chain) and every record the phone kept for it. The live chain is never
  * touched: the slot delete is refused natively for any slot that is not the

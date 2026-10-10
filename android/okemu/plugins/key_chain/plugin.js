@@ -28,7 +28,8 @@
  *                        for the app to present beside its press button
  *
  * The app side: okemu_plugin_event() (jni/okemu_jni.cpp) -> NativeOkEmu
- * onPluginEvent -> src/keyChainRecorder.ts.
+ * onPluginEvent -> src/keyChainRecorder.ts (derive records) and src/pressAsk.ts ->
+ * src/ui/PressSheet.tsx (the press record).
  */
 const INC = '#include "plugins/key_chain/okplugin_key_chain.h"\n';
 module.exports = {

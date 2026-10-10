@@ -8,7 +8,7 @@
  * reading of what it writes (node-onlykey-lib/edge, through ctx.requireLib -
  * the kit's own pinned lib): every link, weld, budget signature, reveal,
  * receipt, settle and checkpoint must check out there. The rules are
- * onlykey-edge/build/firmware.md's; verification row 5 lists what these prove.
+ * SPEC.md's; verification row 5 lists what these prove.
  *
  * Only budget uses owe a receipt (R16, 2026-10-06: an ordinary press is not Edge and
  * writes no link) and nothing automatic happens while
@@ -98,13 +98,13 @@ module.exports = function register({ it }, ctx) {
   /* the device id is edge JS's to compute: SHA256("OKEDGE-DEVICE-v1" || the Edge public key)[0..16] */
   const deviceIdOf = (pub) => new Uint8Array(sha256(Buffer.concat([Buffer.from('OKEDGE-DEVICE-v1'), Buffer.from(pub)])).subarray(0, 16));
 
-  /* HEAD: seq . head . oldest pickable seq . the live budget ids . held mask . owed . overflow */
+  /* HEAD: seq . head . oldest pickable seq . the live budget ids . held mask . owes (0 or 1) */
   async function head(device, opts) {
     const [r] = await edge(device, HEAD, null, opts);
     const ids = [0, 1, 2, 3].map((i) => r.readUInt32LE(40 + 4 * i));
     return {
       seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), oldest: r.readUInt32LE(36),
-      live: ids.filter(Boolean), held: ids.filter((id, i) => id && (r[56] >> i) & 1), owed: r[57], overflow: r[58],
+      live: ids.filter(Boolean), held: ids.filter((id, i) => id && (r[56] >> i) & 1), owed: r[57],
       refusedTx: r[60], /* B7 stage 2: TX starts refused since power-up (RAM only) */
     };
   }
@@ -129,13 +129,13 @@ module.exports = function register({ it }, ctx) {
   /* clear whatever earlier tests left owed: a pressed SETTLE (R18) */
   async function clearDebts(device, { signal, log }) {
     const h = await head(device, { signal });
-    if (!h.owed && !h.overflow) return;
+    if (!h.owed) return;
     await edge(device, SETTLE, null, { signal, press: true });
-    if (log) log(`settled ${h.owed} owed${h.overflow ? ' + overflow' : ''} left by earlier tests`);
+    if (log) log('settled the use earlier tests left owed');
   }
 
   /*
-   * GRANT_CREATE (firmware.md R27 layout): [0] scope count, [1..16] scopes,
+   * GRANT_CREATE (SPEC.md R27 layout): [0] scope count, [1..16] scopes,
    * [17..48] reason hash, [49] flags, [50..51] lifetime (u16 LE minutes, R15b;
    * 0 = the key's 12 h), [52..57] the first 6 bytes of the head the host
    * verified. `verified` is the key's current head - this test is the host,
@@ -546,9 +546,8 @@ module.exports = function register({ it }, ctx) {
     });
 
   /*
-   * Only budget uses owe (spec session, 2026-10-06) and nothing TX starts while one is
-   * owed (R18), so the key owes at most one receipt at a time: the old "past 4 owed,
-   * the overflow" case cannot arise any more. One owed budget use is settled.
+   * Only budget uses owe and nothing TX starts while one is owed (R18), so the key keeps
+   * one owed use or none. One owed budget use is settled.
    */
   it('edge: SETTLE takes a press; a restart keeps the debt; an unpressed settle does nothing (R16, R18)',
     async ({ device, assert, signal, log }) => {
@@ -560,7 +559,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await txStartFor(device, (await head(device, { signal })).head, plw, { signal }), 'EDGE:00');
       const uses = [await selfPressedSign(device, plw, { signal })];
       let h = await head(device, { signal });
-      assert.equal(JSON.stringify([h.owed, h.overflow]), '[1,0]', 'the budget use does not owe its receipt');
+      assert.equal(h.owed, 1, 'the budget use does not owe its receipt');
       /* picked up now: a restart keeps only the latest link in RAM, as a host's copy would */
       const first = before.seq === SEQ_NONE ? 0 : before.seq + 1;
       const kept = await pickup(device, first, h.seq - first + 1, { signal });
@@ -569,7 +568,7 @@ module.exports = function register({ it }, ctx) {
       await device.restart({ signal });
       await device.unlock(ctx.PINS.primary, { signal });
       h = await head(device, { signal });
-      assert.equal(JSON.stringify([h.owed, h.overflow]), '[1,0]', 'the restart cleared the debt');
+      assert.equal(h.owed, 1, 'the restart cleared the debt');
 
       /* unpressed, the settle does nothing */
       const primed = device.log.count(PRIMED);
@@ -582,7 +581,7 @@ module.exports = function register({ it }, ctx) {
       const [w] = await edge(device, SETTLE, null, { signal, press: true });
       const ws = seqHead(w);
       h = await head(device, { signal });
-      assert.equal(JSON.stringify([h.owed, h.overflow]), '[0,0]');
+      assert.equal(h.owed, 0);
       assert.equal(ws.seq, h.seq);
 
       const links = kept.concat(await pickup(device, ws.seq, 1, { signal }));
@@ -591,7 +590,7 @@ module.exports = function register({ it }, ctx) {
       const wl = chain.decodeLink(links[links.length - 1].link);
       log(trail([wl]));
       assert.equal(JSON.stringify([wl.op, wl.decision, wl.flags & PRESS_OBSERVED, wl.grantId]), JSON.stringify([OP_RECEIPT, NEEDS_REVIEW, PRESS_OBSERVED, uses[0].seq]));
-      assert.bytes(Buffer.from(wl.subject), Buffer.from(receipts.settleSubject(uses.map((u) => u.seq), false)), 'the settle subject does not list what it settled');
+      assert.bytes(Buffer.from(wl.subject), Buffer.from(receipts.settleSubject(uses[0].seq)), 'the settle subject does not name the use it settled');
       const paired = receipts.pairReceipts(links);
       assert.equal(paired.uses.find((u) => u.seq === uses[0].seq).status, 'settled', `use #${uses[0].seq}`);
     });
@@ -616,7 +615,7 @@ module.exports = function register({ it }, ctx) {
       const [w] = await edge(device, SETTLE, null, { signal, press: true });
       const ws = seqHead(w);
       h = await head(device, { signal });
-      assert.equal(JSON.stringify([h.owed, h.overflow, h.live.includes(b.grantId)]), '[0,0,false]', 'the settle left the budget live');
+      assert.equal(JSON.stringify([h.owed, h.live.includes(b.grantId)]), '[0,false]', 'the settle left the budget live');
       const [end, settled] = (await pickup(device, ws.seq - 1, 2, { signal })).map((r) => chain.decodeLink(r.link));
       log(trail([end, settled]));
       assert.equal(JSON.stringify([end.op, end.grantId, end.decision]), JSON.stringify([7, b.grantId, END_SETTLED]), 'no grant-end link (settled) for the settled budget');
@@ -1083,10 +1082,10 @@ module.exports = function register({ it }, ctx) {
 
   /*
    * THE AGENT SERVICE ON THE REAL EDGE FIRMWARE (Edge Phase 2, build step 1 -
-   * onlykey-edge daily-loop.md §5: "emulator first, no hardware"). The lib's
+   * onlykey-edge SPEC.md: "emulator first, no hardware"). The lib's
    * own edge-agent (edge/cli/agent.js) over the kit's emulator (the kit's
    * libstack), the phone's side in-process (approve.approveRequest), presses
-   * by the emulator. A scratch repo: `git commit -S` inside `okedge exec`, an
+   * by the emulator. A scratch repo: `git commit -S` inside `onlykey-js edge exec`, an
    * ssh sign on the exec's endpoint bound to a pinned host - each a self-press
    * paid by the budget, each receipted. And the must-fail-safely checks
    * (daily-loop §3): the shared endpoint is a press, a skipped receipt and a
@@ -1152,7 +1151,7 @@ module.exports = function register({ it }, ctx) {
         assert.equal(r.code, 0, r.lines.join('\n'));
         let head = r.lines.find((l) => l.startsWith('head = ')).slice(7);
 
-        /* A4: a signed commit inside okedge exec - a self-press paid by the budget, then its receipt */
+        /* A4: a signed commit inside onlykey-js edge exec - a self-press paid by the budget, then its receipt */
         const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-edge-repo-'));
         execFileSync('git', ['-C', repo, 'init', '-q']);
         execFileSync('git', ['-C', repo, 'config', 'user.name', 'Claude (okt agent)']);
@@ -1223,7 +1222,7 @@ module.exports = function register({ it }, ctx) {
     });
 
   /*
-   * R28 (onlykey-edge firmware.md, decided 2026-10-04): one chain per physical
+   * R28 (onlykey-edge SPEC.md, decided 2026-10-04): one chain per physical
    * device. "Another device restored from the same backup" is exactly what this
    * file sees across two runs: every run starts from the kit's cached
    * 'initialized' snapshot (the same K132) but makes a NEW salt on its first Edge

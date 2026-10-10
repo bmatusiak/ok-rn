@@ -8,7 +8,7 @@
  * budget's opening, the reveals and the chain are checked by the library.
  *
  * A use owes a receipt when it was started, or when a live budget covers its op
- * and slot (onlykey-edge firmware.md R16; the key sets bits 4/5 of the link at
+ * and slot (onlykey-edge SPEC.md R16; the key sets bits 4/5 of the link at
  * decision time). Nothing automatic happens while one is owed (R18): a test
  * that opens a budget first clears what earlier ones left owed, with a pressed
  * SETTLE.
@@ -122,9 +122,9 @@ module.exports = function register({it}, ctx) {
   /* clear whatever is owed: a pressed SETTLE (R18) */
   async function clearDebts(app, log) {
     const h = await app.edge.head();
-    if (!h.owed && !h.overflow) return;
+    if (!h.owed) return;
     await app.edge.settle({onPress: pressSoon});
-    log(`settled ${h.owed} owed${h.overflow ? ' + overflow' : ''}`);
+    log('settled the owed use');
   }
 
   /* the decision is linked: the head moves past `seq` (polled, not slept) */
@@ -147,14 +147,6 @@ module.exports = function register({it}, ctx) {
     const {deviceId} = await app.edge.publicKey();
     const h = await app.edge.head();
     log(`device ${Array.from(deviceId, b => b.toString(16).padStart(2, '0')).join('')}, head #${h.seq}, live ${JSON.stringify(h.live)}`);
-    /*
-     * A key restored from a backup refuses budgets and forgets the links
-     * after the backup until the restore is finished (R26). Seen 2026-10-03
-     * after restoring the A13's backup on the Pixel: three tests failed with
-     * "finish the restore in the app first" and "no longer holds that link".
-     * One clear line instead.
-     */
-    assert.ok(!h.restoring, 'the key is restoring from a backup - finish it on the phone first (Edge tab -> Restore card -> Finish the restore), then run again');
     await ctx.edgeCopy.sync();
     const copy = await ctx.edgeCopy.check();
     assert.ok(copy.ok, `the Edge tab's copy does not verify before the run (${copy.reason}${copy.seq !== undefined ? ` at #${copy.seq}` : ''}) - settle it on the Edge tab first; this suite would only add to it`);
@@ -162,17 +154,6 @@ module.exports = function register({it}, ctx) {
       assert.equal(chain.verify([], {deviceId, expectHead: {seq: -1, head: h.head}}).ok, true, 'an empty chain\'s head is not the genesis');
     }
   });
-
-  /* one pressed agent sign, linked and picked up: {signed, after, f, l} */
-  async function pressedUse(app, text, log) {
-    const before = await app.edge.head();
-    const signed = await agentSign(app, text, {press: true});
-    const after = await headPast(app, before.seq);
-    const [l] = await app.edge.pickup(after.seq, 1);
-    const f = chain.decodeLink(l.link);
-    log(`#${f.seq} op ${f.op} decision ${f.decision} flags ${f.flags} slot ${f.slot}`);
-    return {before, signed, after, f, l};
-  }
 
   /*
    * BUDGET OR NO GO (spec session, 2026-10-06): an ordinary press is not Edge -

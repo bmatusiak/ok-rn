@@ -1,5 +1,5 @@
 /**
- * The phone's copy of a key's Edge chain (spec okrn-edge-tab.md 4.2), and
+ * The phone's copy of a key's Edge chain (spec APP.md), and
  * turning it into the tab's verdict.
  *
  * S1: one mirror per key, keyed by device_id (soft and hard key never share
@@ -95,7 +95,7 @@ export type Mirror = {
    */
   merged?: {seq: number; head: Uint8Array; signature: Uint8Array; at: number}[];
   /*
-   * SEALED BLOCKS (BLOCKS.md §2, §2a; Brad, 2026-10-07: "checkpoints can happen on a
+   * SEALED BLOCKS (BLOCKS.md; Brad, 2026-10-07: "checkpoints can happen on a
    * budget grant end, like it's the end of the block of transactions"; "we only need
    * to verify the new stuff"). A checkpoint the key signed over a head this phone had
    * just verified, taken when a budget had ended since the last seal. NOT a
@@ -321,7 +321,7 @@ function setAsideStrays(mirror: Mirror, keySeq: number, now: number): void {
  */
 let syncing: Promise<unknown> = Promise.resolve();
 /*
- * ONE CHAIN STATE (okrn-edge-tab.md S3a; Brad, 2026-10-07: "unify the state of the
+ * ONE CHAIN STATE (APP.md; Brad, 2026-10-07: "unify the state of the
  * block chain in memory so ui and bluetooth dont need to constantly hammer
  * verifying ... 1 complete check, both bluetooth and ui or anything else can just
  * ask for validity"; "a lot easier to manage and save, and watch events on it").
@@ -510,8 +510,8 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
    * this session (full or sealed), a check that was not clean, and a seal (a budget
    * ended since the last one). A sync that only checks new links on a verified copy
    * is anchored by the head it read; if that check does not hold, liveView asks for
-   * the checkpoint before the full check. (BLOCKS.md's "a seal at every sync" is the
-   * key-to-key sync, R30 - not this copy's sync.)
+   * the checkpoint before the full check. (BLOCKS.md's "a seal at every sync" was the
+   * key-to-key sync, R30, retired 2026-10-08 - never this copy's sync.)
    */
   const live = await source.budgets(true).then(bs => bs.map(b => b.grantId)).catch(() => null as number[] | null);
   lap('budgets');
@@ -530,7 +530,7 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   if (view.verdict.kind === 'verified' || view.verdict.kind === 'gap') {
     mirror.lastSeen = {seq: head.seq, head: head.head};
   }
-  /* a budget ended since the last seal: its block is closed - seal it (BLOCKS.md §2, stage a) */
+  /* a budget ended since the last seal: its block is closed - seal it (BLOCKS.md, stage a) */
   if (live && view.verdict.kind === 'verified' && ownKey?.checkpoint) takeSeal(mirror, head, ownKey.checkpoint, live);
   await saveMirror(mirror);
   lap('save');
@@ -544,11 +544,13 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
 }
 
 /**
- * okedge sync phase 2 (Brad, 2026-10-05): a place that keeps copies offers
+ * onlykey-js edge sync phase 2 (Brad, 2026-10-05): a place that keeps copies offers
  * links for this phone's copy. Merged into a CANDIDATE, checked the same way
  * every sync is (liveView: the key's head, its ring, its checkpoint - R27),
- * and NOT saved: the caller saves only after the sheet, Yes, the press and
- * the key's `sync` link. A link that disagrees with one this copy already holds
+ * and NOT saved: the caller (edgeAgents, on COMMIT) keeps the added links with
+ * keepOffered once the candidate verifies - its own key's links, no sheet and
+ * no press since 2026-10-08 (before that: a sheet, Yes, a press and the key's
+ * `sync` link). A link that disagrees with one this copy already holds
  * is a fork - reported, never chosen between (the copy stays as it is).
  */
 export async function mergeOffered(source: EdgeSource, offered: EdgeLinkRecord[], now = Date.now()):
@@ -559,25 +561,6 @@ export async function mergeOffered(source: EdgeSource, offered: EdgeLinkRecord[]
   for (const r of m.added) candidate.seen[seqOf(r)] = candidate.seen[seqOf(r)] ?? now;
   const view = await liveView(source, candidate);
   return {candidate, added: m.added, conflicts: m.conflicts, view};
-}
-
-/**
- * Keep the offered links - only after the key linked the sync. IN THE SYNC QUEUE,
- * and merged into the copy as it is NOW, not saved from mergeOffered's candidate:
- * found on the Pixel (2026-10-05), the background copy sync loaded the mirror
- * while the sheet was up and saved it after this, dropping the five links the
- * person had just approved. A link that now disagrees is a fork: nothing kept.
- */
-/**
- * R30 (P2c): a SIBLING's links offered to this phone, merged with the copy of
- * that sibling's chain it already holds (the same store, keyed by the sibling's
- * device id - it never mixes with this phone's own chain). No I/O beyond the read.
- */
-export async function mergeOther(chainId: Uint8Array, offered: EdgeLinkRecord[]):
-  Promise<{mirror: Mirror; links: EdgeLinkRecord[]; added: EdgeLinkRecord[]; conflicts: number[]}> {
-  const mirror = await loadMirror(chainId);
-  const m = syncLib.merge(mirror.links, offered);
-  return {mirror, links: m.links, added: m.added, conflicts: m.conflicts};
 }
 
 /**
@@ -613,6 +596,14 @@ async function keepSeenNow(deviceId: Uint8Array, seen: Record<string, number>): 
   await saveMirror(mirror);
 }
 
+/**
+ * Keep the offered links of this phone's OWN chain (a COMMIT whose candidate verified;
+ * until 2026-10-08 only after the key linked the sync). IN THE SYNC QUEUE, and merged
+ * into the copy as it is NOW, not saved from mergeOffered's candidate: found on the
+ * Pixel (2026-10-05), the background copy sync loaded the mirror while the sheet was
+ * up and saved it after this, dropping the five links the person had just approved.
+ * A link that now disagrees is a fork: nothing kept.
+ */
 export function keepOffered(deviceId: Uint8Array, added: EdgeLinkRecord[], now = Date.now()): Promise<void> {
   const run = syncing.then(() => keepOfferedNow(deviceId, added, now), () => keepOfferedNow(deviceId, added, now));
   syncing = run.catch(() => undefined);
@@ -677,7 +668,7 @@ function grantIdsIn(mirror: Mirror): number[] {
 }
 
 /*
- * TAKE A SEAL (BLOCKS.md §2, stage a): only over the head this sync just verified,
+ * TAKE A SEAL (BLOCKS.md, stage a): only over the head this sync just verified,
  * with the key's checkpoint for exactly that head, and only when a budget ended
  * since the last seal - its block of transactions is closed. Stage (b) moves this
  * into the key (R15: grant-end and the checkpoint in one step).
@@ -690,7 +681,7 @@ function takeSeal(mirror: Mirror, head: {seq: number; head: Uint8Array}, cp: {se
   if (!sealDue(mirror, live)) return;
   const ended = grantIdsIn(mirror).filter(id => !live.includes(id));
   const before = new Set(last ? last.ended : []);
-  /* every seal is kept: each closes a block, and the blocks (BLOCKS.md §3) need all of them (one seal ~ 200 bytes) */
+  /* every seal is kept: each closes a block, and the blocks (BLOCKS.md) need all of them (one seal ~ 200 bytes) */
   mirror.seals = [...seals, {seq: cp.seq, head: cp.head, signature: cp.signature, ended}];
   console.log(`[edge] sealed #${cp.seq}: budget ${ended.filter(id => !before.has(id)).join(', ')} ended - its block is closed`);
 }
@@ -703,7 +694,7 @@ function sealDue(mirror: Mirror, live: number[]): boolean {
 }
 
 /*
- * THE SEALED START (BLOCKS.md §2a). With nothing verified this session: the newest
+ * THE SEALED START (BLOCKS.md). With nothing verified this session: the newest
  * seal at or below the copy's end, its signature checked with the public key the
  * key gave THIS session (whose device id must be this copy's). copy.assess then
  * welds the stored links to it like any anchor. Anything that does not fit -> null,
@@ -865,7 +856,7 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
    * verifies), the gap only what no anchor reaches, minus the key's own links,
    * and only a verified LOSS later than a gap covers it.
    *
-   * SEALED (BLOCKS.md §2a; Brad, 2026-10-07: "we only need to verify the new
+   * SEALED (BLOCKS.md; Brad, 2026-10-07: "we only need to verify the new
    * stuff"). With nothing from this session, the check starts from the newest seal
    * the key signed - its signature checked against the public key the key gave
    * THIS session - which stands in for every signature at or below it (one per
@@ -986,7 +977,7 @@ async function tamperNow(deviceId: Uint8Array, how: Tamper): Promise<Mirror> {
 }
 
 /*
- * BLOCKS (BLOCKS.md §3, Brad 2026-10-07: "we use hash of a json"): this key's copy
+ * BLOCKS (BLOCKS.md, Brad 2026-10-07: "we use hash of a json"): this key's copy
  * cut at its seals into canonical JSON blocks - one per closed budget, each sealed
  * by the key's signed checkpoint - for Export. Each block is checked against the
  * key's public key kept with the copy and the block before it; one that does not

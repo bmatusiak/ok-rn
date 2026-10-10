@@ -11,8 +11,9 @@
  *   3 one signature, with a key no other request reaches: a checkpoint over (seq, head). The
  *     press that opens a budget is answered with a checkpoint over its grant-create link,
  *     whose subject commits to the budget's genesis;
- *   4 the debts: every budget use owes a receipt, and while one is owed no TX start, budget
- *     opening or resume is accepted, until a receipt or a pressed SETTLE pays it.
+ *   4 the debt: every budget use owes a receipt, and while it is owed no TX start, budget
+ *     opening or resume is accepted, until a receipt or a pressed SETTLE pays it - so at most
+ *     one use is ever owed.
  * A second key, the owner key, signs a statement about this device for the host to show
  * which devices were made from the same OnlyKey secret.
  *
@@ -52,7 +53,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_GRANT_HOLD 13
 #define OP_GRANT_RESUME 14
 /* op 15 is not written and not reused */
-#define OP_CONTINUE 16 /* the first link of a restored device's own chain, carrying the backup's debts */
+#define OP_CONTINUE 16 /* the first link of a restored device's own chain, carrying the backup's debt */
 #define DECISION_SELF_PRESS 4
 #define CODE_NEEDS_REVIEW 0x8F /* a SETTLE is linked as a receipt with this code and the press flag */
 #define FLAG_PRESS_OBSERVED 0x01
@@ -66,7 +67,6 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define MAX_LIVE 4      /* live budgets at once */
 #define MAX_SCOPES 4    /* scopes per budget */
 #define MAX_USES 1024   /* uses per budget: up to 1,024 SHA-256 at the press and per reveal */
-#define OWED_MAX 4      /* owed uses kept in flash (lib receipts.OWED_MAX) */
 #define HELD 8          /* links held in RAM for pickup */
 #define PRESS_MS 25000UL
 
@@ -79,21 +79,20 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 
 /*
  * The record, 320 bytes, written to sector A or B in turn (the higher gen wins at load):
- *   0 magic "OKEDGEv1" . 8 gen u32 . 12 seq u32 . 16 head 32 . 48 owed_n . 49 overflow .
- *   50..51 zero . 52 owed x4 (seq u32, head 32) . 196 last_link 64 . 260..263 zero .
- *   264 salted . 265 cont . 266 salt 32 . 298 cont_id 16 . 314..315 zero .
- *   316 check: the first 4 bytes of SHA-256 over bytes 0..315.
+ *   0 magic "OKEDGEv1" . 8 gen u32 . 12 seq u32 . 16 head 32 . 48 owes (0 or 1) . 49..51 zero .
+ *   52 the owed use (seq u32, head 32) . 88 last_link 64 . 152 salted . 153 cont . 154 salt 32 .
+ *   186 cont_id 16 . 202..203 zero . 204 check: the first 4 bytes of SHA-256 over bytes 0..203.
  * A record with another magic, or whose check fails, is not read: with neither sector
  * readable the key starts an empty chain. Only the Edge region is ever written here.
  */
-#define STATE_BYTES 320 /* a multiple of 4: flash takes words */
-#define STATE_CHECKED 316
-#define SALTED_AT 264
-#define CONT_AT 265
-#define SALT_AT 266
-#define CONT_ID_AT 298
+#define STATE_BYTES 208 /* a multiple of 4: flash takes words */
+#define STATE_CHECKED 204
 #define OWED_AT 52
-#define LAST_AT (OWED_AT + OWED_MAX * 36)
+#define LAST_AT 88
+#define SALTED_AT 152
+#define CONT_AT 153
+#define SALT_AT 154
+#define CONT_ID_AT 186
 static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', 'v', '1'};
 
 struct owed_use { uint32_t seq; uint8_t head[32]; }; /* head[seq]: what its receipt subject names */
@@ -103,9 +102,8 @@ struct edge_state {
   uint32_t gen;
   uint32_t seq;               /* SEQ_NONE = no link yet */
   uint8_t head[32];           /* head[seq]; the genesis while seq == SEQ_NONE */
-  uint8_t owed_n;             /* uses owing a receipt, oldest first in owed[] */
-  uint8_t overflow;           /* an older owed use fell off the list - only a SETTLE clears it */
-  struct owed_use owed[OWED_MAX];
+  uint8_t owes;               /* 1: the use in `owed` owes a receipt */
+  struct owed_use owed;
   uint8_t last_link[LINK_BYTES]; /* the latest link, so a restart never loses it */
   /*
    * One chain per physical device: the salt is drawn on first use and lives only in this
@@ -115,14 +113,14 @@ struct edge_state {
   uint8_t salted;
   uint8_t cont;                  /* a continue link is owed: CONT_FROM_ID */
   uint8_t salt[32];
-  uint8_t cont_id[ID_BYTES];     /* the device id of the chain the debts come from */
+  uint8_t cont_id[ID_BYTES];     /* the device id of the chain this one continues */
 };
 #define CONT_FROM_ID 1 /* a backup restored here */
 static struct edge_state st;
 static uint8_t loaded;
 
 /* Is anything owed? Then no TX start, budget opening or resume is accepted. */
-static int owes(void) { return st.owed_n || st.overflow; }
+static int owes(void) { return st.owes; }
 
 /* ------------------------------------------------------------ RAM only */
 
@@ -226,7 +224,7 @@ static struct {
 
 /*
  * An OKEDGE request waiting for its physical press: opening a budget, resuming one, settling
- * the debts or accepting a loss. One at a time; a new one replaces it.
+ * the debt or accepting a loss. One at a time; a new one replaces it.
  */
 enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_SETTLE, PRESS_LOSS };
 static struct {
@@ -312,12 +310,9 @@ static void state_encode(uint8_t rec[STATE_BYTES]) {
   put32(rec + 8, st.gen);
   put32(rec + 12, st.seq);
   memcpy(rec + 16, st.head, 32);
-  rec[48] = st.owed_n;
-  rec[49] = st.overflow;
-  for (int i = 0; i < OWED_MAX; i++) {
-    put32(rec + OWED_AT + 36 * i, st.owed[i].seq);
-    memcpy(rec + OWED_AT + 36 * i + 4, st.owed[i].head, 32);
-  }
+  rec[48] = st.owes;
+  put32(rec + OWED_AT, st.owed.seq);
+  memcpy(rec + OWED_AT + 4, st.owed.head, 32);
   memcpy(rec + LAST_AT, st.last_link, LINK_BYTES);
   rec[SALTED_AT] = st.salted;
   rec[CONT_AT] = st.cont;
@@ -335,12 +330,9 @@ static int state_decode(const uint8_t rec[STATE_BYTES], struct edge_state *s) {
   s->gen = get32(rec + 8);
   s->seq = get32(rec + 12);
   memcpy(s->head, rec + 16, 32);
-  s->owed_n = rec[48] > OWED_MAX ? OWED_MAX : rec[48];
-  s->overflow = rec[49];
-  for (int i = 0; i < OWED_MAX; i++) {
-    s->owed[i].seq = get32(rec + OWED_AT + 36 * i);
-    memcpy(s->owed[i].head, rec + OWED_AT + 36 * i + 4, 32);
-  }
+  s->owes = rec[48] == 1;
+  s->owed.seq = get32(rec + OWED_AT);
+  memcpy(s->owed.head, rec + OWED_AT + 4, 32);
   memcpy(s->last_link, rec + LAST_AT, LINK_BYTES);
   s->salted = rec[SALTED_AT] == 1;
   s->cont = rec[CONT_AT] == CONT_FROM_ID ? CONT_FROM_ID : 0;
@@ -452,20 +444,20 @@ static int identity_of(const struct edge_state *s, uint8_t pub[64], uint8_t id[I
  * after the chain it continues (so a carried debt's seq never meets one of the new chain's)
  * and is welded onto the NEW genesis, not the old head:
  *   op = continue, decision = approve, flags 0 (no press: the restore already needed the
- *   person), grant_id = the number of debts carried,
+ *   person), grant_id = 1 when a debt is carried, else 0,
  *   subject = SHA256("OKEDGE-CONTINUE-v1" || old device_id 16 || old seq u32 ||
- *             old head 32 || each carried debt's seq u32, oldest first)
- * The debts (seq + head) stay owed here and are paid by receipt or settle on this chain; the
+ *             old head 32 || the carried debt's seq u32, when there is one)
+ * The debt (seq + head) stays owed here and are paid by receipt or settle on this chain; the
  * host keeps the old chain and its checkpoint key beside it, so the old history stays
  * checkable up to the head this names. Live budgets end.
  */
 static void write_continue(const uint8_t old_id[ID_BYTES]) {
-  uint8_t buf[ID_BYTES + 4 + 32 + 4 * OWED_MAX], subject[32];
+  uint8_t buf[ID_BYTES + 4 + 32 + 4], subject[32];
   memcpy(buf, old_id, ID_BYTES);
   put32(buf + ID_BYTES, st.seq);
   memcpy(buf + ID_BYTES + 4, st.head, 32);
-  for (int i = 0; i < st.owed_n; i++) put32(buf + ID_BYTES + 36 + 4 * i, st.owed[i].seq);
-  H(subject, "OKEDGE-CONTINUE-v1", buf, ID_BYTES + 36 + 4 * st.owed_n, NULL, 0, NULL, 0);
+  if (st.owes) put32(buf + ID_BYTES + 36, st.owed.seq);
+  H(subject, "OKEDGE-CONTINUE-v1", buf, ID_BYTES + 36 + 4 * st.owes, NULL, 0, NULL, 0);
   memset(budgets, 0, sizeof(budgets));
   memset(held, 0, sizeof(held));
   started = 0;
@@ -473,7 +465,7 @@ static void write_continue(const uint8_t old_id[ID_BYTES]) {
   memset(st.cont_id, 0, ID_BYTES);
   /* head[-1] of the new chain = SHA256("OKEDGE-GENESIS-v1" || new device_id) */
   H(st.head, "OKEDGE-GENESIS-v1", ident.device_id, ID_BYTES, NULL, 0, NULL, 0);
-  append(OP_CONTINUE, OKEDGE_DECISION_APPROVE, 0, 0, subject, st.owed_n, 0, NULL);
+  append(OP_CONTINUE, OKEDGE_DECISION_APPROVE, 0, 0, subject, st.owes, 0, NULL);
   state_save();
 }
 
@@ -558,30 +550,22 @@ static void statement(const uint8_t nametag_hash[32]) {
 
 /* ------------------------------------------------------------ the weld */
 
-/* SHA256("OKEDGE-SETTLE-v1" || each owed seq (u32 LE, oldest first) || overflow) (lib receipts.settleSubject) */
+/* SHA256("OKEDGE-SETTLE-v1" || the owed seq (u32 LE)) (lib receipts.settleSubject) */
 static void settle_subject(const struct edge_state *s, uint8_t out[32]) {
-  uint8_t seq4[4], ov = s->overflow ? 1 : 0;
-  SHA256_CTX ctx;
-  sha256_init(&ctx);
-  sha256_update(&ctx, (const unsigned char *)"OKEDGE-SETTLE-v1", sizeof("OKEDGE-SETTLE-v1") - 1);
-  for (int i = 0; i < s->owed_n; i++) {
-    put32(seq4, s->owed[i].seq);
-    sha256_update(&ctx, seq4, 4);
-  }
-  sha256_update(&ctx, &ov, 1);
-  sha256_final(&ctx, out);
+  uint8_t seq4[4];
+  put32(seq4, s->owed.seq);
+  H(out, "OKEDGE-SETTLE-v1", seq4, 4, NULL, 0, NULL, 0);
 }
 
 /*
  * The weld - the one function every link goes through:
  *   head[n] = SHA256("OKEDGE-LINK-v1" || head[n-1] || link[n])   (lib chain.weld)
- * then the debts (lib receipts.keyDebts follows the same rule):
- *   - an approved or self-pressed sign/decrypt whose link carries FLAG_OWES_RECEIPT owes a
- *     receipt. The list keeps the latest OWED_MAX; one more pushes the oldest off for good
- *     (overflow: only a SETTLE clears it);
- *   - a SETTLE - a receipt with code 0x8F, the press flag and the subject over exactly this
- *     list and overflow - clears the list and the overflow;
- *   - any other receipt pays its ref_seq (bytes 40-43), if that use is still on the list.
+ * then the debt (lib receipts.keyDebts follows the same rule):
+ *   - a self-pressed sign/decrypt whose link carries FLAG_OWES_RECEIPT owes a receipt. Nothing
+ *     starts while one is owed, so the slot is always free when a use arrives;
+ *   - a SETTLE - a receipt with code 0x8F, the press flag and the subject over the owed seq -
+ *     clears it;
+ *   - any other receipt pays its ref_seq (bytes 40-43), if that is the owed use.
  * The record is saved before the operation's result is released.
  */
 static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const uint8_t *reveal) {
@@ -592,30 +576,17 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
   uint8_t op = link[4], decision = link[5];
   if (op == OP_SIGN || op == OP_DECRYPT) {
     if ((decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS) && (link[7] & FLAG_OWES_RECEIPT)) {
-      if (s->owed_n == OWED_MAX) {
-        memmove(&s->owed[0], &s->owed[1], sizeof(s->owed[0]) * (OWED_MAX - 1));
-        s->owed_n--;
-        s->overflow = 1;
-      }
-      s->owed[s->owed_n].seq = seq;
-      memcpy(s->owed[s->owed_n].head, head, 32);
-      s->owed_n++;
+      s->owes = 1;
+      s->owed.seq = seq;
+      memcpy(s->owed.head, head, 32);
     }
   } else if (op == OP_RECEIPT) {
     settle_subject(s, w);
-    if (decision == CODE_NEEDS_REVIEW && (link[7] & FLAG_PRESS_OBSERVED) && memcmp(link + 8, w, 32) == 0) {
-      s->owed_n = 0;
-      s->overflow = 0;
-    } else {
-      uint32_t ref = get32(link + 40);
-      for (int k = 0; k < s->owed_n; k++) {
-        if (s->owed[k].seq != ref) continue;
-        memmove(&s->owed[k], &s->owed[k + 1], sizeof(s->owed[0]) * (s->owed_n - k - 1));
-        s->owed_n--;
-        break;
-      }
+    int settled = decision == CODE_NEEDS_REVIEW && (link[7] & FLAG_PRESS_OBSERVED) && memcmp(link + 8, w, 32) == 0;
+    if (s->owes && (settled || get32(link + 40) == s->owed.seq)) {
+      s->owes = 0;
+      memset(&s->owed, 0, sizeof(s->owed));
     }
-    memset(&s->owed[s->owed_n], 0, sizeof(s->owed[0]) * (OWED_MAX - s->owed_n));
   }
   s->seq = seq;
   memcpy(s->head, head, 32);
@@ -898,12 +869,9 @@ static void resume_pressed(void) {
 }
 
 /*
- * The way out for debts nobody will receipt: one press clears them all. Linked as a receipt,
- * code 0x8F (needs review), the press flag, grant_id = the oldest seq it settles, and
- *   subject = SHA256("OKEDGE-SETTLE-v1" || each settled seq (u32 LE, oldest first) || overflow)
- * (lib receipts.settleSubject). With overflow and an empty list (every listed debt was
- * receipted, older ones fell off), grant_id is the settle's own seq: the host then reads every
- * older unpaid use as "settled, not listed".
+ * The way out for a debt nobody will receipt: one press clears it. Linked as a receipt,
+ * code 0x8F (needs review), the press flag, grant_id = the owed seq, and
+ *   subject = SHA256("OKEDGE-SETTLE-v1" || the owed seq (u32 LE))   (lib receipts.settleSubject)
  */
 static void settle_pressed(void) {
   if (!owes()) { status(EDGE_NO_RECEIPT_WAITING); return; } /* paid while it waited */
@@ -914,9 +882,8 @@ static void settle_pressed(void) {
    */
   for (int i = 0; i < MAX_LIVE; i++) if (alive(&budgets[i])) end_budget(&budgets[i], END_SETTLED);
   uint8_t subject[32];
-  uint32_t oldest = st.owed_n ? st.owed[0].seq : (st.seq == SEQ_NONE ? 0 : st.seq + 1);
   settle_subject(&st, subject);
-  append(OP_RECEIPT, CODE_NEEDS_REVIEW, 0, FLAG_PRESS_OBSERVED, subject, oldest, 0, NULL); /* the weld clears the debts */
+  append(OP_RECEIPT, CODE_NEEDS_REVIEW, 0, FLAG_PRESS_OBSERVED, subject, st.owed.seq, 0, NULL); /* the weld clears the debt */
   reply_seq_head();
 }
 
@@ -1117,9 +1084,9 @@ void okplugin_edge_wipe(void) {
 
 /*
  * The plugin backup section (the loader: node-onlykey-lib/cli/firmware-plugins.js), version 1:
- *   1 . seq u32 . head 32 . owed_n . overflow . owed_n x (seq u32, head 32) . device id 16
- * The debts travel with the backup, because only a receipt or a settle may pay them - a
- * restore must not forgive them. The device id names the chain the restored key continues
+ *   1 . seq u32 . head 32 . owes (0 or 1) . the owed use (seq u32, head 32) when owes . device id 16
+ * The debt travels with the backup, because only a receipt or a settle may pay it - a
+ * restore must not forgive it. The device id names the chain the restored key continues
  * (its continue link). Budgets end at a restore (their seeds are never stored); the links
  * themselves are the host's. The SALT IS NEVER HERE: a restored key must never become the
  * device that made the backup. A section of another version is not restored.
@@ -1127,18 +1094,17 @@ void okplugin_edge_wipe(void) {
 int okplugin_edge_backup(uint8_t *out, int max) {
   state_load();
   if (!ensure_identity()) return 0;
-  int len = 39 + 36 * st.owed_n + ID_BYTES;
+  int len = 38 + 36 * st.owes + ID_BYTES;
   if (max < len || st.seq == SEQ_NONE) return 0; /* no chain yet: nothing to keep */
   out[0] = 1;
   put32(out + 1, st.seq);
   memcpy(out + 5, st.head, 32);
-  out[37] = st.owed_n;
-  out[38] = st.overflow;
-  for (int i = 0; i < st.owed_n; i++) {
-    put32(out + 39 + 36 * i, st.owed[i].seq);
-    memcpy(out + 39 + 36 * i + 4, st.owed[i].head, 32);
+  out[37] = st.owes;
+  if (st.owes) {
+    put32(out + 38, st.owed.seq);
+    memcpy(out + 42, st.owed.head, 32);
   }
-  memcpy(out + 39 + 36 * st.owed_n, ident.device_id, ID_BYTES);
+  memcpy(out + 38 + 36 * st.owes, ident.device_id, ID_BYTES);
   return len;
 }
 
@@ -1146,12 +1112,12 @@ int okplugin_edge_backup(uint8_t *out, int max) {
  * A restore always draws a new salt: the restored key is a device of its own - even on the
  * device that made the backup it can never write a second history under the old device id -
  * and its first link (continue) names the backup's chain, its seq and head, and carries the
- * debts. The chain goes on from there, never from zero.
+ * debt, if any. The chain goes on from there, never from zero.
  */
 void okplugin_edge_restore(const uint8_t *in, int len) {
-  if (len < 39 || in[0] != 1) return; /* a version this build does not know: keep what it has */
-  uint8_t n = in[37] > OWED_MAX ? OWED_MAX : in[37];
-  if (len < 39 + 36 * n + ID_BYTES) return;
+  if (len < 38 || in[0] != 1 || in[37] > 1) return; /* a section this build does not know: keep what it has */
+  uint8_t n = in[37];
+  if (len < 38 + 36 * n + ID_BYTES) return;
   /* keep the record generation counting UP: the newer sector wins at load */
   state_load();
   uint32_t gen = st.gen;
@@ -1160,15 +1126,14 @@ void okplugin_edge_restore(const uint8_t *in, int len) {
   st.gen = gen;
   st.seq = get32(in + 1);
   memcpy(st.head, in + 5, 32);
-  st.owed_n = n;
-  st.overflow = in[38] ? 1 : 0;
-  for (int i = 0; i < n; i++) {
-    st.owed[i].seq = get32(in + 39 + 36 * i);
-    memcpy(st.owed[i].head, in + 39 + 36 * i + 4, 32);
+  st.owes = n;
+  if (n) {
+    st.owed.seq = get32(in + 38);
+    memcpy(st.owed.head, in + 42, 32);
   }
   /* the continue link is written on the first Edge request, once the new salt is drawn */
   st.cont = CONT_FROM_ID;
-  memcpy(st.cont_id, in + 39 + 36 * n, ID_BYTES);
+  memcpy(st.cont_id, in + 38 + 36 * n, ID_BYTES);
   memset(held, 0, sizeof(held));
   memset(budgets, 0, sizeof(budgets));
   started = 0;
@@ -1188,7 +1153,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
     case OKEDGE_HEAD: {
       /*
        * seq (SEQ_NONE = empty) . head (the genesis while empty) . oldest pickable seq .
-       * live budget ids x4 . held mask (bit i = budget i on hold) . owed count . overflow .
+       * live budget ids x4 . held mask (bit i = budget i on hold) . owes (0 or 1) . 58 reserved 0 .
        * 59 reserved 0 . 60 TX starts refused since power-up
        */
       uint32_t oldest = SEQ_NONE;
@@ -1203,8 +1168,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
         if (up && budgets[i].on_hold) mask |= 1 << i;
       }
       r[56] = mask;
-      r[57] = st.owed_n;
-      r[58] = st.overflow;
+      r[57] = st.owes;
       r[60] = refused_tx;
       reply(r, 62);
       return;
@@ -1242,7 +1206,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       grant_create(buffer);
       return;
     case OKEDGE_GRANT_REVOKE: {
-      /* ends a live budget, held or not; the debts it made stay owed */
+      /* ends a live budget, held or not; a debt it made stays owed */
       struct budget *b = live_budget(get32(buffer + 6));
       if (!b) { status(EDGE_NO_SUCH_BUDGET); return; }
       end_budget(b, END_REVOKED);
@@ -1292,22 +1256,20 @@ void okplugin_edge_recv(uint8_t *buffer) {
       /*
        * ref_seq u32 . code u8 . msg_hash 32, for any owed use:
        *   SHA256("OKEDGE-RECEIPT-v1" || ref_seq || head[ref_seq] || code || msg_hash)
-       * (lib receipts.receiptSubject), head[ref_seq] from the owed list. The message itself
+       * (lib receipts.receiptSubject), head[ref_seq] from the owed use. The message itself
        * never reaches the key. reply: seq . head after the receipt link - and after its budget's
        * grant-end link when this receipt completed it.
        */
       uint32_t ref = get32(buffer + 6);
       uint8_t code = buffer[10];
-      int k = -1;
-      for (int i = 0; i < st.owed_n; i++) if (st.owed[i].seq == ref) { k = i; break; }
-      if (k < 0) { status(EDGE_NO_RECEIPT_WAITING); return; }
+      if (!st.owes || st.owed.seq != ref) { status(EDGE_NO_RECEIPT_WAITING); return; }
       uint8_t ref4[4], subject[32];
       put32(ref4, ref);
       SHA256_CTX ctx;
       sha256_init(&ctx);
       sha256_update(&ctx, (const unsigned char *)"OKEDGE-RECEIPT-v1", sizeof("OKEDGE-RECEIPT-v1") - 1);
       sha256_update(&ctx, ref4, 4);
-      sha256_update(&ctx, st.owed[k].head, 32);
+      sha256_update(&ctx, st.owed.head, 32);
       sha256_update(&ctx, &code, 1);
       sha256_update(&ctx, buffer + 11, 32);
       sha256_final(&ctx, subject);
@@ -1317,7 +1279,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     }
     case OKEDGE_SETTLE: {
-      /* a physical press ends every live budget and clears every debt (settle_pressed) */
+      /* a physical press ends every live budget and clears the debt (settle_pressed) */
       uint8_t what[32];
       press_drop();
       if (!owes()) { status(EDGE_NO_RECEIPT_WAITING); return; }

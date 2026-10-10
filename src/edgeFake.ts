@@ -8,14 +8,14 @@
  * from a chain built with the LIBRARY's own encodeLink/weld, so what the tab
  * verifies is a real chain: a verdict shown from this fake is the same verdict
  * the real key's links would get. Its "agent" actions append links the way
- * firmware.md R13-R17 says the key would (self-press under a budget, a receipt
+ * SPEC.md R13-R17 says the key would (self-press under a budget, a receipt
  * after a use, a denied request, a human press with an empty hook).
  */
 import {chain, codes, grants, receipts} from 'node-onlykey-lib/edge';
 import {utf8ToBytes} from 'node-onlykey-lib/bytes';
 
 const {OP, DECISION, FLAG} = codes;
-const MAX_LIVE_BUDGETS = 4; // firmware.md R15 target
+const MAX_LIVE_BUDGETS = 4; // SPEC.md R15 target
 
 /** A link as a copy keeps it: the link, the head after it, and a self-press's reveal (R27 checks it against its budget's G). */
 export type EdgeLinkRecord = {link: Uint8Array; head: Uint8Array; reveal?: Uint8Array | null};
@@ -65,7 +65,7 @@ export interface EdgeSource {
   revoke(grantId: number): void | Promise<void>;
 
   /*
-   * The spec change and R26 (firmware.md R15a-R18, R26). Optional: the fake key
+   * The spec change and R26 (SPEC.md R15a-R18, R26). Optional: the fake key
    * predates them, and the tab shows each control only when the key has it.
    */
   /** What the key says about debts, holds and a restore, from HEAD. */
@@ -101,7 +101,7 @@ export type EdgeCopyKey = {
 };
 
 /* refusedTx: B7 stage 2, HEAD byte 60 - TX starts the key refused since it started (0 on older firmware) */
-export type EdgeKeyState = {owed: number; overflow: boolean; held: number[]; refusedTx?: number};
+export type EdgeKeyState = {owed: number; held: number[]; refusedTx?: number};
 
 /** A budget someone asked for and the person has not answered yet (spec 4.3 clasp sheet). */
 export type EdgeRequest = {
@@ -116,7 +116,7 @@ export type EdgeRequest = {
 
 /**
  * A budget a lock or reboot ended before it was used up or ran out of time
- * (spec okrn-edge-tab.md, Continue): what is left of it, by the phone's clock.
+ * (spec APP.md, Continue): what is left of it, by the phone's clock.
  */
 export type EdgeEnded = {
   grantId: number;
@@ -129,7 +129,7 @@ export type EdgeEnded = {
 };
 /**
  * Where budget requests arrive. NOT the key: a request comes from the CLI or an
- * MCP server through the user's Edge Worker (mcp-service.md 4.7); the key only
+ * MCP server through the user's Edge Worker (APP.md); the key only
  * sees the GRANT_CREATE that follows the person's Yes and press.
  */
 export interface EdgeInbox {

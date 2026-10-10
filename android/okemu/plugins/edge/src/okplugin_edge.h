@@ -25,7 +25,7 @@
 #define OKEDGE_GRANT_HOLD 0x13    /* no press: a live budget pays for nothing until resumed */
 #define OKEDGE_GRANT_RESUME 0x14  /* a press: a held budget pays again */
 #define OKEDGE_RECEIPT 0x20       /* replies seq . head; the last open use of a budget ends it (completed) */
-#define OKEDGE_SETTLE 0x21        /* a press: ends every live budget, then clears every owed receipt; replies seq . head */
+#define OKEDGE_SETTLE 0x21        /* a press: ends every live budget, then clears the owed receipt; replies seq . head */
 #define OKEDGE_TX_START 0x22      /* {token 32, intent 16}: starts one budget self-press */
 #define OKEDGE_LOSS 0x34          /* {from, to}, a press: records a range of links as lost */
 #define OKEDGE_WIPE_DEBUG 0x7E    /* DEBUG builds only: erases the Edge state; no key outside it is touched */
@@ -67,7 +67,7 @@ void okplugin_edge_decision(int decision);
 int okplugin_edge_refused(void);
 /* wipeflashdata(): the key is being wiped */
 void okplugin_edge_wipe(void);
-/* the plugin backup section (version 1): seq, head, the owed uses and the device id */
+/* the plugin backup section (version 1): seq, head, the owed use if any, and the device id */
 int okplugin_edge_backup(uint8_t *out, int max);
 void okplugin_edge_restore(const uint8_t *in, int len);
 

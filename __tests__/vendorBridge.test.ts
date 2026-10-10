@@ -507,7 +507,7 @@ test('rule 8: only the phone taps are urgent - a computer Hold (OKEDGE GRANT_HOL
 });
 
 /*
- * EDGE_REQUEST (OKEDGE_REQUEST 0xF7, mcp-service.md 4.7a): the bridge KEEPS it
+ * EDGE_REQUEST (OKEDGE_REQUEST 0xF7, APP.md): the bridge KEEPS it
  * for the app - the person approves the text and the names on the phone - and
  * answers the same way. Nothing of it is written to the key.
  */
@@ -671,7 +671,7 @@ describe('the pairing gate (Part T)', () => {
     off();
   });
 
-  /* THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07): a computer on the other chain never reaches the app */
+  /* THE TESTNET (BLOCKS.md; Brad, 2026-10-07): a computer on the other chain never reaches the app */
   test('a request from the other chain is refused before the app sees it; the same chain is answered, naming its net', async () => {
     const got: any[] = [];
     const {gate, off} = startGated(async msg => { got.push(msg); return {ok: true}; });

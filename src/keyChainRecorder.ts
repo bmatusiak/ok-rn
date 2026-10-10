@@ -151,30 +151,6 @@ export async function readKeyChainList(): Promise<any[]> {
   return raw ? keychain.list.parse(raw) : [];
 }
 
-/**
- * okedge sync phase 2: keep a list merged with a place's (after the sheet, Yes
- * and the press) - in THIS queue, merged into the list as it is NOW, so a derive
- * recorded meanwhile is never lost (the copy sync lost approved links that way).
- */
-export function keepMergedKeyChain(merged: any[]): Promise<void> {
-  const run = queue.then(async () => {
-    /*
-     * The MERGED list as it is - the place takes exactly this back - plus only
-     * entries recorded since (none of its ids, no twin in it). Merging it INTO
-     * the old list kept the old version of every joined entry, so the phone and
-     * the computer held different lists and every sync moved the same entries
-     * again (the A13, 2026-10-05: a second sync, a second press, nothing new).
-     */
-    const now = await readKeyChainList();
-    const ids = new Set(merged.map((e: any) => e.id));
-    const since = now.filter((e: any) => !ids.has(e.id) && !keychain.list.findTwin(merged, e));
-    await AsyncStorage.setItem(keychainListKey(), keychain.list.serialize([...merged, ...since]));
-    for (const l of listeners) l();
-  });
-  queue = run.catch(() => {});
-  return run;
-}
-
 /** Listen for the soft key's derive events for the life of the app. */
 export function startKeyChainRecorder(): () => void {
   try {

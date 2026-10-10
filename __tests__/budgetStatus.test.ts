@@ -1,5 +1,5 @@
 /**
- * The budget's status word (spec okrn-edge-tab.md, Budgets, 2026-10-06): Active
+ * The budget's status word (spec APP.md, Budgets, 2026-10-06): Active
  * while live or while any use owes a receipt ("Active · 1 receipt owed · no uses
  * left"); Validated only when ended and every use's receipt verified in this
  * session's check; red when the copy fails. No "Ended". Never read from storage.

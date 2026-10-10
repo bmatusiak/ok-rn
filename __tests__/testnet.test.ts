@@ -1,5 +1,5 @@
 /*
- * THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07: "--test-mode where edge blockchain
+ * THE TESTNET (BLOCKS.md; Brad, 2026-10-07: "--test-mode where edge blockchain
  * files are seperated from live and test (like how bitcoin does it)"; "technically
  * we change the storageSlot then for testnet"; "everthing for test is throwaway").
  */

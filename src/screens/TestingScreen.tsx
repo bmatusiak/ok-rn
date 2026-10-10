@@ -306,7 +306,7 @@ export function TestingScreen({
       </Section>
 
       {/*
-        THE TESTNET (BLOCKS.md §5; Brad, 2026-10-07: "everthing for test is
+        THE TESTNET (BLOCKS.md; Brad, 2026-10-07: "everthing for test is
         throwaway"). Enter testing mode on the login screen starts the soft key on its
         own storage slot; this deletes that slot and every record the phone kept for it.
         Only from the live chain: the firmware cannot run on a folder being deleted.

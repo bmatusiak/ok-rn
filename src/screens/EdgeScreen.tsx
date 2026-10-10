@@ -1,6 +1,6 @@
 /**
  * Edge: what the key decided, as a chain the phone verifies (spec
- * onlykey-edge/build/okrn-edge-tab.md 4.3), top to bottom:
+ * APP.md), top to bottom:
  *   1. the verdict card - verified / gap / tampered / not synced
  *   2. budgets - what an agent may still do without a press
  *   3. the chain - newest first, each use with its receipt hanging from it
@@ -32,7 +32,7 @@ import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
 import type {EdgeRow, EdgeView, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
 
-const {OP, DECISION, FLAG} = codes;
+const {OP, DECISION, END, FLAG} = codes;
 
 function verdictLine(v: Verdict): {text: string; color: string} {
   switch (v.kind) {
@@ -128,7 +128,7 @@ function ReceiptHook({t, verified, seq, since, edge}: {t: NonNullable<EdgeRow['r
    * is no receipt to show. Crashed the tab before (the Pixel, 2026-10-04: a settle
    * during the B7 watcher test - t.receipt was null).
    */
-  if (t.status === 'settled' || t.status === 'settled-unlisted' || !t.receipt) {
+  if (t.status === 'settled' || !t.receipt) {
     const by = (t as any).settledBy as number | null | undefined;
     return (
       <View style={[styles.receipt, {borderLeftColor: theme.warn}]}>
@@ -289,18 +289,21 @@ function LinkRow({row, receiptVerified, budgetUses, agentOf, notesFrom, continue
         </View>
       ) : null}
       {row.fields.op === OP.GRANT_END ? (
-        <View style={[styles.receipt, {borderLeftColor: theme.textDim}]}>
-          <Text style={[styles.receiptTitle, {color: theme.textDim}]}>Budget ended</Text>
-          <Text style={styles.dim}>{`Budget ${row.fields.grantId} is closed - nothing more can spend from it.`}</Text>
+        /* how it ended, from the key's own end link (codes.END): completed is the normal end; a settle ended it early, incomplete */
+        <View style={[styles.receipt, {borderLeftColor: row.fields.decision === END.SETTLED ? theme.warn : theme.textDim}]}>
+          <Text style={[styles.receiptTitle, {color: row.fields.decision === END.SETTLED ? theme.warn : theme.textDim}]}>
+            {row.fields.decision === END.COMPLETED ? 'Budget completed' : row.fields.decision === END.REVOKED ? 'Budget revoked' : row.fields.decision === END.SETTLED ? 'Budget settled - ended early' : 'Budget ended'}
+          </Text>
+          <Text style={styles.dim}>
+            {row.fields.decision === END.COMPLETED
+              ? `Every use of budget ${row.fields.grantId} was made and receipted; the key ended it.`
+              : row.fields.decision === END.SETTLED
+                ? `Budget ${row.fields.grantId} was ended by a settle - its open uses are marked for review.`
+                : `Budget ${row.fields.grantId} is closed - nothing more can spend from it.`}
+          </Text>
         </View>
       ) : null}
-      {/* blue: an old agent registration (retired 2026-10-08 - a chain that has one still reads); red: history gone (a loss you accepted, a wipe) - always visible to an audit */}
-      {row.fields.op === OP.AGENT_ADD ? (
-        <View style={[styles.receipt, {borderLeftColor: theme.link}]}>
-          <Text style={[styles.receiptTitle, {color: theme.link}]}>Agent registered (old)</Text>
-          <Text style={styles.dim}>From before agents stopped registering: a paired computer may ask for budgets, no registration needed.</Text>
-        </View>
-      ) : null}
+      {/* red: history gone (a loss you accepted) - always visible to an audit */}
       {row.fields.op === OP.LOSS ? (
         <View style={[styles.receipt, {borderLeftColor: theme.error}]}>
           <Text style={[styles.receiptTitle, {color: theme.error}]}>{row.fields.op === OP.LOSS ? 'Loss accepted' : 'Wiped'}</Text>
@@ -683,7 +686,7 @@ function SettleControls({edge}: {edge: ReturnType<typeof useEdge>}) {
  * themselves too, so they stay hidden when the tab ships to everyone.
  */
 /*
- * BLOCKS (BLOCKS.md §3, Brad 2026-10-07: "we use hash of a json"): the chain as
+ * BLOCKS (BLOCKS.md, Brad 2026-10-07: "we use hash of a json"): the chain as
  * canonical JSON blocks - one per closed budget, each sealed by the key - exported as
  * a .json file anyone can check with SHA-256 and this key's public key.
  */
@@ -769,7 +772,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
     return <BudgetView b={b} edge={edge} onBack={() => setOpen(null)} />;
   }
   /*
-   * The mismatch banner (spec okrn-edge-tab.md 4.3): the verdict lives in a
+   * The mismatch banner (spec APP.md): the verdict lives in a
    * budget's chain view, so with no budget open a copy that does not verify
    * would show nowhere. Only when something is wrong; a good copy stays quiet.
    */
@@ -802,7 +805,7 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
   const notLive = [...edge.past, ...edge.budgets.filter(b => expiredIds.has(b.grantId))];
   const owing = notLive.filter(b => budgetStatus(b, false, edge.view).kind === 'active');
   const done = notLive.filter(b => budgetStatus(b, false, edge.view).kind !== 'active');
-  if (broken || (ks && (ks.owed > 0 || ks.overflow))) {
+  if (broken || (ks && ks.owed > 0)) {
     items.push({key: 'status', kind: 'node', render: () => (
       <View style={styles.statusStack}>
           {broken ? (

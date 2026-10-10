@@ -145,7 +145,7 @@ export function useEdge() {
     [run],
   );
   /*
-   * BLOCKS (BLOCKS.md §3, Brad 2026-10-07): this key's copy as canonical JSON blocks,
+   * BLOCKS (BLOCKS.md, Brad 2026-10-07): this key's copy as canonical JSON blocks,
    * shared as a .json file - what anyone can check with SHA-256 and the key's public key.
    * -> a line for the tab: how many blocks, how many links still open, any that did not verify
    */

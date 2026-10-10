@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The plugin's byte cost on a HARD key's CPU (firmware.md §3.1), for AUDIT.md.
+# The plugin's byte cost on a HARD key's CPU (SPEC.md), for AUDIT.md.
 #
 # Compiles src/okplugin_edge.cpp alone with the Teensy 1.6.5-r5 toolchain
 # (Cortex-M4 Thumb, -Os, the firmware's flags) inside the toolchain image, and

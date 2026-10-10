@@ -270,7 +270,7 @@ export const storageSlot: string = (() => {
 })();
 
 /*
- * THE TESTNET'S SOFT KEY (BLOCKS.md §5; Brad, 2026-10-07: "--test-mode where edge
+ * THE TESTNET'S SOFT KEY (BLOCKS.md; Brad, 2026-10-07: "--test-mode where edge
  * blockchain files are seperated from live and test (like how bitcoin does it)";
  * "technically we change the storageSlot then for testnet"). The same firmware,
  * started on its own flash.bin/eeprom.bin: a whole separate, throwaway key with

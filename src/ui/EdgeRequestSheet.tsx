@@ -1,11 +1,9 @@
 /**
- * THE APPROVAL SHEET for an agent's budget request (mcp-service.md 4.7a, step
+ * THE APPROVAL SHEET for an agent's budget request (APP.md, step
  * 2). Over whatever tab is open: an agent asks while the person is elsewhere.
  *
  * It shows what the person approves - the reason TEXT, the identity NAMES, the
- * caps, the lifetime and who asks - never a hash. A request naming one of the
- * person's own identities gets the red warning and a second confirm before
- * anything reaches the key (Brad, 2026-10-03). Then the key waits for the
+ * caps, the lifetime and who asks - never a hash. Then the key waits for the
  * press; no press, no budget. The answer the agent gets is shown last.
  *
  * The state lives in src/edgeAgents.ts; this only draws it.

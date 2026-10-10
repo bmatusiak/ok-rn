@@ -1,5 +1,5 @@
 /**
- * AGENTS ASKING FOR BUDGETS (onlykey-edge build/mcp-service.md 4.7a, step 2).
+ * AGENTS ASKING FOR BUDGETS (onlykey-edge APP.md, step 2).
  *
  * A computer's agent service sends an EDGE_REQUEST over Bluetooth; the vendor
  * bridge KEEPS it for this file (it never reaches the key) and sends back what
@@ -59,7 +59,7 @@ async function saveSeen(seen: Set<string>) {
 /* ---------------------------------------------------------------- the sheet */
 
 export type SheetAsk =
-  /* no peer, sync, sibling or anchor sheet since 2026-10-08: a sync is HELD and answered from the Edge tab's banner (MergeSheet) */
+  /* no peer, sync, sibling or anchor sheet since 2026-10-08: the phone's own links merge at once; another device's log is HELD and approved from the Edge tab's banner (MergeSheet) */
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
   | {kind: 'request'; computer: string | null; view: any; blocked: string | null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
@@ -244,15 +244,17 @@ async function handleNote(msg: any, from: string): Promise<unknown | null> {
 }
 
 /*
- * okedge sync phase 2 (Brad, 2026-10-05): a place that keeps copies fills this
- * phone's copy. Only a place on the KEY's list (R20) is answered at all - the
- * rest is silence, like an unpaired computer. HAVE is a read (what this copy
- * holds); LINKS parts are staged in memory, changing nothing; after the last
- * part the links are merged into a candidate and checked (R27), then the sheet,
- * Yes, the press, and the key's sync link - and only then is the copy kept.
+ * onlykey-js edge sync phase 2 (Brad, 2026-10-05): a place that keeps copies fills this
+ * phone's copy. Since 2026-10-08 the gate is the Bluetooth pairing (the vendor bridge
+ * hands over only a paired computer's encrypted traffic), not a place on the KEY's list
+ * (R20). HAVE is a read (what this copy holds); LINKS parts are staged in memory,
+ * changing nothing. COMMIT: this phone's OWN links are merged into a candidate, checked
+ * (R27) and kept at once - no sheet, no press, no link on the key (until 2026-10-08 a
+ * sync took Yes, a press and a sync link). OFFER: another device's log is HELD until
+ * the person approves it from the Edge tab's banner.
  */
 const syncNames = new Map<string, string>(); /* the name each place gave in its HAVE */
-/* one sync's parts, by sid, in memory only (nothing changes until the press) */
+/* one sync's parts, by sid, in memory only (nothing changes until its COMMIT or OFFER) */
 const syncStaged = new Map<string, {peer: string; links: Map<number, any[]>; linkParts: number; chain: string | null}>();
 async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> {
   const checked = syncLib.verify(msg, {seen});
@@ -284,7 +286,7 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     const hex = (b: Uint8Array) => toHexId(b);
     const next = from.length > batch.length ? seqOfLink(from[batch.length]) : null;
     /*
-     * BLOCKS (BLOCKS.md §3, Brad 2026-10-07): with the last batch, the key's seals
+     * BLOCKS (BLOCKS.md, Brad 2026-10-07): with the last batch, the key's seals
      * (the checkpoints that close each block) - what a computer needs to cut its copy
      * into JSON blocks, each checked there against the key's own public key - and this
      * phone's own latest statement (its NAMETAG, 2026-10-08): what lets that computer
@@ -316,13 +318,6 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     syncNames.set(peer, p.name);
     const {mirror} = await syncCopy(soft); /* what this copy holds NOW, the key's newest included */
     return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r)))};
-  }
-  /*
-   * THE KEY CHAIN LIST IS NOT EDGE'S (Brad, 2026-10-08: "Move it out of Edge"): it is the Key
-   * Chain plugin's, and syncs on its own. Edge's sync carries device logs only.
-   */
-  if (msg.type === syncLib.TAKE_TYPE || msg.type === syncLib.KEYCHAIN_TYPE) {
-    return {ok: false, refusal: 'invalid', detail: "the Key Chain list is not part of Edge's sync"};
   }
   let st = syncStaged.get(p.sid);
   if (!st) {
@@ -366,7 +361,6 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   if (st.chain) return {ok: false, refusal: 'invalid', detail: "another device's links end with an offer, not a commit"};
   /* COMMIT: every part here; this phone's own links merge (its own key's, nothing new to trust) */
   syncStaged.delete(p.sid);
-  if (p.keychainParts) return {ok: false, refusal: 'invalid', detail: "the Key Chain list is not part of Edge's sync"};
   if (st.links.size !== p.linkParts) return {ok: false, refusal: 'invalid', detail: `parts missing (links ${st.links.size}/${p.linkParts}) - sync again`};
   const offered = [...st.links.entries()].sort((a, b) => a[0] - b[0]).flatMap(([, r]) => r);
   const m = await mergeOffered(soft, offered);
@@ -383,16 +377,6 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   }
   return {ok: true, count: m.added.length, seq: null};
 }
-/*
- * R30 (P2c): a place brings this phone a SIBLING's chain up to the sibling's
- * signed checkpoint. Checked first, with no one asked (sync.anchorCheck): the
- * sibling's key from the KEY's list, its checkpoint signature, the links up to
- * it, and against every checkpoint this phone anchored it at before - a
- * rollback or a changed head is the spec's ALARM (one device's tampering
- * proven by the other): the phone posts it and nothing is anchored. Then one
- * sheet, Yes, a press; the key checks the checkpoint again and links the anchor;
- * only then are the sibling's links kept.
- */
 const toHexId = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
 const fromHexId = (h: string) => Uint8Array.from((String(h).match(/../g) ?? []).map(x => parseInt(x, 16)));
 const seqOfLink = (r: any) => chain.decodeLink(r.link).seq;
@@ -400,7 +384,8 @@ const seqOfLink = (r: any) => chain.decodeLink(r.link).seq;
 async function handle(msg: any, from: string): Promise<unknown | null> {
   const seen = await loadSeen();
   try {
-    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.KEYCHAIN_TYPE, syncLib.COMMIT_TYPE, syncLib.TAKE_TYPE, syncLib.GIVE_TYPE, syncLib.OFFER_TYPE].includes(msg?.type)) return await handleSync(msg, seen);
+    /* the Key Chain list is not Edge's (Brad, 2026-10-08: "Move it out of Edge"): Edge's sync carries device logs only */
+    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.COMMIT_TYPE, syncLib.GIVE_TYPE, syncLib.OFFER_TYPE].includes(msg?.type)) return await handleSync(msg, seen);
     if (msg?.type !== requestLib.TYPE) return null;
     /* the Requests switch is off: refused unread */
     if (!(await agentRequestsOn())) return null;

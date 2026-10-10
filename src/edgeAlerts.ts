@@ -1,5 +1,5 @@
 /**
- * B7 "stands out without looking" (onlykey-edge build/okrn-edge-tab.md): after a
+ * B7 "stands out without looking" (onlykey-edge APP.md): after a
  * sync, each NEW link that is an alarm becomes a phone notification - an alarm receipt
  * (bit 7 or a code the v1 table does not know). (v1 links no ordinary press and no
  * mismatched TX start - the key refuses one - so those alarms went, 2026-10-08.) Tapping one opens the Edge tab on it.

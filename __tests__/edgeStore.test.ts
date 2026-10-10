@@ -1,6 +1,6 @@
 /**
  * Edge tab data layer, with no key: the fake key's chain is synced into the
- * phone's mirror and verified by the library (spec okrn-edge-tab.md phase 2).
+ * phone's mirror and verified by the library (spec APP.md phase 2).
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {codes} from 'node-onlykey-lib/edge';
@@ -41,7 +41,7 @@ test('the chain rows carry every receipt state the tab draws', async () => {
   expect(uses).toEqual([
     [14, 'alarm', null], // 0x42: not a v1 code - fails closed
     [12, 'alarm', 'SUSPECTED_INJECTION'],
-    [11, 'waiting', null], // unpaid, and still on the key's list of 4 (the list does not refill, lib receipts.keyDebts)
+    [11, 'missing', null], // unpaid, and not the use the key owes - it owes one at a time (lib receipts.keyDebts)
     [9, 'receipted', 'OK'],
     [7, 'receipted', 'OK'],
     [5, 'receipted', 'OK_UNCONFIRMED'],
@@ -207,7 +207,7 @@ test('a note\'s reason lands on its row; its receipt message shows only when it 
 });
 
 /*
- * okedge sync phase 2, found on the Pixel (2026-10-05): links a place offered and
+ * onlykey-js edge sync phase 2, found on the Pixel (2026-10-05): links a place offered and
  * the person approved were saved OUTSIDE the sync queue; the background copy sync,
  * which had loaded the copy while the sheet was up, saved it afterwards and the
  * approved links were gone. Kept through the queue, they survive a sync that is
@@ -281,7 +281,7 @@ test('verification: an edited OLD link is caught even when the head moved', asyn
 });
 
 /*
- * SEALED BLOCKS (BLOCKS.md §2a; Brad, 2026-10-07: "we only need to verify the new
+ * SEALED BLOCKS (BLOCKS.md; Brad, 2026-10-07: "we only need to verify the new
  * stuff", "checkpoints can happen on a budget grant end"). A key that SIGNS: its
  * device id comes from its public key, as a real key's does, and copyKey() gives a
  * checkpoint over its live head each session.
@@ -359,7 +359,7 @@ test('sealed: no budget ended since the last seal -> no new seal', async () => {
 });
 
 /*
- * ONE CHAIN STATE (okrn-edge-tab.md S3a; Brad, 2026-10-07: "1 complete check, both
+ * ONE CHAIN STATE (APP.md; Brad, 2026-10-07: "1 complete check, both
  * bluetooth and ui or anything else can just ask for validity"; "watch events on it").
  */
 import {chainState} from '../src/edgeStore';
@@ -572,7 +572,7 @@ test('option A: the Sync button reads the stored copy at once', async () => {
 import {blocksOf} from '../src/edgeStore';
 import {block as edgeBlock} from 'node-onlykey-lib/edge';
 
-test('blocks (BLOCKS.md §3): a budget end closes a block; blocksOf exports it as JSON that verifies with the key\'s public key', async () => {
+test('blocks (BLOCKS.md): a budget end closes a block; blocksOf exports it as JSON that verifies with the key\'s public key', async () => {
   const k = signedDemo();
   await sync(k);
   expect((await blocksOf(k.deviceId)).count).toBe(0); /* no budget has ended: nothing closed yet */

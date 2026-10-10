@@ -193,7 +193,7 @@ export function vendorQuietForMs(): number {
 
 /*
  * THE ONE MESSAGE THIS BRIDGE KEEPS FOR THE APP: OKEDGE_REQUEST (0xF7,
- * node-onlykey-lib src/edge/wire.js; mcp-service.md 4.7a).
+ * node-onlykey-lib src/edge/wire.js; APP.md).
  *
  * A budget request is for the PERSON, not the key: the key only ever sees
  * hashes, so the app must show the reason text and the identity names and make
@@ -605,7 +605,7 @@ export function startVendorBridge({log, getKey, isApi, getTarget, isKeyWaiting, 
       return;
     }
     /*
-     * THE OTHER CHAIN IS REFUSED BEFORE ANYTHING (BLOCKS.md §5; Brad, 2026-10-07):
+     * THE OTHER CHAIN IS REFUSED BEFORE ANYTHING (BLOCKS.md; Brad, 2026-10-07):
      * a computer on the testnet (onlykey-js edge --test-mode) never opens a sheet on
      * the live chain, and the other way round. A request with no net is an older
      * computer's: live.

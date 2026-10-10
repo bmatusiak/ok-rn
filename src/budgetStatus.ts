@@ -1,5 +1,5 @@
 /**
- * A budget's status word (spec okrn-edge-tab.md, Budgets; Brad, 2026-10-06):
+ * A budget's status word (spec APP.md, Budgets; Brad, 2026-10-06):
  *   Active     - live with uses left, OR any use still owes a receipt ("it's
  *                still active if a receipt is owed"); when nothing more can be
  *                spent it says so: "Active · 1 receipt owed · no uses left";
@@ -32,7 +32,7 @@ export function budgetStatus(b: EdgeBudget, live: boolean, view: EdgeView | null
   /* a use with no receipt and no settle, that owes one */
   const owedRows = uses.filter(r => {
     const t = r.receipt as Paired | undefined;
-    return !answered(r) && t?.status !== 'no-receipt-owed' && t?.status !== 'settled' && t?.status !== 'settled-unlisted';
+    return !answered(r) && t?.status !== 'no-receipt-owed' && t?.status !== 'settled';
   });
   const owed = Math.max(owedRows.length, b.used - (b.receiptsFiled ?? 0));
   /* nothing more can be spent: every use gone, or the budget is no longer live (ended, expired, a lock) */

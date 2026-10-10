@@ -375,7 +375,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   async messages() {
-    return {}; /* receipt messages arrive by sync (the Worker, E5); none from the key */
+    return {}; /* none from the key: a receipt message comes as a note from the computer that sent the receipt (edgeStore.addNote), or with another device's log; the Worker (E5) is later */
   }
 
   /* rule 8 (Brad, 2026-10-06): the person's Revoke and Hold go to the front of the key's lane (urgent) - never behind an agent */
@@ -385,7 +385,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   async state(): Promise<EdgeKeyState> {
     const h = await this.keyHead();
-    return {owed: h.owed, overflow: h.overflow, held: h.held, refusedTx: h.refusedTx ?? 0};
+    return {owed: h.owed, held: h.held, refusedTx: h.refusedTx ?? 0};
   }
 
   async hold(grantId: number) {
@@ -437,7 +437,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   /*
-   * Continue (spec okrn-edge-tab.md; Brad, 2026-10-02: "a continue budget when
+   * Continue (spec APP.md; Brad, 2026-10-02: "a continue budget when
    * I get back"): a budget this phone approved that the key no longer lists,
    * with no grant-end link (a revoke ends it for good), and with uses and time
    * left. Uses left come from the chain's own self-press links; time left is
@@ -520,7 +520,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
 
   /* ---- the inbox: requests waiting for the person ---- */
 
-  /** A budget request (testing mode makes them here until the MCP server / Worker send them). */
+  /** A budget request made on this phone (testing mode); a computer's requests come over Bluetooth to edgeAgents instead, and the Worker (E5) is later. */
   request(from: string, reason: string, scopes: EdgeRequest['scopes']): number {
     const id = this.nextRequest++;
     this.requests.push({id, from, reason, scopes: scopes.map(sc => ({...sc}))});
@@ -580,7 +580,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * approval (answerAgent verifyCopy) and the library's create/resume stay strict.
    */
   async check(): Promise<EdgeCopyCheck> {
-    /* the one chain state (okrn-edge-tab.md S3a): not a check of its own */
+    /* the one chain state (APP.md): not a check of its own */
     const a = await chainState.validity(this);
     if (a.ok) return {ok: true};
     const v = a.view.verdict as {kind: string; seq?: number; from?: number; to?: number};
@@ -636,7 +636,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   }
 
   /**
-   * An EDGE_REQUEST from a paired computer (mcp-service.md 4.7a), from the vendor
+   * An EDGE_REQUEST from a paired computer (APP.md), from the vendor
    * bridge: the library's one implementation decides (approve.approveRequest - drop the
    * malformed and replayed, check caps and lifetime, ask the person, labels
    * and the reason hash made HERE from the names and the text, R27 on this
@@ -650,7 +650,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       from: o.computer,
       seen: o.seen,
       ask: o.ask,
-      /* the one chain state, strict: only a verified copy gives a head (okrn-edge-tab.md S3a) */
+      /* the one chain state, strict: only a verified copy gives a head (APP.md) */
       verifyCopy: async () => {
         const a = await chainState.validity(this);
         /* a refusal: approveRequest looks at ok first, so the empty head is never used */
