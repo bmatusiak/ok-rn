@@ -2,7 +2,7 @@
 
 What the plugin does, byte by byte: `AUDIT.md` and the whitepaper
 ([WHITEPAPER.md](WHITEPAPER.md)). This file holds only the reasons. Who decided what,
-and when: `onlykey-edge/edge/DECISIONS.md`.
+and when: [DECISIONS.md](DECISIONS.md).
 
 ## 1. The key is a notary
 

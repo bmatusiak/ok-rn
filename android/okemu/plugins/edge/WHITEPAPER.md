@@ -2,7 +2,7 @@
 
 **A whitepaper on the Edge firmware plugin.** 2026-10-10, for the v1 firmware (the first release) at ok-rn `e3a90ac`.
 **Code:** `ok-rn/android/okemu/plugins/edge/src/okplugin_edge.cpp` (cited as `cpp:LINE`), `okplugin_edge.h` (`h:LINE`), `plugin.js`. Every line number is as of ok-rn `e3a90ac`.
-**Rules:** [`SPEC.md`](https://github.com/bm-ok/onlykey-edge/blob/main/edge/SPEC.md) (R-numbers), [`BLOCKS.md`](https://github.com/bm-ok/onlykey-edge/blob/main/edge/BLOCKS.md), [`RECEIPT-CODES.md`](https://github.com/bm-ok/onlykey-edge/blob/main/edge/RECEIPT-CODES.md); not built: [`LATER.md`](https://github.com/bm-ok/onlykey-edge/blob/main/edge/LATER.md); decisions: [`DECISIONS.md`](https://github.com/bm-ok/onlykey-edge/blob/main/edge/DECISIONS.md).
+**Rules:** [`SPEC.md`](SPEC.md) (R-numbers), [`BLOCKS.md`](BLOCKS.md), [`RECEIPT-CODES.md`](RECEIPT-CODES.md); not built: [`LATER.md`](LATER.md); decisions: [`DECISIONS.md`](DECISIONS.md).
 **Host side, for cross-reference:** `node-onlykey-lib/edge/plugin/index.js` (the wire calls) and `node-onlykey-lib/edge/src/` (`chain.js`, `grants.js`, `receipts.js`, `codes.js`).
 
 The code is the source of truth here. Where the code and the spec disagree, §14 names both.
@@ -651,17 +651,17 @@ With the backup and its passphrase they hold K132: the derived identities and th
 
 | Item | State |
 |---|---|
-| **Hard-key fit.** No free flash sector; the region it uses is the bootloader's on a Teensy (`cpp:26-27`) | open; Tim decides the build ([FIRMWARE-RFC.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/FIRMWARE-RFC.md), [LATER.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/LATER.md)) |
+| **Hard-key fit.** No free flash sector; the region it uses is the bootloader's on a Teensy (`cpp:26-27`) | open; Tim decides the build ([FIRMWARE-RFC.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/FIRMWARE-RFC.md), [LATER.md](LATER.md)) |
 | **Size.** Measured 2026-10-10 for a Teensy 3.2: code 7,284 bytes, constants 275, RAM 2,761; the record 208 bytes, twice | [AUDIT.md](AUDIT.md) |
-| **Quantum-safe checkpoints** (hybrid ML-DSA-44 + P-256) | not built ([LATER.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/LATER.md)); hashes are quantum-safe, P-256 signatures are not |
-| **The key seals a block itself** (grant-end and checkpoint in one step) | not built; the phone asks for a checkpoint after a budget ends ([BLOCKS.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/BLOCKS.md)) |
+| **Quantum-safe checkpoints** (hybrid ML-DSA-44 + P-256) | not built ([LATER.md](LATER.md)); hashes are quantum-safe, P-256 signatures are not |
+| **The key seals a block itself** (grant-end and checkpoint in one step) | not built; the phone asks for a checkpoint after a budget ends ([BLOCKS.md](BLOCKS.md)) |
 | **Composite pairs** (R19) | not built; the second half is an ordinary press |
 | **One owed use.** The 4-entry owed list and its overflow flag went (Brad, 2026-10-10: "Drop the owed list = yes"); the record is 208 bytes; HEAD bytes 58, 59 and 61 are reserved, 0 | built |
 | **Agent sign codes in budgets** (201-203, 221-223) | built (R11a) |
 
 ## 14. Code vs spec
 
-[SPEC.md](https://github.com/bm-ok/onlykey-edge/blob/main/edge/SPEC.md) was written from this code on 2026-10-10 (ok-rn `c3d98d4` and after); no difference between them is known. The plugin's own `AUDIT.md` and `DESIGN.md` were rewritten the same day. When code and spec disagree, the code is the truth and the spec is fixed.
+[SPEC.md](SPEC.md) was written from this code on 2026-10-10 (ok-rn `c3d98d4` and after); no difference between them is known. The plugin's own `AUDIT.md` and `DESIGN.md` were rewritten the same day. When code and spec disagree, the code is the truth and the spec is fixed.
 
 ## 15. Appendix: file and function map
 
