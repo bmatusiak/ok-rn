@@ -1,31 +1,29 @@
 /*
- * edge - the minimal firmware half of OnlyKey Edge: the key is a NOTARY
- * (DESIGN.md section 0; owner, 2026-10-02: "the smallest minimal firmware
- * addition, because a device can only hold so much logic").
+ * edge - the firmware half of OnlyKey Edge.
  *
- * Edge JS (node-onlykey-lib/edge) does the work - builds requests, stores the
- * chain, verifies it, pairs receipts, tracks budgets, derives the device id.
- * The key adds only what the host (the agent's own machine, the thing being
- * watched) cannot be trusted with, from facts it saw itself:
- *   1 the weld at each sign/decrypt decision, and the head that pins history;
- *   2 the budget decision (self-press, only when started) and its reveal;
- *   3 ONE signature, with a key no generic sign request reaches: a checkpoint
- *     over (seq, head). Opening a budget at a physical press answers with a
- *     checkpoint over its grant-create link, whose subject commits to G - so
- *     the budget's genesis is signed through the chain.
- *   4 the debts: every approved use owes a receipt (R16), and nothing automatic
- *     happens while one is owed (R18) until a receipt or a pressed WAIVE pays it.
+ * The key records, in a hash chain only it extends, each use of a budget: a set number of
+ * signs or decrypts a person approved once with a physical press. It adds only what the host
+ * cannot be trusted to do, from facts it sees itself:
+ *   1 the weld: every link is hashed onto the previous head, and the head pins the history;
+ *   2 the budget decision: a sign/decrypt runs without a press only when a live budget pays
+ *     for it and a TX start announced exactly that request; each use reveals the next value
+ *     of the budget's hash series;
+ *   3 one signature, with a key no other request reaches: a checkpoint over (seq, head). The
+ *     press that opens a budget is answered with a checkpoint over its grant-create link,
+ *     whose subject commits to the budget's genesis;
+ *   4 the debts: every budget use owes a receipt, and while one is owed no TX start, budget
+ *     opening or resume is accepted, until a receipt or a pressed WAIVE pays it.
+ * A second key, the owner key, signs a statement about this device for the host to show
+ * which devices were made from the same OnlyKey secret.
  *
- * Every byte is node-onlykey-lib/edge's format (codes.js, chain.js, grants.js,
- * receipts.js); the comments name the lib function each must match. The rules
- * are onlykey-edge/build/firmware.md's (R-numbers).
+ * Every byte matches the host library's format (node-onlykey-lib/edge codes.js, chain.js,
+ * grants.js, receipts.js); comments name the library function a format must equal.
  *
- * Budgets are bmatusiak/provable series (owner: "each budget has its own
- * genesis, each genesis gets started with the firmware button press by getting
- * signed"): G = H^n(seed), n <= 1024; use i reveals v_i = H^(n-i)(seed).
+ * A budget's uses form a hash series: G = H^n(seed), n <= 1024; use i reveals
+ * v_i = H^(n-i)(seed), so a verifier checks H^i(v_i) == G.
  *
- * Soft key and desktop emulator only: the flash it uses (base+0x1000) is the
- * bootloader's on a real Teensy, and file-backed and unused on the emulators.
+ * Runs in the soft key and the desktop emulator: the flash region it uses (base+0x1000) is
+ * the bootloader's on a Teensy, and file-backed and otherwise unused in the emulators.
  */
 #include "core_pins.h" /* millis() */
 #include "onlykey.h"
@@ -53,22 +51,22 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_LOSS 11
 #define OP_GRANT_HOLD 13
 #define OP_GRANT_RESUME 14
-/* 15 was agent-add: retired 2026-10-08 (Brad: "the claude key thing is overkill") - a computer is trusted by its Bluetooth pairing, the key keeps no agent; never reused */
-#define OP_CONTINUE 16 /* R28: the first link of a device's own chain, carrying another chain's debts */
+/* op 15 is not written and not reused */
+#define OP_CONTINUE 16 /* the first link of a restored device's own chain, carrying the backup's debts */
 #define DECISION_SELF_PRESS 4
-#define CODE_NEEDS_REVIEW 0x8F /* a WAIVE is linked as this receipt code, with the press flag (R18) */
+#define CODE_NEEDS_REVIEW 0x8F /* a WAIVE is linked as a receipt with this code and the press flag */
 #define FLAG_PRESS_OBSERVED 0x01
 #define FLAG_BUDGET_SPENT 0x02
-#define FLAG_OWES_RECEIPT 0x10 /* R16: this use owes a receipt (decided at the sign) */
+#define FLAG_OWES_RECEIPT 0x10 /* this use owes a receipt */
 
 #define SEQ_NONE 0xFFFFFFFFUL
 #define LINK_BYTES 64
 #define ID_BYTES 16
 
-#define MAX_LIVE 4      /* R15 */
-#define MAX_SCOPES 4    /* R11 */
-#define MAX_USES 1024   /* R11 (Brad, 2026-10-02: back from 255 - too few once the VM and the Pi are in the loop); up to 1,024 SHA-256 at the press and per reveal */
-#define OWED_MAX 4      /* R16: owed uses kept in flash (lib receipts.OWED_MAX) */
+#define MAX_LIVE 4      /* live budgets at once */
+#define MAX_SCOPES 4    /* scopes per budget */
+#define MAX_USES 1024   /* uses per budget: up to 1,024 SHA-256 at the press and per reveal */
+#define OWED_MAX 4      /* owed uses kept in flash (lib receipts.OWED_MAX) */
 #define HELD 8          /* links held in RAM for pickup */
 #define PRESS_MS 25000UL
 
@@ -78,36 +76,24 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define EDGE_REGION ((uintptr_t)factorysectoradr - 0x4800)
 #define EDGE_STATE_A (EDGE_REGION + 0x0000)
 #define EDGE_STATE_B (EDGE_REGION + 0x0800)
-/* the region's other two sectors held the pairs record until 2026-10-08 (peers and siblings left the key): only erased now */
-#define EDGE_SPARE_A (EDGE_REGION + 0x1000)
-#define EDGE_SPARE_B (EDGE_REGION + 0x1800)
 
 /*
- * magic . gen . seq . head . owed_n . overflow . 0 . 0 .
- * owed x4 (seq, head) . last_link . 0 x4 . salted . cont . salt 32 .
- * cont_id 16 . check.  (The zeros held R26's replay state until 2026-10-08.)
- *
- * VERSION 1 - THE FIRST RELEASE (Brad, 2026-10-08: "v1 = first release of the protocol
- * and schemas"; 2026-10-07: "we change all the schemas to V1, because we are doing a
- * reset"). Nothing older is read. A key that finds an older record (any v0: OKEDGE06/
- * 07/08 and the development OKEDGE01) starts fresh instead: every Edge sector is
- * erased and the next Edge request draws a new salt, so a new device id and a new
- * genesis (state_load). Only the Edge region is touched: every private key stays
- * where it is (R31). A user's log is never reset this way - only a development one.
+ * The record, 320 bytes, written to sector A or B in turn (the higher gen wins at load):
+ *   0 magic "OKEDGEv1" . 8 gen u32 . 12 seq u32 . 16 head 32 . 48 owed_n . 49 overflow .
+ *   50..51 zero . 52 owed x4 (seq u32, head 32) . 196 last_link 64 . 260..263 zero .
+ *   264 salted . 265 cont . 266 salt 32 . 298 cont_id 16 . 314..315 zero .
+ *   316 check: the first 4 bytes of SHA-256 over bytes 0..315.
+ * A record with another magic, or whose check fails, is not read: with neither sector
+ * readable the key starts an empty chain. Only the Edge region is ever written here.
  */
-#define STATE_BYTES 320 /* a multiple of 4: flash takes words (318 lost the check bytes) */
-#define STATE_CHECKED 316 /* 314..315 zero padding */
+#define STATE_BYTES 320 /* a multiple of 4: flash takes words */
+#define STATE_CHECKED 316
 #define SALTED_AT 264
 #define CONT_AT 265
 #define SALT_AT 266
 #define CONT_ID_AT 298
 #define OWED_AT 52
 #define LAST_AT (OWED_AT + OWED_MAX * 36)
-/*
- * "OKEDGEv1" - THE FIRST RELEASE (Brad, 2026-10-08: "v0 turns to v1, v1 = first release of
- * the protocol and schemas"). Every record before it - OKEDGE06/07/08 and the development
- * "OKEDGE01" - is v0: finding one, the key erases the Edge region and starts fresh (state_load).
- */
 static const uint8_t MAGIC[8] = {'O', 'K', 'E', 'D', 'G', 'E', 'v', '1'};
 
 struct owed_use { uint32_t seq; uint8_t head[32]; }; /* head[seq]: what its receipt subject names */
@@ -117,32 +103,26 @@ struct edge_state {
   uint32_t gen;
   uint32_t seq;               /* SEQ_NONE = no link yet */
   uint8_t head[32];           /* head[seq]; the genesis while seq == SEQ_NONE */
-  uint8_t owed_n;             /* R16: uses owing a receipt, oldest first in owed[] */
-  uint8_t overflow;           /* R16: an older owed use fell off the list - only a WAIVE clears it */
+  uint8_t owed_n;             /* uses owing a receipt, oldest first in owed[] */
+  uint8_t overflow;           /* an older owed use fell off the list - only a WAIVE clears it */
   struct owed_use owed[OWED_MAX];
-  uint8_t last_link[LINK_BYTES]; /* the latest link, so a crash never loses it */
+  uint8_t last_link[LINK_BYTES]; /* the latest link, so a restart never loses it */
   /*
-   * R28 (onlykey-edge firmware.md, decided 2026-10-04): ONE CHAIN PER PHYSICAL
-   * DEVICE. The salt is made here on first use and lives only in this record -
-   * never in the plugin backup section, and the app keeps the whole flash file
-   * out of Android backup and device transfer (data_extraction_rules.xml). A
-   * restored key draws a new salt (okplugin_edge_restore), so it has another Edge
-   * key and another device id: its own chain from the first link, never a second writer.
+   * One chain per physical device: the salt is drawn on first use and lives only in this
+   * record - never in the backup section. A restored key draws a new salt, so it has another
+   * Edge key and another device id and writes its own chain from the first link.
    */
   uint8_t salted;
-  uint8_t cont;                  /* a continue link is owed: CONT_FROM_ID (cont_id) */
+  uint8_t cont;                  /* a continue link is owed: CONT_FROM_ID */
   uint8_t salt[32];
-  uint8_t cont_id[ID_BYTES];     /* CONT_FROM_ID: the chain the debts come from */
+  uint8_t cont_id[ID_BYTES];     /* the device id of the chain the debts come from */
 };
-#define CONT_FROM_ID 1 /* the only continue: a backup restored here */
+#define CONT_FROM_ID 1 /* a backup restored here */
 static struct edge_state st;
 static uint8_t loaded;
 
-/* R18: is anything owed? Then nothing automatic happens. */
+/* Is anything owed? Then no TX start, budget opening or resume is accepted. */
 static int owes(void) { return st.owed_n || st.overflow; }
-
-/* a restore never forgives debts: the continue link carries them (R28), and they block like any other */
-static int automatic_blocked(void) { return owes(); }
 
 /* ------------------------------------------------------------ RAM only */
 
@@ -153,29 +133,27 @@ static struct {
 } ident;
 
 /*
- * R11a: a scope on a DERIVED code (agent sign 201-203 / 221-223) names one
- * identity - the first 16 bytes of its 32-byte derive label. Those codes are
- * shared by every derived identity of a curve; without the label a budget for
- * the agent's key would also pay for, and make owe, Brad's own logins.
+ * A scope on a derived code (agent sign 201-203 / 221-223) names one identity: the first 16
+ * bytes of its 32-byte derive label. Those codes are shared by every derived identity of a
+ * curve; without the label, a budget for one identity would pay for every other on the code.
  */
 #define LABEL_PREFIX 16
 struct scope { uint8_t op, slot; uint16_t cap, used; uint8_t has_label; uint8_t label[LABEL_PREFIX]; };
-/* a live budget: RAM only - a lock or reboot is a new process, so it ends with the session (R15) */
+/* a live budget: RAM only - a lock or reboot is a new process, so it ends with the session */
 struct budget {
   uint32_t id;
-  uint8_t nscopes, on_hold;   /* on_hold: R15a - pays for nothing, nothing starts under it */
+  uint8_t nscopes, on_hold;   /* on_hold: pays for nothing, and no TX start counts it */
   struct scope scopes[MAX_SCOPES];
   uint16_t uses, used;
-  uint32_t opened, lifetime_ms; /* R15b: millis() at the press, and how long it may live */
+  uint32_t opened, lifetime_ms; /* millis() at the press, and how long it may live */
   uint8_t seed[32];
   uint8_t genesis[32];
 };
 static struct budget budgets[MAX_LIVE];
 
 /*
- * R11a: GRANT_LABEL stages a derived-code scope's label for the NEXT
- * GRANT_CREATE (no press - it only narrows a request). A GRANT_CREATE
- * consumes them, and 25 s without one clears them.
+ * GRANT_LABEL stages a derived-code scope's label for the NEXT GRANT_CREATE (no press: it
+ * only narrows a request). A GRANT_CREATE consumes them, and 25 s without one clears them.
  */
 #define LABEL_STAGE_MS 25000UL
 static struct {
@@ -184,36 +162,28 @@ static struct {
   unsigned long since;
 } staged;
 
-/* a derived code: the identity is in the request, not in the slot (R11a) */
+/* a derived code: the identity is in the request, not in the slot */
 static int derived_code(uint8_t slot) {
   return (slot >= 201 && slot <= 203) || (slot >= 221 && slot <= 223);
 }
 
 /*
- * R13a: ONE self-press, started by TX start {head}. RAM only, and any link clears it
- * (append) - so it is spent by the very next sign/decrypt, whatever it decides,
- * and a lock or reboot drops it.
+ * ONE self-press, started by TX start. RAM only, and any link clears it (weld_in), so it is
+ * spent by the very next sign/decrypt whatever it decides, and a lock or reboot drops it.
  */
 static uint8_t started;
 /*
- * R13a (2026-10-02): the TX start is bound to ONE request, not just the head:
+ * A TX start is bound to ONE request:
  *   token = SHA256("OKEDGE-TX-v1" || head || subject || intent)
- * subject = pend.subject, SHA-256 of exactly the bytes handed to
- * okcore_prime_user_confirmation. The key recomputes it from ITS head when the
- * next sign/decrypt is primed; a program that slips in between the agent's TX start
- * and its sign gets a press, never a free signature - and uses the TX start up.
+ * subject = pend.subject, SHA-256 of exactly the bytes handed to okcore_prime_user_confirmation.
+ * The key recomputes it from ITS head when the next sign/decrypt is primed; a request that is
+ * not the announced one is refused and spends the TX start.
  */
 static uint8_t tx_token[32];
 /*
- * R13b (Brad, 2026-10-06): the use says what it's for BEFORE it happens.
- * TX start {token, intent}: intent = the first 16 bytes of SHA256("OKEDGE-INTENT-v1" ||
- * intent text), token = SHA256("OKEDGE-TX-v1" || head || subject || intent); the
- * self-press link then carries the intent in bytes 47-62 (63 stays zero), so the
- * reason is welded into the chain before the signature exists.
- * ONE formula (the TX start rename, 2026-10-07): a use that names no intent sends 16
- * zero bytes, the token covers them like any other, and the link carries no intent.
- * The old split (OKEDGE-ARM-v1 without an intent, -v2 with one) is gone; lib and
- * firmware change together, and nothing stored holds a token.
+ * The intent: the first 16 bytes of SHA256("OKEDGE-INTENT-v1" || intent text), sent with the
+ * TX start and covered by the token. The self-press link carries it in bytes 47-62, so the
+ * use's purpose is in the chain before the signature exists. 16 zero bytes = no intent.
  */
 static uint8_t tx_intent[16];
 static uint8_t tx_has_intent;
@@ -221,10 +191,9 @@ static uint8_t tx_has_intent;
 static const uint8_t *next_intent;
 
 /*
- * B7 stage 2 (spec, 2026-10-04): TX starts this key refused since power-up, in HEAD
- * byte 60. RAM only - a refused TX start writes no link (any host could flood the
- * chain and wear the flash), so this count is the key's own evidence; the
- * phone's watcher alarms when it rises. Stops at 255.
+ * TX starts refused since power-up, reported in HEAD byte 60. RAM only: a refused TX start
+ * writes no link (any host could otherwise flood the chain and wear the flash), so this count
+ * is the key's own evidence of refused attempts. Stops at 255.
  */
 static uint8_t refused_tx;
 static void status(uint8_t code);
@@ -233,7 +202,7 @@ static void refuse_tx(uint8_t code) {
   status(code);
 }
 
-/* the last links, with a self-press's reveal, for edge JS to pick up */
+/* the last links, with a self-press's reveal, for the host to pick up */
 static struct held_link {
   uint8_t used;
   uint32_t seq;
@@ -242,23 +211,22 @@ static struct held_link {
   uint8_t reveal[32];
 } held[HELD];
 
-/* what the confirmation that is waiting for its decision is about */
+/* the sign/decrypt that is waiting for its decision */
 static struct {
   uint8_t active, opcode, slot, press;
-  uint8_t has_intent; /* R13b: a v2 start matched - its intent goes into the self-press link */
-  uint8_t refuse;     /* R13a: the status to refuse this request with (0 = none) - not the TX start's request, or no budget can pay it now */
+  uint8_t has_intent; /* the TX start matched and named an intent: it goes into the self-press link */
+  uint8_t refuse;     /* the status to refuse this request with (0 = none) */
   uint8_t intent[16];
   int8_t budget;
   uint8_t subject[32];
-  /* R11a: on a derived code, the identity's label prefix - the request's last 32 bytes are its label */
+  /* on a derived code, the identity's label prefix - the request's last 32 bytes are its label */
   uint8_t has_label;
   uint8_t label[LABEL_PREFIX];
 } pend;
 
 /*
- * An OKEDGE request waiting for its PHYSICAL press: opening a budget (R10),
- * resuming one (R15a) or waiving the debts (R18). One at a time; a new one
- * replaces it.
+ * An OKEDGE request waiting for its physical press: opening a budget, resuming one, waiving
+ * the debts or accepting a loss. One at a time; a new one replaces it.
  */
 enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_WAIVE, PRESS_LOSS };
 static struct {
@@ -267,10 +235,10 @@ static struct {
   uint32_t id;                /* PRESS_RESUME: the budget; PRESS_LOSS: to */
   uint32_t from;              /* PRESS_LOSS: from */
   /*
-   * R27: the head the host verified its copy up to (GRANT_CREATE: its first
-   * GRANT_HEAD_BYTES, all that fits; GRANT_RESUME: all 32). Checked when the
-   * request arrives AND again at the press: a link written while the key waits
-   * would otherwise open the budget on a history the host never checked.
+   * The head the host verified its copy up to (GRANT_CREATE: its first GRANT_HEAD_BYTES;
+   * GRANT_RESUME: all 32). Checked when the request arrives AND again at the press: a link
+   * written while the key waits would otherwise open the budget on a history the host never
+   * checked.
    */
   uint8_t verified[32];
   uint8_t verified_len;
@@ -278,8 +246,8 @@ static struct {
   uint8_t reason[32];
   uint8_t scopes_enc[1 + 4 * MAX_SCOPES];
   uint8_t scopes_len;
-  uint16_t lifetime;          /* PRESS_GRANT: R15b minutes, 0 = DEFAULT_LIFETIME_MIN */
-  uint8_t labels[MAX_SCOPES][32]; /* PRESS_GRANT: R11a, the FULL labels of derived-code scopes, for the subject */
+  uint16_t lifetime;          /* PRESS_GRANT: minutes, 0 = DEFAULT_LIFETIME_MIN */
+  uint8_t labels[MAX_SCOPES][32]; /* PRESS_GRANT: the full labels of derived-code scopes, for the subject */
 } press;
 
 /* ------------------------------------------------------------ bytes and hashes */
@@ -327,7 +295,7 @@ static void reply(const uint8_t *data, int len) {
   send_transport_response(r, 64, false, false);
 }
 
-/* seq . head: RECEIPT's, WAIVE's and LOSS's answer - the head the agent passes to the next TX start (R13a) */
+/* seq . head: the answer of RECEIPT, WAIVE and LOSS - the head the next TX start must name */
 static void reply_seq_head(void) {
   uint8_t r[36];
   put32(r, st.seq);
@@ -398,28 +366,18 @@ static void hold(uint32_t seq, const uint8_t link[LINK_BYTES], const uint8_t hea
   if (reveal) memcpy(h->reveal, reveal, 32); else memset(h->reveal, 0, 32);
 }
 
-/* an Edge record of a version before the clean start (OKEDGE06, 07, 08) */
-static int old_record(const uint8_t rec[8]) {
-  return memcmp(rec, "OKEDGE0", 7) == 0 && rec[7] != '1';
-}
-
-static void fresh_start(void); /* below: the whole Edge region erased */
-
+/* the newer readable record of the two sectors; neither readable: an empty chain */
 static void state_load(void) {
   if (loaded) return;
   uint8_t rec[STATE_BYTES];
   struct edge_state a, b;
   okcore_flashget_common(rec, (unsigned long *)EDGE_STATE_A, STATE_BYTES);
   int ha = state_decode(rec, &a);
-  int olda = old_record(rec);
   okcore_flashget_common(rec, (unsigned long *)EDGE_STATE_B, STATE_BYTES);
   int hb = state_decode(rec, &b);
-  int oldb = old_record(rec);
   if (ha && (!hb || a.gen > b.gen)) st = a;
   else if (hb) st = b;
   else {
-    /* THE CLEAN START (v1): a record from before it - the whole Edge region goes */
-    if (olda || oldb) fresh_start();
     memset(&st, 0, sizeof(st));
     st.seq = SEQ_NONE;
   }
@@ -431,10 +389,10 @@ static void state_load(void) {
 /* ------------------------------------------------------------ the Edge key */
 
 /*
- * HKDF(K132, info "onlykey/edge/v1"), P-256. K132 is the key's own secret (made
- * at PIN setup, in the backup): the identity survives a restore and changes
- * with a wipe - a wiped key is simply a new device to every host. The
- * firmware's ECC globals (a pending sign may be using them) are put back.
+ * HKDF over K132 (the key's own secret, made at PIN setup and kept in the backup) with the
+ * given info string and optional 33-byte salt, into `out`. K132 is loaded into the
+ * firmware's ECC globals to derive, so they are saved first and put back after: a pending
+ * sign may be using them. 0 without a PIN (no K132).
  */
 static int edge_secret_salted(const char *info, const uint8_t *salt33, uint8_t out[32]) {
   uint8_t t = 0;
@@ -455,12 +413,11 @@ static int edge_secret_salted(const char *info, const uint8_t *salt33, uint8_t o
 
 
 /*
- * R28: the Edge checkpoint key - and so the device id and the genesis - is
- * HKDF(salt = 0x28 . this device's salt, K132, "onlykey/edge/v1"). ONLY this
- * key takes the salt: every derived identity (SSH, PGP, the agents' keys) is
- * K132's alone and stays the same across R28 (tested before == after). Since
- * the clean start (v1) there is no Edge key without a salt: ensure_identity
- * draws one before anything asks for the key.
+ * The Edge checkpoint key - and so the device id and the genesis - is
+ * HKDF(salt = 0x28 . this device's salt, K132, "onlykey/edge/v1"), P-256. Only this key takes
+ * the salt: every derived identity (SSH, PGP, the agents' keys) depends on K132 alone and is
+ * the same on every device made from the same backup. There is no Edge key without a salt:
+ * ensure_identity draws one before anything asks for the key.
  */
 static int edge_key_with(const struct edge_state *s, uint8_t priv[32]) {
   if (!s->salted) return 0;
@@ -478,7 +435,7 @@ static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, co
 static void append_scoped(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
     uint32_t grant_id, uint16_t grant_step, uint8_t scope, const uint8_t *reveal);
 
-/* device_id = SHA256("OKEDGE-DEVICE-v1" || pubkey)[0..16] - edge JS computes it the same way */
+/* device_id = SHA256("OKEDGE-DEVICE-v1" || pubkey)[0..16] (lib chain.deviceIdOf) */
 static int identity_of(const struct edge_state *s, uint8_t pub[64], uint8_t id[ID_BYTES]) {
   uint8_t priv[32], h[32];
   if (!edge_key_with(s, priv)) return 0;
@@ -491,16 +448,16 @@ static int identity_of(const struct edge_state *s, uint8_t pub[64], uint8_t id[I
 }
 
 /*
- * R28 continue: the first link of this device's own chain. It takes the NEXT
- * seq after the chain it continues (so a carried debt's seq never meets one of
- * the new chain's) and is welded onto the NEW genesis, not the old head:
- *   op = continue, decision = approve, flags 0 (no press: a restore or a
- *   firmware update already needed the person), grant_id = debts carried,
+ * The continue link: the first link of a restored device's own chain. It takes the NEXT seq
+ * after the chain it continues (so a carried debt's seq never meets one of the new chain's)
+ * and is welded onto the NEW genesis, not the old head:
+ *   op = continue, decision = approve, flags 0 (no press: the restore already needed the
+ *   person), grant_id = the number of debts carried,
  *   subject = SHA256("OKEDGE-CONTINUE-v1" || old device_id 16 || old seq u32 ||
  *             old head 32 || each carried debt's seq u32, oldest first)
- * The debts (seq + head) stay owed here and are paid by receipt or waive on this
- * chain; the hosts keep the old copy and its checkpoint key beside it, so the
- * old history stays checkable up to the head this names. Live budgets end.
+ * The debts (seq + head) stay owed here and are paid by receipt or waive on this chain; the
+ * host keeps the old chain and its checkpoint key beside it, so the old history stays
+ * checkable up to the head this names. Live budgets end.
  */
 static void write_continue(const uint8_t old_id[ID_BYTES]) {
   uint8_t buf[ID_BYTES + 4 + 32 + 4 * OWED_MAX], subject[32];
@@ -525,9 +482,8 @@ static int ensure_identity(void) {
   state_load();
   if (ident.ok) return 1;
   /*
-   * R28: no salt yet - a new key, a key after the clean start, or a backup
-   * restored here (which then continues that chain, CONT_FROM_ID).
-   * The salt is made now. Since v1 there is no unsalted chain to continue.
+   * No salt yet - a new key, a wiped Edge state, or a backup restored here (which then
+   * writes its continue link, CONT_FROM_ID). The salt is drawn now.
    */
   if (!st.salted) {
     uint8_t t = 0;
@@ -554,7 +510,7 @@ static int ensure_identity(void) {
 }
 
 /*
- * The one signature: a checkpoint over (seq, head) (R7, lib chain.checkpointDigest)
+ * The checkpoint: a signature over (seq, head) (lib chain.checkpointDigest)
  *   SHA256("OKEDGE-CKPT-v1" || device_id || seq (u32 LE) || head)
  * reply: seq u32 . head 32; then the 64-byte signature.
  */
@@ -572,15 +528,12 @@ static void checkpoint(void) {
 }
 
 /*
- * THE OWNER STATEMENT (Brad, 2026-10-08): "if it has the private ecc key to sign the
- * block, then i want the log"; a device gives "its own name for its device fingerprint in
- * the block" - its NAMETAG. The owner key is HKDF(K132, "onlykey/edge/owner/v1") with NO
- * salt, so it is the same on every device made from the same backup: any of them can tell
- * a log "made with our key" without a salt ever leaving its device (R28). The key signs
- * only a statement about ITSELF - its device id, its checkpoint key, its current seq - and
- * the hash of a nametag the host gives. No press and no link: it writes nothing (the rule:
- * a link only for a press or a budget's use). The nametag is a label - the signature
- * proves the key, not the words.
+ * The owner statement. The owner key is HKDF(K132, "onlykey/edge/owner/v1") with NO salt,
+ * so it is the same on every device made from the same OnlyKey secret: a host holding one
+ * device's owner public key can tell which other logs were made with the same secret, while
+ * each device's salt stays on that device. The key signs only a statement about ITSELF - its
+ * device id, its checkpoint key, its current seq - and the hash of a nametag the host gives.
+ * No press and no link: it writes nothing. The signature proves the key, not the nametag.
  *   digest = SHA256("OKEDGE-STATEMENT-v1" || device id 16 || checkpoint pubkey 64 ||
  *                   seq u32 LE || nametag hash 32)        (lib grants.statementDigest)
  * reply: seq . nametag hash, then the owner public key (X || Y), then the signature.
@@ -620,18 +573,16 @@ static void waive_subject(const struct edge_state *s, uint8_t out[32]) {
 }
 
 /*
- * THE weld - the one function every link goes through:
+ * The weld - the one function every link goes through:
  *   head[n] = SHA256("OKEDGE-LINK-v1" || head[n-1] || link[n])   (lib chain.weld)
- * then the debt rule (R16-R18; lib receipts.keyDebts follows the same rule):
- *   - an approved sign/decrypt whose link carries owes_receipt (bit 4, set at the
- *     sign by the R16 rule - see okplugin_edge_decision) owes a receipt. The key
- *     keeps the latest 4; a 5th pushes the oldest off for good (overflow: only
- *     a WAIVE clears it). Only a human press can make a 5th (R18);
- *   - a WAIVE - a receipt with code 0x8F, the press flag and the subject over
- *     exactly this list and overflow - clears the list and the overflow;
- *   - any other receipt pays its ref_seq, if that use is still on the list;
- * and persists it before the operation's result is released (R4).
- * `s`: the state it welds into - the record (st: saved, held for pickup).
+ * then the debts (lib receipts.keyDebts follows the same rule):
+ *   - an approved or self-pressed sign/decrypt whose link carries FLAG_OWES_RECEIPT owes a
+ *     receipt. The list keeps the latest OWED_MAX; one more pushes the oldest off for good
+ *     (overflow: only a WAIVE clears it);
+ *   - a WAIVE - a receipt with code 0x8F, the press flag and the subject over exactly this
+ *     list and overflow - clears the list and the overflow;
+ *   - any other receipt pays its ref_seq (bytes 40-43), if that use is still on the list.
+ * The record is saved before the operation's result is released.
  */
 static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const uint8_t *reveal) {
   uint8_t head[32], w[32];
@@ -669,7 +620,7 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
   s->seq = seq;
   memcpy(s->head, head, 32);
   memcpy(s->last_link, link, LINK_BYTES);
-  started = 0; /* R13a: any link spends or clears the TX start */
+  started = 0; /* any link spends or clears the TX start */
   if (s == &st) {
     state_save();
     hold(seq, link, head, reveal);
@@ -684,20 +635,21 @@ static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, co
 }
 
 /*
- * R3 (2026-10-03): byte 46 = which of the budget's scopes paid, 1-based, on a
- * link that spends a budget (flags BUDGET_SPENT); 0 on every other link (and on
- * every link before this). The step and the subject cannot say it - two scopes
- * on the same op+slot (two identities on slot 221) differ only by label - and
- * the card and a verifier need each identity's own count. Bytes 47-63 stay
- * reserved zero.
+ * The link, 64 bytes:
+ *   0 seq u32 . 4 op . 5 decision . 6 slot . 7 flags . 8 subject 32 . 40 grant_id u32 .
+ *   44 grant_step u16 . 46 scope . 47 intent 16 . 63 version (OKEDGE_LINK_VERSION).
+ * Byte 46: on a link that spends a budget (FLAG_BUDGET_SPENT), which of its scopes paid,
+ * 1-based; on a grant-create, its scope count; 0 on every other link. The step and the
+ * subject cannot say which scope paid - two scopes on the same op and slot differ only by
+ * label - and a verifier needs each scope's own count.
  */
 static void append_scoped(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
     uint32_t grant_id, uint16_t grant_step, uint8_t scope, const uint8_t *reveal) {
   uint8_t link[LINK_BYTES];
   memset(link, 0, sizeof(link));
   link[46] = scope;
-  if (next_intent) { memcpy(link + 47, next_intent, 16); next_intent = NULL; } /* R13b */
-  link[63] = OKEDGE_LINK_VERSION; /* R3: future format changes are version 2 in the same chain */
+  if (next_intent) { memcpy(link + 47, next_intent, 16); next_intent = NULL; }
+  link[63] = OKEDGE_LINK_VERSION;
   put32(link, st.seq == SEQ_NONE ? 0 : st.seq + 1);
   link[4] = op;
   link[5] = decision;
@@ -712,11 +664,9 @@ static void append_scoped(uint8_t op, uint8_t decision, uint8_t slot, uint8_t fl
 /* ------------------------------------------------------------ budgets */
 
 /*
- * What a budget may pay for (R14: never FIDO2, config, backup, keys, PINs or
- * the hardened derive / shared secret): OKSIGN on the stored slots 1-4 and
- * 101-116 and the agent sign codes 201-203 / 221-223; OKDECRYPT on the stored
- * slots only. CHOSEN - the open question on agent-derived identities decides
- * whether agent signs stay in.
+ * What a budget may pay for: OKSIGN on the stored slots 1-4 and 101-116 and the agent sign
+ * codes 201-203 / 221-223; OKDECRYPT on the stored slots only. Never FIDO2, config, backup,
+ * keys, PINs, the hardened derive or the shared secret.
  */
 static int scope_allowed(uint8_t op, uint8_t slot) {
   int stored = (slot >= 1 && slot <= 4) || (slot >= 101 && slot <= 116);
@@ -726,42 +676,34 @@ static int scope_allowed(uint8_t op, uint8_t slot) {
 }
 
 /*
- * R15b: a budget lives `lifetime` minutes from its press (0 = 12 hours -
- * Brad, 2026-10-02: long enough to step away for lunch). millis() counts from boot, and a reboot ends every
- * budget anyway (R15), so the clock never resets inside a budget's life - the
- * same works on a hard key, which has no real-time clock. Wrap-safe like the
- * 25 s press window. An expired budget is simply gone: it pays for nothing,
- * HEAD stops listing it, and its slot is free; no grant-end link (like a
- * reboot) - the host tells expiry apart from the lifetime in its opening link.
+ * A budget lives `lifetime` minutes from its press (0 = 12 hours). millis() counts from boot,
+ * and a reboot ends every budget anyway, so the clock never resets inside a budget's life -
+ * the same works on a hard key, which has no real-time clock. Wrap-safe like the 25 s press
+ * window. An expired budget is simply gone: it pays for nothing, HEAD stops listing it, and
+ * its slot is free; no grant-end link is written - the host tells expiry from the lifetime in
+ * its grant-create link.
  */
 #define DEFAULT_LIFETIME_MIN 720
 static int alive(const struct budget *b) {
   return b->id && (uint32_t)(millis() - b->opened) <= b->lifetime_ms;
 }
 
-/* unlocked, out of config mode, nothing owed (R18), not restoring (R26): the only state a budget can pay in */
+/* unlocked, out of config mode, nothing owed: the only state a budget can pay in */
 static int budgets_may_pay(void) {
-  return unlocked == true && configmode == false && !automatic_blocked();
+  return unlocked == true && configmode == false && !owes();
 }
 
-/* why nothing automatic may happen now: restoring first (the person finishes it), else a debt */
-static uint8_t blocked_status(void) { return EDGE_RECEIPT_OWED; }
-
-/* R27: does the head the host verified (its first n bytes) still match the key's? */
+/* does the head the host verified (its first n bytes) still match the key's? */
 static int head_is(const uint8_t *verified, uint8_t n) { return memcmp(verified, st.head, n) == 0; }
 
-/*
- * The live budget that pays for this use: started (R13a), not on hold (R15a), a
- * scope with room. Anything else falls back to the press the person sees -
- * never a refusal path of its own.
- */
-/* R11a: a scope matches op and slot - and, on a derived code, the identity's label */
+/* a scope matches op and slot - and, on a derived code, the identity's label */
 static int scope_matches(const struct scope *sc, uint8_t op, uint8_t slot, const uint8_t *label) {
   if (sc->op != op || sc->slot != slot) return 0;
   if (!sc->has_label) return 1;
   return label && memcmp(sc->label, label, LABEL_PREFIX) == 0;
 }
 
+/* the live budget that pays for this use: started, may pay, alive, not on hold, a scope with room; -1 = none */
 static int budget_for(uint8_t op, uint8_t slot, const uint8_t *label, struct scope **sc_out) {
   if (!started || !budgets_may_pay()) return -1;
   for (int i = 0; i < MAX_LIVE; i++) {
@@ -778,10 +720,7 @@ static int budget_for(uint8_t op, uint8_t slot, const uint8_t *label, struct sco
   return -1;
 }
 
-/* (R16's "covered" check went 2026-10-06: an ordinary press is not Edge and owes nothing) */
-
-
-/* R13a: TX start needs a budget that could pay for something - live, not on hold, uses left */
+/* a TX start needs a budget that could pay for something: live, not on hold, uses left */
 static int any_budget_payable(void) {
   for (int i = 0; i < MAX_LIVE; i++)
     if (alive(&budgets[i]) && !budgets[i].on_hold && budgets[i].used < budgets[i].uses) return 1;
@@ -804,15 +743,7 @@ static void press_wait(uint8_t what, const uint8_t subject[32]) {
   okcore_prime_user_confirmation(OKEDGE, 0, (uint8_t *)subject, 32);
 }
 
-/*
- * GRANT_CREATE: [6] scope count, [7..22] scopes (op, slot, cap u16 LE) x4,
- * [23..54] reason_hash, [55..62] the first GRANT_HEAD_BYTES of the head the
- * host verified its copy up to (R27; CHOSEN - a report has no room for all 32).
- * The seed and G = H^n(seed) are made here; the budget opens only on a
- * PHYSICAL press, never while a receipt is owed or a restore is unfinished
- * (R10, R18, R26), and never on a head the host did not verify.
- */
-/* R11a: GRANT_LABEL {scope index u8, label 32} - no press, no link; it only narrows the next GRANT_CREATE */
+/* GRANT_LABEL {scope index u8, label 32} - no press, no link; it only narrows the next GRANT_CREATE */
 static void grant_label(const uint8_t *buffer) {
   uint8_t j = buffer[6];
   if (j >= MAX_SCOPES) { status(EDGE_BAD_SCOPES); return; }
@@ -824,11 +755,19 @@ static void grant_label(const uint8_t *buffer) {
   status(EDGE_OK);
 }
 
+/*
+ * GRANT_CREATE: [6] scope count, [7..22] scopes (op, slot, cap u16 LE) x4, [23..54] reason
+ * hash, [56..57] lifetime u16 (minutes), [58..63] the first GRANT_HEAD_BYTES of the head the
+ * host verified its copy up to (a report has no room for all 32). Checked in order: nothing
+ * owed, the head, the scope count, each scope (allowed, cap >= 1, a derived code with its
+ * staged label), the total uses. The seed and G = H^n(seed) are made here; the budget opens
+ * only at the physical press (grant_pressed).
+ */
 #define GRANT_HEAD_BYTES 6
 static void grant_create(const uint8_t *buffer) {
   uint8_t n = buffer[6];
   unsigned uses = 0;
-  /* R11a: this GRANT_CREATE consumes what GRANT_LABEL staged - fresh only (25 s) */
+  /* this GRANT_CREATE consumes what GRANT_LABEL staged - fresh only (25 s) */
   int fresh = staged.since && (unsigned long)(millis() - staged.since) <= LABEL_STAGE_MS;
   uint8_t have[MAX_SCOPES];
   uint8_t labels[MAX_SCOPES][32];
@@ -836,7 +775,7 @@ static void grant_create(const uint8_t *buffer) {
   memcpy(labels, staged.label, sizeof(labels));
   memset(&staged, 0, sizeof(staged));
   press_drop();
-  if (automatic_blocked()) { status(blocked_status()); return; }
+  if (owes()) { status(EDGE_RECEIPT_OWED); return; }
   if (!head_is(buffer + 58, GRANT_HEAD_BYTES)) { status(EDGE_STALE_HEAD); return; }
   memcpy(press.verified, buffer + 58, GRANT_HEAD_BYTES);
   press.lifetime = get16(buffer + 56);
@@ -851,7 +790,7 @@ static void grant_create(const uint8_t *buffer) {
     sc->cap = get16(p + 2);
     if (!scope_allowed(sc->op, sc->slot) || sc->cap < 1) { press_drop(); status(EDGE_SCOPE_NOT_ALLOWED); return; }
     if (derived_code(sc->slot)) {
-      /* R11a: a derived code names one identity, or the budget is refused (EDGE:03) */
+      /* a derived code names one identity, or the budget is refused (EDGE:03) */
       if (!fresh || !have[j]) { press_drop(); status(EDGE_SCOPE_NOT_ALLOWED); return; }
       sc->has_label = 1;
       memcpy(sc->label, labels[j], LABEL_PREFIX);
@@ -873,14 +812,15 @@ static void grant_create(const uint8_t *buffer) {
 }
 
 /*
- * The press: link grant-create, whose subject commits to the budget's genesis
- *   SHA256("OKEDGE-GRANT-v1" || scopes || reason_hash || G)   (lib grants.grantSubject)
+ * The press: link grant-create, whose subject commits to the budget (lib grants.grantSubject)
+ *   SHA256("OKEDGE-GRANT-v1" || scopes || reason_hash || G || lifetime u16 ||
+ *          each derived-code scope's full label, in scope order)
  * and answer with a checkpoint over that link - the key's signature on G.
  * reply: id u32 . uses u16 . G 32 . the link's seq u32; then the checkpoint.
  */
 static void grant_pressed(void) {
   int slot = -1;
-  if (automatic_blocked()) { status(blocked_status()); return; } /* a use slipped in while it waited */
+  if (owes()) { status(EDGE_RECEIPT_OWED); return; } /* a use slipped in while it waited */
   if (!head_is(press.verified, press.verified_len)) { status(EDGE_STALE_HEAD); return; }
   for (int i = 0; i < MAX_LIVE; i++) if (!alive(&budgets[i])) { slot = i; break; } /* an expired budget's slot is free */
   if (slot < 0) { status(EDGE_LIVE_FULL); return; }
@@ -896,8 +836,8 @@ static void grant_pressed(void) {
   sha256_update(&ctx, press.b.genesis, 32);
   uint8_t life[2];
   put16(life, press.lifetime);
-  sha256_update(&ctx, life, 2); /* R12 + R15b: the subject ends with the lifetime the person approved */
-  /* R11a: then the FULL labels of derived-code scopes, in scope order - the identities the person approved */
+  sha256_update(&ctx, life, 2); /* the lifetime the person approved */
+  /* then the full labels of derived-code scopes, in scope order - the identities the person approved */
   for (int j = 0; j < press.b.nscopes; j++)
     if (press.b.scopes[j].has_label) sha256_update(&ctx, press.labels[j], 32);
   sha256_final(&ctx, subject);
@@ -905,7 +845,7 @@ static void grant_pressed(void) {
   press.b.opened = millis();
   press.b.lifetime_ms = (uint32_t)(press.lifetime ? press.lifetime : DEFAULT_LIFETIME_MIN) * 60000UL;
   budgets[slot] = press.b;
-  /* R3: the opening carries its scope count in byte 46, so every spend of it must name one of 1..N */
+  /* byte 46 of the opening carries its scope count, so every spend of it names one of 1..N */
   append_scoped(OP_GRANT_CREATE, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, id, 0, press.b.nscopes, NULL);
 
   put32(r, id);
@@ -916,11 +856,11 @@ static void grant_pressed(void) {
   checkpoint();
 }
 
-/* R15a: the press that lets a held budget pay again (refused while a receipt is owed, R18) */
+/* the press that lets a held budget pay again (refused while a receipt is owed) */
 static void resume_pressed(void) {
   struct budget *b = live_budget(press.id);
   if (!b) { status(EDGE_NO_SUCH_BUDGET); return; }
-  if (automatic_blocked()) { status(blocked_status()); return; }
+  if (owes()) { status(EDGE_RECEIPT_OWED); return; }
   if (!head_is(press.verified, press.verified_len)) { status(EDGE_STALE_HEAD); return; }
   if (b->on_hold) {
     uint8_t zero[32] = {0};
@@ -931,13 +871,12 @@ static void resume_pressed(void) {
 }
 
 /*
- * R18: the way out for debts nobody will receipt - one press clears them all.
- * Linked as a receipt, code 0x8F (needs review), the press flag, grant_id = the
- * oldest seq it waives, and
+ * The way out for debts nobody will receipt: one press clears them all. Linked as a receipt,
+ * code 0x8F (needs review), the press flag, grant_id = the oldest seq it waives, and
  *   subject = SHA256("OKEDGE-WAIVE-v1" || each waived seq (u32 LE, oldest first) || overflow)
- * (lib receipts.waiveSubject). With overflow and an empty list (every listed
- * debt was receipted, older ones fell off), grant_id is the waive's own seq:
- * the lib then reads every older unpaid use as "waived, not listed".
+ * (lib receipts.waiveSubject). With overflow and an empty list (every listed debt was
+ * receipted, older ones fell off), grant_id is the waive's own seq: the host then reads every
+ * older unpaid use as "waived, not listed".
  */
 static void waive_pressed(void) {
   if (!owes()) { status(EDGE_NO_RECEIPT_WAITING); return; } /* paid while it waited */
@@ -949,12 +888,11 @@ static void waive_pressed(void) {
 }
 
 /*
- * R24 LOSS subject: to (u32 LE), then the first 28 bytes of SHA-256(link to+1)
- * when the key holds that link - its latest, or one in the ring - from its own
- * memory (Brad, 2026-10-02). Its predecessor is in the lost range, so its own
- * bytes can never be welded again; this is the key naming them, and a host
- * counts the copy's #to+1 only when it hashes to this. Not held (or past the
- * head): zeros, and the host offers #from..#to+1 instead.
+ * LOSS subject: to (u32 LE), then the first 28 bytes of SHA-256(link to+1) when the key holds
+ * that link - its latest, or one in the ring - from its own memory. Its predecessor is in the
+ * lost range, so its own bytes can never be welded again; this is the key naming them, and a
+ * host counts the copy's #to+1 only when it hashes to this. Not held (or past the head):
+ * zeros, and the host offers #from..#to+1 instead.
  */
 static void loss_subject(uint32_t to, uint8_t subject[32]) {
   memset(subject, 0, 32);
@@ -974,13 +912,11 @@ static void loss_subject(uint32_t to, uint8_t subject[32]) {
 }
 
 /*
- * R24 LOSS {from, to}, a press (firmware.md R24; built ahead of the rest of E5
- * for the tab's red banner, Brad 2026-10-02): the person accepts #from..#to as
- * unrecoverable - no copy anywhere holds it. One link, op = loss, decision
- * approve, slot 0, the press flag, grant_id = from, subject = loss_subject(to)
- * It records the acceptance; it
- * pays no debt (R16: only a receipt or a waive does). A host then accepts a gap
- * covered by it under R27. reply: seq . head after it.
+ * LOSS {from, to}, at a press: the person accepts #from..#to as unrecoverable - no copy
+ * anywhere holds it. One link: op = loss, decision approve, slot 0, the press flag,
+ * grant_id = from, subject = loss_subject(to). It records the acceptance and pays no debt
+ * (only a receipt or a waive does); a host then accepts a gap covered by it.
+ * reply: seq . head after it.
  */
 static void loss_pressed(void) {
   uint8_t subject[32];
@@ -989,23 +925,22 @@ static void loss_pressed(void) {
   reply_seq_head();
 }
 
-
-/*
- * NO PEERS, SIBLINGS, SYNC OR ANCHORS ON THE KEY (Brad, 2026-10-08): "sync ... is a basic p2p
- * style way to combine 2 blockchains into 1, the blocks are signed, so i honestly dont think
- * firmware changes were needed here". Every block is signed by its own key's checkpoint, so
- * the lib joins two chains and checks each against its own key; the phone keeps its own
- * approved lists. The key keeps only what a hostile host could otherwise cheat (firmware.md
- * §3.2) - and its 600-byte pairs record and ~1.5 KB of code went with this.
- */
-
 /* ------------------------------------------------------------ hooks */
 
+/*
+ * okcore_prime_user_confirmation(): an operation now waits for its decision.
+ * An OKEDGE request always takes a physical press. A sign/decrypt is recorded in `pend`:
+ * its subject (SHA-256 of exactly the bytes submitted), its label on a derived code, and -
+ * when a TX start is pending - whether it is the announced request (else refused with
+ * EDGE_TX_MISMATCH, no press, and the TX start is spent). A budget that pays it lets the
+ * firmware's no-press path run it; otherwise it is an ordinary request and the person's
+ * press decides.
+ */
 void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len) {
   pend.active = 0;
   pend.budget = -1;
   if (opcode == OKEDGE) {
-    user_input_mode = USER_INPUT_PRESS; /* a grant, resume or waive always takes a physical press */
+    user_input_mode = USER_INPUT_PRESS; /* a grant, resume, waive or loss always takes a physical press */
     return;
   }
   if (opcode != OKSIGN && opcode != OKDECRYPT) return;
@@ -1015,21 +950,20 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   pend.opcode = opcode;
   pend.slot = slot;
   H(pend.subject, NULL, msg, msg_len, NULL, 0, NULL, 0); /* SHA-256 of exactly what was submitted */
-  /* R11a: an agent request is message || identity label (32): the label picks the derived key */
+  /* a derived-code request is message || identity label (32): the label picks the derived key */
   pend.has_label = derived_code(slot) && msg_len >= 32;
   if (pend.has_label) memcpy(pend.label, msg + msg_len - 32, LABEL_PREFIX);
   state_load();
   if (started) {
-    /* R13a: this request, after THIS head, is the one the TX start was for - or the TX start is spent */
+    /* is this request, after THIS head, the one the TX start was for? */
     uint8_t t[32];
-    H(t, "OKEDGE-TX-v1", st.head, 32, pend.subject, 32, tx_intent, 16); /* R13b: zeros when no intent */
+    H(t, "OKEDGE-TX-v1", st.head, 32, pend.subject, 32, tx_intent, 16); /* zeros when no intent */
     if (memcmp(t, tx_token, 32) != 0) {
       /*
-       * R13a (spec session, 2026-10-06): a request that is not the one the TX start
-       * was for is REFUSED, not pressed - no prompt, no link. The TX start is used up
-       * (the agent TX starts again) and HEAD byte 60 counts it with the refused TX starts.
-       * No press: the core runs the request at once and okplugin_edge_refused()
-       * answers EDGE:1C before anything is signed.
+       * Not the announced request: refused, not pressed - no prompt, no link. The TX start
+       * is spent and the refusal is counted in HEAD byte 60. The core runs the request at
+       * once without a press, and okplugin_edge_refused() answers EDGE:1C before anything
+       * is signed.
        */
       started = 0;
       pend.refuse = EDGE_TX_MISMATCH;
@@ -1044,21 +978,26 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   int i = budget_for(opcode == OKSIGN ? OP_SIGN : OP_DECRYPT, slot, pend.has_label ? pend.label : NULL, &sc);
   if (i >= 0) {
     pend.budget = (int8_t)i;
-    user_input_mode = USER_INPUT_NONE; /* an started budget pays: the firmware's own no-press path runs it (R13) */
+    user_input_mode = USER_INPUT_NONE; /* a budget pays: the firmware's own no-press path runs it */
   } else if (started) {
     /*
-     * The announced request, but its budget expired, was held or ended in between: no
-     * budget pays, so it is an ordinary request - the person's press decides, and an
-     * ordinary press writes no link. The TX start is spent here, or the person's own next
-     * request would meet it and be refused as a mismatch. (Brad, 2026-10-08: refusing it
-     * was a misreading of "budget or no go", which only means nothing goes on the chain
-     * without a budget behind it; firmware.md R13a.)
+     * The announced request, but no budget can pay it now (it expired, was held or ended in
+     * between): it is an ordinary request - the person's press decides, and an ordinary
+     * press writes no link. The TX start is spent here, or the person's own next request
+     * would meet it and be refused as a mismatch.
      */
     started = 0;
   }
   pend.press = user_input_mode != USER_INPUT_NONE;
 }
 
+/*
+ * The decision: approve (the press, or the no-press path a budget opened), deny or timeout.
+ * For an OKEDGE request, an approve within PRESS_MS runs the pressed action. For a
+ * sign/decrypt, only a budget use is linked: a self-press link that spends the budget,
+ * reveals the next value of its series, carries the intent and owes a receipt. An ordinary
+ * press - approved, denied or timed out - writes no link.
+ */
 void okplugin_edge_decision(int decision) {
   if (packet_buffer_details[0] == OKEDGE) {
     uint8_t what = press.what;
@@ -1077,13 +1016,6 @@ void okplugin_edge_decision(int decision) {
   pend.active = 0;
   if (!ensure_identity()) return; /* no K132 yet: nothing to chain to */
   uint8_t op = pend.opcode == OKSIGN ? OP_SIGN : OP_DECRYPT;
-  /*
-   * Only a budget use is linked (R1, R16; Brad, 2026-10-08: "no unattended press, unless
-   * its an approved budget that can be logged into the blockchain"): the self-press a
-   * live budget pays, which owes a receipt. A budget only ever pays a started request
-   * (budget_for), so the link needs no "started" mark; nothing else is written, so no
-   * "previous use had no receipt" mark either.
-   */
   if (decision == OKEDGE_DECISION_APPROVE && pend.budget >= 0) {
     struct scope *sc;
     if (budget_for(op, pend.slot, pend.has_label ? pend.label : NULL, &sc) == pend.budget) { /* still started, live, with room */
@@ -1092,26 +1024,20 @@ void okplugin_edge_decision(int decision) {
       b->used++;
       sc->used++;
       hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
-      if (pend.has_intent) next_intent = pend.intent; /* R13b: the reason, welded in with the use */
+      if (pend.has_intent) next_intent = pend.intent; /* the intent, welded in with the use */
       append_scoped(op, DECISION_SELF_PRESS, pend.slot, FLAG_OWES_RECEIPT | FLAG_BUDGET_SPENT, pend.subject, b->id, b->used,
-                    (uint8_t)(sc - b->scopes + 1), reveal); /* R3: byte 46, which scope paid */
+                    (uint8_t)(sc - b->scopes + 1), reveal); /* byte 46: which scope paid */
       memset(reveal, 0, 32);
       return;
     }
   }
-  /*
-   * THE CHAIN HOLDS ONLY EDGE'S OWN RECORDS (spec session, 2026-10-06): an
-   * ordinary ssh/gpg press - approved, denied or timed out - is not Edge and
-   * writes no link (FIDO was never linked, R1). Brad: "my press is the
-   * safeguard, as on any OnlyKey". Only the self-press above is linked.
-   */
 }
 
 /*
- * Called first in okcore_run_pending_op (plugin.js hook), before the request
- * runs. Refuses (1) a request that did not match its TX start (R13a, EDGE:1C) and
- * (2) a request primed to be paid by a budget that can no longer pay - budget or
- * no go: it must never run without a press and without a link. -> 1 = refused.
+ * Called first in okcore_run_pending_op (plugin.js hook), before the request runs. Refuses
+ * (1) a request that did not match its TX start (EDGE:1C) and (2) a request primed to be paid
+ * by a budget that can no longer pay (EDGE:0D): it must never run without a press and without
+ * a link. -> 1 = refused.
  */
 int okplugin_edge_refused(void) {
   if (!pend.active) return 0;
@@ -1135,21 +1061,14 @@ int okplugin_edge_refused(void) {
 }
 
 /*
- * The Edge region erased: all four sectors - both state copies and the two spare ones (only the Edge
- * region - no key, slot or setting outside it). The clean start (v1, state_load)
- * and every wipe end here.
+ * wipeflashdata(), and the DEBUG-only Edge wipe: both state sectors erased, live budgets and
+ * held links dropped. The next Edge request draws a new salt: a new device id and a new
+ * chain. Only the Edge region is written - no key, slot or setting outside it.
  */
-static void fresh_start(void) {
+void okplugin_edge_wipe(void) {
   uint8_t blank[4] = {0xff, 0xff, 0xff, 0xff};
   okcore_flashsector(blank, (unsigned long *)EDGE_STATE_A, 4);
   okcore_flashsector(blank, (unsigned long *)EDGE_STATE_B, 4);
-  okcore_flashsector(blank, (unsigned long *)EDGE_SPARE_A, 4);
-  okcore_flashsector(blank, (unsigned long *)EDGE_SPARE_B, 4);
-}
-
-/* wipeflashdata(): the record goes and live budgets end; a new K132 makes the key a new device */
-void okplugin_edge_wipe(void) {
-  fresh_start();
   memset(budgets, 0, sizeof(budgets));
   memset(held, 0, sizeof(held));
   memset(&ident, 0, sizeof(ident));
@@ -1161,18 +1080,16 @@ void okplugin_edge_wipe(void) {
   press_drop();
 }
 
-/* ------------------------------------------------------------ backup (DESIGN.md 6) */
+/* ------------------------------------------------------------ backup */
 
 /*
- * The plugin backup section (node-onlykey-lib/cli/firmware-plugins.js), version 1
- * since the clean start (it was 3; Brad, 2026-10-07: every schema v1):
+ * The plugin backup section (the loader: node-onlykey-lib/cli/firmware-plugins.js), version 1:
  *   1 . seq u32 . head 32 . owed_n . overflow . owed_n x (seq u32, head 32) . device id 16
- * The debts travel with the backup, because R16 lets only a receipt or a waive
- * pay them - a restore must not be a way to forgive them. The device id names
- * the chain the restored key continues (its continue link). Budgets end at a restore anyway (their
- * seeds were never stored); the links themselves are the hosts'. The SALT IS
- * NEVER HERE: a restored key must never become the device that made the backup. A
- * section from before the clean start is not restored (that chain is gone).
+ * The debts travel with the backup, because only a receipt or a waive may pay them - a
+ * restore must not forgive them. The device id names the chain the restored key continues
+ * (its continue link). Budgets end at a restore (their seeds are never stored); the links
+ * themselves are the host's. The SALT IS NEVER HERE: a restored key must never become the
+ * device that made the backup. A section of another version is not restored.
  */
 int okplugin_edge_backup(uint8_t *out, int max) {
   state_load();
@@ -1192,27 +1109,19 @@ int okplugin_edge_backup(uint8_t *out, int max) {
   return len;
 }
 
+/*
+ * A restore always draws a new salt: the restored key is a device of its own - even on the
+ * device that made the backup it can never write a second history under the old device id -
+ * and its first link (continue) names the backup's chain, its seq and head, and carries the
+ * debts. The chain goes on from there, never from zero.
+ */
 void okplugin_edge_restore(const uint8_t *in, int len) {
-  if (len < 39 || in[0] != 1) return; /* a version this build does not know (or one from before the clean start): keep what it has */
+  if (len < 39 || in[0] != 1) return; /* a version this build does not know: keep what it has */
   uint8_t n = in[37] > OWED_MAX ? OWED_MAX : in[37];
   if (len < 39 + 36 * n + ID_BYTES) return;
-  /*
-   * Keep the record generation counting UP: the newer of the two sectors wins at
-   * boot, so a restore that started again at 1 lost to the older record left in
-   * the other sector (found by the kit test: the key came back at the right seq
-   * but without the LOSS link).
-   */
+  /* keep the record generation counting UP: the newer sector wins at load */
   state_load();
   uint32_t gen = st.gen;
-  /*
-   * EVERY RESTORE DRAWS A NEW SALT (Brad, 2026-10-08: "you cant reset bitcoin, so i
-   * cant reset our log"; restore-then-replay went as overkill). So a restored key is
-   * always a device of its own - even on the phone that made the backup it can never
-   * write a second history under the old device id - and its first link (continue,
-   * R28) names the backup's chain, its seq and head, and carries the debts. The log
-   * goes on from there, never from zero; a copy of the links after the backup, found
-   * later, still welds onto that head in the lib.
-   */
   memset(&st, 0, sizeof(st));
   memset(&ident, 0, sizeof(ident));
   st.gen = gen;
@@ -1245,10 +1154,9 @@ void okplugin_edge_recv(uint8_t *buffer) {
   switch (buffer[5]) {
     case OKEDGE_HEAD: {
       /*
-       * seq (SEQ_NONE = empty) . head (the genesis while empty) . oldest pickable
-       * seq . live budget ids x4 . held mask (bit i = budget i on hold, R15a) .
-       * owed count . overflow (R16) . restoring (R26; CHOSEN - the tab opens its
-       * Restore card on it)
+       * seq (SEQ_NONE = empty) . head (the genesis while empty) . oldest pickable seq .
+       * live budget ids x4 . held mask (bit i = budget i on hold) . owed count . overflow .
+       * 59 reserved 0 . 60 TX starts refused since power-up
        */
       uint32_t oldest = SEQ_NONE;
       uint8_t mask = 0;
@@ -1264,7 +1172,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       r[56] = mask;
       r[57] = st.owed_n;
       r[58] = st.overflow;
-      r[60] = refused_tx; /* B7: refused TX starts since power-up (RAM only) */
+      r[60] = refused_tx;
       reply(r, 62);
       return;
     }
@@ -1301,7 +1209,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       grant_create(buffer);
       return;
     case OKEDGE_GRANT_REVOKE: {
-      /* ends a live budget, held or not; the debts it made stay owed (R16) */
+      /* ends a live budget, held or not; the debts it made stay owed */
       uint32_t id = get32(buffer + 6);
       struct budget *b = live_budget(id);
       if (!b) { status(EDGE_NO_SUCH_BUDGET); return; }
@@ -1313,9 +1221,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
     }
 #ifdef DEBUG
     /*
-     * DEBUG BUILDS ONLY (R31, the clean start's rehearsals): the Edge region erased -
-     * state, salt - so the next Edge request starts a new chain with a new
-     * device id. Every private key stays (only the Edge region is written). A
+     * DEBUG builds only: the Edge state erased (okplugin_edge_wipe), so the next Edge request
+     * starts a new chain with a new device id. No key outside the Edge region is touched. A
      * production build has no such case: it falls to "unknown sub-op".
      */
     case OKEDGE_WIPE_DEBUG:
@@ -1324,7 +1231,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
 #endif
     case OKEDGE_GRANT_HOLD: {
-      /* R15a: no press - it only makes the key stricter. Holding a held budget links nothing. */
+      /* no press - it only makes the key stricter. Holding a held budget links nothing. */
       uint32_t id = get32(buffer + 6);
       struct budget *b = live_budget(id);
       if (!b) { status(EDGE_NO_SUCH_BUDGET); return; }
@@ -1337,15 +1244,12 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     }
     case OKEDGE_GRANT_RESUME: {
-      /*
-       * id u32 . the head the host verified (32, R27). A physical press;
-       * refused while a receipt is owed or a restore is unfinished (R18, R26).
-       */
+      /* id u32 . the head the host verified (32). A physical press; refused while a receipt is owed. */
       uint32_t id = get32(buffer + 6);
       uint8_t what[32];
       press_drop();
       if (!live_budget(id)) { status(EDGE_NO_SUCH_BUDGET); return; }
-      if (automatic_blocked()) { status(blocked_status()); return; }
+      if (owes()) { status(EDGE_RECEIPT_OWED); return; }
       if (!head_is(buffer + 10, 32)) { status(EDGE_STALE_HEAD); return; }
       memcpy(press.verified, buffer + 10, 32);
       press.verified_len = 32;
@@ -1356,10 +1260,10 @@ void okplugin_edge_recv(uint8_t *buffer) {
     }
     case OKEDGE_RECEIPT: {
       /*
-       * ref_seq u32 . code u8 . msg_hash 32, for ANY owed use (R16):
+       * ref_seq u32 . code u8 . msg_hash 32, for any owed use:
        *   SHA256("OKEDGE-RECEIPT-v1" || ref_seq || head[ref_seq] || code || msg_hash)
-       * (lib receipts.receiptSubject), head[ref_seq] from the owed list. The message
-       * itself never reaches the key. reply: seq . head after the receipt link.
+       * (lib receipts.receiptSubject), head[ref_seq] from the owed list. The message itself
+       * never reaches the key. reply: seq . head after the receipt link.
        */
       uint32_t ref = get32(buffer + 6);
       uint8_t code = buffer[10];
@@ -1370,7 +1274,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       put32(ref4, ref);
       SHA256_CTX ctx;
       sha256_init(&ctx);
-      sha256_update(&ctx, (const unsigned char *)"OKEDGE-RECEIPT-v1", sizeof("OKEDGE-RECEIPT-v1") - 1); /* counted by the compiler: the rename from TICKET (16) to RECEIPT (17) broke a hand count */
+      sha256_update(&ctx, (const unsigned char *)"OKEDGE-RECEIPT-v1", sizeof("OKEDGE-RECEIPT-v1") - 1);
       sha256_update(&ctx, ref4, 4);
       sha256_update(&ctx, st.owed[k].head, 32);
       sha256_update(&ctx, &code, 1);
@@ -1381,7 +1285,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     }
     case OKEDGE_WAIVE: {
-      /* R18: a physical press clears every debt (the person's Yes in ok-rn comes first) */
+      /* a physical press clears every debt */
       uint8_t what[32];
       press_drop();
       if (!owes()) { status(EDGE_NO_RECEIPT_WAITING); return; }
@@ -1391,33 +1295,24 @@ void okplugin_edge_recv(uint8_t *buffer) {
     }
     case OKEDGE_TX_START: {
       /*
-       * R13a, like ssh-agent: the agent's wire asks, the key decides. TX start {token}
-       * starts ONE self-press when nothing is owed, no restore is unfinished and
-       * some budget (alive, off hold, uses left) could pay. Whether the token
-       * fits - this head, this request - is decided when the request is primed
-       * (okplugin_edge_primed); a stale head shows there, as a press.
-       */
-      /*
-       * R13b, budget or no go (Brad, 2026-10-06): a TX start, with or without an
-       * intent, is refused unless a budget can pay - there is no pressed-intent
-       * path. A press is the ordinary ssh/gpg agent, which sends no TX start.
+       * TX start {token 32, intent 16}: starts ONE self-press when nothing is owed and some
+       * budget (alive, off hold, uses left) could pay; otherwise refused and counted, with no
+       * link. Whether the token fits - this head, this request - is decided when the request
+       * is primed (okplugin_edge_primed).
        */
       uint8_t has_intent = 0;
       for (int k = 0; k < 16; k++) has_intent |= buffer[38 + k];
       if (owes()) { refuse_tx(EDGE_RECEIPT_OWED); return; }
       if (!any_budget_payable()) { refuse_tx(EDGE_NOTHING_TO_PAY); return; }
       memcpy(tx_token, buffer + 6, 32);
-      memcpy(tx_intent, buffer + 38, 16); /* R13b: zeros = no intent (still in the token) */
+      memcpy(tx_intent, buffer + 38, 16); /* zeros = no intent (still in the token) */
       tx_has_intent = has_intent;
       started = 1;
       status(EDGE_OK);
       return;
     }
     case OKEDGE_LOSS: {
-      /*
-       * from u32 . to u32, a press. Only a past range (to at or before the head)
-       * can be lost.
-       */
+      /* from u32 . to u32, a press. Only a past range (to at or before the head) can be lost. */
       uint32_t from = get32(buffer + 6), to = get32(buffer + 10);
       uint8_t what[32];
       press_drop();

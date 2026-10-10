@@ -7,6 +7,7 @@
 #define OKPLUGIN_KEY_CHAIN_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /* okcore.cpp's: 0 = the vendor interface (RAW_USB), 1 = WebAuthn (okcore.h) */
 extern int outputmode;
@@ -20,5 +21,8 @@ extern int outputmode;
  */
 void okplugin_key_chain_derived(int transport, int code, int keytype, const uint8_t *label32,
                                 const uint8_t *pub, int publen, const uint8_t *rpid32);
+
+/* a sign or decrypt now waits for its press: its transport, opcode, slot, subject hash and label, to the app */
+void okplugin_key_chain_primed(int transport, uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len);
 
 #endif

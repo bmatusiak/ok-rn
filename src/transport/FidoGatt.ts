@@ -1,4 +1,5 @@
 import {noteRpId} from '../keyChainRecorder';
+import {noteFidoAsk} from '../pressAsk';
 import {protocol} from 'node-onlykey-lib';
 import NativeFidoGatt from '../../specs/NativeFidoGatt';
 import {ioPulse} from '../btActivity';
@@ -13,6 +14,20 @@ import {bytes as okbytes} from 'node-onlykey-lib';
  * is '' rather than a throw, because this runs on every event and a bad
  * request must not take the listener down with it.
  */
+/** a makeCredential's user (name, else display name), from the same CBOR; null when absent */
+export function userFromPayload(hex: string): string | null {
+  if (!hex) return null;
+  try {
+    const value = protocol.cbor.decode(okbytes.fromHex(hex));
+    const user = value instanceof Map ? value.get(3) : null;
+    if (!(user instanceof Map)) return null;
+    const name = user.get('name') ?? user.get('displayName');
+    return typeof name === 'string' && name ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 export function rpIdFromPayload(commandName: string, hex: string): string {
   if (!hex) return '';
   try {
@@ -126,6 +141,10 @@ class FidoGattClient {
         const withRp = event.rpId ? event : {...event, rpId: rpIdFromPayload(event.commandName, event.hex)};
         /* the Key Chain recorder names a FIDO derive by this rpId (the firmware reports only its hash) */
         noteRpId(withRp.rpId);
+        /* the press sheet presents the site (and a register's user) beside the press (Brad, 2026-10-10) */
+        if (withRp.commandName === 'makeCredential' || withRp.commandName === 'getAssertion') {
+          noteFidoAsk(withRp.commandName, withRp.rpId, withRp.commandName === 'makeCredential' ? userFromPayload(event.hex) : null);
+        }
         this.emit('request', withRp);
       }),
     );

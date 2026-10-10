@@ -1,16 +1,14 @@
 /*
- * edge - the minimal firmware half of OnlyKey Edge: the key is a notary
- * (DESIGN.md section 0). It welds each sign/decrypt decision into the key's
- * chain, decides budget self-presses (each started), signs budget geneses and
- * checkpoints, keeps the owed receipts, and links receipts and waives; node-onlykey-lib/edge does everything else.
+ * edge - the firmware half of OnlyKey Edge. The key records each budget use in a hash
+ * chain, opens budgets only at a physical press, signs checkpoints over its chain with a
+ * key no other request reaches, and keeps the receipts its uses owe. The host library
+ * (node-onlykey-lib/edge) builds the requests and stores and verifies the chain.
  */
 #ifndef OKPLUGIN_EDGE_H
 #define OKPLUGIN_EDGE_H
 
 #include <stdint.h>
 #include <stddef.h>
-
-#define OK_PLUGIN_EDGE 1
 
 /* the vendor message, 0xF8 on the wire */
 #define OKEDGE (TYPE_INIT | 0x78)
@@ -20,44 +18,41 @@
 #define OKEDGE_PICKUP 0x02
 #define OKEDGE_CHECKPOINT 0x03
 #define OKEDGE_PUBKEY 0x04
-#define OKEDGE_STATEMENT 0x06 /* {nametag hash 32}, no press, no link: seq . nametag hash, the owner public key, the owner signature (2026-10-08) */
-#define OKEDGE_GRANT_CREATE 0x10
-#define OKEDGE_GRANT_LABEL 0x11   /* R11a: {scope index, label 32}, no press - stages a derived identity's label for the next GRANT_CREATE */
-#define OKEDGE_GRANT_REVOKE 0x12
-#define OKEDGE_GRANT_HOLD 0x13   /* R15a: no press */
-#define OKEDGE_GRANT_RESUME 0x14 /* R15a: press */
+#define OKEDGE_STATEMENT 0x06     /* {nametag hash 32}, no press, no link: the owner statement */
+#define OKEDGE_GRANT_CREATE 0x10  /* a press: opens a budget */
+#define OKEDGE_GRANT_LABEL 0x11   /* {scope index, label 32}, no press: a derived identity's label for the next GRANT_CREATE */
+#define OKEDGE_GRANT_REVOKE 0x12  /* no press: ends a live budget */
+#define OKEDGE_GRANT_HOLD 0x13    /* no press: a live budget pays for nothing until resumed */
+#define OKEDGE_GRANT_RESUME 0x14  /* a press: a held budget pays again */
 #define OKEDGE_RECEIPT 0x20       /* replies seq . head */
-#define OKEDGE_WAIVE 0x21        /* R18: press; replies seq . head */
-#define OKEDGE_TX_START 0x22          /* R13a: TX start {head} */
-/* 0x15 was AGENT_ADD: retired 2026-10-08 (a computer is trusted by its Bluetooth pairing); answers EDGE_UNKNOWN_REQUEST */
-#define OKEDGE_LOSS 0x34         /* R24: {from, to}, press; a LOSS link the person accepts */
-#define OKEDGE_WIPE_DEBUG 0x7E   /* R31: DEBUG builds only - the Edge region erased (state, pairs, salt); no key outside it touched */
-/* R3 (2026-10-06): byte 63 of every link this build writes - 0 = the links before it (no version), still readable */
+#define OKEDGE_WAIVE 0x21         /* a press: clears every owed receipt; replies seq . head */
+#define OKEDGE_TX_START 0x22      /* {token 32, intent 16}: starts one budget self-press */
+#define OKEDGE_LOSS 0x34          /* {from, to}, a press: records a range of links as lost */
+#define OKEDGE_WIPE_DEBUG 0x7E    /* DEBUG builds only: erases the Edge state; no key outside it is touched */
+/* 0x15 is not handled: it answers EDGE_UNKNOWN_REQUEST like any unknown sub-op */
+
+/* byte 63 of every link this firmware writes */
 #define OKEDGE_LINK_VERSION 1
 
-/*
- * Text replies are "EDGE:xx" - two hex digits, no sentences (owner, 2026-10-02:
- * "keep the return strings minimal in firmware"). Edge JS turns each into words.
- */
+/* Text replies are "EDGE:xx" - two hex digits; the host library turns each into words. */
 #define EDGE_OK 0x00
-#define EDGE_NEED_PIN 0x01          /* no K132 yet: set a PIN first */
-#define EDGE_BAD_SCOPES 0x02        /* a budget has 1 to 4 scopes */
-#define EDGE_SCOPE_NOT_ALLOWED 0x03 /* op/slot a budget may not pay for (R14) */
-#define EDGE_TOO_MANY_USES 0x04     /* more than 1024 uses */
-#define EDGE_LIVE_FULL 0x05         /* 4 budgets already live */
-#define EDGE_SIGN_FAILED 0x06       /* the Edge key could not sign */
-#define EDGE_NO_SUCH_BUDGET 0x07    /* revoke: no live budget with that id */
+#define EDGE_NEED_PIN 0x01           /* no K132 yet: set a PIN first */
+#define EDGE_BAD_SCOPES 0x02         /* a budget has 1 to 4 scopes */
+#define EDGE_SCOPE_NOT_ALLOWED 0x03  /* an op/slot a budget may not pay for, or a derived code without its label */
+#define EDGE_TOO_MANY_USES 0x04      /* more than 1024 uses */
+#define EDGE_LIVE_FULL 0x05          /* 4 budgets already live */
+#define EDGE_SIGN_FAILED 0x06        /* the Edge key could not sign */
+#define EDGE_NO_SUCH_BUDGET 0x07     /* no live budget with that id */
 #define EDGE_NO_RECEIPT_WAITING 0x08 /* receipt: that use owes nothing; waive: nothing owed */
-#define EDGE_NOT_HELD 0x09          /* pickup: that link is no longer held */
+#define EDGE_NOT_HELD 0x09           /* pickup: that link is no longer held */
 #define EDGE_UNKNOWN_REQUEST 0x0A
-#define EDGE_STALE_HEAD 0x0B        /* TX start: not the current head */
-#define EDGE_RECEIPT_OWED 0x0C       /* R18: a receipt is owed - no TX start, GRANT_CREATE or GRANT_RESUME */
-#define EDGE_NOTHING_TO_PAY 0x0D    /* TX start: no live budget off hold with uses left */
-#define EDGE_BAD_RANGE 0x12         /* LOSS: from > to, or to past the key's head (CHOSEN, pending the spec) */
-#define EDGE_BAD_KEY 0x15          /* PEER_ADD: not a P-256 point, or Y without its X */
-#define EDGE_TX_MISMATCH 0x1C      /* R13a (2026-10-06): the sign was not the request the TX start was for - refused, the TX start is used up */
+#define EDGE_STALE_HEAD 0x0B         /* the head the host verified is not the key's head */
+#define EDGE_RECEIPT_OWED 0x0C       /* a receipt is owed: no TX start, GRANT_CREATE or GRANT_RESUME */
+#define EDGE_NOTHING_TO_PAY 0x0D     /* no live budget off hold with uses left */
+#define EDGE_BAD_RANGE 0x12          /* LOSS: from > to, or to past the key's head */
+#define EDGE_TX_MISMATCH 0x1C        /* the sign is not the request its TX start was for: refused, the TX start is spent */
 
-/* decisions, as node-onlykey-lib/edge/codes.js numbers them */
+/* decisions, numbered as the host library's codes.js */
 #define OKEDGE_DECISION_APPROVE 1
 #define OKEDGE_DECISION_DENY 2
 #define OKEDGE_DECISION_TIMEOUT 3
@@ -66,13 +61,13 @@
 void okplugin_edge_recv(uint8_t *buffer);
 /* okcore_prime_user_confirmation(): an operation is waiting for its decision */
 void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len);
-/* the decision points: run_pending_op (approve), wrong challenge (deny), the 20 s fade (timeout) */
+/* the decision points: the press (approve), a wrong challenge (deny), the 20 s fade (timeout) */
 void okplugin_edge_decision(int decision);
-/* R13a + budget or no go: refuse the primed sign/decrypt before it runs (no press, no link) -> 1 if refused */
+/* before a primed sign/decrypt runs: 1 = refused (no press, no link) */
 int okplugin_edge_refused(void);
 /* wipeflashdata(): the key is being wiped */
 void okplugin_edge_wipe(void);
-/* the plugin backup section (the loader calls these): version 2, seq, head and the owed uses */
+/* the plugin backup section (version 1): seq, head, the owed uses and the device id */
 int okplugin_edge_backup(uint8_t *out, int max);
 void okplugin_edge_restore(const uint8_t *in, int len);
 

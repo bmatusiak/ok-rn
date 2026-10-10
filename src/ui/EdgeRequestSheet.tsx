@@ -14,6 +14,7 @@ import React, {useEffect, useState} from 'react';
 import {Modal, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {answerSheet, closeSheet, onSheet, pressFromSheet, type SheetState} from '../edgeAgents';
 import {Btn} from './components';
+import {Locate} from './PressSheet';
 import {theme} from './theme';
 import {consentRefusal} from '../debugGuard';
 import {BudgetCard} from '../screens/EdgeScreen';
@@ -200,6 +201,7 @@ export function EdgeRequestSheet() {
             {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
             {s.phase === 'ask' && !acting ? (
               <View style={styles.row}>
+                <Locate what={`budget ask "${a.view.reason}" - approve`}>
                 <Btn
                   large
                   title="Approve"
@@ -207,6 +209,7 @@ export function EdgeRequestSheet() {
                   disabled={off || refusal !== null || !!a.blocked}
                   onPress={consent(() => answerSheet('approve'))}
                 />
+                </Locate>
                 <Btn large title="Decline" disabled={off} onPress={act(() => answerSheet('decline'))} />
               </View>
             ) : null}
@@ -221,7 +224,9 @@ export function EdgeRequestSheet() {
                 </Text>
                 {refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
                 <View style={styles.row}>
-                  <Btn large title="Press the soft key" tone="primary" disabled={off || refusal !== null} onPress={consent(() => void pressFromSheet())} />
+                  <Locate what={`budget press "${a.view.reason}"`}>
+                    <Btn large title="Press the soft key" tone="primary" disabled={off || refusal !== null} onPress={consent(() => void pressFromSheet())} />
+                  </Locate>
                 </View>
               </>
             ) : null}

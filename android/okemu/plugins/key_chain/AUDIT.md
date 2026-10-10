@@ -15,9 +15,18 @@ Brad, 2026-10-03). Remove the folder and it is gone.
 | 5 | ok_extension.cpp | after `#include "onlykey.h"` | the plugin header |
 | 6 | ok_extension.cpp | after the FIDO derive copies its public key into the reply | one call: code 128, the request's keytype, the rpId hash |
 | 7 | ok_extension.cpp | after the FIDO derived X-Wing recipient | one call: code 128, X-Wing, the rpId hash |
+| 8 | okcore.cpp | after `#include "onlykey.h"` | the plugin header |
+| 9 | okcore.cpp | in `okcore_prime_user_confirmation()`, after `user_input_mode = okcore_user_input_mode_for_slot(slot);` | one call: the press record |
 
-Each call happens after the public key was computed and before it is sent; it
-changes nothing the firmware sends, stores or decides.
+Each derive call happens after the public key was computed and before it is
+sent; the press record is made as a sign or decrypt starts waiting for its
+press. Neither changes anything the firmware sends, stores or decides.
+
+**Soft key only, by design** (Brad, 2026-10-10: "a hardkey is secure, it will
+never expose this hook, its a softkey only thing"). The soft key's app is a
+display between the requester and the key; the press record lets it present
+what the firmware was handed, beside the press button. The requester (the
+host) gets nothing from it and has no way to reach the press.
 
 ## What leaves the firmware
 
@@ -27,8 +36,15 @@ request, the rpId hash (FIDO path), the public key length and bytes. **Never**
 `ecc_private_key`, a seed, a shared secret or the label text (the firmware never
 has it).
 
-It goes to `okemu_plugin_event()`, declared weak: the soft key's JNI layer
-provides it (onPluginEvent → `src/keyChainRecorder.ts`); a build without a
+The press record, event `press`, 69 bytes (`okplugin_key_chain_primed`):
+version, transport, opcode, slot, a label flag, the SHA-256 of exactly the bytes
+handed to the press wait, and on a derived code (201-203, 221-223) the request's
+32-byte label hash. Public data only - the request's own bytes, hashed - never
+the message itself or any key.
+
+Both go to `okemu_plugin_event()`, declared weak: the soft key's JNI layer
+provides it (onPluginEvent → `src/keyChainRecorder.ts` for derives,
+`src/pressAsk.ts` → `src/ui/PressSheet.tsx` for presses); a build without a
 provider reports nothing.
 
 ## Storage

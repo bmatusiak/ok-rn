@@ -9,7 +9,7 @@ import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import {Btn, StatusPill} from './src/ui/components';
 import {WANTED, OFF, PRE, ON, type ConfigState} from './src/ui/configModeNotes';
 import OkEmu from './src/transport/OkEmu';
-import {describeWaiting, useKeyWaiting} from './src/hooks/useKeyWaiting';
+import {useKeyWaiting} from './src/hooks/useKeyWaiting';
 import {useEdgeBackgroundSync} from './src/hooks/useEdgeBackgroundSync';
 import {rememberTab, takeResumeTab} from './src/resumeTab';
 import {Drawer} from './src/ui/Drawer';
@@ -72,9 +72,9 @@ import {TestingScreen} from './src/screens/TestingScreen';
 import {BT_SEQ_BASE, takeOpenedAlarm} from './src/edgeAlerts';
 import NativeFidoGatt from './specs/NativeFidoGatt';
 import {btTransit} from './src/btTransit';
-import {consentRefusal} from './src/debugGuard';
 import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
+import {PressSheet} from './src/ui/PressSheet';
 import {buildInfo, hasSoftKeyPlugin} from './src/buildInfo';
 import {setFirmwareConsoleToLogcat} from './src/hooks/useOkEmu';
 import {startKeyChainRecorder} from './src/keyChainRecorder';
@@ -1164,79 +1164,14 @@ function Shell() {
         ) : null}
 
         {/*
-          Presence is asked for by the KEY, so the prompt lives above the views
-          rather than inside one. A browser says "press the button on your
-          security key"; the key has to say where, wherever you are looking.
+          EVERY PRESS IS ASKED ON THE SHEET (Brad, 2026-10-10: "the confirm button ... needs to be
+          removed, so the sheet is the notifier with press button"; "blind presses is a blocker").
+          A request that came over the API - an ssh login, a gpg sign, an Edge approval - waits on
+          the soft key, and ui/PressSheet says what it is for and holds the press. A
+          passkey's presence (a site asking for a security key) is asked on the same sheet, with
+          the site it names; a key the app cannot press (no debug console) says to press the key.
         */}
-        {fido.presenceNeeded ? (
-          <View style={styles.prompt}>
-            <View style={styles.promptText}>
-              <Text style={styles.promptTitle}>Confirm on your key</Text>
-              <Text style={styles.promptBody}>
-                {emu.canPress === true
-                  ? 'A site is asking for a security key. This is the press it wants.'
-                  : 'A site is asking for a security key. Press any button on the key itself.'}
-              </Text>
-            </View>
-            {/*
-              NO CONFIRM BUTTON ON A KEY THE APP CANNOT PRESS.
-
-              `fido.confirm` presses the active key through holdTicks, which
-              throws without the debug console - every production key. Here that
-              is worse than elsewhere: the browser is mid-ceremony, and a button
-              that throws means the credential is never made and the site just
-              times out. The instruction is the honest offer.
-
-              This prompt is app-wide, above the views, so it needed its own
-              gate - the one on the Bluetooth tab's Authenticator panel does not
-              reach it.
-            */}
-            {emu.canPress === true ? (
-              <Btn title="Confirm" tone="primary" onPress={fido.confirm} />
-            ) : null}
-          </View>
-        ) : null}
-
-        {/*
-          THE SAME PROMPT FOR A REQUEST THAT CAME OVER THE API (owner,
-          2026-10-02): an ssh login or a gpg sign through onlykey-js --ble waits
-          on the soft key exactly as a site does, and the phone said nothing -
-          the key just timed out. The wait is the firmware's own
-          (useKeyWaiting); CTAP keeps its prompt above, so a WebAuthn wait is
-          never shown twice.
-
-          A CODE IS NEVER SHOWN HERE. The 3 digits come from the computer that
-          asked; a phone that displayed them would let a bad request supply its
-          own code and the person just copy it in - the check would prove
-          nothing. So code mode says where the code is and opens the keypad.
-        */}
-        {keyWaiting && !fido.presenceNeeded ? (
-          <View style={styles.prompt}>
-            <View style={styles.promptText}>
-              <Text style={styles.promptTitle}>Confirm on your key</Text>
-              <Text style={styles.promptBody}>
-                {describeWaiting(keyWaiting) + ' '}
-                {keyWaiting.mode === 'press'
-                  ? 'This is the press it wants.'
-                  : keyWaiting.mode === 'code'
-                    ? `Enter the code the computer shows on This Key's keypad (${keyWaiting.entered} of 3 in).`
-                    : 'Press a button, or enter the code the computer shows on This Key.'}
-              </Text>
-            </View>
-            {/*
-              * Spec rule 10, the app's lock: an Edge approval (budget, waive, loss,
-              * restore, registration) cannot be pressed here while debugging is on,
-              * unless a TEST consent started it (src/debugGuard.ts).
-              */}
-            {keyWaiting.what === 'edge' && consentRefusal() ? (
-              <Text style={[styles.promptBody, {color: theme.error, flexShrink: 1}]}>Turn off debugging to approve this.</Text>
-            ) : keyWaiting.mode === 'press' ? (
-              <Btn title="Confirm" tone="primary" onPress={() => { if (keyWaiting.what === 'edge' && consentRefusal()) return; void OkEmu.pressQueue('1'); }} />
-            ) : tab !== 'This Key' ? (
-              <Btn title="Keypad" tone="primary" onPress={() => setTab('This Key')} />
-            ) : null}
-          </View>
-        ) : null}
+        <PressSheet waiting={keyWaiting} fido={{needed: fido.presenceNeeded, canPress: emu.canPress === true, confirm: fido.confirm}} />
 
         {/*
           THE KEYBOARD MUST NOT COVER THE FIELD BEING TYPED IN.

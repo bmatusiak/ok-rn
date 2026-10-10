@@ -124,8 +124,8 @@ test('no call passes anything to the shared check - nothing a path knows can loo
 const PATHS: {path: string; file: string; anchor: RegExp}[] = [
   {path: 'waive', file: 'src/screens/EdgeScreen.tsx', anchor: /title="Yes, waive"[^\n]*/},
   {path: 'accept loss (a gap)', file: 'src/screens/EdgeScreen.tsx', anchor: /title=\{`Yes, accept loss of \$\{range\}`\}[^\n]*/},
-  /* the soft key's Confirm panel when an EDGE press waits (the FIDO Confirm above it is a passkey press, not an Edge consent) */
-  {path: 'the key\'s Confirm panel (Edge)', file: 'App.tsx', anchor: /title="Confirm" tone="primary" onPress=\{\(\) => \{ if \(keyWaiting\.what === 'edge'[^\n]*/},
+  /* the press sheet when an EDGE press waits (2026-10-10: it replaced the Confirm panel; every button of it presses through press()) */
+  {path: 'the press sheet (Edge)', file: 'src/ui/PressSheet.tsx', anchor: /onPress=\{\(button: string\) => \{\n[^\n]*\n[^\n]*/},
   {path: 'resume a held budget', file: 'src/screens/EdgeScreen.tsx', anchor: /title="Resume"[^\n]*/},
   {path: 'the sheet (budget, registration)', file: 'src/ui/EdgeRequestSheet.tsx', anchor: /const consent = [^\n]*\n[^\n]*/},
   /* 2026-10-08: merging a log a sync brought - every button of the banner's sheet goes through act() */

@@ -23,6 +23,9 @@
  *   5 ok_extension.cpp   include the plugin header
  *   6 ok_extension.cpp   the FIDO derive (web page path): ed25519/x25519, P-256, secp256k1
  *   7 ok_extension.cpp   the FIDO derived X-Wing recipient
+ *   8 okcore.cpp         include the plugin header
+ *   9 okcore.cpp         okcore_prime_user_confirmation(): the press record - what waits for a press,
+ *                        for the app to present beside its press button
  *
  * The app side: okemu_plugin_event() (jni/okemu_jni.cpp) -> NativeOkEmu
  * onPluginEvent -> src/keyChainRecorder.ts.
@@ -37,6 +40,14 @@ module.exports = {
   stateless: true,
   hooks: [
     { file: 'okcrypto.cpp', anchor: '#include "onlykey.h"\n', insert: 'after', text: INC },
+    /* okcore.cpp: the header, and okcore_prime_user_confirmation() - a sign or decrypt now waits for its press */
+    { file: 'okcore.cpp', anchor: '#include "onlykey.h"\n', insert: 'after', text: INC },
+    {
+      file: 'okcore.cpp',
+      anchor: '    user_input_mode = okcore_user_input_mode_for_slot(slot);\n',
+      insert: 'after',
+      text: '    okplugin_key_chain_primed(outputmode, opcode, slot, msg, msg_len);\n',
+    },
     {
       file: 'okcrypto.cpp',
       anchor: '        okcrypto_derive_key(buffer[6], buffer + 7, 0);\n',
