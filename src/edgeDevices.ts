@@ -66,6 +66,8 @@ export type HeldLog = {
   checkpoint: {seq: number; head: string; signature: string; signaturePq: string};
   statement: StoredStatement;
   declined?: boolean;
+  /* declined while it checked out (made with your OnlyKey, its chain checks, complete): your answer to a good log */
+  declinedValid?: boolean;
   leak?: boolean;
 };
 /** What the Approve sheet shows for one held device. */
@@ -217,9 +219,17 @@ export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; p
    * merged asked to be merged again. An offer at the checkpoint already held, or at one this
    * phone has already merged for that device, changes nothing; a newer checkpoint is new blocks
    * and asks again.
+   *
+   * EXCEPT A LOG KEPT ONLY BECAUSE IT FAILED A CHECK (live A13, 2026-10-11). The Pixel's log came
+   * to the A13 failing a check that was a bug of that build (its statement had no ML-DSA halves),
+   * so the sheet offered only "Keep as evidence"; once kept, the same checkpoint was "nothing new"
+   * for good and the Pixel's history never showed. A log declined while it did NOT check out is
+   * judged again when it comes back: checking out now, it waits for an answer like any new log.
+   * A good log you declined, and a "not mine", keep their answer.
    */
   const head = toHex(o.checkpoint.head).toLowerCase();
-  if (was && was.checkpoint.seq === o.checkpoint.seq && was.checkpoint.head.toLowerCase() === head) return {held: false, count: 0};
+  const same = !!was && was.checkpoint.seq === o.checkpoint.seq && was.checkpoint.head.toLowerCase() === head;
+  if (same && (!was!.declined || was!.declinedValid || was!.leak)) return {held: false, count: 0};
   const merged = (await loadMirror(o.deviceId)).merged ?? [];
   if (merged.some(m => m.seq > o.checkpoint.seq || (m.seq === o.checkpoint.seq && toHex(m.head).toLowerCase() === head))) return {held: false, count: 0};
   const entry: HeldLog = {
@@ -230,6 +240,7 @@ export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; p
     ...(o.openings && o.openings.length ? {openings: o.openings.slice(0, 500)} : {}),
     ...(o.notes ? {notes: o.notes} : {}),
   };
+  if (same && !checksOut(await judge(entry))) return {held: false, count: 0};
   await saveHeld([...list.filter(h => h.deviceId !== id), entry]);
   return {held: true, count: entry.records.length};
 }
@@ -246,17 +257,25 @@ export async function reviewHeld(): Promise<HeldView[]> {
   const owner = await ownerKey();
   const known = await loadDevices();
   const out: HeldView[] = [];
-  for (const h of await loadHeld()) {
-    const merged = ((await loadMirror(fromHex(h.deviceId))).merged ?? []).map(m => ({seq: m.seq, head: m.head}));
-    const c = owner ? devicesLib.classify({log: logOf(h), ownerKey: owner.ownerKey, ownerKeyPq: owner.ownerKeyPq, known, merged}) : {class: 'forged', nametag: null, check: {ok: false, alarm: 'no-nametag'}};
-    out.push({
-      deviceId: h.deviceId, nametag: c.nametag, claimed: h.statement.nametag, class: c.class as HeldView['class'], count: h.records.length, from: h.from, at: h.at,
-      checkOk: !!c.check.ok, alarm: c.check.ok ? null : c.check.alarm ?? 'bad', declined: !!h.declined, leak: !!h.leak,
-      ...(await completenessOf(h)),
-    });
-  }
+  for (const h of await loadHeld()) out.push(await judge(h, owner, known));
   return out;
 }
+
+/* one held log as the sheet shows it: sorted by the lib with THIS key's owner key, and checked complete */
+async function judge(h: HeldLog, owner?: Awaited<ReturnType<typeof ownerKey>>, known?: Device[]): Promise<HeldView> {
+  if (owner === undefined) owner = await ownerKey();
+  if (known === undefined) known = await loadDevices();
+  const merged = ((await loadMirror(fromHex(h.deviceId))).merged ?? []).map(m => ({seq: m.seq, head: m.head}));
+  const c = owner ? devicesLib.classify({log: logOf(h), ownerKey: owner.ownerKey, ownerKeyPq: owner.ownerKeyPq, known, merged}) : {class: 'forged', nametag: null, check: {ok: false, alarm: 'no-nametag'}};
+  return {
+    deviceId: h.deviceId, nametag: c.nametag, claimed: h.statement.nametag, class: c.class as HeldView['class'], count: h.records.length, from: h.from, at: h.at,
+    checkOk: !!c.check.ok, alarm: c.check.ok ? null : c.check.alarm ?? 'bad', declined: !!h.declined, leak: !!h.leak,
+    ...(await completenessOf(h)),
+  };
+}
+
+/* made with your OnlyKey, its chain checks, and complete: a log that could be merged */
+const checksOut = (v: HeldView): boolean => v.class !== 'forged' && v.checkOk && v.complete;
 
 /** How many held items still wait for an answer (the banner): device logs, and a Key Chain list. */
 export async function waitingCount(): Promise<number> {
@@ -364,8 +383,13 @@ async function completenessOf(h: HeldLog): Promise<{complete: boolean; missing: 
 
 /** Decline: kept as evidence, out of your view. */
 export async function declineHeld(deviceId: string): Promise<void> {
+  const id = deviceId.toLowerCase();
   const list = await loadHeld();
-  await saveHeld(list.map(x => (x.deviceId === deviceId.toLowerCase() ? {...x, declined: true} : x)));
+  const h = list.find(x => x.deviceId === id);
+  if (!h) return;
+  /* whether it checked out when declined: a log kept only because it failed a check is judged again when it comes back */
+  const declinedValid = checksOut(await judge(h));
+  await saveHeld(list.map(x => (x.deviceId === id ? {...x, declined: true, declinedValid} : x)));
 }
 
 /**

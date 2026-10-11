@@ -252,3 +252,29 @@ test('the same log offered again changes nothing: declined stays declined, merge
   expect((await offer(pixel, 'Pixel')).held).toBe(true);
   expect(await waitingCount()).toBe(1);
 }, 30000);
+
+/*
+ * Live A13 (2026-10-11): the Pixel's log came failing a check (a bug of that build), "Keep as
+ * evidence" was the only answer, and the same checkpoint never asked again. A log declined while
+ * it did not check out is judged again when it comes back; a good log declined keeps its answer.
+ */
+test('a log kept only because it failed a check asks again when it comes back checking out', async () => {
+  const me = await device();
+  await setNametag(me.e, 'A13');
+  const pixel = await device();
+  const id = hex((await pixel.e.publicKey()).deviceId);
+  /* first offer without the receipt's message: not complete, so Decline is the only answer */
+  expect((await holdLog({...(await offered(pixel, 'Pixel')), notes: null})).held).toBe(true);
+  expect((await reviewHeld())[0].complete).toBe(false);
+  await declineHeld(id);
+  expect(await waitingCount()).toBe(0);
+  /* the same checkpoint, now complete: held again, waiting for an answer */
+  expect((await offer(pixel, 'Pixel')).held).toBe(true);
+  expect(await waitingCount()).toBe(1);
+  const [v] = await reviewHeld();
+  expect([v.complete, v.checkOk, v.declined]).toEqual([true, true, false]);
+  /* a good log declined keeps its answer */
+  await declineHeld(id);
+  expect((await offer(pixel, 'Pixel')).held).toBe(false);
+  expect(await waitingCount()).toBe(0);
+}, 30000);
