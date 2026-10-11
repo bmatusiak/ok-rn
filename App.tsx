@@ -178,10 +178,24 @@ type Tab = (typeof TABS)[number] | typeof IN_DEV_TAB | typeof EDGE_TAB | typeof 
  */
 const HIDDEN_TABS: readonly Tab[] = ['PIN Setup', 'Preferences', 'Backup/Restore', 'Firmware', 'Advanced', 'Slots', 'Encrypt', 'Decrypt', 'Keys'];
 
-/* the drawer's tabs: testing mode adds its own; Edge also comes with a soft key that has it */
+/*
+ * DEBUG BUILDS ONLY (Brad, 2026-10-11: "Log tab,, is for testing debugging so it should not be
+ * included in production"): out of a release build's drawer, and its render branch is gated on
+ * __DEV__ too, so the release bundle does not carry it.
+ */
+const DEV_ONLY_TABS: readonly Tab[] = ['Log'];
+
+/*
+ * The drawer's tabs: testing mode adds its own; Edge also comes with a soft key that has it.
+ * EDGE SECOND, SETTINGS LAST (Brad, 2026-10-11: "Settings Tab,, should be at the Bottom, in the
+ * list of tabs,, and Edge should be 2nd").
+ */
 function shownTabs(testingOn: boolean): readonly Tab[] {
-  const all: readonly Tab[] = __DEV__ && testingOn ? [...TABS, IN_DEV_TAB, EDGE_TAB, TESTING_TAB] : hasSoftKeyPlugin('edge') ? [...TABS, EDGE_TAB] : TABS;
-  return all.filter(t => !HIDDEN_TABS.includes(t));
+  const testingTabs = __DEV__ && testingOn;
+  const edge = testingTabs || hasSoftKeyPlugin('edge');
+  const [first, ...rest] = TABS.filter(t => t !== 'Settings');
+  const all: readonly Tab[] = [first, ...(edge ? [EDGE_TAB] : []), ...rest, ...(testingTabs ? [IN_DEV_TAB, TESTING_TAB] : []), 'Settings'];
+  return all.filter(t => !HIDDEN_TABS.includes(t) && (__DEV__ || !DEV_ONLY_TABS.includes(t)));
 }
 
 /** Splash until the device can answer, then a door, then the app. */
@@ -1321,7 +1335,7 @@ function Shell() {
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
           ) : tab === 'Settings' ? (
-            <SettingsScreen render={settingsPage} />
+            <SettingsScreen render={settingsPage} hidden={keys.hard.state === 'running' ? [] : ['Firmware']} />
           ) : tab === 'PIN Setup' ? (
             settingsPage('PIN Setup')
           ) : tab === 'Encrypt/Decrypt' ? (
@@ -1356,7 +1370,7 @@ function Shell() {
             <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
             settingsPage('Advanced')
-          ) : tab === 'Log' ? (
+          ) : __DEV__ && tab === 'Log' ? (
             <LogScreen
               blockScreenshots={BLOCK_SCREENSHOTS}
               /*
