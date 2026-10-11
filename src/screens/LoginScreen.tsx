@@ -2,6 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {StyleSheet, Text, View} from 'react-native';
 import {Logo} from '../ui/Logo';
 import {Btn} from '../ui/components';
+import type {Net} from '../net';
 import {theme} from '../ui/theme';
 import {buildInfo} from '../buildInfo';
 import NativeOkSsl from '../../specs/NativeOkSsl';
@@ -20,12 +21,20 @@ export function LoginScreen({
   attached,
   onContinue,
   onTesting,
+  picked = null,
 }: {
   device: DeviceState;
   attached?: boolean | null;
   onContinue: () => void;
   /** Turns testing mode on from outside the door. Debug builds only. */
   onTesting?: () => void;
+  /*
+   * THE MODE ALREADY PICKED (Brad, 2026-10-11: "after selecting a mode,, diable the button that
+   * cant be activated,, so a app restart is forced"): the net the soft key's firmware already runs
+   * on, null when none runs. A started firmware cannot change its storage, so the other mode's
+   * button is disabled - after a hot reload the screen shows which one is live and only that.
+   */
+  picked?: Net | null;
 }) {
   const setup = device === 'uninitialized';
   const hint = setup
@@ -82,6 +91,7 @@ export function LoginScreen({
           title={setup ? 'Set up this key' : 'Log in'}
           tone="primary"
           onPress={onContinue}
+          disabled={picked === 'test'}
         />
         {/*
           * THE PIN LINE IS GONE at the user's direction: by the time it was
@@ -111,7 +121,7 @@ export function LoginScreen({
       {__DEV__ && onTesting ? (
         <View style={styles.devFooter}>
           <View style={styles.devFooterInner}>
-            <Btn title="Enter testing mode" onPress={onTesting} />
+            <Btn title="Enter testing mode" onPress={onTesting} disabled={picked === 'live'} />
           </View>
         </View>
       ) : null}

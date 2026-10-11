@@ -1,4 +1,5 @@
-import {useCallback, useState} from 'react';
+import {useCallback, useEffect, useState} from 'react';
+import {currentNet, onNet} from '../net';
 
 /**
  * Testing mode: a real app mode, not a build flag.
@@ -53,7 +54,15 @@ import {useCallback, useState} from 'react';
 const AVAILABLE = __DEV__;
 
 export function useTestingMode() {
-  const [enabled, setEnabled] = useState<boolean>(false);
+  /*
+   * FOLLOWS THE RUNNING FIRMWARE'S NET (Brad, 2026-10-11: "the login screen does not remember
+   * what i picked"). A hot reload rebuilds the screens while the soft key keeps running; the
+   * app adopts it and reads its net from the folder it runs on (OkEmu.start -> setNet). The
+   * testnet is only ever started by Enter testing mode, so a running testnet means testing
+   * mode was picked. A real launch has nothing running: off - the gate up.
+   */
+  const [enabled, setEnabled] = useState<boolean>(() => AVAILABLE && currentNet() === 'test');
+  useEffect(() => onNet(net => { if (AVAILABLE && net === 'test') setEnabled(true); }), []);
 
   const toggle = useCallback(() => {
     if (!AVAILABLE) return;

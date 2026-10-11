@@ -1192,6 +1192,7 @@ function Shell() {
             <LoginScreen
               device={emu.device}
               attached={keys.attached}
+              picked={keys.backend === 'embedded' && keys.soft.state === 'running' ? net : null}
               /*
                 Straight to the Testing tab, not This Key. Someone who turns
                 testing mode on from the door is going there next - it is the
