@@ -114,7 +114,7 @@ export function ConfigModePanel({
       <Section title="Config mode">
         <Text style={styles.body}>
           The key locked itself on the way in. Enter your PIN, then press
-          “Check config mode”.
+          “Check config mode” on the This Key tab.
         </Text>
       </Section>
     );
@@ -149,7 +149,7 @@ export function ConfigModePanel({
       <Text style={styles.steps}>
         1. {soft ? 'the app holds button 6' : 'you hold button 6 for about 5 seconds'}
         {'\n'}2. the key locks, and you enter your PIN again
-        {'\n'}3. press “Check config mode”
+        {'\n'}3. press “Check config mode” on the This Key tab
         {'\n'}4. you {purpose}
         {'\n'}5. restart the key — config mode ends only there
       </Text>

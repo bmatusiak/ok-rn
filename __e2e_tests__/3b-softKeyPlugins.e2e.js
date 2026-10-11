@@ -64,6 +64,19 @@ const edgeCopy = {
   async keep(g, o) {
     await (await edgeCopy.source()).keepOpening(g, {from: 'okrn e2e', ...o});
   },
+  /* a receipt's message text, kept under the use's seq as the wire's note keeps it */
+  async message(seq, text) {
+    const {addNote} = require('../src/edgeStore');
+    await addNote((await edgeCopy.source()).deviceId, {computer: 'okrn e2e', seq, receiptMsg: text});
+  },
+  /* the messages the tab's copy holds in STORAGE, by the use's seq - what a restart, and a sync to another phone, reads */
+  async messages() {
+    const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+    const {edgeKey} = require('../src/net');
+    const id = Array.from((await edgeCopy.source()).deviceId, (x) => x.toString(16).padStart(2, '0')).join('');
+    const raw = await AsyncStorage.getItem(edgeKey('mirror.' + id));
+    return raw ? JSON.parse(raw).messages ?? {} : {};
+  },
   async check() {
     return (await edgeCopy.source()).check();
   },

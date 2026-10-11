@@ -10,6 +10,7 @@ import {
   approveHeld, bannerLine, declineHeld, ensureNametag, holdLog, loadDevices, nametagOf, notMine, ownStatement, ownerKey, reviewHeld, setNametag, waitingCount,
 } from '../src/edgeDevices';
 import {loadMirror} from '../src/edgeStore';
+import {edgeKey} from '../src/net';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 
 /* eslint-disable @typescript-eslint/no-var-requires */
@@ -194,6 +195,20 @@ test('after a key reset (a new device id) the old statement is signed again, the
   expect((await ownStatement())?.deviceId).toBe(hex(deviceId));
 });
 
+test('a statement without its ML-DSA half is signed again, both halves and the nametag kept (2026-10-10)', async () => {
+  const me = await device();
+  await setNametag(me.e, 'work phone');
+  const {deviceId} = await me.e.publicKey();
+  /* a statement signed before the hybrid signatures: no publicKeyPq, no signaturePq */
+  const old = {...(await ownStatement())!, publicKeyPq: '', signaturePq: ''};
+  await AsyncStorage.setItem(edgeKey('ownStatement'), JSON.stringify(old));
+  const s = await ensureNametag({statement: (n: string) => me.e.statement(n), deviceId});
+  expect(s?.nametag).toBe('work phone');
+  expect(s?.publicKeyPq.length).toBeGreaterThan(0);
+  expect(s?.signaturePq.length).toBeGreaterThan(0);
+  expect((await ownStatement())?.signaturePq.length).toBeGreaterThan(0);
+});
+
 /*
  * COMPLETE BEFORE IT IS MERGED (Brad, 2026-10-09: "a data store must contain all info about the
  * usage of the credental, including the result"): a log with a use still waiting for its result
@@ -209,3 +224,31 @@ test('a log missing a use\'s result is not merged - the sheet says what is missi
   expect(v.missing.join(' ')).toMatch(/#0: no result/);
   await expect(approveHeld(v.deviceId, {isMine: true})).rejects.toThrow(/not complete - nothing merged/);
 });
+
+/*
+ * Two-phone testnet walk (2026-10-11): the computer offers every log it holds at every sync.
+ * The same log offered again must not undo an answer - a declined log stays declined, a merged
+ * one is not held again - and only a newer checkpoint asks again.
+ */
+test('the same log offered again changes nothing: declined stays declined, merged is not held; a newer one asks again', async () => {
+  const me = await device();
+  await setNametag(me.e, 'A13');
+  const old = await device();
+  await offer(old, 'old phone');
+  const oldId = hex((await old.e.publicKey()).deviceId);
+  await declineHeld(oldId);
+  expect((await offer(old, 'old phone')).held).toBe(false);
+  expect(await waitingCount()).toBe(0);
+  expect((await reviewHeld()).find(v => v.deviceId === oldId)?.declined).toBe(true);
+
+  const pixel = await device();
+  await offer(pixel, 'Pixel');
+  const id = hex((await pixel.e.publicKey()).deviceId);
+  await approveHeld(id, {isMine: true});
+  expect((await offer(pixel, 'Pixel')).held).toBe(false);
+  expect(await waitingCount()).toBe(0);
+
+  pixel.t.edgeRecord();
+  expect((await offer(pixel, 'Pixel')).held).toBe(true);
+  expect(await waitingCount()).toBe(1);
+}, 30000);

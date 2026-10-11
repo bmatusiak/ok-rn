@@ -123,10 +123,14 @@ try {
 }
 
 /* the staged debugging lock (src/generated/firmware.json): off = a TEST build (tools/release-guards.js) */
+/*
+ * Whether THIS build asked for a TEST build (debugging lock off). Read from the request
+ * (OKRN_DEBUG_LOCK=off, the same input stage.js uses), not from src/generated/firmware.json:
+ * Gradle reads this while it configures, before stage.js rewrites that file, so the file still
+ * describes the PREVIOUS build - a lock-on pre-release after a TEST build was named "-TEST-nolock".
+ */
 def stagedLockOff = {
-    def f = rootProject.file('../src/generated/firmware.json')
-    if (!f.exists()) return false
-    try { return new groovy.json.JsonSlurper().parse(f).debugLock == false } catch (ignored) { return false }
+    return System.getenv('OKRN_DEBUG_LOCK') == 'off'
 }
 
 android {

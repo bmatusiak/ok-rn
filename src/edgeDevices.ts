@@ -147,7 +147,13 @@ export async function ensureNametag(soft: {statement(nametag: string): Promise<a
    * chain's statement, and every computer refused it ("the statement does not name this device"),
    * so this phone's log was never offered to your other devices. Same nametag, this chain.
    */
-  if (have && soft?.deviceId && have.deviceId.toLowerCase() !== toHex(soft.deviceId).toLowerCase()) {
+  /*
+   * A STATEMENT WITHOUT ITS ML-DSA HALF IS SIGNED AGAIN too (2026-10-10, the hybrid signatures): one
+   * signed before the key made hybrid statements has no publicKeyPq / signaturePq, so a computer
+   * refuses it the same way and this phone's log is not offered. Same nametag, both halves.
+   */
+  const stale = have && (!have.publicKeyPq || !have.signaturePq);
+  if (have && soft && (stale || (soft.deviceId && have.deviceId.toLowerCase() !== toHex(soft.deviceId).toLowerCase()))) {
     try {
       return await setNametag(soft, have.nametag);
     } catch {
@@ -204,6 +210,18 @@ export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; p
   const list = await loadHeld();
   const was = list.find(h => h.deviceId === id);
   if (was && was.checkpoint.seq > o.checkpoint.seq) return {held: false, count: 0};
+  /*
+   * NOTHING NEW, NOTHING ASKED AGAIN (two-phone testnet walk, 2026-10-11). A computer offers every
+   * log it holds at every sync, most of them with nothing new. Held again, the same log came
+   * back as "waiting": a declined log or one kept as evidence lost its answer, and a log already
+   * merged asked to be merged again. An offer at the checkpoint already held, or at one this
+   * phone has already merged for that device, changes nothing; a newer checkpoint is new blocks
+   * and asks again.
+   */
+  const head = toHex(o.checkpoint.head).toLowerCase();
+  if (was && was.checkpoint.seq === o.checkpoint.seq && was.checkpoint.head.toLowerCase() === head) return {held: false, count: 0};
+  const merged = (await loadMirror(o.deviceId)).merged ?? [];
+  if (merged.some(m => m.seq > o.checkpoint.seq || (m.seq === o.checkpoint.seq && toHex(m.head).toLowerCase() === head))) return {held: false, count: 0};
   const entry: HeldLog = {
     deviceId: id, publicKey: toHex(o.publicKey), publicKeyPq: hexOf(o.publicKeyPq), from: o.from, at: now,
     records: o.records.map(r => [toHex(r.link), toHex(r.head), r.reveal ? toHex(r.reveal) : null]),

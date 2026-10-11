@@ -10,6 +10,7 @@
  */
 import React, {useEffect, useState} from 'react';
 import {Modal, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {answerSheet, closeSheet, onSheet, pressFromSheet, type SheetState} from '../edgeAgents';
 import {Btn} from './components';
 import {Locate} from './PressSheet';
@@ -105,6 +106,13 @@ function ApprovedBudget({grantId}: {grantId: number}) {
 }
 
 export function EdgeRequestSheet() {
+  /*
+   * ABOVE THE NAVIGATION BAR (A13, 2026-10-10: "the native android action bar is covering the
+   * close button on the sheet, and cant close the sheet"). The app draws edge to edge, so a sheet
+   * pinned to the bottom runs under the system's navigation bar - a thin gesture handle on the
+   * Pixel, three buttons on the A13. Its bottom inset is added under the sheet's last row.
+   */
+  const insets = useSafeAreaInsets();
   const [s, setS] = useState<SheetState | null>(null);
   /* no second confirm since 2026-10-08: no "yours" mark - the identities asked for are on the sheet (Brad) */
   useEffect(() => onSheet(next => { setS(next); }), []);
@@ -148,7 +156,7 @@ export function EdgeRequestSheet() {
   return (
     <Modal transparent animationType="slide" visible onRequestClose={() => (s.phase === 'done' ? closeSheet() : undefined)}>
       <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, {paddingBottom: insets.bottom}]}>
           <ScrollView contentContainerStyle={styles.body}>
             {/* the testnet (src/net.ts): a throwaway key - said before anything is approved */}
             {currentNet() === 'test' ? <Text style={[styles.title, {color: theme.io}]}>TESTNET</Text> : null}

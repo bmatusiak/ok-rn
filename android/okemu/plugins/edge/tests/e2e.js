@@ -74,7 +74,18 @@ module.exports = function register({it}, ctx) {
       await ctx.edgeCopy.sync();
       return r;
     };
-    for (const name of ['receipt', 'revoke', 'settle', 'hold', 'resume', 'loss']) edge[name] = after(name);
+    for (const name of ['revoke', 'settle', 'hold', 'resume', 'loss']) edge[name] = after(name);
+    /*
+     * receipt() takes the message TEXT, as an agent files it: the key gets its hash, the tab's
+     * copy keeps the text under the use's seq (as the wire's note does). Without the text the
+     * chain is incomplete, and another phone refuses to merge it.
+     */
+    edge.receipt = async (seq, code, text) => {
+      const r = await app.edge.receipt(seq, code, sha256(text));
+      await ctx.edgeCopy.message(seq, text);
+      await ctx.edgeCopy.sync();
+      return r;
+    };
     edge.grant = async ({reason, ...o}) => {
       const g = await app.edge.grant({...o, reasonHash: sha256(reason)});
       await ctx.edgeCopy.keep(g, {reason, scopes: o.scopes, lifetime: o.ttlMinutes ?? 0});
@@ -195,7 +206,7 @@ module.exports = function register({it}, ctx) {
     assert.equal(await app.edge.revoke(g.grantId), true);
   });
 
-  it('edge: a budget opened by a press pays started uses, each receipted, and is revoked', async ({log, assert}) => {
+  it('edge: a budget opened by a press pays started uses, each receipted, and ends itself at its last receipt', async ({log, assert}) => {
     const app = await ready(log);
     await clearDebts(app, log);
     const {publicKey, deviceId} = await app.edge.publicKey();
@@ -235,7 +246,8 @@ module.exports = function register({it}, ctx) {
       const subject = sha256(payload);
       assert.equal(hex(f.subject), hex(grants.requestSubject(payload)), `use ${i}: the firmware's subject is not the library's requestSubject`);
       spends.push({step: i, value: l.reveal, subject, mac: null});
-      txHead = (await app.edge.receipt(h.seq, 0x00, sha256(`okrn e2e: did as asked ${i}`))).head;
+      txHead = (await app.edge.receipt(h.seq, 0x00, `okrn e2e: did as asked ${i}`)).head;
+      assert.equal((await ctx.edgeCopy.messages())[h.seq], `okrn e2e: did as asked ${i}`, `the tab's copy lost receipt ${i}'s message - another phone would refuse this log`);
     }
     /* used up: nothing left to start */
     assert.equal(await refusal(txStartFor(app, txHead, agentRequest('used up'))), 'nothing-to-pay');
@@ -246,8 +258,12 @@ module.exports = function register({it}, ctx) {
       assert.ok(r.ok, `step ${s.step}: ${r.reason}`);
     }
 
-    assert.equal(await app.edge.revoke(g.grantId), true);
-    assert.ok(!(await app.edge.head()).live.includes(g.grantId), 'a revoked budget is still live');
+    /* fulfilled: the key ended it at its last receipt - a grant-end link, decision 1 (completed) */
+    const end = await app.edge.head();
+    assert.ok(!end.live.includes(g.grantId), 'a fulfilled budget is still live');
+    const [last] = await app.edge.pickup(end.seq, 1);
+    const fe = chain.decodeLink(last.link);
+    assert.equal(JSON.stringify([fe.op, fe.grantId, fe.decision]), JSON.stringify([7, g.grantId, 1]), 'no grant-end link (completed) after the last receipt');
   });
 
   it('edge: a held budget starts nothing until a pressed resume', async ({log, assert}) => {

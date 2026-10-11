@@ -17,6 +17,9 @@
  */
 import React from 'react';
 import TestRenderer, {act} from 'react-test-renderer';
+import {SafeAreaProvider} from 'react-native-safe-area-context';
+/* the app renders every sheet under its SafeAreaProvider (App.tsx); a test gives zero insets */
+const METRICS = {frame: {x: 0, y: 0, width: 0, height: 0}, insets: {top: 0, left: 0, right: 0, bottom: 0}};
 import NativeOkEmu from '../specs/NativeOkEmu';
 
 /* no Node types in this project's tsconfig - typed by hand, as configModeHasOneWriter.test.ts does */
@@ -64,7 +67,7 @@ function consentButton(kind: string) {
   mockSheetState = {phase: 'ask', ask: KINDS[kind].ask, until: Date.now() + 120000};
   let r: any;
   jest.useFakeTimers();
-  act(() => { r = TestRenderer.create(<EdgeRequestSheet />); });
+  act(() => { r = TestRenderer.create(<SafeAreaProvider initialMetrics={METRICS}><EdgeRequestSheet /></SafeAreaProvider>); });
   /* the buttons wake 1 s after the sheet appears (no double taps) - past that, only the lock can hold them */
   act(() => { jest.advanceTimersByTime(1100); });
   jest.useRealTimers();
@@ -129,7 +132,7 @@ const PATHS: {path: string; file: string; anchor: RegExp}[] = [
   {path: 'resume a held budget', file: 'src/screens/EdgeScreen.tsx', anchor: /title="Resume"[^\n]*/},
   {path: 'the sheet (budget, registration)', file: 'src/ui/EdgeRequestSheet.tsx', anchor: /const consent = [^\n]*\n[^\n]*/},
   /* 2026-10-08: merging a log a sync brought - every button of the banner's sheet goes through act() */
-  {path: 'merge a held log (the banner sheet)', file: 'src/ui/MergeSheet.tsx', anchor: /const act = [\s\S]{0,120}?consentRefusal\(\)/},
+  {path: 'merge a held log (the banner sheet)', file: 'src/ui/MergeSheet.tsx', anchor: /const act = [\s\S]{0,200}?consentRefusal\(\)/},
 ];
 
 test.each(PATHS)('$path asks the shared check', ({file, anchor}) => {

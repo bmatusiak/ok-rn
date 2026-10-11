@@ -20,6 +20,7 @@
  */
 import React, {useEffect, useRef, useState} from 'react';
 import {Modal, PixelRatio, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import OkEmu, {type KeyWaiting} from '../transport/OkEmu';
 import NativeOkEmu from '../../specs/NativeOkEmu';
 import {describeWaiting} from '../hooks/useKeyWaiting';
@@ -54,6 +55,13 @@ type Who = {label: string; listed: boolean; name: string | null};
 type Fido = {needed: boolean; canPress: boolean; confirm: () => void};
 
 export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: Fido}) {
+  /*
+   * ABOVE THE NAVIGATION BAR (A13, 2026-10-10: "the native android action bar is covering the
+   * close button on the sheet, and cant close the sheet"). The app draws edge to edge, so a sheet
+   * pinned to the bottom runs under the system's navigation bar - a thin gesture handle on the
+   * Pixel, three buttons on the A13. Its bottom inset is added under the sheet's last row.
+   */
+  const insets = useSafeAreaInsets();
   useEffect(() => startPressRecords(), []);
   /* the Edge request sheet asks for its own press: this one waits while that one is up */
   const [edge, setEdge] = useState<SheetState | null>(null);
@@ -130,7 +138,7 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
   return (
     <Modal transparent animationType="slide" visible onRequestClose={() => undefined}>
       <View style={styles.backdrop}>
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, {paddingBottom: insets.bottom}]}>
           <ScrollView contentContainerStyle={styles.body}>
             {currentNet() === 'test' ? <Text style={[styles.title, {color: theme.io}]}>TESTNET</Text> : null}
             {showFido ? (
