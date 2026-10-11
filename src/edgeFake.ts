@@ -12,7 +12,8 @@
  * after a use, a denied request, a human press with an empty hook).
  */
 import {chain, codes, grants, receipts} from 'node-onlykey-lib/edge';
-import {utf8ToBytes} from 'node-onlykey-lib/bytes';
+/* the fake key's own P-256 key, for signing its checkpoints as the real key does */
+const {p256} = require('node-onlykey-lib/vendor/@noble/curves/nist.js');
 
 const {OP, DECISION, FLAG} = codes;
 const MAX_LIVE_BUDGETS = 4; // SPEC.md R15 target
@@ -171,9 +172,33 @@ export class FakeEdgeKey implements EdgeSource, EdgeInbox {
   /** links older than this are gone from the fake key's ring */
   ring = 32;
 
+  /*
+   * IT SIGNS, as the real key does (Brad, 2026-10-11: "checking every field in a token means
+   * nothing if we never check the signature"): a P-256 key and its ML-DSA-65 twin, both from
+   * the name; the device id is the public key's (chain.deviceIdOf), and every checkpoint it gives
+   * carries both halves. A fake that signed nothing could only ever pass a check that skipped
+   * the signature.
+   */
+  private readonly signSecret: Uint8Array;
+  private readonly signPq: {publicKey: Uint8Array; secretKey: Uint8Array};
+  readonly publicKey: Uint8Array;
+
   /* bump the name when demo() changes: a new history needs its own mirror, or the phone rightly calls it tampering */
   constructor(name = 'fake-key-demo-3') {
-    this.deviceId = utf8ToBytes(name.padEnd(16, '.').slice(0, 16));
+    this.signSecret = sha(`edge fake key: ${name}`);
+    this.publicKey = p256.getPublicKey(this.signSecret, false);
+    this.deviceId = chain.deviceIdOf(this.publicKey);
+    this.signPq = chain.mlDsaKeys(sha(`edge fake key, ML-DSA-65: ${name}`));
+  }
+
+  /** the key's public keys and its latest checkpoint, both halves (checkpoint false: none) */
+  async copyKey(opts: {checkpoint?: boolean} = {}): Promise<EdgeCopyKey> {
+    const seq = this.links.length - 1;
+    const fields = {deviceId: this.deviceId, seq, head: this.tip};
+    const checkpoint = opts.checkpoint !== false && seq >= 0
+      ? {seq, head: this.tip, signature: chain.signCheckpoint(fields, this.signSecret), signaturePq: chain.signCheckpointPq(fields, this.signPq.secretKey)}
+      : null;
+    return {publicKey: this.publicKey, publicKeyPq: this.signPq.publicKey, openings: {}, checkpoint};
   }
 
   private get tip(): Uint8Array {

@@ -309,6 +309,14 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    */
   async deviceView(deviceIdHex: string): Promise<EdgeView> {
     const mirror = await loadMirror(fromHex(deviceIdHex));
+    /*
+     * THE STORED KEY MUST BE THAT DEVICE'S (Brad, 2026-10-11): its public key is read back from
+     * storage, so it is checked against the device id it is filed under (chain.deviceIdOf) - a
+     * chain signed by some other key, filed under this id, is red, not verified.
+     */
+    let own = false;
+    try { own = !!mirror.publicKey && toHex(chain.deviceIdOf(mirror.publicKey)) === deviceIdHex.toLowerCase(); } catch { own = false; }
+    if (mirror.publicKey && !own) return {...evaluate(mirror, null), verdict: {kind: 'tampered', seq: -1, reason: "the stored public key is not this device's"}};
     const last = (mirror.merged ?? [])[(mirror.merged ?? []).length - 1];
     if (!last || !mirror.publicKey) return evaluate(mirror, null);
     const prefix = REGISTRY() + deviceIdHex.toLowerCase() + '.';
@@ -573,7 +581,8 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     /* the key's latest checkpoint - once per action */
     const cached = this.sameHead && 'checkpoint' in this.sameHead ? this.sameHead.checkpoint : undefined;
     const checkpoint = this.snap && 'checkpoint' in this.snap ? this.snap.checkpoint : cached !== undefined ? cached : want ? await this.edge.checkpoint().catch(() => null) : null;
-    if (want && this.snap) this.snap.checkpoint = checkpoint;
+    /* only a checkpoint is kept for the action: a failed read (null) is asked again, not reused */
+    if (want && this.snap && checkpoint) this.snap.checkpoint = checkpoint;
     if (want && this.sameHead && checkpoint) this.sameHead.checkpoint = checkpoint;
     return {publicKey, publicKeyPq, openings: await this.openings(), checkpoint};
   }
@@ -593,11 +602,31 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     return {ok: false, reason: v.kind, seq: v.seq ?? v.from, to: v.to};
   }
 
-  /* R27 for Approve and resume: the head the one chain state verified, or a refusal */
+  /* R27 for Approve and resume: the head the strict check verified, or a refusal */
   private async verifiedHead(): Promise<Uint8Array> {
+    const s = await this.strictHead();
+    if (!s.ok) throw new Error(`edge: this phone's copy of the chain does not verify (${s.reason}) - sync or settle it first`);
+    return s.head;
+  }
+
+  /*
+   * THE LIBRARY'S STRICT CHECK BEFORE A BUDGET OPENS OR RESUMES (Brad, 2026-10-11: "checking every
+   * field in a token means nothing if we never check the signature"). The one chain state welds
+   * the links and checks the key's checkpoint, but it never checked the budget openings' own
+   * signatures, the self-press spends or the scope rules - so a stored opening edited on the
+   * phone would show as genuine and still pass. lib grants.check runs copy.verifyCopyKept with
+   * the key's public keys, its live head, its checkpoint (both halves) and its ring, keeping
+   * what it verified in memory so the next check reads only new links. Both must pass, at the
+   * same head.
+   */
+  private async strictHead(): Promise<{ok: true; head: Uint8Array} | {ok: false; reason: string}> {
     const a = await chainState.validity(this);
-    if (!a.ok || !a.head) throw new Error(`edge: this phone's copy of the chain does not verify (${a.view.verdict.kind}) - sync or settle it first`);
-    return a.head.head;
+    if (!a.ok || !a.head) return {ok: false, reason: a.view.verdict.kind};
+    const mirror = await loadMirror(this.deviceId);
+    const r = await this.edge.grants.check({links: mirror.links, openings: await this.openings()}).catch((e: unknown) => ({ok: false, reason: String((e as Error)?.message ?? e)}));
+    if (!r?.ok) return {ok: false, reason: `the strict check: ${r?.reason ?? 'not ok'}${r?.seq !== undefined ? ` at #${r.seq}` : ''}`};
+    if (toHex(r.head) !== toHex(a.head.head)) return {ok: false, reason: 'the key moved during the check - try again'};
+    return {ok: true, head: r.head};
   }
 
   /**
@@ -656,11 +685,12 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       from: o.computer,
       seen: o.seen,
       ask: o.ask,
-      /* the one chain state, strict: only a verified copy gives a head (APP.md) */
+      /* the one chain state AND the library's strict check (strictHead): only a copy both verify gives a head */
       verifyCopy: async () => {
-        const a = await chainState.validity(this);
+        const s = await this.strictHead();
+        if (!s.ok) console.log(`[edge] approve: refused - ${s.reason}`);
         /* a refusal: approveRequest looks at ok first, so the empty head is never used */
-        return a.ok && a.head ? {ok: true, head: a.head.head} : {ok: false, head: new Uint8Array(0)};
+        return s.ok ? {ok: true, head: s.head} : {ok: false, head: new Uint8Array(0)};
       },
       budgetOf: (id: number) => this.keptSync.get(id) ?? null,
       coverOf: (m: any) => this.coverOf(m, o.computer),

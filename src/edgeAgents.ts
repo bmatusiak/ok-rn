@@ -253,10 +253,9 @@ async function handleNote(msg: any, from: string): Promise<unknown | null> {
  * sync took Yes, a press and a sync link). OFFER: another device's log is HELD until
  * the person approves it from the Edge tab's banner.
  */
-const syncNames = new Map<string, string>(); /* the name each place gave in its HAVE */
 /* one sync's parts, by sid, in memory only (nothing changes until its COMMIT or OFFER) */
-const syncStaged = new Map<string, {peer: string; links: Map<number, any[]>; linkParts: number; chain: string | null}>();
-async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> {
+const syncStaged = new Map<string, {peer: string; computer: string; links: Map<number, any[]>; linkParts: number; chain: string | null}>();
+async function handleSync(msg: any, seen: Set<string>, computer: {id: string; name: string}): Promise<unknown | null> {
   const checked = syncLib.verify(msg, {seen});
   /* one line per sync message: a message dropped here gets no answer, and the computer waits */
   console.log(`[edge] sync message ${msg?.type}${msg?.payload?.chain ? ` (device ${String(msg.payload.chain).slice(0, 8)})` : ''}: ${checked.ok ? 'checked' : `dropped (${checked.reason})`}`);
@@ -265,9 +264,13 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   soft = soft ?? (await SoftKeyEdge.open());
   if (!soft) return {ok: false, refusal: 'invalid', detail: "this phone's key has no Edge"};
   /*
-   * Which computer: its own sync key signed this (msg.peer), and the message came over a
-   * Bluetooth link the person approved with its 6-digit code - no peer list since
-   * 2026-10-08 (Brad: peers dropped). What it brings of another device is HELD.
+   * WHICH COMPUTER IS THE PAIRING (Brad, 2026-10-11: "checking every field in a token means
+   * nothing if we never check the signature"): `computer` is the paired computer behind this
+   * Bluetooth link (its 6-digit code, its encrypted session) - that is what says who sent it,
+   * and its name is the one the banner shows. The message's own signature is checked against a
+   * key the message itself carries (msg.peer), so it proves only that the message is whole, not
+   * who sent it; a sync's parts must all come from one paired computer. What it brings of
+   * another device is HELD.
    */
   const peer = String(msg.peer).toLowerCase();
   if (String(msg.payload.deviceId).toLowerCase() !== toHexId(soft.deviceId)) {
@@ -310,23 +313,21 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   const other = p.chain ? String(p.chain).toLowerCase() : null;
   if (other && other === toHexId(soft.deviceId)) return {ok: false, refusal: 'invalid', detail: "that is this phone's own chain"};
   if (msg.type === syncLib.HAVE_TYPE && other) {
-    syncNames.set(peer, p.name);
     const merged = (await loadMirror(fromHexId(other))).links.map((r: any) => seqOfLink(r));
     const heldOne = (await loadHeld()).find(h => h.deviceId === other);
     const heldSeqs = heldOne ? heldOne.records.map(([l]) => seqOfLink({link: fromHexId(l)})) : [];
     return {ok: true, ranges: syncLib.rangesOf([...new Set([...merged, ...heldSeqs])].sort((a, b) => a - b))};
   }
   if (msg.type === syncLib.HAVE_TYPE) {
-    syncNames.set(peer, p.name);
     const {mirror} = await syncCopy(soft); /* what this copy holds NOW, the key's newest included */
     return {ok: true, ranges: syncLib.rangesOf(mirror.links.map((r: any) => seqOfLink(r)))};
   }
   let st = syncStaged.get(p.sid);
   if (!st) {
-    st = {peer, links: new Map(), linkParts: 0, chain: null};
+    st = {peer, computer: computer.id, links: new Map(), linkParts: 0, chain: null};
     syncStaged.set(p.sid, st);
   }
-  if (st.peer !== peer) return {ok: false, refusal: 'invalid', detail: 'a part of another sync'};
+  if (st.peer !== peer || st.computer !== computer.id) return {ok: false, refusal: 'invalid', detail: 'a part of another sync'};
   if ((st.chain ?? null) !== (p.chain ?? null) && st.links.size) return {ok: false, refusal: 'invalid', detail: 'a part of another chain'};
   st.chain = p.chain ?? null;
   if (msg.type === syncLib.LINKS_TYPE) {
@@ -358,7 +359,7 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
         deviceId: fromHexId(String(p.chain)), publicKey: fromHexId(st2.publicKey), publicKeyPq: fromHexId(st2.publicKeyPq), seq: st2.seq ?? null, nametag: st2.nametag,
         signature: fromHexId(st2.signature), signaturePq: fromHexId(st2.signaturePq),
       },
-      from: syncNames.get(peer) ?? 'a computer',
+      from: computer.name,
       openings: Array.isArray(p.openings) ? p.openings : [],
       notes: p.notes && typeof p.notes === 'object' ? p.notes : null,
     });
@@ -376,6 +377,18 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
   if (m.added.length && m.view.verdict.kind !== 'verified' && m.view.verdict.kind !== 'gap') {
     return {ok: false, refusal: 'copy_unverified', detail: `with those links this phone's copy would not verify (${m.view.verdict.kind}) - nothing taken`};
   }
+  /*
+   * EVERY LINK TAKEN IS A CHECKED ONE (Brad, 2026-10-11: "checking every field in a token means
+   * nothing if we never check the signature"). A "gap" verdict means part of the copy cannot be
+   * checked; links a computer offered INSIDE such a gap were kept unchecked, and the real links
+   * at those seqs refused later as a "fork". Each added link must be verified in the copy it
+   * lands in - welded to the key's signed checkpoint - or nothing is taken.
+   */
+  const verifiedSeqs = new Set(m.view.rows.filter(r => r.verified).map(r => r.seq));
+  const unchecked = m.added.map(seqOfLink).filter(seq => !verifiedSeqs.has(seq));
+  if (unchecked.length) {
+    return {ok: false, refusal: 'copy_unverified', detail: `#${unchecked.slice(0, 5).join(', #')}${unchecked.length > 5 ? '…' : ''} cannot be checked against the key - nothing taken`};
+  }
   /* Brad, 2026-10-08 ("Own links direct"): this phone's OWN links merge at once - its own key's, checked against its signature */
   if (m.added.length) {
     await keepOffered(soft.deviceId, m.added);
@@ -391,7 +404,11 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
   const seen = await loadSeen();
   try {
     /* the Key Chain list is not Edge's (Brad, 2026-10-08: "Move it out of Edge"): Edge's sync carries device logs only */
-    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.COMMIT_TYPE, syncLib.GIVE_TYPE, syncLib.OFFER_TYPE].includes(msg?.type)) return await handleSync(msg, seen);
+    if ([syncLib.HAVE_TYPE, syncLib.LINKS_TYPE, syncLib.COMMIT_TYPE, syncLib.GIVE_TYPE, syncLib.OFFER_TYPE].includes(msg?.type)) {
+      /* a sync is taken only from a paired computer - none behind this link, no answer (as a request below) */
+      const pc = await btTransit.computer(from).catch(() => null);
+      return pc ? await handleSync(msg, seen, {id: pc.id, name: pc.name}) : null;
+    }
     if (msg?.type !== requestLib.TYPE) return null;
     /* the Requests switch is off: refused unread */
     if (!(await agentRequestsOn())) return null;

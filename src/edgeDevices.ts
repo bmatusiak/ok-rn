@@ -110,8 +110,32 @@ export async function ownStatement(): Promise<StoredStatement | null> {
  */
 export async function ownerKey(): Promise<{ownerKey: Uint8Array; ownerKeyPq: Uint8Array} | null> {
   const s = await ownStatement();
-  return s?.ownerKey && s.ownerKeyPq ? {ownerKey: fromHex(s.ownerKey), ownerKeyPq: fromHex(s.ownerKeyPq)} : null;
+  if (!(s?.ownerKey && s.ownerKeyPq)) return null;
+  /*
+   * THE OWNER KEY IS THE KEY'S, NOT STORAGE'S (Brad, 2026-10-11: "checking every field in a token
+   * means nothing if we never check the signature"). Every held log is judged against this key,
+   * and storage is something anything on the phone could edit: once a session it is compared with
+   * a statement the soft key signs now (no press, no link). Not the key's, or the key cannot
+   * answer: no owner key - nothing classifies as yours.
+   */
+  const id = `${s.ownerKey}.${s.ownerKeyPq}`.toLowerCase();
+  if (!ownerConfirmed.has(id)) {
+    try {
+      const soft = await require('./edgeSoftKey').SoftKeyEdge.open();
+      const fresh = soft ? store(await soft.statement(s.nametag)) : null;
+      if (!fresh || `${fresh.ownerKey}.${fresh.ownerKeyPq}`.toLowerCase() !== id) {
+        console.log("[edge] the stored owner key is not this key's - not used");
+        return null;
+      }
+      ownerConfirmed.add(id);
+    } catch {
+      return null;
+    }
+  }
+  return {ownerKey: fromHex(s.ownerKey), ownerKeyPq: fromHex(s.ownerKeyPq)};
 }
+/* the owner keys the key itself gave this session (a statement it signed) - memory only */
+const ownerConfirmed = new Set<string>();
 
 /**
  * Set this phone's nametag: the key signs it with its owner key (no press, no link) and the
@@ -120,6 +144,8 @@ export async function ownerKey(): Promise<{ownerKey: Uint8Array; ownerKeyPq: Uin
 export async function setNametag(soft: {statement(nametag: string): Promise<any>}, nametag: string): Promise<StoredStatement> {
   const st = await soft.statement(nametag);
   const s = store(st);
+  /* signed by the key just now: its owner key is the key's for this session */
+  if (s.ownerKey && s.ownerKeyPq) ownerConfirmed.add(`${s.ownerKey}.${s.ownerKeyPq}`.toLowerCase());
   await AsyncStorage.setItem(OWN(), JSON.stringify(s));
   notify();
   return s;

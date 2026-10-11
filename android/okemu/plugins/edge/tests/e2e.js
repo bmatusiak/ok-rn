@@ -245,7 +245,7 @@ module.exports = function register({it}, ctx) {
       assert.equal(f.grantStep, i);
       const subject = sha256(payload);
       assert.equal(hex(f.subject), hex(grants.requestSubject(payload)), `use ${i}: the firmware's subject is not the library's requestSubject`);
-      spends.push({step: i, value: l.reveal, subject, mac: null});
+      spends.push({step: i, value: l.reveal, subject});
       txHead = (await app.edge.receipt(h.seq, 0x00, `okrn e2e: did as asked ${i}`)).head;
       assert.equal((await ctx.edgeCopy.messages())[h.seq], `okrn e2e: did as asked ${i}`, `the tab's copy lost receipt ${i}'s message - another phone would refuse this log`);
     }
@@ -253,8 +253,7 @@ module.exports = function register({it}, ctx) {
     assert.equal(await refusal(txStartFor(app, txHead, agentRequest('used up'))), 'nothing-to-pay');
     assert.ok(spends.every(s => s.value), 'a self-press came back without its reveal');
     for (const s of spends) {
-      const r = grants.checkSelfPress({genesis: g.genesis, uses: g.uses, step: s.step, value: s.value, subject: s.subject,
-        mac: ctx.lib.hmacSha256(s.value, s.subject)});
+      const r = grants.checkSelfPress({genesis: g.genesis, uses: g.uses, step: s.step, value: s.value});
       assert.ok(r.ok, `step ${s.step}: ${r.reason}`);
     }
 

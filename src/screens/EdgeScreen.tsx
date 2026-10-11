@@ -47,6 +47,8 @@ function verdictLine(v: Verdict): {text: string; color: string} {
       const checked = v.from === 0 ? `Checked from #${v.to + 1} on` : `Checked through #${v.from - 1} and from #${v.to + 1} on`;
       return {text: `${checked}. ${range} can't be checked on this phone.`, color: theme.warn};
     }
+    case 'unsigned':
+      return {text: "Not checked yet: the key's signature could not be checked - pull down to try again", color: theme.warn};
     case 'tampered':
       return {text: `Tampered at #${v.seq}: ${v.reason}`, color: theme.error};
     case 'not-synced':

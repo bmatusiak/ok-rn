@@ -13,7 +13,7 @@
  *     hashes to its receipt link.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {block, chain, codes, copy, sync as syncLib, receipts} from 'node-onlykey-lib/edge';
+import {block, chain, codes, copy, grants, sync as syncLib, receipts} from 'node-onlykey-lib/edge';
 import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 import type {EdgeCopyKey, EdgeLinkRecord, EdgeSource} from './edgeFake';
 import {raiseAlarms} from './edgeAlerts';
@@ -135,6 +135,12 @@ export type Verdict =
   | {kind: 'not-synced'}
   /* lost: ranges the person accepted as gone (LOSS links, R24) - verified around them */
   | {kind: 'verified'; through: number; lost?: {from: number; to: number}[]}
+  /*
+   * NO SIGNATURE CHECKED (Brad, 2026-10-11: "checking every field in a token means nothing if we
+   * never check the signature"): every link welds up to the head the key reported, but no
+   * checkpoint of the key's verified with both halves in this check - so it is not "verified".
+   */
+  | {kind: 'unsigned'; through: number}
   | {kind: 'gap'; through: number; from: number; to: number}
   | {kind: 'tampered'; seq: number; reason: string};
 
@@ -442,9 +448,10 @@ export function sync(source: EdgeSource, now = Date.now()): Promise<{mirror: Mir
 }
 
 /**
- * B7 stage 2: keep a verified EDGE_NOTE (edgeAgents checked the signature and
- * that its key was registered with a press). In the sync queue, so a note and a
- * sync never save over each other.
+ * B7 stage 2: keep an EDGE_NOTE from a paired computer. A note is NOT signed: the pairing
+ * behind the Bluetooth link (edgeAgents) says which computer sent it, and its text is shown only
+ * when it hashes to what the chain holds (the intent welded into the use, the receipt's message
+ * hash). In the sync queue, so a note and a sync never save over each other.
  */
 /* computer: the pairing id of the computer that sent it (no agent key since 2026-10-08) */
 export type EdgeNote = {computer: string; seq: number; reason?: string; receiptMsg?: string; txRefused?: string};
@@ -456,9 +463,28 @@ export function addNote(deviceId: Uint8Array, n: EdgeNote, now = Date.now()): Pr
 async function addNoteNow(deviceId: Uint8Array, n: EdgeNote, now: number): Promise<void> {
   const m = await loadMirror(deviceId);
   const computer = n.computer;
-  if (n.reason !== undefined) m.reasons[n.seq] = {computer, text: n.reason, at: now};
+  /*
+   * A NOTE DOES NOT REPLACE ONE THAT MATCHES (Brad, 2026-10-11: "checking every field in a token
+   * means nothing if we never check the signature"). Notes are unsigned and any paired computer
+   * may send one for any seq: the first stays, and a later one replaces it only when the stored
+   * text does not hash to the chain and the new one does - so a matching intent or receipt
+   * message cannot be turned red by another computer's note.
+   */
+  const link = m.links.find(r => seqOf(r) === n.seq);
+  const intentMatches = (text: string) => {
+    const intent = link ? (chain.decodeLink(link.link) as {intent?: Uint8Array | null}).intent : null;
+    return !!intent && toHex(grants.intentOf(text)) === toHex(intent);
+  };
+  const messageMatches = (text: string) =>
+    receipts.pairReceipts(m.links, {[n.seq]: text}).uses.find(u => u.seq === n.seq)?.messageStatus === 'match';
+  const keep = (was: string | undefined, now: string, matches: (t: string) => boolean) =>
+    was === undefined || (was !== now && !matches(was) && matches(now)) ? now : was;
+  if (n.reason !== undefined) {
+    const was = m.reasons[n.seq]?.text;
+    if (keep(was, n.reason, intentMatches) !== was) m.reasons[n.seq] = {computer, text: n.reason, at: now};
+  }
   /* by the use's seq, as receipts.pairReceipts reads it: shown only if it hashes to the receipt */
-  if (n.receiptMsg !== undefined) m.messages[n.seq] = n.receiptMsg;
+  if (n.receiptMsg !== undefined) m.messages[n.seq] = keep(m.messages[n.seq], n.receiptMsg, messageMatches);
   if (n.txRefused !== undefined) m.refusals = [...m.refusals, {computer, seq: n.seq, status: n.txRefused, at: now}].slice(-50);
   await saveMirror(m);
 }
@@ -676,7 +702,16 @@ export async function liveView(source: EdgeSource, mirror: Mirror, known?: {seq:
   }
   /* a sync in a burst asks no checkpoint (syncNow); the full check has one again */
   const full = key && !key.checkpoint && source.copyKey ? await source.copyKey().catch(() => key) : key;
-  return evaluate(mirror, head, await ring(), full);
+  const view = evaluate(mirror, head, await ring(), full);
+  /*
+   * NO SIGNATURE CHECKED: ask once more, head and checkpoint together - a link that landed
+   * between the two reads gives a checkpoint for a newer head, which cannot anchor this one.
+   */
+  if (view.verdict.kind !== 'unsigned' || !source.copyKey) return view;
+  const head2 = await source.head();
+  const key2 = await source.copyKey().catch(() => null);
+  const ring2 = head2.seq >= 0 ? await source.read(head2.ringFrom, head2.seq - head2.ringFrom + 1) : [];
+  return evaluate(mirror, head2, ring2, key2);
 }
 
 /* would evaluate() reuse this session's result, or check only the new links? (no I/O, no verification) */
@@ -912,15 +947,18 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
    * key.publicKey and ML-DSA-65 under key.publicKeyPq (chain.verifyCheckpoint, strict) -
    * because the older checkpoints (seals, budget openings) are checked by P-256 alone and are
    * quantum-safe only through the welds up to it. copy.assess would merely leave a bad one out
-   * as an anchor; lib copy.verifyCopy (Approve) refuses it, so the banner refuses it too: one
+   * as an anchor; lib grants.check (verifyCopyKept - Approve runs it, SoftKeyEdge strictHead)
+   * refuses it, so the banner refuses it too: one
    * answer. No fallback: a checkpoint without its ML-DSA-65 half, or a key that gave no
    * ML-DSA-65 key, fails here (Edge is unreleased).
    */
+  let hybridOk = false;
   if (cp && key?.publicKey) {
     let ok = false;
     try {
       ok = chain.verifyCheckpoint({deviceId: chain.deviceIdOf(key.publicKey), seq: cp.seq, head: cp.head}, cp.signature, key.publicKey, cp.signaturePq ?? null, key.publicKeyPq ?? null);
     } catch { /* malformed: not ok */ }
+    hybridOk = ok;
     if (!ok) {
       lastCheck = 'full';
       console.log(`[edge] verify ${id.slice(0, 8)}: the key's checkpoint at #${cp.seq} does not verify with both halves (P-256 + ML-DSA-65)`);
@@ -955,6 +993,21 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
   else if (open.length) verdict = {kind: 'gap', through: result.verifiedThrough, from: open[0].from, to: open[0].to};
   else if (lost.length) verdict = {kind: 'verified', through: head.seq, lost};
   else verdict = {kind: 'verified', through: result.verifiedThrough};
+  /*
+   * VERIFIED NEEDS A SIGNATURE (Brad, 2026-10-11: "checking every field in a token means nothing
+   * if we never check the signature"). The welds above only prove the links lead to the head the
+   * key reported; the key's checkpoint verifying with both halves is what proves the key signed
+   * that head. A checkpoint that could not be read, or was for a newer head (dropped above), left
+   * this check with no signature at all - and it used to end "verified" anyway. Not any more:
+   * "unsigned", never kept as this session's verified state, so the next check is a full one with
+   * the checkpoint asked again (liveView asks once more at once).
+   */
+  /* a key with nothing recorded yet (head #-1) has no link to sign and nothing to trust */
+  if (verdict.kind === 'verified' && !hybridOk && head.seq >= 0) {
+    console.log(`[edge] verify ${id.slice(0, 8)}: no checkpoint of the key verified in this check - not checked yet (unsigned)`);
+    verifiedNow.delete(id);
+    return viewOf({kind: 'unsigned', through: verdict.through}, unverified);
+  }
   remember(verdict, [...unverified]);
   return viewOf(verdict, unverified);
 }

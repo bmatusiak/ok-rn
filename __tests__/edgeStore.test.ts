@@ -663,3 +663,54 @@ test('one anchor per copy: the newest seal keeps its ML-DSA-65 half, the older d
   expect(lastCheckPath()).toBe('sealed');
   expect(view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
 });
+
+/*
+ * VERIFIED NEEDS A SIGNATURE (Brad, 2026-10-11: "checking every field in a token means nothing if
+ * we never check the signature"). Every link welds up to the key's head, but when no checkpoint
+ * of the key verifies (the read failed, or it was for a newer head), the copy is "unsigned" -
+ * not "verified" - and Approve's one check (chainState.validity) refuses it.
+ */
+class NoCheckpointFake extends FakeEdgeKey {
+  async copyKey(opts: {checkpoint?: boolean} = {}): Promise<EdgeCopyKey> {
+    return {...(await super.copyKey(opts)), checkpoint: null};
+  }
+}
+
+test('no checkpoint verified: the copy is "unsigned", not "verified", and validity refuses it', async () => {
+  const k = FakeEdgeKey.demo(new NoCheckpointFake('fake-key-no-checkpoint'));
+  const {view} = await sync(k);
+  expect(view.verdict.kind).toBe('unsigned');
+  forgetVerified();
+  const a = await chainState.validity(k);
+  expect(a.ok).toBe(false);
+  expect(a.view.verdict.kind).toBe('unsigned');
+});
+
+test('the same chain with its checkpoint signed (both halves) is verified', async () => {
+  const k = FakeEdgeKey.demo(new FakeEdgeKey('fake-key-signed-checkpoint'));
+  const {view} = await sync(k);
+  expect(view.verdict.kind).toBe('verified');
+});
+
+test('a key with nothing recorded yet stays "Verified: nothing recorded yet" - there is nothing to sign', async () => {
+  const k = new NoCheckpointFake('fake-key-empty');
+  const {view} = await sync(k);
+  expect(view.verdict).toEqual({kind: 'verified', through: -1});
+});
+
+/*
+ * A NOTE DOES NOT REPLACE ONE THAT MATCHES (Brad, 2026-10-11): notes are unsigned and any
+ * paired computer may send one; a receipt message that hashes to the receipt stays when another
+ * computer sends a different text for the same use.
+ */
+test("a matching receipt message stays when another computer's note says something else", async () => {
+  const k = new FakeEdgeKey('fake-key-notes-stay');
+  const seq = spend(k, 'commit 1');
+  k.receipt(0x00, 'pushed ok-rn');
+  k.messages = async () => ({});
+  await sync(k);
+  await addNote(k.deviceId, {computer: 'pair-1', seq, receiptMsg: 'pushed ok-rn'});
+  await addNote(k.deviceId, {computer: 'pair-2', seq, receiptMsg: 'something else'});
+  const row = (await sync(k)).view.rows.find(r => r.seq === seq)!;
+  expect(row.receipt).toMatchObject({messageStatus: 'match', message: 'pushed ok-rn'});
+});
