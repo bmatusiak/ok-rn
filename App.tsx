@@ -78,6 +78,7 @@ import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
 import {PressSheet} from './src/ui/PressSheet';
 import {buildInfo, hasSoftKeyPlugin} from './src/buildInfo';
+import {pluginTabs, pluginWatches, usePluginsStarted} from './src/plugins';
 import {setFirmwareConsoleToLogcat} from './src/hooks/useOkEmu';
 import {startKeyChainRecorder} from './src/keyChainRecorder';
 
@@ -165,7 +166,9 @@ const IN_DEV_TAB = 'In-Development' as const;
  * testing controls when testing mode is off.
  */
 const EDGE_TAB = 'Edge' as const;
-type Tab = (typeof TABS)[number] | typeof IN_DEV_TAB | typeof EDGE_TAB | typeof TESTING_TAB;
+/* a tab an app plugin added (src/plugins): App draws it without naming it */
+type PluginTab = string & {readonly __pluginTab: true};
+type Tab = (typeof TABS)[number] | typeof IN_DEV_TAB | typeof EDGE_TAB | typeof TESTING_TAB | PluginTab;
 
 /*
  * TABS KEPT BUT NOT SHOWN (Brad, 2026-10-11): a tab replaced by a newer one leaves the
@@ -194,7 +197,12 @@ function shownTabs(testingOn: boolean): readonly Tab[] {
   const testingTabs = __DEV__ && testingOn;
   const edge = testingTabs || hasSoftKeyPlugin('edge');
   const [first, ...rest] = TABS.filter(t => t !== 'Settings');
-  const all: readonly Tab[] = [first, ...(edge ? [EDGE_TAB] : []), ...rest, ...(testingTabs ? [IN_DEV_TAB, TESTING_TAB] : []), 'Settings'];
+  const all: Tab[] = [first, ...(edge ? [EDGE_TAB] : []), ...rest, ...(testingTabs ? [IN_DEV_TAB, TESTING_TAB] : []), 'Settings'];
+  /* each plugin tab after the tab it names, else just before Settings */
+  for (const p of pluginTabs()) {
+    const at = p.after ? all.indexOf(p.after as Tab) : -1;
+    all.splice(at >= 0 ? at + 1 : all.length - 1, 0, p.name as PluginTab);
+  }
   return all.filter(t => !HIDDEN_TABS.includes(t) && (__DEV__ || !DEV_ONLY_TABS.includes(t)));
 }
 
@@ -840,6 +848,9 @@ function Shell() {
   }, [getActiveKey, emu]);
 
   const [tab, setTab] = useState<Tab>('This Key');
+  /* the app plugins start a moment after launch; their tabs appear then */
+  usePluginsStarted();
+  const pluginTab = pluginTabs().find(t => t.name === tab);
   /* B7: a tapped Edge alarm opens the Edge tab on its link (on launch and on every return to the app) */
   const [edgeFocus, setEdgeFocus] = useState<number | null>(null);
   /* the request sheet's budget card, tapped: the Edge tab, on that budget's details (edgeNav.ts) */
@@ -1073,6 +1084,16 @@ function Shell() {
       <StatusBar barStyle="light-content" />
       {/* an agent's budget request (Edge step 2): over whatever tab is open */}
       {hasSoftKeyPlugin('edge') ? <EdgeRequestSheet /> : null}
+      {/* app plugins' watches run whatever tab is open (the Password Manager closes a key's store when it locks) */}
+      {pluginWatches().map((Watch, i) => (
+        <Watch
+          key={i}
+          unlocked={{
+            embedded: keys.soft.state === 'running' && keys.soft.device === 'unlocked',
+            usb: keys.hard.state === 'running' && keys.hard.device === 'unlocked',
+          }}
+        />
+      ))}
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>
         {ready ? (
           <View style={styles.bar}>
@@ -1305,6 +1326,13 @@ function Shell() {
               onCheckConfig={() => void checkConfig()}
               checking={checking}
             />
+          ) : pluginTab ? (
+            pluginTab.render({
+              backend: keys.backend,
+              unlocked: emu.state === 'running' && emu.device === 'unlocked',
+              caps: emu.capabilities,
+              blockScreenshots: BLOCK_SCREENSHOTS,
+            })
           ) : tab === 'This Key' ? (
             openSlot ? (
               <SlotEditorScreen slot={openSlot} emu={emu} onBack={() => setOpenSlot(null)} blockScreenshots={BLOCK_SCREENSHOTS} />

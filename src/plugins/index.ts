@@ -1,0 +1,52 @@
+import {useEffect, useState} from 'react';
+import Rectify from '@bmatusiak/rectify';
+
+import tabs, {type TabsService} from './tabs';
+import passwords from './passwords/plugin';
+import type {AppTab, AppWatch} from './types';
+
+/*
+ * THE APP PLUGINS, composed with Rectify as src/onlykey.ts composes the library's (Brad: Rectify
+ * is the plugin system). A feature that is its own plugin lives in one folder under src/plugins/
+ * and is named once, here. Removing it = deleting its folder and its line below; App.tsx never
+ * names it - it draws whatever tabs the plugins added (Brad, 2026-10-11, the Password Manager:
+ * "i want the password manager to act as its own plugin, keeping it easy to remove and work on
+ * seperatly").
+ */
+const PLUGINS: any[] = [tabs, passwords];
+
+let started: TabsService | null = null;
+const waiting = new Set<() => void>();
+
+const app = Rectify.build(PLUGINS, (err: Error | null, ready: any) => {
+  if (err) {
+    console.warn('[plugins] did not start:', err.message);
+    return;
+  }
+  started = ready.services.tabs as TabsService;
+  for (const w of waiting) w();
+  waiting.clear();
+});
+app.start();
+
+/** The plugins' tabs; empty until they have started (a moment after launch, before login). */
+export function pluginTabs(): readonly AppTab[] {
+  return started ? started.list() : [];
+}
+
+export function pluginWatches(): readonly AppWatch[] {
+  return started ? started.watches() : [];
+}
+
+/** Re-renders once when the plugins have started. */
+export function usePluginsStarted(): boolean {
+  const [ok, setOk] = useState(started !== null);
+  useEffect(() => {
+    if (ok) return;
+    const w = () => setOk(true);
+    if (started) w();
+    else waiting.add(w);
+    return () => void waiting.delete(w);
+  }, [ok]);
+  return ok;
+}
