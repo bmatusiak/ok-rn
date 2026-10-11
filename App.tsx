@@ -62,6 +62,8 @@ import {BackupScreen} from './src/screens/BackupScreen';
 import {BluetoothScreen} from './src/screens/BluetoothScreen';
 import {CryptoScreen} from './src/screens/CryptoScreen';
 import {EncryptDecryptScreen} from './src/screens/EncryptDecryptScreen';
+import {EncryptDecryptTabScreen} from './src/screens/EncryptDecryptTabScreen';
+import {SettingsScreen, type SettingsPage} from './src/screens/SettingsScreen';
 import {SetupTabScreen} from './src/screens/SetupTabScreen';
 import {FirmwareTabScreen} from './src/screens/FirmwareTabScreen';
 import {PreferencesScreen} from './src/screens/PreferencesScreen';
@@ -114,7 +116,9 @@ import {startKeyChainRecorder} from './src/keyChainRecorder';
  */
 const TABS = [
   'This Key',
+  'Settings',
   'PIN Setup',
+  'Encrypt/Decrypt',
   'Encrypt',
   'Decrypt',
   'Slots',
@@ -163,10 +167,21 @@ const IN_DEV_TAB = 'In-Development' as const;
 const EDGE_TAB = 'Edge' as const;
 type Tab = (typeof TABS)[number] | typeof IN_DEV_TAB | typeof EDGE_TAB | typeof TESTING_TAB;
 
+/*
+ * TABS KEPT BUT NOT SHOWN (Brad, 2026-10-11): a tab replaced by a newer one leaves the
+ * drawer, and its screen and render branch stay as they were - "just incase i need to bring
+ * them back as they where". Bringing one back is taking it off this list.
+ *   PIN Setup, Preferences, Backup/Restore, Firmware, Advanced - opened from Settings (a sub view with a back button).
+ *   Slots - a panel on This Key, under Buttons; a slot opens its editor there.
+ *   Encrypt, Decrypt - merged into Encrypt/Decrypt (one tab, a switch at the top).
+ *   Keys - replaced by Key Chain.
+ */
+const HIDDEN_TABS: readonly Tab[] = ['PIN Setup', 'Preferences', 'Backup/Restore', 'Firmware', 'Advanced', 'Slots', 'Encrypt', 'Decrypt', 'Keys'];
+
 /* the drawer's tabs: testing mode adds its own; Edge also comes with a soft key that has it */
 function shownTabs(testingOn: boolean): readonly Tab[] {
-  if (__DEV__ && testingOn) return [...TABS, IN_DEV_TAB, EDGE_TAB, TESTING_TAB];
-  return hasSoftKeyPlugin('edge') ? [...TABS, EDGE_TAB] : TABS;
+  const all: readonly Tab[] = __DEV__ && testingOn ? [...TABS, IN_DEV_TAB, EDGE_TAB, TESTING_TAB] : hasSoftKeyPlugin('edge') ? [...TABS, EDGE_TAB] : TABS;
+  return all.filter(t => !HIDDEN_TABS.includes(t));
 }
 
 /** Splash until the device can answer, then a door, then the app. */
@@ -987,6 +1002,22 @@ function Shell() {
 
   const ready = phase === 'main';
 
+  /* PIN Setup, Preferences, Advanced: one element each, drawn by Settings' sub views and by their own (hidden) tabs */
+  const settingsPage = (page: SettingsPage) =>
+    page === 'PIN Setup' ? (
+      <SetupTabScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+    ) : page === 'Preferences' ? (
+      /* The PIN changes are on PIN Setup. */
+      <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['prefs']} />
+    ) : page === 'Backup/Restore' ? (
+      /* The backup key is here, beside the restore that needs it. */
+      <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['capture', 'backupKey', 'restore']} />
+    ) : page === 'Firmware' ? (
+      <FirmwareTabScreen emu={keys.key} hardRunning={keys.hard.state === 'running'} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+    ) : (
+      <AdvancedScreen emu={keys.key} hard={keys.hard} keys={keys} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+    );
+
   /*
    * Locking forgets everything learned while unlocked. The epoch is a remount
    * key for the screens; the hook also drops the library's cached vault keys,
@@ -1261,7 +1292,12 @@ function Shell() {
               checking={checking}
             />
           ) : tab === 'This Key' ? (
-            <KeyScreen emu={emu} keys={keys} configMode={configMode === PRE} onCheckConfig={() => void checkConfig()} checking={checking} />
+            openSlot ? (
+              <SlotEditorScreen slot={openSlot} emu={emu} onBack={() => setOpenSlot(null)} blockScreenshots={BLOCK_SCREENSHOTS} />
+            ) : (
+              <KeyScreen emu={emu} keys={keys} configMode={configMode === PRE} onCheckConfig={() => void checkConfig()} checking={checking}
+                slots={<SlotsScreen panel onOpen={slot => setOpenSlot(slot)} />} />
+            )
           ) : tab === 'Slots' ? (
             openSlot ? (
               <SlotEditorScreen
@@ -1284,8 +1320,18 @@ function Shell() {
             <KeysScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
           ) : tab === 'Bluetooth' ? (
             <BluetoothScreen fido={fido} on={btOn} setOn={setBtOn} auto={auto} canPress={emu.canPress === true} testing={testing.enabled} />
+          ) : tab === 'Settings' ? (
+            <SettingsScreen render={settingsPage} />
           ) : tab === 'PIN Setup' ? (
-            <SetupTabScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+            settingsPage('PIN Setup')
+          ) : tab === 'Encrypt/Decrypt' ? (
+            <EncryptDecryptTabScreen
+              emu={emu}
+              blockScreenshots={BLOCK_SCREENSHOTS}
+              configMode={configMode}
+              onWantConfigMode={() => setConfigMode(WANTED)}
+              testing={testing.enabled}
+            />
           ) : tab === 'Encrypt' || tab === 'Decrypt' ? (
             <EncryptDecryptScreen
               key={tab}
@@ -1297,13 +1343,11 @@ function Shell() {
               testing={testing.enabled}
             />
           ) : tab === 'Backup/Restore' ? (
-            /* The backup key is here, beside the restore that needs it. */
-            <BackupScreen emu={emu} blockScreenshots={BLOCK_SCREENSHOTS} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['capture', 'backupKey', 'restore']} />
+            settingsPage('Backup/Restore')
           ) : tab === 'Firmware' ? (
-            <FirmwareTabScreen emu={keys.key} hardRunning={keys.hard.state === 'running'} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+            settingsPage('Firmware')
           ) : tab === 'Preferences' ? (
-            /* The PIN changes are on PIN Setup. */
-            <PreferencesScreen emu={emu} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} show={['prefs']} />
+            settingsPage('Preferences')
           ) : tab === EDGE_TAB ? (
             <EdgeScreen testingMode={testing.enabled} focusSeq={edgeFocus} onFocused={() => setEdgeFocus(null)} openGrantId={edgeBudget} onBudgetOpened={() => setEdgeBudget(null)} />
           ) : tab === IN_DEV_TAB ? (
@@ -1311,7 +1355,7 @@ function Shell() {
           ) : tab === 'Passkeys' ? (
             <PasskeysScreen emu={keys.key} configMode={configMode} />
           ) : tab === 'Advanced' ? (
-            <AdvancedScreen emu={keys.key} hard={keys.hard} keys={keys} configMode={configMode} onWantConfigMode={() => setConfigMode(WANTED)} />
+            settingsPage('Advanced')
           ) : tab === 'Log' ? (
             <LogScreen
               blockScreenshots={BLOCK_SCREENSHOTS}

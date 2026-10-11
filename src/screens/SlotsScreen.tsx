@@ -1,6 +1,6 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {Btn} from '../ui/components';
+import {Btn, Section} from '../ui/components';
 import {SlotGrid} from '../ui/SlotGrid';
 import {DuoSlotGrid} from '../ui/DuoSlotGrid';
 import {theme} from '../ui/theme';
@@ -22,9 +22,16 @@ import {device as okdevice} from 'node-onlykey-lib';
  */
 export function SlotsScreen({
   onOpen,
+  panel = false,
 }: {
   /* `label` is what the grid shows for the slot - the one field the key reports. */
   onOpen: (slot: {id: string; index: number; label: string | null}) => void;
+  /*
+   * As a panel on This Key, under Buttons (Brad, 2026-10-11: "i want the content of this tab,,
+   * to become a panel, in This Key tab, under Buttons panel"): the same header, grid and note
+   * in a Section, inside This Key's own scroll view. The Slots tab draws it as a full screen.
+   */
+  panel?: boolean;
 }) {
   /* The ACTIVE key, not whichever one this file used to assume. */
   const getKey = useActiveKey();
@@ -73,16 +80,9 @@ export function SlotsScreen({
     void refresh();
   }, [refresh]);
 
-  return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={styles.content}
-      showsVerticalScrollIndicator={false}>
-      <View style={styles.header}>
-        <Text style={styles.title}>{`Slots — ${keyName}`}</Text>
-        <Btn title={loading ? '…' : 'Refresh'} disabled={loading} onPress={refresh} />
-      </View>
-
+  const refreshBtn = <Btn title={loading ? '…' : 'Refresh'} disabled={loading} onPress={refresh} />;
+  const body = (
+    <>
       <Text style={styles.intro}>
         Each button holds two slots — a and b. A tap types the a slot; a hold
         types the b slot.
@@ -113,6 +113,25 @@ export function SlotsScreen({
         hold a login — the app cannot see what is in it until the key is asked
         to type it.
       </Text>
+    </>
+  );
+  if (panel) {
+    return (
+      <Section title={`Slots — ${keyName}`} right={refreshBtn}>
+        <View style={styles.panel}>{body}</View>
+      </Section>
+    );
+  }
+  return (
+    <ScrollView
+      style={styles.root}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}>
+      <View style={styles.header}>
+        <Text style={styles.title}>{`Slots — ${keyName}`}</Text>
+        {refreshBtn}
+      </View>
+      {body}
     </ScrollView>
   );
 }
@@ -120,6 +139,7 @@ export function SlotsScreen({
 const styles = StyleSheet.create({
   root: {flex: 1},
   content: {padding: 16, gap: 16, paddingBottom: 32},
+  panel: {gap: 16},
 
   header: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
   title: {color: theme.text, fontSize: 20, fontWeight: '700'},

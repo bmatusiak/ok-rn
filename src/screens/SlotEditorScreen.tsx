@@ -1,5 +1,6 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {
+  BackHandler,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -197,6 +198,14 @@ export function SlotEditorScreen({
   const getKey = useActiveKey();
   /* What the key types in, remembered per key. See useKeyboardLayout. */
   const {layout} = useKeyboardLayout();
+  /*
+   * THE PHONE'S OWN BACK (button or gesture) goes back to the slots, as the ‹ does (Brad,
+   * 2026-10-11: "that new view lacks the native back gesture action") - as Edge's budget view.
+   */
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { onBack(); return true; });
+    return () => sub.remove();
+  }, [onBack]);
 
   /*
    * THE LABEL IS SHOWN AND EDITED IN PLACE. It is the one thing the key reports

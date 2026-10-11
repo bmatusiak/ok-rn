@@ -102,12 +102,14 @@ function describeBuild(caps: EmuSession['capabilities']): string {
  * the key its PIN goes in HERE - and without the button the app never learned
  * the key was in config mode (Restore and "Set a backup key" stayed greyed).
  */
-export function KeyScreen({emu, keys, configMode = false, onCheckConfig, checking = false}: {
+export function KeyScreen({emu, keys, configMode = false, onCheckConfig, checking = false, slots}: {
   emu: EmuSession;
   keys: KeyControl;
   configMode?: boolean;
   onCheckConfig?: () => void;
   checking?: boolean;
+  /* the Slots panel, drawn under Buttons (Brad, 2026-10-11) - App passes it with its editor wired */
+  slots?: React.ReactNode;
 }) {
 
   if (emu.state === 'halted') {
@@ -188,7 +190,7 @@ export function KeyScreen({emu, keys, configMode = false, onCheckConfig, checkin
     );
   }
 
-  return <Unlocked emu={emu} keys={keys} />;
+  return <Unlocked emu={emu} keys={keys} slots={slots} />;
 }
 
 /**
@@ -212,7 +214,7 @@ function sourceLabel(keys: KeyControl): string {
   return `${keys.name} (chosen)`;
 }
 
-function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
+function Unlocked({emu, keys, slots}: {emu: EmuSession; keys: KeyControl; slots?: React.ReactNode}) {
   const getKey = useActiveKey();
   const capabilityRows = describeCapabilities(emu.capabilities);
 
@@ -292,6 +294,8 @@ function Unlocked({emu, keys}: {emu: EmuSession; keys: KeyControl}) {
         </View>
       </Section>
       )}
+
+      {slots}
 
       {/*
         THE PANEL NAMES ITS OWN SUBJECT.
