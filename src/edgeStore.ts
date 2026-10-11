@@ -36,9 +36,10 @@ type StoredMirror = {
   reasons?: Record<string, {computer: string; text: string; at: number}>;
   refusals?: {computer: string; seq: number; status: string; at: number}[];
   publicKey?: string;
+  publicKeyPq?: string;
   continued?: ContinueCheck | null;
-  merged?: {seq: number; head: string; signature: string; at: number}[];
-  seals?: {seq: number; head: string; signature: string; ended: number[]}[];
+  merged?: {seq: number; head: string; signature: string; signaturePq?: string; at: number}[];
+  seals?: {seq: number; head: string; signature: string; signaturePq?: string; ended: number[]}[];
 };
 
 /*
@@ -50,7 +51,26 @@ type StoredMirror = {
  */
 export type ContinueCheck = {ok: boolean; fromDeviceId?: string; oldSeq: number; debtsChecked?: boolean; reason?: string};
 
-export type Seal = {seq: number; head: Uint8Array; signature: Uint8Array; ended: number[]};
+/* signaturePq: the ML-DSA-65 half - only on the newest seal (one hybrid anchor per copy, see oneAnchor) */
+export type Seal = {seq: number; head: Uint8Array; signature: Uint8Array; signaturePq?: Uint8Array; ended: number[]};
+
+/*
+ * ONE ML-DSA ANCHOR PER COPY (the hybrid design, Brad 2026-10-10; lib chain.verifyCheckpointP256,
+ * block.verifyBlock's anchor). The key signs every checkpoint with P-256 AND ML-DSA-65, but an
+ * ML-DSA-65 signature is 3309 bytes: kept on every seal and merge point it would grow the copy by
+ * one per budget ever closed. Only the NEWEST checkpoint of a copy keeps its ML-DSA-65 half and is
+ * checked with both; every older one keeps its P-256 half and is quantum-safe through the welds up
+ * to that newest one. So a list of checkpoints is stored with the pq half dropped from all but its
+ * last (as the lib's CLI keepSeals does with a computer's seals).
+ */
+function oneAnchor<T extends {signaturePq?: Uint8Array}>(list: T[]): T[] {
+  return list.map((x, i) => {
+    if (i === list.length - 1 || !x.signaturePq) return x;
+    const p256 = {...x};
+    delete p256.signaturePq;
+    return p256;
+  });
+}
 
 export type Mirror = {
   deviceId: Uint8Array;
@@ -86,14 +106,17 @@ export type Mirror = {
    * chain, this old copy and its checkpoints stay checkable without the key.
    */
   publicKey?: Uint8Array | null;
+  /* its ML-DSA-65 twin (1952 bytes; hybrid, 2026-10-10), kept beside it for the same reason */
+  publicKeyPq?: Uint8Array | null;
   continued?: ContinueCheck | null;
   /*
    * On ANOTHER device's copy (2026-10-08): the signed checkpoints of that device this
    * phone merged its log up to, when you approved it - what the next offer is checked
    * against (a rollback or a changed head alarms; lib sync.anchorCheck). No link on this
    * key records a merge: pairing and sync are all app (Brad).
+   * The newest keeps its ML-DSA-65 half (signaturePq), the older ones drop it (oneAnchor).
    */
-  merged?: {seq: number; head: Uint8Array; signature: Uint8Array; at: number}[];
+  merged?: {seq: number; head: Uint8Array; signature: Uint8Array; signaturePq?: Uint8Array; at: number}[];
   /*
    * SEALED BLOCKS (BLOCKS.md; Brad, 2026-10-07: "checkpoints can happen on a
    * budget grant end, like it's the end of the block of transactions"; "we only need
@@ -221,9 +244,10 @@ async function readMirror(deviceId: Uint8Array): Promise<Mirror> {
     reasons: Object.fromEntries(Object.entries(s.reasons ?? {}).map(([k, v]) => [Number(k), v])),
     refusals: s.refusals ?? [],
     publicKey: s.publicKey ? fromHex(s.publicKey) : null,
+    publicKeyPq: s.publicKeyPq ? fromHex(s.publicKeyPq) : null,
     continued: s.continued ?? null,
-    merged: (s.merged ?? []).map(a => ({seq: a.seq, head: fromHex(a.head), signature: fromHex(a.signature), at: a.at})),
-    seals: (s.seals ?? []).map(x => ({seq: x.seq, head: fromHex(x.head), signature: fromHex(x.signature), ended: x.ended ?? []})),
+    merged: (s.merged ?? []).map(a => ({seq: a.seq, head: fromHex(a.head), signature: fromHex(a.signature), ...(a.signaturePq ? {signaturePq: fromHex(a.signaturePq)} : {}), at: a.at})),
+    seals: (s.seals ?? []).map(x => ({seq: x.seq, head: fromHex(x.head), signature: fromHex(x.signature), ...(x.signaturePq ? {signaturePq: fromHex(x.signaturePq)} : {}), ended: x.ended ?? []})),
   };
 }
 
@@ -241,9 +265,10 @@ export async function saveMirror(m: Mirror): Promise<void> {
     ...(m.refusals.length ? {refusals: m.refusals} : {}),
     ...(m.setAside.length ? {setAside: m.setAside.map(x => ({link: toHex(x.link), head: toHex(x.head), at: x.at}))} : {}),
     ...(m.publicKey ? {publicKey: toHex(m.publicKey)} : {}),
+    ...(m.publicKeyPq ? {publicKeyPq: toHex(m.publicKeyPq)} : {}),
     ...(m.continued ? {continued: m.continued} : {}),
-    ...(m.merged?.length ? {merged: m.merged.map(a => ({seq: a.seq, head: toHex(a.head), signature: toHex(a.signature), at: a.at}))} : {}),
-    ...(m.seals?.length ? {seals: m.seals.map(x => ({seq: x.seq, head: toHex(x.head), signature: toHex(x.signature), ended: x.ended}))} : {}),
+    ...(m.merged?.length ? {merged: m.merged.map(a => ({seq: a.seq, head: toHex(a.head), signature: toHex(a.signature), ...(a.signaturePq ? {signaturePq: toHex(a.signaturePq)} : {}), at: a.at}))} : {}),
+    ...(m.seals?.length ? {seals: m.seals.map(x => ({seq: x.seq, head: toHex(x.head), signature: toHex(x.signature), ...(x.signaturePq ? {signaturePq: toHex(x.signaturePq)} : {}), ended: x.ended}))} : {}),
   };
   const text = JSON.stringify(s);
   const now = await AsyncStorage.getItem(storageKey(m.deviceId));
@@ -519,7 +544,10 @@ async function syncNow(source: EdgeSource, now: number): Promise<{mirror: Mirror
   const wantCheckpoint = !was || was.verdict.kind !== 'verified' || (live !== null && sealDue(mirror, live));
   const ownKey = source.copyKey ? await source.copyKey({checkpoint: wantCheckpoint}).catch(() => null) : null;
   lap(wantCheckpoint ? 'copyKey' : 'copyKey (no checkpoint)');
-  if (ownKey?.publicKey) mirror.publicKey = ownKey.publicKey;
+  if (ownKey?.publicKey) {
+    mirror.publicKey = ownKey.publicKey;
+    mirror.publicKeyPq = ownKey.publicKeyPq ?? null;
+  }
   if (!mirror.continued) mirror.continued = await continuedFrom(mirror);
   lap('continued');
   mirror.lastSync = now;
@@ -567,19 +595,21 @@ export async function mergeOffered(source: EdgeSource, offered: EdgeLinkRecord[]
  * Keep another device's links and the checkpoint they were merged up to - only once you
  * approved that device's held log (edgeDevices.approveHeld). In the sync queue.
  */
-export function keepMerged(chainId: Uint8Array, publicKey: Uint8Array, added: EdgeLinkRecord[], point: NonNullable<Mirror['merged']>[number], now = Date.now()): Promise<void> {
-  const run = syncing.then(() => keepMergedNow(chainId, publicKey, added, point, now), () => keepMergedNow(chainId, publicKey, added, point, now));
+export function keepMerged(chainId: Uint8Array, publicKey: Uint8Array, publicKeyPq: Uint8Array, added: EdgeLinkRecord[], point: NonNullable<Mirror['merged']>[number], now = Date.now()): Promise<void> {
+  const run = syncing.then(() => keepMergedNow(chainId, publicKey, publicKeyPq, added, point, now), () => keepMergedNow(chainId, publicKey, publicKeyPq, added, point, now));
   syncing = run.catch(() => undefined);
   return run;
 }
-async function keepMergedNow(chainId: Uint8Array, publicKey: Uint8Array, added: EdgeLinkRecord[], point: NonNullable<Mirror['merged']>[number], now: number): Promise<void> {
+async function keepMergedNow(chainId: Uint8Array, publicKey: Uint8Array, publicKeyPq: Uint8Array, added: EdgeLinkRecord[], point: NonNullable<Mirror['merged']>[number], now: number): Promise<void> {
   const mirror = await loadMirror(chainId);
   const m = syncLib.merge(mirror.links, added);
   if (m.conflicts.length) throw new Error(`a fork at #${m.conflicts.join(', #')} - nothing kept`);
   mirror.links = m.links;
   for (const r of m.added) mirror.seen[seqOf(r)] = mirror.seen[seqOf(r)] ?? now;
   mirror.publicKey = publicKey;
-  mirror.merged = [...(mirror.merged ?? []), point];
+  mirror.publicKeyPq = publicKeyPq;
+  /* the point is the held log's newest checkpoint: the copy's hybrid anchor now - the older points keep P-256 only */
+  mirror.merged = oneAnchor([...(mirror.merged ?? []), point]);
   mirror.lastSync = now;
   await saveMirror(mirror);
 }
@@ -673,7 +703,7 @@ function grantIdsIn(mirror: Mirror): number[] {
  * since the last seal - its block of transactions is closed. Stage (b) moves this
  * into the key (R15: grant-end and the checkpoint in one step).
  */
-function takeSeal(mirror: Mirror, head: {seq: number; head: Uint8Array}, cp: {seq: number; head: Uint8Array; signature: Uint8Array}, live: number[]) {
+function takeSeal(mirror: Mirror, head: {seq: number; head: Uint8Array}, cp: {seq: number; head: Uint8Array; signature: Uint8Array; signaturePq?: Uint8Array | null}, live: number[]) {
   if (cp.seq !== head.seq || toHex(cp.head) !== toHex(head.head)) return;
   const seals = mirror.seals ?? [];
   const last = seals[seals.length - 1];
@@ -681,8 +711,12 @@ function takeSeal(mirror: Mirror, head: {seq: number; head: Uint8Array}, cp: {se
   if (!sealDue(mirror, live)) return;
   const ended = grantIdsIn(mirror).filter(id => !live.includes(id));
   const before = new Set(last ? last.ended : []);
-  /* every seal is kept: each closes a block, and the blocks (BLOCKS.md) need all of them (one seal ~ 200 bytes) */
-  mirror.seals = [...seals, {seq: cp.seq, head: cp.head, signature: cp.signature, ended}];
+  /*
+   * every seal is kept: each closes a block, and the blocks (BLOCKS.md) need all of them (one
+   * seal ~ 200 bytes). The new one is the newest: it keeps the key's ML-DSA-65 half (the newest
+   * block's hybrid anchor); the one before it drops its own (oneAnchor).
+   */
+  mirror.seals = oneAnchor([...seals, {seq: cp.seq, head: cp.head, signature: cp.signature, ...(cp.signaturePq ? {signaturePq: cp.signaturePq} : {}), ended}]);
   console.log(`[edge] sealed #${cp.seq}: budget ${ended.filter(id => !before.has(id)).join(', ')} ended - its block is closed`);
 }
 
@@ -715,7 +749,12 @@ function sealedStart(mirror: Mirror, head: {seq: number}, key: EdgeCopyKey | nul
   const lastSeq = seqOf(mirror.links[mirror.links.length - 1]);
   const seal = [...mirror.seals].reverse().find(x => x.seq <= lastSeq && x.seq <= head.seq);
   if (!seal) return no('no seal at or below the end of the copy');
-  if (!chain.verifyCheckpoint({deviceId, seq: seal.seq, head: seal.head}, seal.signature, key.publicKey)) return no(`the seal at #${seal.seq} does not verify`);
+  /*
+   * An OLDER checkpoint (one anchor per copy, 2026-10-10): checked by its P-256 half only. The
+   * newest one - the key's live checkpoint this session - is the hybrid anchor, checked with
+   * both halves in evaluateWith before any of this is used.
+   */
+  if (!chain.verifyCheckpointP256({deviceId, seq: seal.seq, head: seal.head}, seal.signature, key.publicKey)) return no(`the seal at #${seal.seq} does not verify`);
   /* the stored links are welded to it by copy.assess, as every anchor is - a copy that starts late (the Pixel's, at #268) works as in the full check */
   return {seq: seal.seq, head: seal.head};
 }
@@ -834,7 +873,7 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
       samePrefix(mirror.links, was)) {
     const a = copy.assess(
       {links: mirror.links, openings: key?.openings ?? {}},
-      {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: cp},
+      {publicKey: key?.publicKey, publicKeyPq: key?.publicKeyPq ?? null, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: cp},
       {from: {seq: was.lastSeq, head: fromHex(was.lastHead)}, ringFrom: head.ringFrom},
     );
     if (a.chain.ok && !a.chain.gaps.length && !a.open.length && !a.missing.length) {
@@ -867,10 +906,33 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
    * result is the answer; anything else runs again without the seal, and that
    * full check decides.
    */
+  /*
+   * THE HYBRID ANCHOR (one ML-DSA anchor per copy; Brad, 2026-10-10). The key's live
+   * checkpoint is this copy's NEWEST: it must verify with both halves - P-256 under
+   * key.publicKey and ML-DSA-65 under key.publicKeyPq (chain.verifyCheckpoint, strict) -
+   * because the older checkpoints (seals, budget openings) are checked by P-256 alone and are
+   * quantum-safe only through the welds up to it. copy.assess would merely leave a bad one out
+   * as an anchor; lib copy.verifyCopy (Approve) refuses it, so the banner refuses it too: one
+   * answer. No fallback: a checkpoint without its ML-DSA-65 half, or a key that gave no
+   * ML-DSA-65 key, fails here (Edge is unreleased).
+   */
+  if (cp && key?.publicKey) {
+    let ok = false;
+    try {
+      ok = chain.verifyCheckpoint({deviceId: chain.deviceIdOf(key.publicKey), seq: cp.seq, head: cp.head}, cp.signature, key.publicKey, cp.signaturePq ?? null, key.publicKeyPq ?? null);
+    } catch { /* malformed: not ok */ }
+    if (!ok) {
+      lastCheck = 'full';
+      console.log(`[edge] verify ${id.slice(0, 8)}: the key's checkpoint at #${cp.seq} does not verify with both halves (P-256 + ML-DSA-65)`);
+      /* not remembered: the next check is a full one again, with a checkpoint asked afresh */
+      verifiedNow.delete(id);
+      return viewOf({kind: 'tampered', seq: cp.seq, reason: 'bad-checkpoint'}, new Set());
+    }
+  }
   const sealed = was ? null : sealedStart(mirror, head, key);
   const assessWith = (seal: {seq: number; head: Uint8Array} | null) => copy.assess(
     {links: mirror.links, openings: key?.openings ?? {}},
-    {publicKey: key?.publicKey, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: cp},
+    {publicKey: key?.publicKey, publicKeyPq: key?.publicKeyPq ?? null, deviceId: mirror.deviceId, head: {seq: head.seq, head: head.head}, held, checkpoint: cp},
     {ringFrom: head.ringFrom, lastSeen: mirror.lastSeen ?? undefined, ...(seal ? {sealed: seal} : {})},
   );
   let a = sealed ? assessWith(sealed) : null;
@@ -990,7 +1052,9 @@ export async function blocksOf(deviceId: Uint8Array): Promise<{json: string; cou
   const r = block.blocksFrom({net: currentNet(), deviceId, records: mirror.links, seals: mirror.seals ?? []});
   let bad = 0;
   r.blocks.forEach((b: any, i: number) => {
-    const v = mirror.publicKey ? block.verifyBlock(b, mirror.publicKey, i ? r.blocks[i - 1] : null) : {ok: false};
+    /* the newest block is the copy's one hybrid anchor (both halves); older blocks are checked by P-256 and welded to it */
+    const anchor = i === r.blocks.length - 1;
+    const v = mirror.publicKey ? block.verifyBlock(b, mirror.publicKey, mirror.publicKeyPq ?? null, i ? r.blocks[i - 1] : null, {anchor}) : {ok: false};
     if (!v.ok) bad += 1;
   });
   return {json: JSON.stringify(r.blocks, null, 2) + '\n', count: r.blocks.length, open: r.open, bad, ...(r.reason ? {reason: r.reason} : {})};

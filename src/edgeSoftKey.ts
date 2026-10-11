@@ -58,9 +58,10 @@ type Kept = {
 const DEFAULT_LIFETIME_MINUTES = 12 * 60;
 
 type SameHead = {key: string; raw: any; checkpoint?: any};
-/* per key: the answers the key gave for its current head, and its Edge public key - this session's memory only */
+/* per key: the answers the key gave for its current head, and its Edge public keys (P-256, ML-DSA-65) - this session's memory only */
 const sameHeads = new Map<string, SameHead>();
 const publicKeys = new Map<string, Uint8Array>();
+const publicKeysPq = new Map<string, Uint8Array>();
 /*
  * THE BUDGET OPENINGS, IN MEMORY FOR THE SESSION (A13, 2026-10-07: copyKey without a
  * checkpoint still 125-699 ms - the storage key list and every budget record read,
@@ -103,6 +104,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
   static forgetSession() {
     sameHeads.clear();
     publicKeys.clear();
+    publicKeysPq.clear();
   }
 
   static async open(): Promise<SoftKeyEdge | null> {
@@ -302,7 +304,8 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
    * ANOTHER DEVICE'S CHAIN VIEW (Brad, 2026-10-09: "all the data i see on the a13 should be just
    * like on the pixel"): its merged log, checked under its own key against the last checkpoint
    * merged, with its openings and notes - the same rows (receipts paired, intents checked) its
-   * own phone draws.
+   * own phone draws. That checkpoint is the copy's newest, its one hybrid anchor (2026-10-10):
+   * it must verify with both halves, under both of that device's keys kept with the copy.
    */
   async deviceView(deviceIdHex: string): Promise<EdgeView> {
     const mirror = await loadMirror(fromHex(deviceIdHex));
@@ -315,7 +318,7 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
       const rec: Kept | null = JSON.parse(raw || 'null');
       if (rec && rec.signature) openings[Number(key.slice(prefix.length))] = openingOf(rec);
     }
-    return evaluate(mirror, {seq: last.seq, head: last.head, ringFrom: last.seq + 1}, [], {publicKey: mirror.publicKey, openings, checkpoint: {seq: last.seq, head: last.head, signature: last.signature}});
+    return evaluate(mirror, {seq: last.seq, head: last.head, ringFrom: last.seq + 1}, [], {publicKey: mirror.publicKey, publicKeyPq: mirror.publicKeyPq ?? null, openings, checkpoint: {seq: last.seq, head: last.head, signature: last.signature, signaturePq: last.signaturePq ?? null}});
   }
 
   /* every budget with a record on this phone for that device and not live now, newest first */
@@ -564,12 +567,15 @@ export class SoftKeyEdge implements EdgeSource, EdgeInbox {
     const id = toHex(this.deviceId);
     const publicKey = publicKeys.get(id) ?? (await this.edge.publicKey()).publicKey;
     publicKeys.set(id, publicKey);
+    /* its ML-DSA-65 twin (hybrid, 2026-10-10): never changes either - read once a session, beside it */
+    const publicKeyPq = publicKeysPq.get(id) ?? (await this.edge.publicKeyPq('checkpoint'));
+    publicKeysPq.set(id, publicKeyPq);
     /* the key's latest checkpoint - once per action */
     const cached = this.sameHead && 'checkpoint' in this.sameHead ? this.sameHead.checkpoint : undefined;
     const checkpoint = this.snap && 'checkpoint' in this.snap ? this.snap.checkpoint : cached !== undefined ? cached : want ? await this.edge.checkpoint().catch(() => null) : null;
     if (want && this.snap) this.snap.checkpoint = checkpoint;
     if (want && this.sameHead && checkpoint) this.sameHead.checkpoint = checkpoint;
-    return {publicKey, openings: await this.openings(), checkpoint};
+    return {publicKey, publicKeyPq, openings: await this.openings(), checkpoint};
   }
 
   /**

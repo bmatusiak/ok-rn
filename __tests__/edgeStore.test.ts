@@ -290,16 +290,26 @@ import {chain as edgeChain} from 'node-onlykey-lib/edge';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {p256} = require('node-onlykey-lib/vendor/@noble/curves/nist.js');
 
+/*
+ * HYBRID (Brad, 2026-10-10): the key signs every checkpoint with P-256 AND ML-DSA-65; its
+ * ML-DSA-65 twin key comes from a 32-byte seed (lib chain.mlDsaKeys, as the firmware derives it).
+ */
 class SignedFake extends FakeEdgeKey {
   private readonly sk: Uint8Array = (p256.utils.randomSecretKey ?? p256.utils.randomPrivateKey)();
   readonly pub: Uint8Array = p256.getPublicKey(this.sk, false).subarray(1);
+  private readonly pq = edgeChain.mlDsaKeys(Uint8Array.from({length: 32}, () => Math.floor(Math.random() * 256)));
+  readonly pubPq: Uint8Array = this.pq.publicKey;
   constructor() {
     super();
     (this as unknown as {deviceId: Uint8Array}).deviceId = edgeChain.deviceIdOf(this.pub);
   }
+  /* both halves over (device id, seq, head) */
+  signBoth(fields: {deviceId: Uint8Array; seq: number; head: Uint8Array}) {
+    return {signature: edgeChain.signCheckpoint(fields, this.sk), signaturePq: edgeChain.signCheckpointPq(fields, this.pq.secretKey)};
+  }
   async copyKey(_opts?: {checkpoint?: boolean}): Promise<EdgeCopyKey> {
     const h = await this.head();
-    return {publicKey: this.pub, openings: {}, checkpoint: {seq: h.seq, head: h.head, signature: edgeChain.signCheckpoint({deviceId: this.deviceId, seq: h.seq, head: h.head}, this.sk)}};
+    return {publicKey: this.pub, publicKeyPq: this.pubPq, openings: {}, checkpoint: {seq: h.seq, head: h.head, ...this.signBoth({deviceId: this.deviceId, seq: h.seq, head: h.head})}};
   }
 }
 const signedDemo = () => FakeEdgeKey.demo(new SignedFake()) as SignedFake;
@@ -585,6 +595,71 @@ test('blocks (BLOCKS.md): a budget end closes a block; blocksOf exports it as JS
   expect(r.open).toBeGreaterThan(0);
   const [b] = JSON.parse(r.json);
   const m = await loadMirror(k.deviceId);
-  expect(edgeBlock.verifyBlock(b, m.publicKey!)).toMatchObject({ok: true, id: edgeBlock.blockId(b)});
+  /* the only block is the newest: the copy's hybrid anchor, both halves */
+  expect(edgeBlock.verifyBlock(b, m.publicKey!, m.publicKeyPq!, null, {anchor: true})).toMatchObject({ok: true, id: edgeBlock.blockId(b)});
   expect(b.checkpoint.seq).toBe(m.seals![0].seq);
+  expect(b.checkpoint.sigPq).toBeTruthy();
+});
+
+/*
+ * HYBRID CHECKPOINTS, ONE ML-DSA ANCHOR PER COPY (Brad, 2026-10-10). The key's live checkpoint
+ * is the copy's newest and must verify with both halves; older ones (seals) keep and are
+ * checked by their P-256 half only. No fallback.
+ */
+/* a key whose live checkpoint's ML-DSA-65 half is missing, or wrong */
+class BadPqKey extends SignedFake {
+  how: 'missing' | 'wrong' | 'no-key' | 'both' = 'missing';
+  async copyKey(opts?: {checkpoint?: boolean}): Promise<EdgeCopyKey> {
+    const k = await super.copyKey(opts);
+    if (this.how === 'both') return k;
+    const cp = k.checkpoint!;
+    if (this.how === 'missing') return {...k, checkpoint: {seq: cp.seq, head: cp.head, signature: cp.signature}};
+    if (this.how === 'no-key') return {...k, publicKeyPq: null};
+    /* a real ML-DSA-65 signature of this key - over another head */
+    const other = this.signBoth({deviceId: this.deviceId, seq: cp.seq, head: cp.head.map(b => b ^ 1)});
+    return {...k, checkpoint: {...cp, signaturePq: other.signaturePq}};
+  }
+}
+
+test.each(['missing', 'wrong', 'no-key'] as const)('hybrid: the copy check refuses a newest checkpoint whose ML-DSA-65 half is %s', async how => {
+  const k = FakeEdgeKey.demo(new BadPqKey()) as BadPqKey;
+  k.how = how;
+  const {view} = await sync(k);
+  expect(view.verdict).toEqual({kind: 'tampered', seq: (await k.head()).seq, reason: 'bad-checkpoint'});
+});
+
+test('hybrid: the same copy with both halves verifies (the refusal above is the pq half alone)', async () => {
+  const k = FakeEdgeKey.demo(new BadPqKey()) as BadPqKey;
+  k.how = 'missing';
+  expect((await sync(k)).view.verdict.kind).toBe('tampered');
+  k.how = 'both'; /* the same key, now giving both halves */
+  expect((await sync(k)).view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
+});
+
+test('one anchor per copy: the newest seal keeps its ML-DSA-65 half, the older drops it - and an older, P-256-only seal is a sealed start under the hybrid live checkpoint', async () => {
+  const k = signedDemo();
+  await sync(k);
+  await endOne(k);
+  await sync(k);
+  spend(k, 'commit 6000');
+  k.receipt(0x00, 'done');
+  await endOne(k);
+  const {mirror} = await sync(k);
+  expect(mirror.seals).toHaveLength(2);
+  expect(mirror.seals![0].signaturePq).toBeUndefined();
+  expect(mirror.seals![1].signaturePq?.length).toBe(edgeChain.ML_DSA65.SIG);
+  /* stored the same way: one pq half in the stored copy */
+  expect(((await AsyncStorage.getItem('okrn.edge.mirror.' + Array.from(k.deviceId, x => x.toString(16).padStart(2, '0')).join(''))) ?? '').split('"signaturePq"').length - 1).toBe(1);
+  /* the blocks: the older one by P-256, the newest (the anchor) with both halves - all verify */
+  expect(await blocksOf(k.deviceId)).toMatchObject({count: 2, bad: 0});
+  /* only the older, P-256-only seal left: it is still a sealed start - the live checkpoint is the hybrid anchor */
+  const m = await loadMirror(k.deviceId);
+  m.seals = [m.seals![0]];
+  await saveMirror(m);
+  spend(k, 'commit 6001');
+  k.receipt(0x00, 'done');
+  forgetVerified();
+  const {view} = await sync(k);
+  expect(lastCheckPath()).toBe('sealed');
+  expect(view.verdict).toEqual({kind: 'verified', through: (await k.head()).seq});
 });

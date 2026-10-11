@@ -28,7 +28,7 @@ Outside a budget, Edge pays for nothing and writes nothing.
 | R4 | The record is saved inside the weld, before the operation's result is released. |
 | R5 | No chain in flash: the latest link and the head are kept; the last 8 links are held in RAM for pickup; hosts keep the chain. |
 | R6 | HEAD answers seq, head, the oldest pickable seq, the live budget ids, the held mask, whether a use is owed (0 or 1), and (byte 60) TX starts refused since power-up. PICKUP returns links with their heads and reveals. |
-| R7 | A checkpoint is a P-256 signature over `SHA256("OKEDGE-CKPT-v1" ‖ device_id ‖ seq ‖ head)`, with the Edge key `HKDF(0x28 ‖ device salt, K132, "onlykey/edge/v1")`, which no other request reaches. |
+| R7 | A checkpoint is two signatures over `SHA256("OKEDGE-CKPT-v1" ‖ device_id ‖ seq ‖ head)`: P-256 with the Edge key `HKDF(0x28 ‖ device salt, K132, "onlykey/edge/v1")`, and ML-DSA-65 (FIPS 204, pure, empty context) with a key generated from the seed `HKDF(0x28 ‖ device salt, K132, "onlykey/edge/mldsa/v1")`. No other request reaches either key. A verifier requires both. PUBKEY_PQ (0x05) answers the ML-DSA public keys. |
 | R8 | Every Edge request needs a PIN set, the key unlocked and out of config mode (else `EDGE:01` or no answer). |
 | R9 | A wipe erases the Edge state; the next request draws a new salt (a new device id, a new genesis). No wipe link. |
 | R10 | A budget opens only at a physical press, and never while a receipt is owed - checked when asked and again at the press. |
@@ -51,9 +51,9 @@ Outside a budget, Edge pays for nothing and writes nothing.
 | R24 | LOSS {from, to}, at a press: the person accepts a range of links nobody holds. One link; it pays no debt. `EDGE:12` for a bad range. |
 | R25 | *Later: hardware.* |
 | R26 | Every restore of a backup draws a new salt - a new device - and its first link is a **continue** naming the backup's chain, seq and head and carrying its debt, if any. The backup section (version 1) holds seq, head, the owed use (if any) and the device id, never the salt. |
-| R27 | A host verifies before it approves: the phone's copy of the chain must verify, or Approve is off (`copy_unverified`). The key checks the head the host verified on GRANT_CREATE (6 bytes) and GRANT_RESUME (32), on arrival and again at the press (`EDGE:0B`). |
+| R27 | A host verifies before it approves: the phone's copy of the chain must verify, or Approve is off (`copy_unverified`). A copy verifies only when its links weld up to a newest checkpoint whose two signatures both verify (one hybrid anchor per copy); older checkpoints the copy keeps (seals, budget openings) carry the P-256 signature only. The key checks the head the host verified on GRANT_CREATE (6 bytes) and GRANT_RESUME (32), on arrival and again at the press (`EDGE:0B`). |
 | R28 | One chain per physical device: the salt is drawn on first use and never leaves the device. Derived identities do not depend on it. |
-| R29 | The owner statement: an owner key `HKDF(K132, "onlykey/edge/owner/v1")`, no salt - the same on every device made from your OnlyKey - signs the device id, its checkpoint key, its seq and a nametag hash. No press, no link. |
+| R29 | The owner statement: an owner key `HKDF(K132, "onlykey/edge/owner/v1")` and its ML-DSA-65 twin (seed `HKDF(K132, "onlykey/edge/owner-mldsa/v1")`), no salt - the same on every device made from your OnlyKey - both sign the device id, its P-256 checkpoint key, the hash of its ML-DSA checkpoint key, its seq and a nametag hash. A verifier requires both. No press, no link. |
 | R30 | Sync is the app's and the library's, never the key's ([BLOCKS.md](BLOCKS.md)). |
 | R31 | The record is `OKEDGEv1`; a record of any other format is not read (the chain starts empty). A debug-only wipe (0x7E) exists in DEBUG builds only. |
 
@@ -81,7 +81,7 @@ Outside a budget, Edge pays for nothing and writes nothing.
 | receipt | The agent's answer for a use: a one-byte code and the hash of a message ([RECEIPT-CODES.md](RECEIPT-CODES.md)). |
 | settle | The press that ends every live budget and marks the open uses for review. |
 | loss | The press that accepts links nobody holds. |
-| checkpoint | The key's signature over its seq and head. |
+| checkpoint | The key's two signatures (P-256 and ML-DSA-65) over its seq and head. |
 | continue | The first link of a restored device's chain, naming the chain it came from. |
 | nametag | A device's name, signed in its owner statement. |
 | block | The links between two seals, as canonical JSON ([BLOCKS.md](BLOCKS.md)). |

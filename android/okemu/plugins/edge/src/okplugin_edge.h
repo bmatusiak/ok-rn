@@ -18,6 +18,7 @@
 #define OKEDGE_PICKUP 0x02
 #define OKEDGE_CHECKPOINT 0x03
 #define OKEDGE_PUBKEY 0x04
+#define OKEDGE_PUBKEY_PQ 0x05     /* {which: 0 checkpoint key, 1 owner key}, no press: an ML-DSA-65 public key */
 #define OKEDGE_STATEMENT 0x06     /* {nametag hash 32}, no press, no link: the owner statement */
 #define OKEDGE_GRANT_CREATE 0x10  /* a press: opens a budget */
 #define OKEDGE_GRANT_LABEL 0x11   /* {scope index, label 32}, no press: a derived identity's label for the next GRANT_CREATE */

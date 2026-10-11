@@ -32,11 +32,23 @@ const DEVICES = (): string => edgeKey('devices');
 const OWN = (): string => edgeKey('ownStatement');
 const HELD = (): string => edgeKey('held');
 
+/*
+ * HYBRID STATEMENTS (lib grants.verifyStatement; Brad, 2026-10-10): the key signs a statement
+ * with its owner key AND the owner key's ML-DSA-65 twin, over its device id and BOTH checkpoint
+ * keys (publicKey, publicKeyPq). Both signatures must verify under this phone's own owner keys
+ * (ownerKey, ownerKeyPq), and a device is "mine" only when its statement's publicKeyPq is the
+ * one its log is checked with (devices.classify). Statements stay fully hybrid - unlike older
+ * checkpoints, nothing welds a statement to a newer one. No fallback: a statement stored
+ * without its ML-DSA-65 half no longer verifies (Edge is unreleased).
+ */
 /** A statement as stored (hex), and as the lib takes it (bytes). */
-export type StoredStatement = {deviceId: string; publicKey: string; seq: number | null; nametag: string; signature: string; ownerKey?: string};
-export type Statement = {deviceId: Uint8Array; publicKey: Uint8Array; seq: number | null; nametag: string; signature: Uint8Array};
+export type StoredStatement = {
+  deviceId: string; publicKey: string; publicKeyPq: string; seq: number | null; nametag: string; signature: string; signaturePq: string;
+  ownerKey?: string; ownerKeyPq?: string;
+};
+export type Statement = {deviceId: Uint8Array; publicKey: Uint8Array; publicKeyPq: Uint8Array; seq: number | null; nametag: string; signature: Uint8Array; signaturePq: Uint8Array};
 /** One of your devices, as lib devices.remember keeps it. */
-export type Device = {deviceId: string; publicKey: string; since: number; statements: {seq: number | null; nametag: string; signature: string}[]};
+export type Device = {deviceId: string; publicKey: string; publicKeyPq: string; since: number; statements: {seq: number | null; nametag: string; signature: string; signaturePq: string}[]};
 /** A log held for your approval. */
 export type HeldLog = {
   deviceId: string;
@@ -47,8 +59,11 @@ export type HeldLog = {
   openings?: unknown[];
   /* its notes: {reasons: {seq: text}, messages: {seq: text}} - checked against the chain where shown */
   notes?: {reasons?: Record<string, string>; messages?: Record<string, string>; seen?: Record<string, number>} | null;
+  /* its checkpoint key's ML-DSA-65 twin, as its statement names it */
+  publicKeyPq: string;
   records: [string, string, string | null][];
-  checkpoint: {seq: number; head: string; signature: string};
+  /* that log's newest checkpoint: both halves (its one hybrid anchor) */
+  checkpoint: {seq: number; head: string; signature: string; signaturePq: string};
   statement: StoredStatement;
   declined?: boolean;
   leak?: boolean;
@@ -56,10 +71,18 @@ export type HeldLog = {
 /** What the Approve sheet shows for one held device. */
 export type HeldView = {complete: boolean; missing: string[]; deviceId: string; nametag: string | null; claimed: string; class: 'mine-known' | 'mine-new' | 'forged'; count: number; from: string; at: number; checkOk: boolean; alarm: string | null; declined: boolean; leak: boolean};
 
-const toStatement = (s: StoredStatement): Statement => ({deviceId: fromHex(s.deviceId), publicKey: fromHex(s.publicKey), seq: s.seq ?? null, nametag: s.nametag, signature: fromHex(s.signature)});
-const store = (s: Statement & {ownerKey?: Uint8Array}): StoredStatement => ({
-  deviceId: toHex(s.deviceId), publicKey: toHex(s.publicKey), seq: s.seq ?? null, nametag: s.nametag, signature: toHex(s.signature),
+/* a missing half reads as empty bytes: it fails every check (no fallback) */
+const bytesOf = (h: string | undefined | null) => fromHex(h ?? '');
+const hexOf = (b: Uint8Array | undefined | null) => (b ? toHex(b) : '');
+const toStatement = (s: StoredStatement): Statement => ({
+  deviceId: fromHex(s.deviceId), publicKey: fromHex(s.publicKey), publicKeyPq: bytesOf(s.publicKeyPq), seq: s.seq ?? null, nametag: s.nametag,
+  signature: fromHex(s.signature), signaturePq: bytesOf(s.signaturePq),
+});
+const store = (s: Statement & {ownerKey?: Uint8Array; ownerKeyPq?: Uint8Array}): StoredStatement => ({
+  deviceId: toHex(s.deviceId), publicKey: toHex(s.publicKey), publicKeyPq: hexOf(s.publicKeyPq), seq: s.seq ?? null, nametag: s.nametag,
+  signature: toHex(s.signature), signaturePq: hexOf(s.signaturePq),
   ...(s.ownerKey ? {ownerKey: toHex(s.ownerKey)} : {}),
+  ...(s.ownerKeyPq ? {ownerKeyPq: toHex(s.ownerKeyPq)} : {}),
 });
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
@@ -78,10 +101,14 @@ export async function ownStatement(): Promise<StoredStatement | null> {
   return readJson<StoredStatement | null>(OWN(), null);
 }
 
-/** This key's owner public key (X||Y), from its own statement - null before a nametag is set. */
-export async function ownerKey(): Promise<Uint8Array | null> {
+/**
+ * This key's owner public keys, from its own statement: the P-256 one (X||Y) and its ML-DSA-65
+ * twin (1952 bytes) - null before a nametag is set, or when the statement lacks either (both
+ * are needed to check any statement).
+ */
+export async function ownerKey(): Promise<{ownerKey: Uint8Array; ownerKeyPq: Uint8Array} | null> {
   const s = await ownStatement();
-  return s?.ownerKey ? fromHex(s.ownerKey) : null;
+  return s?.ownerKey && s.ownerKeyPq ? {ownerKey: fromHex(s.ownerKey), ownerKeyPq: fromHex(s.ownerKeyPq)} : null;
 }
 
 /**
@@ -147,7 +174,7 @@ export async function loadDevices(): Promise<Device[]> {
 export async function nametagOf(d: Device): Promise<{nametag: string; previously: string[]} | null> {
   const owner = await ownerKey();
   if (!owner) return d.statements.length ? {nametag: d.statements[d.statements.length - 1].nametag, previously: []} : null;
-  const r = devicesLib.nametagOf(devicesLib.statementsOf(d), owner);
+  const r = devicesLib.nametagOf(devicesLib.statementsOf(d), owner.ownerKey, owner.ownerKeyPq);
   return r ? {nametag: r.nametag, previously: r.previously} : null;
 }
 
@@ -172,15 +199,15 @@ async function saveHeld(list: HeldLog[]): Promise<void> {
  * A log offered by a computer: HELD, never merged here. A newer offer of the same device
  * replaces an older one; an older one never replaces a newer one. -> {held, count}
  */
-export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; records: EdgeLinkRecord[]; checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array}; statement: Statement; from: string; openings?: unknown[]; notes?: HeldLog['notes']}, now = Date.now()): Promise<{held: boolean; count: number}> {
+export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; publicKeyPq: Uint8Array; records: EdgeLinkRecord[]; checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array; signaturePq: Uint8Array}; statement: Statement; from: string; openings?: unknown[]; notes?: HeldLog['notes']}, now = Date.now()): Promise<{held: boolean; count: number}> {
   const id = toHex(o.deviceId);
   const list = await loadHeld();
   const was = list.find(h => h.deviceId === id);
   if (was && was.checkpoint.seq > o.checkpoint.seq) return {held: false, count: 0};
   const entry: HeldLog = {
-    deviceId: id, publicKey: toHex(o.publicKey), from: o.from, at: now,
+    deviceId: id, publicKey: toHex(o.publicKey), publicKeyPq: hexOf(o.publicKeyPq), from: o.from, at: now,
     records: o.records.map(r => [toHex(r.link), toHex(r.head), r.reveal ? toHex(r.reveal) : null]),
-    checkpoint: {seq: o.checkpoint.seq, head: toHex(o.checkpoint.head), signature: toHex(o.checkpoint.signature)},
+    checkpoint: {seq: o.checkpoint.seq, head: toHex(o.checkpoint.head), signature: toHex(o.checkpoint.signature), signaturePq: hexOf(o.checkpoint.signaturePq)},
     statement: store(o.statement),
     ...(o.openings && o.openings.length ? {openings: o.openings.slice(0, 500)} : {}),
     ...(o.notes ? {notes: o.notes} : {}),
@@ -191,8 +218,8 @@ export async function holdLog(o: {deviceId: Uint8Array; publicKey: Uint8Array; r
 
 const recordsOf = (h: HeldLog): EdgeLinkRecord[] => h.records.map(([l, hd, r]) => ({link: fromHex(l), head: fromHex(hd), reveal: r ? fromHex(r) : null}));
 const logOf = (h: HeldLog) => ({
-  deviceId: fromHex(h.deviceId), publicKey: fromHex(h.publicKey), records: recordsOf(h),
-  checkpoint: {seq: h.checkpoint.seq, head: fromHex(h.checkpoint.head), signature: fromHex(h.checkpoint.signature)},
+  deviceId: fromHex(h.deviceId), publicKey: fromHex(h.publicKey), publicKeyPq: bytesOf(h.publicKeyPq), records: recordsOf(h),
+  checkpoint: {seq: h.checkpoint.seq, head: fromHex(h.checkpoint.head), signature: fromHex(h.checkpoint.signature), signaturePq: bytesOf(h.checkpoint.signaturePq)},
   statement: toStatement(h.statement),
 });
 
@@ -203,7 +230,7 @@ export async function reviewHeld(): Promise<HeldView[]> {
   const out: HeldView[] = [];
   for (const h of await loadHeld()) {
     const merged = ((await loadMirror(fromHex(h.deviceId))).merged ?? []).map(m => ({seq: m.seq, head: m.head}));
-    const c = owner ? devicesLib.classify({log: logOf(h), ownerKey: owner, known, merged}) : {class: 'forged', nametag: null, check: {ok: false, alarm: 'no-nametag'}};
+    const c = owner ? devicesLib.classify({log: logOf(h), ownerKey: owner.ownerKey, ownerKeyPq: owner.ownerKeyPq, known, merged}) : {class: 'forged', nametag: null, check: {ok: false, alarm: 'no-nametag'}};
     out.push({
       deviceId: h.deviceId, nametag: c.nametag, claimed: h.statement.nametag, class: c.class as HeldView['class'], count: h.records.length, from: h.from, at: h.at,
       checkOk: !!c.check.ok, alarm: c.check.ok ? null : c.check.alarm ?? 'bad', declined: !!h.declined, leak: !!h.leak,
@@ -252,7 +279,8 @@ export async function approveHeld(deviceId: string, {isMine = false}: {isMine?: 
   if (view.class === 'mine-new' && !isMine) throw new Error('say whether this device is yours first');
   if (!view.complete) throw new Error(`not complete - nothing merged: ${view.missing.slice(0, 3).join('; ')}`);
   const log = logOf(h);
-  await keepMerged(log.deviceId, log.publicKey, log.records, {seq: h.checkpoint.seq, head: log.checkpoint.head, signature: log.checkpoint.signature, at: Date.now()});
+  /* the merge point is that log's newest checkpoint: kept with both halves - the copy's hybrid anchor */
+  await keepMerged(log.deviceId, log.publicKey, log.publicKeyPq, log.records, {seq: h.checkpoint.seq, head: log.checkpoint.head, signature: log.checkpoint.signature, signaturePq: log.checkpoint.signaturePq, at: Date.now()});
   const known = devicesLib.remember(await loadDevices(), log.statement);
   await AsyncStorage.setItem(DEVICES(), JSON.stringify(known));
   await keepOpenings(id, log.publicKey, h.openings ?? []);

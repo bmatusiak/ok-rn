@@ -31,7 +31,15 @@
 #include "okplugin_edge.h"
 #include "sha256.h"
 #include "uECC.h"
+#include "okpqc.h" /* MLDSA_PK_SIZE, MLDSA_SK_SIZE, MLDSA_SIG_SIZE */
 #include <string.h>
+
+/* the firmware's ML-DSA-65 (mldsa-native, FIPS 204) and the buffers its users share */
+extern "C" int PQCP_MLDSA_NATIVE_MLDSA65_keypair_internal(uint8_t *pk, uint8_t *sk, const uint8_t seed[32]);
+extern "C" int PQCP_MLDSA_NATIVE_MLDSA65_signature(uint8_t *sig, size_t *siglen,
+    const uint8_t *m, size_t mlen, const uint8_t *ctx, size_t ctxlen, const uint8_t *sk);
+extern uint8_t ctap_buffer[];
+extern uint8_t *large_resp_buffer;
 
 extern uint8_t packet_buffer_details[5];
 extern uint8_t profilemode;
@@ -422,6 +430,60 @@ static int edge_key_with(const struct edge_state *s, uint8_t priv[32]) {
 }
 static int edge_private_key(uint8_t priv[32]) { return edge_key_with(&st, priv); }
 
+/*
+ * THE ML-DSA-65 TWINS. Each P-256 signature Edge makes - a checkpoint, an owner statement - has an
+ * ML-DSA-65 signature beside it over the same digest (FIPS 204, pure, empty context), and a host
+ * requires both: the pair holds while either algorithm does. The ML-DSA keys are derived like the
+ * P-256 ones and never stored:
+ *   checkpoint key: seed = HKDF(salt = 0x28 . this device's salt, K132, "onlykey/edge/mldsa/v1")
+ *   owner key:      seed = HKDF(K132, "onlykey/edge/owner-mldsa/v1")             (no salt)
+ * Keygen from the seed writes the expanded secret key (MLDSA_SK_SIZE) to ctap_buffer and the
+ * public key (MLDSA_PK_SIZE) to pk; the caller wipes ctap_buffer.
+ */
+#define MLDSA_CHECKPOINT_KEY 0
+#define MLDSA_OWNER_KEY 1
+static int mldsa_keypair(uint8_t which, uint8_t *pk) {
+  uint8_t seed[32], salt33[33];
+  int ok;
+  if (which == MLDSA_CHECKPOINT_KEY) {
+    if (!st.salted) return 0;
+    salt33[0] = 0x28;
+    memcpy(salt33 + 1, st.salt, 32);
+    ok = edge_secret_salted("onlykey/edge/mldsa/v1", salt33, seed);
+    memset(salt33, 0, sizeof(salt33));
+  } else {
+    ok = edge_secret_salted("onlykey/edge/owner-mldsa/v1", NULL, seed);
+  }
+  if (ok) ok = PQCP_MLDSA_NATIVE_MLDSA65_keypair_internal(pk, ctap_buffer, seed) == 0;
+  memset(seed, 0, sizeof(seed));
+  return ok;
+}
+
+/*
+ * An ML-DSA-65 public key, sent whole (MLDSA_PK_SIZE bytes in 64-byte reports). The public key
+ * and then the signature use large_resp_buffer (3392 bytes): the vendor reply path streams
+ * through its own resp_buffer.
+ */
+static void mldsa_pubkey_reply(uint8_t which) {
+  int ok = mldsa_keypair(which, large_resp_buffer);
+  memset(ctap_buffer, 0, MLDSA_SK_SIZE);
+  if (!ok) { status(EDGE_SIGN_FAILED); return; }
+  send_transport_response(large_resp_buffer, MLDSA_PK_SIZE, false, false);
+  memset(large_resp_buffer, 0, MLDSA_PK_SIZE);
+}
+
+/* the ML-DSA-65 signature of a key over a 32-byte digest, sent whole (MLDSA_SIG_SIZE bytes) */
+static int mldsa_sign_reply(uint8_t which, const uint8_t digest[32]) {
+  size_t siglen = 0;
+  int ok = mldsa_keypair(which, large_resp_buffer)
+        && PQCP_MLDSA_NATIVE_MLDSA65_signature(large_resp_buffer, &siglen, digest, 32, NULL, 0, ctap_buffer) == 0
+        && siglen == MLDSA_SIG_SIZE;
+  memset(ctap_buffer, 0, MLDSA_SK_SIZE);
+  if (ok) send_transport_response(large_resp_buffer, MLDSA_SIG_SIZE, false, false);
+  memset(large_resp_buffer, 0, MLDSA_SIG_SIZE);
+  return ok;
+}
+
 static void append(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
     uint32_t grant_id, uint16_t grant_step, const uint8_t *reveal);
 static void append_scoped(uint8_t op, uint8_t decision, uint8_t slot, uint8_t flags, const uint8_t subject[32],
@@ -502,9 +564,11 @@ static int ensure_identity(void) {
 }
 
 /*
- * The checkpoint: a signature over (seq, head) (lib chain.checkpointDigest)
+ * The checkpoint: two signatures over (seq, head) (lib chain.checkpointDigest)
  *   SHA256("OKEDGE-CKPT-v1" || device_id || seq (u32 LE) || head)
- * reply: seq u32 . head 32; then the 64-byte signature.
+ * by the P-256 checkpoint key and its ML-DSA-65 twin.
+ * reply: seq u32 . head 32; then the 64-byte P-256 signature; then the ML-DSA-65 signature
+ * (MLDSA_SIG_SIZE bytes).
  */
 static void checkpoint(void) {
   uint8_t seq4[4], digest[32], sig[64], priv[32], r[36];
@@ -517,6 +581,7 @@ static void checkpoint(void) {
   memcpy(r + 4, st.head, 32);
   reply(r, 36);
   reply(sig, 64);
+  if (!mldsa_sign_reply(MLDSA_CHECKPOINT_KEY, digest)) status(EDGE_SIGN_FAILED);
 }
 
 /*
@@ -527,13 +592,21 @@ static void checkpoint(void) {
  * device id, its checkpoint key, its current seq - and the hash of a nametag the host gives.
  * No press and no link: it writes nothing. The signature proves the key, not the nametag.
  *   digest = SHA256("OKEDGE-STATEMENT-v1" || device id 16 || checkpoint pubkey 64 ||
- *                   seq u32 LE || nametag hash 32)        (lib grants.statementDigest)
- * reply: seq . nametag hash, then the owner public key (X || Y), then the signature.
+ *                   SHA256(ML-DSA checkpoint pubkey) 32 || seq u32 LE || nametag hash 32)
+ *                                                          (lib grants.statementDigest)
+ * so the statement names both of this device's checkpoint keys.
+ * reply: seq . nametag hash, then the owner public key (X || Y), then the P-256 signature,
+ * then the owner's ML-DSA-65 signature (MLDSA_SIG_SIZE bytes) over the same digest.
  */
 static void statement(const uint8_t nametag_hash[32]) {
-  uint8_t who[ID_BYTES + 64], seq4[4], digest[32], priv[32], pub[64], sig[64], r[36];
+  uint8_t who[ID_BYTES + 64 + 32], seq4[4], digest[32], priv[32], pub[64], sig[64], r[36];
   memcpy(who, ident.device_id, ID_BYTES);
   memcpy(who + ID_BYTES, ident.pub, 64);
+  int pq = mldsa_keypair(MLDSA_CHECKPOINT_KEY, large_resp_buffer);
+  memset(ctap_buffer, 0, MLDSA_SK_SIZE);
+  if (pq) H(who + ID_BYTES + 64, NULL, large_resp_buffer, MLDSA_PK_SIZE, NULL, 0, NULL, 0);
+  memset(large_resp_buffer, 0, MLDSA_PK_SIZE);
+  if (!pq) { status(EDGE_SIGN_FAILED); return; }
   put32(seq4, st.seq);
   H(digest, "OKEDGE-STATEMENT-v1", who, sizeof(who), seq4, 4, nametag_hash, 32);
   int ok = edge_secret_salted("onlykey/edge/owner/v1", NULL, priv)
@@ -546,6 +619,7 @@ static void statement(const uint8_t nametag_hash[32]) {
   reply(r, 36);
   reply(pub, 64);
   reply(sig, 64);
+  if (!mldsa_sign_reply(MLDSA_OWNER_KEY, digest)) status(EDGE_SIGN_FAILED);
 }
 
 /* ------------------------------------------------------------ the weld */
@@ -1195,6 +1269,9 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     case OKEDGE_PUBKEY:
       reply(ident.pub, 64);
+      return;
+    case OKEDGE_PUBKEY_PQ:
+      mldsa_pubkey_reply(buffer[6] ? MLDSA_OWNER_KEY : MLDSA_CHECKPOINT_KEY);
       return;
     case OKEDGE_STATEMENT:
       statement(buffer + 6);

@@ -14,6 +14,7 @@ import {fromHex, toHex} from 'node-onlykey-lib/bytes';
 
 /* eslint-disable @typescript-eslint/no-var-requires */
 const {p256} = require('../node_modules/node-onlykey-lib/src/vendor/exports/@noble/curves/nist.js');
+/* the lib's fake key: hybrid, as the soft key (PUBKEY_PQ; both halves on checkpoints and statements) */
 const {fakeKey, edgeOver} = require('../node_modules/node-onlykey-lib/edge/test/helpers/fake-edge-key');
 
 /* the fake starts with one use owing its result (#0); a complete device files it, with a message (2026-10-09) */
@@ -27,9 +28,14 @@ async function device({ownerSecret, links = 2, result = true}: {ownerSecret?: Ui
   return {t, e};
 }
 async function offer(d: {e: any}, nametag: string, from = 'NITRO16') {
+  return holdLog({...(await offered(d, nametag, from)), notes: {messages: {0: DONE0}}});
+}
+/* what a computer offers of a device: its links, its newest checkpoint (both halves), its statement (fully hybrid) */
+async function offered(d: {e: any}, nametag: string, from = 'NITRO16') {
   const {publicKey, deviceId} = await d.e.publicKey();
+  const publicKeyPq = await d.e.publicKeyPq('checkpoint');
   const h = await d.e.head();
-  return holdLog({deviceId, publicKey, records: await d.e.pickup(0, h.seq + 1), checkpoint: await d.e.checkpoint(), statement: await d.e.statement(nametag), from, notes: {messages: {0: DONE0}}});
+  return {deviceId, publicKey, publicKeyPq, records: await d.e.pickup(0, h.seq + 1), checkpoint: await d.e.checkpoint(), statement: await d.e.statement(nametag), from};
 }
 const hex = (b: Uint8Array) => toHex(b);
 
@@ -43,7 +49,9 @@ test('this phone\'s nametag: the key signs it with its owner key, the phone keep
   expect(await ownStatement()).toBeNull();
   const s = await setNametag(me.e, '  A13 ');
   expect(s.nametag).toBe('A13');
-  expect(await ownerKey()).not.toBeNull();
+  const owner = await ownerKey();
+  expect(owner?.ownerKey.length).toBe(64);
+  expect(owner?.ownerKeyPq.length).toBe(1952); /* the owner key's ML-DSA-65 twin, from the same statement */
   expect((await ownStatement())?.nametag).toBe('A13');
 });
 
@@ -79,6 +87,44 @@ test('a device you know comes back renamed: mine-known, Approve merges, the newe
   expect(v.class).toBe('mine-known');
   await approveHeld(id);
   expect(await nametagOf((await loadDevices())[0])).toEqual({nametag: 'Pixel', previously: ['phone']});
+  /* one ML-DSA anchor per copy: the newest merge point keeps its pq half, the older one drops it */
+  const merged = (await loadMirror(fromHex(id))).merged!;
+  expect(merged).toHaveLength(2);
+  expect(merged[0].signaturePq).toBeUndefined();
+  expect(merged[1].signaturePq?.length).toBe(3309);
+  expect((await loadMirror(fromHex(id))).publicKeyPq?.length).toBe(1952);
+});
+
+/*
+ * HYBRID STATEMENTS (Brad, 2026-10-10): a device is "mine" only when its statement verifies with
+ * BOTH owner signatures and names the ML-DSA-65 checkpoint key its log is checked with.
+ */
+test.each([
+  ['its ML-DSA-65 signature is missing', (st: any) => ({...st, signaturePq: new Uint8Array(0)})],
+  ['its ML-DSA-65 signature is wrong', (st: any) => ({...st, signaturePq: st.signaturePq.map((b: number, i: number) => (i === 7 ? b ^ 1 : b))})],
+  ['it names another ML-DSA-65 checkpoint key', (st: any) => ({...st, publicKeyPq: st.publicKeyPq.map((b: number, i: number) => (i === 0 ? b ^ 1 : b))})],
+])('a statement whose pq half does not hold does not make a device "mine": %s', async (_why, edit) => {
+  const me = await device();
+  await setNametag(me.e, 'A13');
+  const other = await device();
+  const o = await offered(other, 'Pixel');
+  await holdLog({...o, statement: edit(o.statement), notes: {messages: {0: DONE0}}});
+  const [v] = await reviewHeld();
+  expect(v.class).toBe('forged');
+  expect(v.nametag).toBeNull();
+  await expect(approveHeld(v.deviceId, {isMine: true})).rejects.toThrow(/not made with your OnlyKey/);
+});
+
+test('a held log whose newest checkpoint lacks its ML-DSA-65 half does not check - never merged', async () => {
+  const me = await device();
+  await setNametag(me.e, 'A13');
+  const other = await device();
+  const o = await offered(other, 'Pixel');
+  await holdLog({...o, checkpoint: {...o.checkpoint, signaturePq: new Uint8Array(0)}, notes: {messages: {0: DONE0}}});
+  const [v] = await reviewHeld();
+  expect(v.class).toBe('mine-new'); /* the statement is good: it is yours */
+  expect(v.checkOk).toBe(false);
+  await expect(approveHeld(v.deviceId, {isMine: true})).rejects.toThrow(/does not check/);
 });
 
 test('a log NOT made with your OnlyKey is forged: never merged, kept as evidence', async () => {
@@ -112,9 +158,7 @@ test('an older offer never replaces a newer held one', async () => {
   const me = await device();
   await setNametag(me.e, 'A13');
   const d = await device({links: 3});
-  const {publicKey, deviceId} = await d.e.publicKey();
-  const h = await d.e.head();
-  const oldOffer = {deviceId, publicKey, records: await d.e.pickup(0, h.seq + 1), checkpoint: await d.e.checkpoint(), statement: await d.e.statement('x'), from: 'NITRO16'};
+  const oldOffer = await offered(d, 'x');
   d.t.edgeRecord();
   await offer(d, 'x');
   expect((await holdLog(oldOffer)).held).toBe(false);

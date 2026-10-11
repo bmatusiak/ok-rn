@@ -295,8 +295,10 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     /* this phone's nametag - its device name until you set one (Brad, 2026-10-08) */
     const own = next === null ? await ensureNametag(soft) : null;
     const blocks = next === null ? {
-      seals: (mirror.seals ?? []).map(s => [s.seq, hex(s.head), hex(s.signature)]),
-      ...(own ? {statement: {deviceId: own.deviceId, publicKey: own.publicKey, seq: own.seq, nametag: own.nametag, signature: own.signature}} : {}),
+      /* [seq, head, sig, sigPq?]: only the newest seal carries its ML-DSA-65 half (one hybrid anchor per copy, 2026-10-10) */
+      seals: (mirror.seals ?? []).map(s => (s.signaturePq ? [s.seq, hex(s.head), hex(s.signature), hex(s.signaturePq)] : [s.seq, hex(s.head), hex(s.signature)])),
+      /* the statement fully hybrid: both checkpoint keys named, both owner signatures */
+      ...(own ? {statement: {deviceId: own.deviceId, publicKey: own.publicKey, publicKeyPq: own.publicKeyPq, seq: own.seq, nametag: own.nametag, signature: own.signature, signaturePq: own.signaturePq}} : {}),
       /* the budgets' opening words: full cards on your other devices, checked there against this log (2026-10-09) */
       openings: await soft.openingWords().catch(() => []),
       /* its notes - the intent of each use, each receipt's message - checked against the chain's hashes wherever shown */
@@ -348,10 +350,14 @@ async function handleSync(msg: any, seen: Set<string>): Promise<unknown | null> 
     const all = syncLib.merge(syncLib.merge([], before).links, offered);
     const c = p.checkpoint;
     const st2 = p.statement;
+    /* hybrid (2026-10-10): the offer's checkpoint is that log's newest - both halves - and its statement names both checkpoint keys (lib sync.verify checked the lengths) */
     const r = await holdLog({
-      deviceId: fromHexId(String(p.chain)), publicKey: fromHexId(st2.publicKey), records: all.links,
-      checkpoint: {seq: c.seq, head: fromHexId(c.head), signature: fromHexId(c.signature)},
-      statement: {deviceId: fromHexId(String(p.chain)), publicKey: fromHexId(st2.publicKey), seq: st2.seq ?? null, nametag: st2.nametag, signature: fromHexId(st2.signature)},
+      deviceId: fromHexId(String(p.chain)), publicKey: fromHexId(st2.publicKey), publicKeyPq: fromHexId(st2.publicKeyPq), records: all.links,
+      checkpoint: {seq: c.seq, head: fromHexId(c.head), signature: fromHexId(c.signature), signaturePq: fromHexId(c.signaturePq)},
+      statement: {
+        deviceId: fromHexId(String(p.chain)), publicKey: fromHexId(st2.publicKey), publicKeyPq: fromHexId(st2.publicKeyPq), seq: st2.seq ?? null, nametag: st2.nametag,
+        signature: fromHexId(st2.signature), signaturePq: fromHexId(st2.signaturePq),
+      },
       from: syncNames.get(peer) ?? 'a computer',
       openings: Array.isArray(p.openings) ? p.openings : [],
       notes: p.notes && typeof p.notes === 'object' ? p.notes : null,
@@ -433,7 +439,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       show({
         phase: 'done',
         ask: asked,
-        result: r.ok ? {ok: true, text: `Budget ${r.budget.grantId} is open: ${r.budget.uses} uses for ${msg.lifetime} minutes`, grantId: r.budget.grantId} : r,
+        result: r.ok ? {ok: true, text: `Budget ${r.budget.grantId} is open: ${r.budget.uses} use${r.budget.uses === 1 ? '' : 's'} for ${msg.lifetime} minute${msg.lifetime === 1 ? '' : 's'}`, grantId: r.budget.grantId} : r,
       });
     }
     return r;

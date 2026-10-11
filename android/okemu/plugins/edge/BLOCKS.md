@@ -44,10 +44,10 @@ The model behind Edge, and how the build meets it. Checked against the code on 2
 
 The phone's copy is untrusted, and its check must not grow with the chain. Each session:
 
-1. **Sealed blocks are re-welded, not re-checked.** The phone hashes its stored links up to the newest seal and checks **the key's signature** on it, with the public key it reads **from the key this session** (never one from storage). An edit anywhere in a sealed block breaks the hash: red. Cost: hashing only.
+1. **Sealed blocks are re-welded, not re-checked.** The phone hashes its stored links up to the newest seal and checks **the key's P-256 signature** on it (older seals keep only that half), with the public key it reads **from the key this session** (never one from storage). An edit anywhere in a sealed block breaks the hash: red. Cost: hashing only.
 2. **Only the open block gets the full checks** (openings, reveals, receipts, welds onto the sealed head).
 3. **Anything that does not fit falls back to the full check from genesis:** no seal, the hash does not reach it, a gap, a red verdict, a copy changed under the same head.
-4. **Nothing "verified" is stored.** Only the key's signature carries over, checked again every session.
+4. **Nothing "verified" is stored.** Only the key's signatures carry over, checked again every session. The copy is verified only when it welds up to the newest checkpoint and both of that checkpoint's signatures (P-256 and ML-DSA-65) verify: one hybrid anchor per copy.
 5. **The key signs a checkpoint only when one is used:** the first check of a session, a check that was not clean, and a seal. A sync that checks only new links on a verified copy is anchored by the head it just read. (A checkpoint at every sync costs 0.4-1 s per sync on a phone, up to 4.5 s in a burst.)
 
 The condition of a full check from genesis at app start holds here too: an edit to the stored copy without the head moving turns red, because the signed hash no longer matches. Only the cost differs: on a phone the full check takes 10.3 s of a 12.3 s sync, on the thread that answers Bluetooth.

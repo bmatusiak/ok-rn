@@ -51,6 +51,18 @@ nobody will receipt; if the budget went on paying after it, a press would let an
 receipts - so a settle ends every live budget, and more work takes a new budget and a new press.
 The end link says which happened: completed, revoked or settled.
 
+## 5a. Why two signatures
+
+Hashes stay safe against a quantum computer; P-256 signatures do not. So each signature Edge
+makes - a checkpoint, an owner statement - has an ML-DSA-65 signature beside it over the same
+digest, and a host requires both: if either algorithm holds, the pair holds. ML-DSA-65 because the
+3.1.0 firmware already carries it (the composite PGP slots), so the plugin adds only the calls.
+The keys are derived like the P-256 ones, so nothing new is stored, and a restore makes new ones.
+
+A host keeps the ML-DSA half only for the newest checkpoint of its copy. The links below it are
+welded by hashes up to that head, so one hybrid checkpoint authenticates the whole copy; older
+checkpoints keep their P-256 signature, which is small. This keeps a sync message about 20 KB.
+
 ## 6. Why a restore is a new device
 
 A backup restored anywhere - another phone, or the phone that made it - could otherwise write a

@@ -94,10 +94,18 @@ export interface EdgeSource {
   copyKey?(opts?: {checkpoint?: boolean}): Promise<EdgeCopyKey>;
 }
 
+/*
+ * HYBRID (lib chain.verifyCheckpoint; Brad, 2026-10-10): the key signs each checkpoint with
+ * P-256 AND ML-DSA-65. publicKeyPq is the checkpoint key's ML-DSA-65 twin (1952 bytes, read
+ * from the key like publicKey); the key's latest checkpoint carries both signatures - it is
+ * the copy's one hybrid anchor, and a copy verifies only when it welds up to it. Older
+ * checkpoints (seals, openings) keep and are checked by their P-256 half only.
+ */
 export type EdgeCopyKey = {
   publicKey: Uint8Array;
+  publicKeyPq: Uint8Array | null;
   openings: Record<number, unknown>;
-  checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array} | null;
+  checkpoint: {seq: number; head: Uint8Array; signature: Uint8Array; signaturePq?: Uint8Array | null} | null;
 };
 
 /* refusedTx: B7 stage 2, HEAD byte 60 - TX starts the key refused since it started (0 on older firmware) */

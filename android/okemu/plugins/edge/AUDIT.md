@@ -33,6 +33,7 @@ An ordinary press - approved, denied or timed out - writes no link.
 | 02 | PICKUP | - | - | the held links, each with its head and reveal |
 | 03 | CHECKPOINT | - | - | seq · head, then the signature |
 | 04 | PUBKEY | - | - | the Edge public key |
+| 05 | PUBKEY_PQ | - | - | an ML-DSA-65 public key: 0 the checkpoint key, 1 the owner key (1,952 bytes) |
 | 06 | STATEMENT | - | - | the owner statement: seq · nametag hash, the owner key, the signature |
 | 10 | GRANT_CREATE | yes | grant-create | id, uses, G, seq, then a checkpoint |
 | 11 | GRANT_LABEL | - | - | stages a derived identity's label for the next GRANT_CREATE |
@@ -68,6 +69,9 @@ receipt owed, `0D` nothing to pay, `12` bad range, `1C` not the request its TX s
   only. The salt is drawn on first use and never leaves the device; a restore draws a new one.
 - **The owner key:** `HKDF(K132, "onlykey/edge/owner/v1")`, no salt - the same on every device made
   from the same OnlyKey. Signs only the owner statement.
+- **Their ML-DSA-65 twins:** seeds `HKDF(0x28 ‖ device salt, K132, "onlykey/edge/mldsa/v1")` and
+  `HKDF(K132, "onlykey/edge/owner-mldsa/v1")`; key pairs from the firmware's mldsa-native build,
+  regenerated for each signature. Each signs the same digest as its P-256 key; a host requires both.
 - No other key is read or derived; nothing private is ever sent.
 
 ## What it never does
@@ -101,8 +105,8 @@ The SHA-256, uECC, HKDF, RNG, flash and press code it calls is already in the fi
 
 | Kind | Bytes | Largest |
 |---|---|---|
-| Code (`.text`) | 7,284 | `okplugin_edge_recv` 2,164, `okplugin_edge_decision` 1,044, `ensure_identity` 496, `append_scoped` 440, `okplugin_edge_primed` 396 |
-| Constants | 275 | tags, the magic, the status digits |
+| Code (`.text`) | 7,716 | `okplugin_edge_recv` 2,340, `okplugin_edge_decision` 1,044, `ensure_identity` 496, `append_scoped` 440, `okplugin_edge_primed` 396 |
+| Constants | 325 | tags, the magic, the status digits, the HKDF labels |
 | RAM (`.bss`) | 2,761 | held links 1,088, budgets 720, the waiting press 412, the record 196, staged labels 136 |
 | Flash | 208, double-buffered | the record above |
 

@@ -394,7 +394,7 @@ export function BudgetCard({b, busy, stopping = false, onOpen, onRevoke, held, o
       <Text style={styles.op}>{b.reason}</Text>
       {b.agent ? <Text style={styles.dim}>{`for ${b.agent}`}</Text> : null}
       {held ? <Text style={[styles.receiptTitle, {color: theme.warn}]}>On hold – it pays for nothing until you resume it</Text> : null}
-      <Text style={styles.dim}>{`${b.used} of ${b.uses} uses spent${b.used >= b.uses ? ' – used up' : ''}`}</Text>
+      <Text style={styles.dim}>{`${b.used} of ${b.uses} use${b.uses === 1 ? '' : 's'} spent${b.used >= b.uses ? ' – used up' : ''}`}</Text>
       <Progress used={b.used} total={b.uses} thick />
       {scopeLines(b.scopes, b.exact).map((s, i) => (
         <View key={i} style={styles.scope}>

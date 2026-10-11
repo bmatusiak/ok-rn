@@ -24,6 +24,12 @@ const HEAD = 0x01;
 const PICKUP = 0x02;
 const CHECKPOINT = 0x03;
 const PUBKEY = 0x04;
+const PUBKEY_PQ = 0x05; /* {which: 0 checkpoint key, 1 owner key}: an ML-DSA-65 public key */
+/* ML-DSA-65 sizes and their 64-byte reports */
+const PQ_PK = 1952;
+const PQ_SIG = 3309;
+const PQ_PK_REPORTS = Math.ceil(PQ_PK / 64);
+const PQ_SIG_REPORTS = Math.ceil(PQ_SIG / 64);
 const STATEMENT = 0x06;  /* {nametag hash 32}, no press, no link: seq . nametag hash, owner key, signature (2026-10-08) */
 const LOSS = 0x34;
 const RETIRED_AGENT_ADD = 0x15; /* retired 2026-10-08: refused as unknown */
@@ -158,7 +164,7 @@ module.exports = function register({ it }, ctx) {
     return req;
   }
 
-  /* ... with its press -> {grantId, uses, G, chainSeq, ckpt, sig} */
+  /* ... with its press -> {grantId, uses, G, chainSeq, ckpt, sig, sigPq} */
   async function openBudget(device, scopes, reason, { signal, lifetime = 0 }) {
     const reasonHash = sha256(Buffer.from(reason));
     /* R11a: each derived-code scope's label is staged first (no press); GRANT_CREATE consumes them */
@@ -169,10 +175,11 @@ module.exports = function register({ it }, ctx) {
       if (staged !== 'EDGE:00') throw new Error(`GRANT_LABEL ${j} answered ${staged}`);
     }
     const req = grantRequest(scopes, reasonHash, (await head(device, { signal })).head, lifetime);
-    const [g, ckpt, s] = await edge(device, GRANT_CREATE, req, { signal, press: true, reports: 3 });
+    const rs = await edge(device, GRANT_CREATE, req, { signal, press: true, reports: 3 + PQ_SIG_REPORTS });
+    const [g, ckpt, s] = rs;
     return {
       grantId: g.readUInt32LE(0), uses: g.readUInt16LE(4), G: new Uint8Array(g.subarray(6, 38)),
-      chainSeq: g.readUInt32LE(38), ckpt, sig: new Uint8Array(s.subarray(0, 64)), reasonHash,
+      chainSeq: g.readUInt32LE(38), ckpt, sig: new Uint8Array(s.subarray(0, 64)), sigPq: joined(rs.slice(3), PQ_SIG), reasonHash,
     };
   }
 
@@ -191,11 +198,24 @@ module.exports = function register({ it }, ctx) {
     }
   }
 
-  /* a checkpoint (seq, head) is the Edge key's signature (lib chain checkpoint digest, R7) */
-  function checkpointVerifies(pub, seq, headBytes, sig) {
+  /* reports joined into the n bytes they carry */
+  const joined = (rs, n) => new Uint8Array(Buffer.concat(rs).subarray(0, n));
+
+  /*
+   * A checkpoint (seq, head) is TWO signatures over the same digest (lib chain checkpoint digest,
+   * R7): the P-256 Edge key's, checked here with node:crypto, and its ML-DSA-65 twin's, checked by
+   * the lib (chain.mlDsaVerify). Both must verify.
+   */
+  function checkpointVerifies(pub, seq, headBytes, sig, pubPq, sigPq) {
     const message = Buffer.concat([Buffer.from('OKEDGE-CKPT-v1'), Buffer.from(deviceIdOf(pub)), u32(seq), Buffer.from(headBytes)]);
     const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), Buffer.from(pub)]), format: 'der', type: 'spki' });
-    return crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sig).subarray(0, 64));
+    return crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sig).subarray(0, 64))
+      && chain.mlDsaVerify(sigPq, sha256(message), pubPq);
+  }
+
+  /* an ML-DSA-65 public key: 0 the checkpoint key's twin, 1 the owner key's */
+  async function pubkeyPq(device, which, opts) {
+    return joined(await edge(device, PUBKEY_PQ, Buffer.from([which]), { ...opts, reports: PQ_PK_REPORTS }), PQ_PK);
   }
 
   /*
@@ -206,13 +226,18 @@ module.exports = function register({ it }, ctx) {
   async function statementOf(device, nametag, opts) {
     const nh = sha256(Buffer.concat([Buffer.from('OKEDGE-NAMETAG-v1'), Buffer.from(nametag, 'utf8')]));
     const pub = await pubkey(device, opts);
-    const [a, k, sg] = await edge(device, STATEMENT, nh, { ...opts, reports: 3 });
+    const pubPq = await pubkeyPq(device, 0, opts);
+    const ownerPq = await pubkeyPq(device, 1, opts);
+    const rs = await edge(device, STATEMENT, nh, { ...opts, reports: 3 + PQ_SIG_REPORTS });
+    const [a, k, sg] = rs;
     const seq = a.readUInt32LE(0);
     const owner = new Uint8Array(k.subarray(0, 64));
-    const message = Buffer.concat([Buffer.from('OKEDGE-STATEMENT-v1'), Buffer.from(deviceIdOf(pub)), Buffer.from(pub), u32(seq), nh]);
+    /* the statement names both of this device's checkpoint keys: the P-256 key, and the hash of its ML-DSA twin */
+    const message = Buffer.concat([Buffer.from('OKEDGE-STATEMENT-v1'), Buffer.from(deviceIdOf(pub)), Buffer.from(pub), sha256(Buffer.from(pubPq)), u32(seq), nh]);
     const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), Buffer.from(owner)]), format: 'der', type: 'spki' });
-    const ok = crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sg).subarray(0, 64));
-    return { seq, echoed: Buffer.from(a.subarray(4, 36)).equals(nh), owner, ok, pub };
+    const p256ok = crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sg).subarray(0, 64));
+    const pqOk = chain.mlDsaVerify(joined(rs.slice(3), PQ_SIG), sha256(message), ownerPq);
+    return { seq, echoed: Buffer.from(a.subarray(4, 36)).equals(nh), owner, ownerPq, ok: p256ok && pqOk, p256ok, pqOk, pub, pubPq };
   }
 
   /* PICKUP: per link the link, then its head and (for a self-press) the reveal */
@@ -412,7 +437,7 @@ module.exports = function register({ it }, ctx) {
        *   SHA256("OKEDGE-GRANT-v1" || scopes || reason_hash || G || lifetime)
        */
       assert.equal(b.ckpt.readUInt32LE(0), b.chainSeq, 'the checkpoint is not over the grant-create link');
-      assert.ok(checkpointVerifies(pub, b.chainSeq, b.ckpt.subarray(4, 36), b.sig), 'the opening checkpoint does not verify');
+      assert.ok(checkpointVerifies(pub, b.chainSeq, b.ckpt.subarray(4, 36), b.sig, await pubkeyPq(device, 0, { signal }), b.sigPq), 'the opening checkpoint does not verify (both halves)');
       const [opened] = await pickup(device, b.chainSeq, 1, { signal });
       assert.bytes(Buffer.from(chain.weld(before.head, opened.link)), b.ckpt.subarray(4, 36), 'the signed head is not this link welded on');
       const scopesEnc = Buffer.from([1, OP_SIGN, 222, 2, 0]);
@@ -694,7 +719,8 @@ module.exports = function register({ it }, ctx) {
       }));
       log(`kept for the older-firmware restore: ${keep}`);
 
-      const ownerBefore = (await statementOf(device, 'okt bench', { signal })).owner;
+      const stBefore = await statementOf(device, 'okt bench', { signal });
+      const ownerBefore = stBefore.owner;
       /* a link the backup does not have: lost with the restore - the continue link names the backup's head, not this one */
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await receipt(device, owedAtBackup.seq, 'okt: paid after the backup', { signal });
@@ -726,6 +752,8 @@ module.exports = function register({ it }, ctx) {
       /* the same OnlyKey secret: the owner key is the same before and after - that is how another device knows the log is yours */
       const after2 = await statementOf(device, 'okt bench', { signal });
       assert.ok(after2.ok && Buffer.from(after2.owner).equals(Buffer.from(ownerBefore)), 'the owner key changed with the restore - a restored key would no longer be recognised as yours');
+      assert.ok(Buffer.from(after2.ownerPq).equals(Buffer.from(stBefore.ownerPq)), 'the owner ML-DSA key changed with the restore');
+      assert.ok(!Buffer.from(after2.pubPq).equals(Buffer.from(stBefore.pubPq)), 'the checkpoint ML-DSA key survived the restore - it must follow the new salt');
       await receipt(device, owedAtBackup.seq, 'okt: the carried debt paid on the new chain', { signal });
       assert.equal((await head(device, { signal })).owed, 0, 'a receipt on the new chain did not pay the carried debt');
     });
@@ -1064,17 +1092,29 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true }), 'EDGE:00');
     });
 
-  it('edge: a checkpoint is the Edge key\'s signature over the head',
-    async ({ device, assert, signal }) => {
+  it('edge: a checkpoint is two signatures over the head - the P-256 key\'s and its ML-DSA-65 twin\'s, both required',
+    async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       const h = await ensureChain(device, 1, { signal }); /* an empty chain has no head to sign */
       const pub = await pubkey(device, { signal });
-      const [c, s] = await edge(device, CHECKPOINT, null, { signal, reports: 2 });
-      assert.ok(checkpointVerifies(pub, h.seq, h.head, s), 'the checkpoint signature does not verify');
+      const pubPq = await pubkeyPq(device, 0, { signal });
+      const ownerPq = await pubkeyPq(device, 1, { signal });
+      assert.equal(pubPq.length, PQ_PK);
+      assert.ok(!Buffer.from(pubPq).equals(Buffer.from(ownerPq)), 'the checkpoint key and the owner key are the same ML-DSA key');
+      const t0 = Date.now();
+      const rs = await edge(device, CHECKPOINT, null, { signal, reports: 2 + PQ_SIG_REPORTS });
+      log(`the hybrid checkpoint: ${rs.length} reports in ${Date.now() - t0} ms`);
+      const [c, s] = rs;
+      const sigPq = joined(rs.slice(2), PQ_SIG);
+      assert.ok(checkpointVerifies(pub, h.seq, h.head, s, pubPq, sigPq), 'the checkpoint does not verify (both halves)');
       assert.equal(c.readUInt32LE(0), h.seq);
       assert.bytes(c.subarray(4, 36), Buffer.from(h.head));
       /* and over THIS head only */
-      assert.ok(!checkpointVerifies(pub, h.seq, new Uint8Array(32).fill(1), s), 'a checkpoint verified over another head');
+      assert.ok(!checkpointVerifies(pub, h.seq, new Uint8Array(32).fill(1), s, pubPq, sigPq), 'a checkpoint verified over another head');
+      /* each half alone is not a checkpoint: a flipped byte in the ML-DSA half, or the owner's ML-DSA key */
+      const bad = Uint8Array.from(sigPq); bad[100] ^= 1;
+      assert.ok(!checkpointVerifies(pub, h.seq, h.head, s, pubPq, bad), 'a checkpoint with a broken ML-DSA half verified');
+      assert.ok(!checkpointVerifies(pub, h.seq, h.head, s, ownerPq, sigPq), 'the checkpoint\'s ML-DSA half verified under the owner key');
       /* the latest link is still held for pickup, and its weld is the signed head */
       const [last] = await pickup(device, h.seq, 1, { signal });
       assert.bytes(Buffer.from(last.head), Buffer.from(h.head));
