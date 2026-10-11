@@ -12,6 +12,8 @@ module.exports = {
   minBase: '3.1.0',
   notes: 'fix: the 20 s user timer stops when a request is decided, so it cannot answer "Timeout occured" for the next one',
   backup: false,
+  /* keeps nothing in flash or EEPROM: the soft key's storage slot is not named after it (firmware-plugins slotPlugins) */
+  stateless: true,
   hooks: [
     {
       file: 'okcore.cpp',

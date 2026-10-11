@@ -807,8 +807,10 @@ function evaluateWith(mirror: Mirror, head: {seq: number; head: Uint8Array; ring
    * made the new-links check fail and sent every check to the full one. It is only
    * one anchor: check without it; the next sync has both at the same head.
    */
-  const cp = key?.checkpoint && key.checkpoint.seq <= head.seq ? key.checkpoint : null;
-  if (key?.checkpoint && !cp) console.log(`[edge] verify ${id.slice(0, 8)}: the key's checkpoint is for #${key.checkpoint.seq}, the head read was #${head.seq} - a link landed during the sync; checked without it`);
+  /* a key with no link yet signs its checkpoint at seq 0xFFFFFFFF (no link): nothing to anchor, nothing landed */
+  const emptyChain = key?.checkpoint?.seq === 0xffffffff;
+  const cp = key?.checkpoint && !emptyChain && key.checkpoint.seq <= head.seq ? key.checkpoint : null;
+  if (key?.checkpoint && !cp && !emptyChain) console.log(`[edge] verify ${id.slice(0, 8)}: the key's checkpoint is for #${key.checkpoint.seq}, the head read was #${head.seq} - a link landed during the sync; checked without it`);
   const remember = (verdict: Verdict, unverified: number[]) => {
     const last = decoded[decoded.length - 1];
     verifiedNow.set(id, {seq: head.seq, head: headHex, count: mirror.links.length, lastSeq: last ? last.f.seq : -1, lastHead: last ? toHex(last.r.head) : '', records: mirror.links.slice(), verdict, unverified});

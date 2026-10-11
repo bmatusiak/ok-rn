@@ -13,13 +13,18 @@
  * THE FIRST RELEASE (Brad, 2026-10-08: "v0 turns to v1, v1 = first release of the protocol
  * and schemas"): the mark moved from '1' to 'release-1', so the build that ships v1 clears
  * the development chain's records once more - together with its soft key, whose OKEDGEv1
- * record replaces the development OKEDGE01 one. A user's log is never reset after this.
+ * record replaces the development OKEDGE01 one.
+ *
+ * ONE OWED USE (Brad, 2026-10-10: "clean full start, i dont want fallback support in v1"): the
+ * key's record shrank to one owed use and no longer reads the old one, so every soft key starts a
+ * fresh chain; the mark moved to 'v1-one-owed-use' and the phone clears the old chains' records
+ * once more. Edge is unreleased: nothing reads an older record or copy.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {LIVE_PREFIX} from './net';
 
 export const EDGE_V1_MARK = 'okrn.edgeV1';
-export const EDGE_V1_DONE = 'release-1';
+export const EDGE_V1_DONE = 'v1-one-owed-use';
 /* every Edge record (net.ts edgeKey: okrn.edge. and okrn.edge.test.), the sibling names' old key, the testnet's Key Chain list */
 const EDGE_KEYS = (k: string) => k.startsWith(LIVE_PREFIX) || k === 'edge.siblingNames' || k === 'okrn.keychain.test.list';
 
