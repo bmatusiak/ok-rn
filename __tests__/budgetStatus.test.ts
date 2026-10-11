@@ -58,3 +58,21 @@ test('nothing checked yet (no view): not Validated', () => {
 test('an unused budget that ended reads "Validated · unused"', () => {
   expect(budgetStatusText(budgetStatus(budget(0, 0), false, view(0, 0)))).toBe('Validated · unused');
 });
+
+/* use #10 receipted at #11; use #12 cleared by the settle link #14 (the key wrote it at the person's press) */
+function settledView(settleVerified: boolean): EdgeView {
+  const v = view(1, 1) as unknown as {rows: unknown[]};
+  v.rows.push({seq: 12, fields: {seq: 12, grantId: ID, decision: codes.DECISION.SELF_PRESS}, verified: true, receipt: {status: 'settled', receipt: null, settledBy: 14}});
+  v.rows.push({seq: 14, fields: {seq: 14, grantId: 12, decision: 0x8f}, verified: settleVerified});
+  return v as unknown as EdgeView;
+}
+
+test('a use cleared by a verified settle: Settled, not "Not checked yet"', () => {
+  const s = budgetStatus(budget(2, 2), false, settledView(true));
+  expect(s).toEqual({kind: 'settled'});
+  expect(budgetStatusText(s)).toBe('Settled');
+});
+
+test('a settle link the check did not verify: not Settled', () => {
+  expect(budgetStatus(budget(2, 2), false, settledView(false))).toEqual({kind: 'unchecked'});
+});

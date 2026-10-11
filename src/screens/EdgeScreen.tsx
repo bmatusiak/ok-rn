@@ -298,7 +298,7 @@ function LinkRow({row, receiptVerified, budgetUses, agentOf, notesFrom, continue
             {row.fields.decision === END.COMPLETED
               ? `Every use of budget ${row.fields.grantId} was made and receipted; the key ended it.`
               : row.fields.decision === END.SETTLED
-                ? `Budget ${row.fields.grantId} was ended by a settle - its open uses are marked for review.`
+                ? `Budget ${row.fields.grantId} was ended by a settle - nothing more can spend from it.`
                 : `Budget ${row.fields.grantId} is closed - nothing more can spend from it.`}
           </Text>
         </View>
@@ -359,11 +359,11 @@ function ChainList({rows, budgetUses, edge}: {rows: EdgeRow[]; budgetUses?: Map<
   );
 }
 
-/* the status word's colour: green done or live, yellow a receipt owed, red a failed check */
+/* the status word's colour: green done or live, yellow a receipt owed or a settled use, red a failed check */
 export function statusColor(s: BudgetStatus): string {
   if (s.kind === 'failed') return theme.error;
   if (s.kind === 'unchecked') return theme.textDim;
-  if (s.kind === 'active' && s.owed > 0) return theme.warn;
+  if (s.kind === 'settled' || (s.kind === 'active' && s.owed > 0)) return theme.warn;
   return theme.ok;
 }
 
@@ -647,7 +647,7 @@ function BudgetView({b, edge, onBack, other}: {b: EdgeBudget; edge: ReturnType<t
  * SETTLE SETTLES THE BUDGET (Brad, 2026-10-10: "its more secure to just end the budget instead
  * of allowing it to be continue to be used; this will force a new budget to be created by the
  * agent"): the key ends every live budget, each with its end link, then links the settle - the
- * person accepts every owed use without its receipt. In the budget's detail view, under the use
+ * person accepts the owed use without its receipt. In the budget's detail view, under the use
  * that is waiting for its receipt (Brad, 2026-10-06), not a banner on the list.
  */
 function SettleControls({edge}: {edge: ReturnType<typeof useEdge>}) {
@@ -662,7 +662,7 @@ function SettleControls({edge}: {edge: ReturnType<typeof useEdge>}) {
     </>
   ) : confirming ? (
     <>
-      <Text style={styles.dim}>Settling ends every live budget and records, in the chain, that you accept every owed use without its receipt. The agent then needs a new budget, which you approve again. It needs a press on the key.</Text>
+      <Text style={styles.dim}>Settling ends every live budget and records, in the chain, that you accept the owed use without its receipt. The agent then needs a new budget, which you approve again. It needs a press on the key.</Text>
       <View style={styles.row}>
         {consentRefusal() ? <Text style={[styles.op, {color: theme.error}]}>{consentRefusal()}</Text> : null}
         <Btn title="Yes, settle" tone="danger" onPress={() => { if (consentRefusal()) return; setConfirming(false); void edge.settle(); }} disabled={edge.busy || consentRefusal() !== null} />

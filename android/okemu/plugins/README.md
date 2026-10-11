@@ -1,12 +1,12 @@
 # Soft-key firmware plugins
 
-Experimental firmware features for the **soft key only** (owner, 2026-10-01). Each plugin is its own folder, so:
+Firmware changes for the **soft key**, each in its own folder: experimental features, and fixes to the base firmware that are tested here before they are proposed upstream. Because each plugin is its own folder:
 - it is **removed** by deleting the folder;
 - it is **audited** by reading just the folder.
 
-Hard keys never get them.
+Hard keys never get the feature plugins. A fix plugin is how a fix for every key is built and tested first (see "Firmware fixes" below).
 
-**This folder holds only the plugins ok-rn ships** (none yet; Edge will be the first). The demo plugin, `hello`, lives in node-onlykey-emulator (`emulator/plugins/hello/`). The loader is the library's (`node-onlykey-lib/cli/firmware-plugins`), shared with that emulator.
+**This folder holds the plugins ok-rn ships** (listed at the end). The demo plugin, `hello`, lives in node-onlykey-emulator (`emulator/plugins/hello/`). The loader is the library's (`node-onlykey-lib/cli/firmware-plugins`), shared with that emulator.
 
 ## Use one
 Name the plugins when you stage or build. Without the variable, nothing is staged, and the soft key is the base build, byte for byte (the staged digest is unchanged):
@@ -39,7 +39,7 @@ OKEMU_PLUGINS=hello OKEMU_PLUGINS_DIR=<node-onlykey-emulator>/emulator/plugins .
 
 **After editing a plugin's `tests/e2e.js`, restage (or copy it to `src/generated/plugins/<name>.e2e.js`) and restart Metro with `--reset-cache`:** Metro does not pick up changes in the generated copy, and the phone keeps running the old test. That cost a round of debugging Edge against code the phone was not running.
 
-**In testing mode the soft key's firmware console goes to logcat** as `[okemu-fw] …` (`useOkEmu`, owner 2026-10-02), so `adb logcat` and `tools/logwatch.js` can read what a plugin does while a test drives it.
+**In testing mode the soft key's firmware console goes to logcat** as `[okemu-fw] …` (`useOkEmu`), so `adb logcat` and `tools/logwatch.js` can read what a plugin does while a test drives it.
 
 Neither the emulator nor the kit depends on ok-rn. A test gets the app or the kit through `ctx` (device access, `IFACE`, `okmsg` or `protocol`, the PIN), never by a relative path.
 
@@ -52,4 +52,19 @@ Neither the emulator nor the kit depends on ok-rn. A test gets the app or the ki
 ## Plugins
 | Name | What |
 |---|---|
-| (none yet) | Edge comes next |
+| `config` | OKGETCONFIG prints the settings as INI; OKSETCONFIG imports one (config mode, DEBUG builds only) |
+| `edge` | OnlyKey Edge: budgets opened at a press, each use linked in the key's hash chain ([edge/README.md](edge/README.md)) |
+| `key_chain` | reports each derived public key the soft key makes, and a record of each press for the press sheet |
+| `fix_usertimeout` | fix: the 20 s user timer stops when a request is decided, so it cannot answer "Timeout occured" for the next request ([AUDIT.md](fix_usertimeout/AUDIT.md)) |
+
+## Firmware fixes
+
+A fix to the base firmware is a plugin named `fix_<topic>`, so it is contained, built only when
+asked for, and tested on its own before it goes upstream:
+- `plugin.js` holds the fix as hooks into the base files, as small as the fix allows;
+- `AUDIT.md` is the write-up for the firmware maintainers: the issue, why it happens, the fix, what
+  it does not change, and the test;
+- `tests/kit.test.js` reproduces the issue on the emulator. It fails without the fix's hooks and
+  passes with them; both runs are recorded in AUDIT.md.
+
+`src/` may hold only a note when the fix is hooks alone (the loader requires the folder).

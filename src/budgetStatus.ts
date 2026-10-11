@@ -5,6 +5,8 @@
  *                spent it says so: "Active · 1 receipt owed · no uses left";
  *   Validated  - ended, and every use has a receipt that verifies in the copy
  *                re-checked this session - the only green "done";
+ *   Settled    - ended, the copy verifies, and a use was cleared by the person's settle
+ *                (accepted without its receipt) - yellow: checked, but not receipted;
  *   red        - the copy failed its check.
  * There is no "Complete" and no "Ended" state.
  *
@@ -18,6 +20,8 @@ import type {EdgeView} from './edgeStore';
 export type BudgetStatus =
   | {kind: 'active'; owed: number; live: boolean; noUsesLeft: boolean}
   | {kind: 'validated'; unused?: boolean}
+  /* ended and verified, but a use was cleared by a settle, not a receipt */
+  | {kind: 'settled'}
   /* ended, nothing owed, but this session's check has not verified it (not read yet, or a gap) */
   | {kind: 'unchecked'}
   | {kind: 'failed'; seq?: number; reason?: string};
@@ -27,8 +31,13 @@ export function budgetStatus(b: EdgeBudget, live: boolean, view: EdgeView | null
   const rows = view?.rows ?? [];
   const bySeq = new Map(rows.map(r => [r.seq, r]));
   const uses = rows.filter(r => r.fields.grantId === b.grantId && r.fields.decision === codes.DECISION.SELF_PRESS);
-  type Paired = {status?: string; receipt?: {seq: number} | null};
+  type Paired = {status?: string; receipt?: {seq: number} | null; settledBy?: number | null};
   const answered = (r: (typeof rows)[number]) => (r.receipt as Paired | undefined)?.receipt ?? null;
+  /* the settle link that cleared this use, when a settle (not a receipt) answered it */
+  const settledBy = (r: (typeof rows)[number]) => {
+    const t = r.receipt as Paired | undefined;
+    return t?.status === 'settled' ? t.settledBy ?? null : null;
+  };
   /* a use with no receipt and no settle, that owes one */
   const owedRows = uses.filter(r => {
     const t = r.receipt as Paired | undefined;
@@ -38,11 +47,16 @@ export function budgetStatus(b: EdgeBudget, live: boolean, view: EdgeView | null
   /* nothing more can be spent: every use gone, or the budget is no longer live (ended, expired, a lock) */
   const noUsesLeft = !live || (b.uses > 0 && b.used >= b.uses);
   if (live || owed > 0) return {kind: 'active', owed, live, noUsesLeft};
+  /* every use answered by a link that verifies: its receipt, or the settle that cleared it */
   const allChecked = uses.length === b.used && uses.every(r => {
+    if (!r.verified) return false;
     const t = answered(r);
-    return r.verified && t !== null && bySeq.get(t.seq)?.verified === true;
+    if (t) return bySeq.get(t.seq)?.verified === true;
+    const s = settledBy(r);
+    return s !== null && bySeq.get(s)?.verified === true;
   });
-  return view?.verdict.kind === 'verified' && allChecked ? {kind: 'validated', unused: b.used === 0} : {kind: 'unchecked'};
+  if (view?.verdict.kind !== 'verified' || !allChecked) return {kind: 'unchecked'};
+  return uses.some(r => settledBy(r) !== null) ? {kind: 'settled'} : {kind: 'validated', unused: b.used === 0};
 }
 
 /*
@@ -55,6 +69,7 @@ export function budgetStatus(b: EdgeBudget, live: boolean, view: EdgeView | null
 /** the words the cards show */
 export function budgetStatusText(s: BudgetStatus): string {
   if (s.kind === 'validated') return s.unused ? 'Validated · unused' : 'Validated';
+  if (s.kind === 'settled') return 'Settled';
   if (s.kind === 'failed') return s.seq !== undefined ? `Copy failed its check at #${s.seq}` : 'Copy failed its check';
   if (s.kind === 'unchecked') return 'Not checked yet';
   const parts = ['Active'];
