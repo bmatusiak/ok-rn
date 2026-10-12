@@ -32,6 +32,14 @@ jest.mock('../src/net', () => ({netTag: () => ''}));
 
 import {MergeSheet} from '../src/ui/MergeSheet';
 
+/*
+ * These tests check the ORDER of updates, not speed. The first one renders the whole sheet for
+ * the first time in this file, and inside a full `npx jest` run (all workers busy) that render
+ * alone passed jest's 5 s default: it failed 3 full runs out of about 10 on "Exceeded timeout of
+ * 5000 ms" and passed every time on its own (2026-10-12). 20 s leaves room for a loaded machine.
+ */
+jest.setTimeout(20000);
+
 const texts = (r: TestRenderer.ReactTestRenderer) =>
   r.root.findAll(n => typeof n.props.children === 'string').map(n => n.props.children as string);
 const press = async (r: TestRenderer.ReactTestRenderer, title: string) => {

@@ -35,7 +35,21 @@ export type Backend = 'embedded' | 'usb';
 export type Manager = Awaited<ReturnType<typeof m.openManager>>;
 
 /** What a store records about itself, in clear: nothing in it names a site or a secret. */
-export type StoreMeta = {v: 1; press: boolean; asked: boolean; createdAt: string};
+/*
+ * policy: how long the store stays open once its key is derived (spec "Unlock and session
+ * policy": "a person can pick ... up to session:8h"). Absent = the default, 30 minutes.
+ */
+export type StoreMeta = {v: 1; press: boolean; asked: boolean; createdAt: string; policy?: StorePolicy};
+
+/*
+ * The choices. No 'always' (no cache): the screen checks the session on every tap and closes the
+ * store when the key is not held, so a store opened under 'always' would shut on its first tap.
+ * Up to 1 h a window slides with use; 8 h and 'startup' (until the app restarts) are fixed.
+ */
+export const STORE_POLICIES = ['session:5m', 'session:30m', 'session:8h', 'startup'] as const;
+export type StorePolicy = (typeof STORE_POLICIES)[number];
+export const DEFAULT_STORE_POLICY: StorePolicy = 'session:30m';
+const isStorePolicy = (p: unknown): p is StorePolicy => (STORE_POLICIES as readonly unknown[]).includes(p);
 
 /** Key/value storage with AsyncStorage's three methods. */
 export type KV = {
@@ -54,6 +68,7 @@ export type Okcrypto = {
     reap(): string[];
     /* read-only: the policy and the cached keys' time left (neither counts as a use) */
     getPolicy?(label: string): string;
+    setPolicy?(label: string, policy: string): unknown;
     status?(): {serviceId: string; policy: string; remainingMs: number}[];
   };
 };
@@ -103,9 +118,18 @@ export function createStores({
     if (!raw) return null;
     const meta = JSON.parse(raw);
     if (meta?.v !== 1 || typeof meta.press !== 'boolean') throw new Error('passwords: this store\'s meta is damaged');
-    return {v: 1, press: meta.press, asked: meta.asked === true, createdAt: String(meta.createdAt)};
+    return {v: 1, press: meta.press, asked: meta.asked === true, createdAt: String(meta.createdAt), ...(isStorePolicy(meta.policy) ? {policy: meta.policy} : {})};
   }
   const writeMeta = (id: string, meta: StoreMeta) => kvFor(id).setItem(META, JSON.stringify(meta));
+
+  /*
+   * The store's policy goes on the label before every derive: the label is per backend, not per
+   * store, so a store opened after another key's store on the same backend must not inherit its
+   * window.
+   */
+  const applyPolicy = async (okcrypto: Okcrypto, meta: StoreMeta | null) => {
+    await okcrypto.deviceVault.setPolicy?.(LABEL, meta?.policy ?? DEFAULT_STORE_POLICY);
+  };
 
   /** The store id of the key on `backend`. Never a press: a public-key derive is not gated. */
   async function identify(backend: Backend, okcrypto: Okcrypto): Promise<string> {
@@ -154,6 +178,7 @@ export function createStores({
       const id = await identify(backend, okcrypto);
       if (open.has(id)) return {manager: await attach(id, backend, null), why: 'session'};
       const meta = await readMeta(id);
+      if (!okcrypto.deviceVault.isUnlocked(LABEL)) await applyPolicy(okcrypto, meta);
       /* a store not made yet, or one whose open asked a press: never by itself (Brad, 2026-10-11) */
       if (!meta || meta.press || meta.asked) {
         if (!meta || !okcrypto.deviceVault.isUnlocked(LABEL)) return null;
@@ -189,6 +214,7 @@ export function createStores({
     ): Promise<{manager: Manager; why: OpenWhy}> {
       const id = await identify(backend, okcrypto);
       const meta = await readMeta(id);
+      await applyPolicy(okcrypto, meta);
       let asked = false;
       const watch = (status: unknown) => {
         if (status !== UP_NEEDED) return;
@@ -205,9 +231,22 @@ export function createStores({
         press = true;
         key = await okcrypto.deviceVault.key(LABEL, {requirePress: true, onKeepAlive: watch});
       }
-      const next: StoreMeta = {v: 1, press, asked: press || asked, createdAt: meta?.createdAt ?? now().toISOString()};
+      const next: StoreMeta = {v: 1, press, asked: press || asked, createdAt: meta?.createdAt ?? now().toISOString(), ...(meta?.policy ? {policy: meta.policy} : {})};
       if (!meta || meta.asked !== next.asked) await writeMeta(id, next);
       return {manager: await attach(id, backend, key), why: press ? 'press' : 'touch-free'};
+    },
+
+    /**
+     * The person's choice of how long this backend's store stays open: kept in the store's meta
+     * and put on the label now. A shorter window takes effect from the next open (the key already
+     * held keeps the time it was given).
+     */
+    async setPolicy(backend: Backend, okcrypto: Okcrypto, policy: StorePolicy): Promise<void> {
+      if (!isStorePolicy(policy)) throw new Error('passwords: not a store policy');
+      const id = await identify(backend, okcrypto);
+      const meta = await readMeta(id);
+      if (meta) await writeMeta(id, {...meta, policy});
+      await okcrypto.deviceVault.setPolicy?.(LABEL, policy);
     },
 
     /**

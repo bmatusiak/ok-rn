@@ -1,7 +1,7 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {Alert, BackHandler, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 
-import {legacy} from 'node-onlykey-lib/passwords';
+import {legacy, totp as totpLib} from 'node-onlykey-lib/passwords';
 import NativeSecrets from '../../../specs/NativeSecrets';
 import NativeShare from '../../../specs/NativeShare';
 import {missingNote} from '../../firmwareFeatures';
@@ -19,10 +19,11 @@ import {EntryEditor} from './EntryEditor';
 import {DerivedEntry, NewDerived} from './DerivedViews';
 import {openEntry, sealEntry, stripInner} from './innerKeys';
 import {NewPhrase, PhraseEntry} from './PhraseViews';
-import {TotpCode} from './TotpViews';
+import {RowActions, type RowAction} from './RowActions';
+import {TotpCode, TotpRowCode} from './TotpViews';
 import {policyWords, timeLeftWords} from './session';
 import {usePasswordManager, type OldVault} from './usePasswordManager';
-import type {Manager} from './stores';
+import type {Manager, StorePolicy} from './stores';
 
 /*
  * THE PASSWORDS TAB. Unlocks when the tab opens if that needs no press; otherwise "Open with
@@ -70,6 +71,11 @@ type Page =
   | {kind: 'derive-new'; id: null}
   | {kind: 'to-slot'; id: string};
 
+/* the store's "stays open" choices, in words (stores.ts STORE_POLICIES) */
+const POLICY_OF_LABEL = {'5 min': 'session:5m', '30 min': 'session:30m', '8 hours': 'session:8h', 'Until restart': 'startup'} as const;
+const POLICY_LABELS = Object.keys(POLICY_OF_LABEL) as (keyof typeof POLICY_OF_LABEL)[];
+const POLICY_LABEL_OF = Object.fromEntries(Object.entries(POLICY_OF_LABEL).map(([k, v]) => [v, k])) as Record<StorePolicy, keyof typeof POLICY_OF_LABEL>;
+
 const hostOf = (url: string) => url.replace(/^[a-z]+:\/\//i, '').split(/[/?#]/)[0];
 
 async function copy(text: string | undefined, what: string) {
@@ -79,7 +85,7 @@ async function copy(text: string | undefined, what: string) {
 }
 
 export function PasswordsScreen({ctx}: {ctx: TabContext}) {
-  const {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey, policy, timeLeft} = usePasswordManager({
+  const {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey, policy, timeLeft, choosePolicy} = usePasswordManager({
     backend: ctx.backend,
     unlocked: ctx.unlocked,
     caps: ctx.caps,
@@ -92,7 +98,7 @@ export function PasswordsScreen({ctx}: {ctx: TabContext}) {
     const {device} = await getOnlyKey(ctx.backend);
     await device.setSlot(slotId, device.totpFields(secret));
   };
-  if (view.state === 'open') return <OpenStore manager={view.manager} keyName={keyName} touch={touch} lockNow={lockNow} oldVault={oldVault} phraseKey={phraseKey} timeLeft={timeLeft} writeSlot={writeSlot} />;
+  if (view.state === 'open') return <OpenStore manager={view.manager} keyName={keyName} touch={touch} lockNow={lockNow} oldVault={oldVault} phraseKey={phraseKey} timeLeft={timeLeft} policy={policy} choosePolicy={choosePolicy} writeSlot={writeSlot} />;
 
   return (
     <ScrollView contentContainerStyle={styles.pad}>
@@ -138,6 +144,8 @@ function OpenStore({
   oldVault,
   phraseKey,
   timeLeft,
+  policy,
+  choosePolicy,
   writeSlot,
 }: {
   manager: Manager;
@@ -147,6 +155,8 @@ function OpenStore({
   oldVault: () => Promise<OldVault>;
   phraseKey: Parameters<typeof PhraseEntry>[0]['phraseKey'];
   timeLeft: () => number | null;
+  policy: () => string | null;
+  choosePolicy: (p: StorePolicy) => Promise<void>;
   writeSlot: (slotId: string, secret: string) => Promise<void>;
 }) {
   /* the session's time left, redrawn every 15 s (read-only: it does not keep the session open) */
@@ -170,6 +180,10 @@ function OpenStore({
   const [kindFilter, setKindFilter] = useState<KindFilter>('All');
   const [folderFilter, setFolderFilter] = useState<string | null>(null);
   const [rev, setRev] = useState(0);
+  /* a long-pressed row's shortcuts (RowActions): copy and type without opening the entry */
+  const [rowFor, setRowFor] = useState<Entry | null>(null);
+  const bt = useSharedBtKeyboard();
+  const canType = bt.state === 'connected' && bt.forwarding;
   /* Back: an edit to its entry, a new entry's form (or a phrase) to the Add page, the rest to the list */
   const back = useCallback(
     () =>
@@ -192,6 +206,24 @@ function OpenStore({
     if (!touch()) return;
     Promise.resolve(fn()).catch(err => Alert.alert('Passwords', String(err?.message ?? err)));
   }, [touch]);
+
+  /*
+   * The shortcuts a row offers. Only what the list already holds open: an entry sealed again
+   * keeps its secrets shut until it is opened (it asks its key or passphrase), a derived password
+   * or phrase is made only when shown, and a counter code moves its counter only from the entry.
+   */
+  const rowActions = (e: Entry | null): RowAction[] => {
+    if (!e || e.inner) return [];
+    const out: RowAction[] = [];
+    if (e.password) out.push({title: 'Copy password', primary: true, onPress: () => act(() => copy(e.password, 'Password'))});
+    if (e.username) out.push({title: 'Copy username', onPress: () => act(() => copy(e.username, 'Username'))});
+    if (canType && e.username) out.push({title: 'Type username + Tab', onPress: () => act(() => bt.typeSecret(e.username!, {then: 'tab'}))});
+    if (canType && e.password) out.push({title: 'Type password', onPress: () => act(() => bt.typeSecret(e.password!, {then: null}))});
+    const timed = e.totp && e.totp.type !== 'hotp';
+    if (timed) out.push({title: 'Copy code', primary: !e.password, onPress: () => act(() => copy(totpLib.codeOf(e.totp).code, 'Code'))});
+    if (timed && canType) out.push({title: 'Type code', onPress: () => act(() => bt.typeSecret(totpLib.codeOf(e.totp).code, {then: null}))});
+    return out;
+  };
 
   /* read on every draw, not memoised: the Autofill sheet adds entries to this same store */
   void rev;
@@ -259,6 +291,8 @@ function OpenStore({
           />
         ) : page.kind === 'add' ? (
           <AddPage
+            first={entries.length === 0}
+            keyName={keyName}
             onPick={next =>
               setPage(next === 'phrase' ? {kind: 'phrase', id: null} : next === 'derived' ? {kind: 'derive-new', id: null} : {kind: 'edit', id: null, newKind: next})
             }
@@ -373,6 +407,18 @@ function OpenStore({
     if (!of.length) continue;
     items.push({key: `s-${kind}`, kind: 'section', title: KIND_TITLE[kind], right: String(of.length)});
     for (const e of of) {
+      /* an authenticator row shows its code and time bar, live (spec UI: "Show TOTP" in the list) */
+      if (e.kind === 'totp' && !e.inner && e.totp) {
+        items.push({
+          key: e.id,
+          kind: 'node',
+          accessibilityLabel: e.title,
+          render: () => <TotpRowCode totp={e.totp} title={e.title} subtitle={e.totp?.issuer || 'authenticator'} />,
+          onPress: () => act(() => setPage({kind: 'entry', id: e.id})),
+          onLongPress: () => setRowFor(e),
+        });
+        continue;
+      }
       items.push({
         key: e.id,
         kind: 'row',
@@ -387,6 +433,7 @@ function OpenStore({
                 : e.username || (e.urls?.[0] ? hostOf(e.urls[0]) : undefined),
         right: e.inner ? 'sealed' : undefined,
         onPress: () => act(() => setPage({kind: 'entry', id: e.id})),
+        onLongPress: () => setRowFor(e),
       });
     }
   }
@@ -398,8 +445,15 @@ function OpenStore({
    * single-password vault) are each opened with their own derive, one press per site as before,
    * and kept here as logins; the old vault is left as it is.
    */
-  const move = (kind: 'export' | 'import' | 'old') =>
+  const move = (kind: 'export' | 'save' | 'import' | 'old') =>
     act(async () => {
+      /* the sealed copy into a folder the person picks (spec: "Save to a folder through Android's file picker") */
+      if (kind === 'save') {
+        const stamp = new Date().toISOString().slice(0, 10);
+        const r = await NativeShare.saveFile(`onlykey-passwords-${stamp}.json`, await manager.exportJSON(), 'application/json');
+        if (r.saved) Alert.alert('Saved', `Sealed copy saved as ${r.name || 'the chosen file'}. It opens only with this key or one restored from its backup.`);
+        return;
+      }
       if (kind === 'export') {
         const stamp = new Date().toISOString().slice(0, 10);
         await NativeShare.shareFile(`onlykey-passwords-${stamp}.json`, await manager.exportJSON(), 'application/json', 'Passwords (sealed)');
@@ -431,6 +485,21 @@ function OpenStore({
   if (!q && !entries.length) items.push({key: 'none', kind: 'row', tone: 'dim', title: 'No passwords yet', subtitle: '+ Add makes the first one.'});
   /* the panels below belong to the whole store, not to a filtered view */
   if (!filtered) {
+    /* how long the store stays open once the key opened it (spec: "up to session:8h") */
+    const chosen = POLICY_LABEL_OF[policy() as StorePolicy] ?? '30 min';
+    items.push({key: 's-stay', kind: 'section', title: 'Stays open'});
+    items.push({
+      key: 'stay',
+      kind: 'node',
+      render: () => (
+        <View>
+          <Segmented options={POLICY_LABELS} value={chosen} onChange={v => act(() => choosePolicy(POLICY_OF_LABEL[v]))} />
+          <Text style={styles.dim}>
+            {policyWords(POLICY_OF_LABEL[chosen])}, or until the key locks. A shorter choice counts from the next open.
+          </Text>
+        </View>
+      ),
+    });
     items.push({key: 's-autofill', kind: 'section', title: 'Autofill'});
     items.push({key: 'autofill', kind: 'node', render: () => <AutofillCard />});
     items.push({key: 's-move', kind: 'section', title: 'Move passwords'});
@@ -443,7 +512,8 @@ function OpenStore({
             A sealed export opens only with this key or a key restored from its backup.
           </Text>
           <View style={styles.buttons}>
-            <Btn title="Export (sealed)" onPress={() => move('export')} />
+            <Btn title="Save to a folder (sealed)" onPress={() => move('save')} />
+            <Btn title="Share (sealed)" onPress={() => move('export')} />
             <Btn title="Import (sealed)" onPress={() => move('import')} />
             {/* Import old vault: hidden - no legacy support yet (Brad, 2026-10-11); move('old') and lib legacy.js stay */}
           </View>
@@ -480,6 +550,7 @@ function OpenStore({
       </View>
       {left !== null ? <Text style={[styles.dim, styles.session]}>{timeLeftWords(left)}</Text> : null}
       <EdgeList items={items} empty="Nothing matches." />
+      <RowActions title={rowFor ? rowFor.title : null} actions={rowActions(rowFor)} onClose={() => setRowFor(null)} />
     </View>
   );
 }
@@ -497,9 +568,20 @@ const ADD_KINDS: {kind: NewKind | 'phrase' | 'derived'; title: string; what: str
   {kind: 'phrase', title: '+ Wallet phrase', what: 'A BIP39 phrase made from this OnlyKey and a name - nothing of it is stored.'},
 ];
 
-function AddPage({onPick}: {onPick: (kind: NewKind | 'phrase' | 'derived') => void}) {
+function AddPage({first, keyName, onPick}: {first: boolean; keyName: string; onPick: (kind: NewKind | 'phrase' | 'derived') => void}) {
   return (
     <ScrollView contentContainerStyle={styles.pad}>
+      {/*
+        * Before the first entry (spec Security: "OnlyKey lost with no backup - Data lost. By design;
+        * the backup section says so in the UI before the first entry is saved"). The app cannot
+        * tell whether the key has a backup key set - only a backup attempt says so - so it says it
+        * to everyone, once the store is empty.
+        */}
+      {first ? (
+        <Text style={[styles.dim, styles.firstNote]}>
+          Everything saved here opens only with the {keyName}, or with a key restored from its backup. Without a backup, losing the key loses these. Make one in Settings › Backup/Restore.
+        </Text>
+      ) : null}
       {ADD_KINDS.map(k => (
         <View key={k.kind} style={styles.addRow}>
           <Btn title={k.title} tone="primary" onPress={() => onPick(k.kind)} />
@@ -642,6 +724,7 @@ function EntryView({
 }
 
 const styles = StyleSheet.create({
+  firstNote: {color: theme.warn, marginBottom: 12},
   root: {flex: 1},
   pad: {padding: 16},
   row: {flexDirection: 'row', alignItems: 'stretch', paddingHorizontal: 16, paddingTop: 16},

@@ -3,6 +3,7 @@ import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 
 import {totp as totpLib} from 'node-onlykey-lib/passwords';
 import {sealOf, type Seal} from './innerKeys';
+import {TotpPreview} from './TotpViews';
 import {generatePassword, MAX_LENGTH, MIN_LENGTH, type PasswordOptions} from '../../passwordGenerator';
 import {Btn, Section, Segmented} from '../../ui/components';
 import {theme} from '../../ui/theme';
@@ -43,6 +44,12 @@ type Input = {
   totp?: any;
 };
 
+const CODE_KINDS = ['Time-based', 'Counter-based', 'Steam'] as const;
+type CodeKind = (typeof CODE_KINDS)[number];
+const codeKindOf = (t: any): CodeKind => (t?.type === 'hotp' ? 'Counter-based' : t?.encoder === 'steam' ? 'Steam' : 'Time-based');
+const ALGO_OPTIONS = ['SHA1', 'SHA256', 'SHA512'] as const;
+const DIGIT_OPTIONS = ['6', '7', '8'] as const;
+
 export function EntryEditor({
   entry,
   newKind = 'login',
@@ -68,6 +75,47 @@ export function EntryEditor({
   const [tags, setTags] = useState((entry?.tags ?? []).join(', '));
   /* an authenticator's setup key, or the whole otpauth:// link (the QR code's text) */
   const [otp, setOtp] = useState<string>(entry?.totp?.secret ?? '');
+  /*
+   * A code typed in by hand (spec "Adding an account", "Or type it in"): its kind, and an Advanced
+   * fold for algorithm, digits and period. Steam fixes its own (5 characters, SHA1, 30 s) and takes
+   * the base64 shared_secret of its .maFile; Counter-based asks the next counter. A link sets all
+   * of it by itself.
+   */
+  const [codeKind, setCodeKind] = useState<CodeKind>(codeKindOf(entry?.totp));
+  const [advOpen, setAdvOpen] = useState(false);
+  const [algo, setAlgo] = useState<(typeof ALGO_OPTIONS)[number]>(entry?.totp?.algo && entry.totp.algo in {SHA1: 1, SHA256: 1, SHA512: 1} ? entry.totp.algo : 'SHA1');
+  const [digits, setDigits] = useState<(typeof DIGIT_OPTIONS)[number]>(['6', '7', '8'].includes(String(entry?.totp?.digits)) ? (String(entry!.totp.digits) as any) : '6');
+  const [period, setPeriod] = useState(String(entry?.totp?.period ?? 30));
+  const [counter, setCounter] = useState(String(entry?.totp?.counter ?? 0));
+  const isLink = /^otpauth:\/\//i.test(otp.trim());
+
+  /* the field's text as a code: a link brings its own settings (and a title); a key takes the choices */
+  const readCode = (): {code?: any; named?: string} => {
+    const raw = otp.trim();
+    if (!raw) return {};
+    if (isLink) {
+      const r = totpLib.parseOtpauth(raw);
+      return {code: r.totp, named: r.issuer || r.account};
+    }
+    const base = {secret: raw, issuer: entry?.totp?.issuer};
+    if (codeKind === 'Steam') return {code: totpLib.shapeTotp({...base, encoder: 'steam'})};
+    const common = {...base, algo, digits: Number(digits)};
+    if (codeKind === 'Counter-based') {
+      const next = Number(counter);
+      /* spec: the counter only moves forward - a lower one would show codes already used */
+      const was = entry?.totp?.type === 'hotp' ? entry.totp.counter ?? 0 : 0;
+      if (Number.isInteger(next) && next < was) throw new Error(`the counter only moves forward (it is at ${was})`);
+      return {code: totpLib.shapeTotp({...common, type: 'hotp', counter: next})};
+    }
+    return {code: totpLib.shapeTotp({...common, period: Number(period)})};
+  };
+  let preview: any = null;
+  let previewError: string | null = null;
+  try {
+    preview = readCode().code ?? null;
+  } catch (e: any) {
+    previewError = String(e?.message ?? e).replace(/^passwords: /, '');
+  }
   const [error, setError] = useState<string | null>(null);
   /* sealed a second time: with the key (a press each open) or a passphrase (spec: per-entry keys) */
   const [seal, setSeal] = useState<Seal>(sealOf(entry));
@@ -99,19 +147,13 @@ export function EntryEditor({
 
   const save = () => {
     const opt = (s: string) => (s.trim() ? s : undefined);
-    /* the code: a pasted otpauth:// link brings its own settings (and a title); a bare key keeps
-       the entry's settings, or the usual 6 digits / 30 s / SHA1 */
+    /* the code: a link brings its own settings (and a title); a key takes the form's choices */
     let code: any;
     let named = title.trim();
     try {
-      const raw = otp.trim();
-      if (raw && /^otpauth:\/\//i.test(raw)) {
-        const r = totpLib.parseOtpauth(raw);
-        code = r.totp;
-        if (!named) named = r.issuer || r.account;
-      } else if (raw) {
-        code = totpLib.shapeTotp({...(entry?.totp ?? {}), secret: raw});
-      }
+      const r = readCode();
+      code = r.code;
+      if (!named && r.named) named = r.named;
     } catch (e: any) {
       return setError(String(e?.message ?? e).replace(/^passwords: /, ''));
     }
@@ -179,7 +221,13 @@ export function EntryEditor({
         {kind === 'login' || kind === 'totp' ? <Field label="Sites (one per line)" value={urls} onChange={setUrls} placeholder="https://github.com" multiline /> : null}
         {kind === 'totp' || kind === 'login' ? (
           <Field
-            label={kind === 'totp' ? 'Setup key, or the otpauth:// link' : 'Authenticator setup key (optional)'}
+            label={
+              codeKind === 'Steam' && !isLink
+                ? "Steam's shared_secret (from its .maFile), or its setup key"
+                : kind === 'totp'
+                  ? 'Setup key, or the otpauth:// link'
+                  : 'Authenticator setup key (optional)'
+            }
             value={otp}
             onChange={setOtp}
             placeholder="JBSW Y3DP EHPK 3PXP"
@@ -193,6 +241,31 @@ export function EntryEditor({
             <Btn title="Scan QR" onPress={() => void scanQr()} />
           </View>
         ) : null}
+        {isLink ? <Text style={styles.label}>The link sets the kind of code and its settings.</Text> : null}
+        {(kind === 'totp' || (kind === 'login' && otp.trim())) && !isLink ? (
+          <>
+            <Text style={styles.label}>Kind of code</Text>
+            <Segmented options={CODE_KINDS} value={codeKind} onChange={setCodeKind} />
+            {codeKind === 'Counter-based' ? <Field label="Next counter (0 for a new account)" value={counter} onChange={setCounter} mono /> : null}
+            {codeKind !== 'Steam' ? (
+              <View style={styles.buttons}>
+                <Btn title={advOpen ? 'Advanced ▲' : 'Advanced ▼'} onPress={() => setAdvOpen(o => !o)} />
+              </View>
+            ) : (
+              <Text style={styles.label}>Steam: 5 characters, SHA1, every 30 s.</Text>
+            )}
+            {advOpen && codeKind !== 'Steam' ? (
+              <>
+                <Text style={styles.label}>Algorithm (most sites: SHA1)</Text>
+                <Segmented options={ALGO_OPTIONS} value={algo} onChange={setAlgo} />
+                <Text style={styles.label}>Digits</Text>
+                <Segmented options={DIGIT_OPTIONS} value={digits} onChange={setDigits} />
+                {codeKind === 'Time-based' ? <Field label="Period in seconds (most sites: 30)" value={period} onChange={setPeriod} mono /> : null}
+              </>
+            ) : null}
+          </>
+        ) : null}
+        {preview ? <TotpPreview totp={preview} /> : previewError ? <Text style={[styles.label, {color: theme.error}]}>{previewError}</Text> : null}
         <Field label="Notes" value={notes} onChange={setNotes} multiline />
         <Field label="Folder" value={folder} onChange={setFolder} placeholder="Work" />
         <Field label="Tags (comma-separated)" value={tags} onChange={setTags} placeholder="email, important" />

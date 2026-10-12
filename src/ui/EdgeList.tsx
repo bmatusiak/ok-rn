@@ -29,10 +29,16 @@ export type EdgeListItem =
       /* 1 = hangs under the row above (a receipt under its use) */
       indent?: number;
       onPress?: () => void;
+      /* a second action set on a row (the Passwords list: Copy / Type without opening the entry) */
+      onLongPress?: () => void;
       accessibilityLabel?: string;
     }
-  /* bare: the screen's node draws its own padding and border (a row it already has) */
-  | {key: string; kind: 'node'; render: () => React.ReactNode; bare?: boolean};
+  /*
+   * bare: the screen's node draws its own padding and border (a row it already has).
+   * onPress / onLongPress: a node that acts as a row (a row whose content updates by itself, e.g.
+   * an authenticator code with its time bar).
+   */
+  | {key: string; kind: 'node'; render: () => React.ReactNode; bare?: boolean; onPress?: () => void; onLongPress?: () => void; accessibilityLabel?: string};
 
 const toneColor = (t: EdgeListTone | undefined) =>
   t === 'alarm' ? theme.error : t === 'warn' ? theme.warn : t === 'ok' ? theme.ok : t === 'dim' ? theme.textDim : theme.text;
@@ -48,8 +54,8 @@ function Row({item}: {item: Extract<EdgeListItem, {kind: 'row'}>}) {
       {item.right ? <Text style={styles.right}>{item.right}</Text> : null}
     </View>
   );
-  return item.onPress ? (
-    <Pressable onPress={item.onPress} accessibilityRole="button" accessibilityLabel={item.accessibilityLabel ?? item.title}
+  return item.onPress || item.onLongPress ? (
+    <Pressable onPress={item.onPress} onLongPress={item.onLongPress} accessibilityRole="button" accessibilityLabel={item.accessibilityLabel ?? item.title}
       style={({pressed}) => (pressed ? styles.pressed : null)}>
       {body}
     </Pressable>
@@ -84,6 +90,16 @@ export function EdgeList({
       refreshControl={onRefresh ? <RefreshControl refreshing={!!refreshing} onRefresh={onRefresh} /> : undefined}
       ListEmptyComponent={empty ? <Text style={[styles.subtitle, {padding: 16}]}>{empty}</Text> : undefined}
       renderItem={({item}) => <EdgeListEntry item={item} />}
+      /*
+       * No off-screen clipping (FlatList's Android default is on). Seen on the Pixel 2026-10-12:
+       * coming back from the Autofill sheet (a second surface on the same React host), the screen
+       * was drawn again while not visible, the list measured an empty window and detached every
+       * row - "removeViewAt: view already removed from parent! Children in parent: 0", a blank
+       * Passwords list that never came back; one time "addViewAt: failed to insert view ...
+       * index=1 count=0", and React tore itself down and the app crashed. The lists here are a
+       * screen or two long, so clipping saved nothing.
+       */
+      removeClippedSubviews={false}
     />
   );
 }
@@ -102,7 +118,19 @@ export function EdgeListEntry({item}: {item: EdgeListItem}) {
   ) : item.kind === 'row' ? (
     <Row item={item} />
   ) : (
-    item.bare ? <>{item.render()}</> : <View style={styles.node}>{item.render()}</View>
+    <NodeEntry item={item} />
+  );
+}
+
+function NodeEntry({item}: {item: Extract<EdgeListItem, {kind: 'node'}>}) {
+  const body = item.bare ? <>{item.render()}</> : <View style={styles.node}>{item.render()}</View>;
+  return item.onPress || item.onLongPress ? (
+    <Pressable onPress={item.onPress} onLongPress={item.onLongPress} accessibilityRole="button" accessibilityLabel={item.accessibilityLabel}
+      style={({pressed}) => (pressed ? styles.pressed : null)}>
+      {body}
+    </Pressable>
+  ) : (
+    body
   );
 }
 

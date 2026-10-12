@@ -17,7 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {getOnlyKey} from '../../onlykey';
 import {supportsKnown} from '../../firmwareFeatures';
-import {createStores, LABEL, type Backend, type Manager, type Okcrypto, type OpenWhy} from './stores';
+import {createStores, LABEL, type Backend, type Manager, type Okcrypto, type OpenWhy, type StorePolicy} from './stores';
 
 declare const crypto: {getRandomValues<T extends Uint8Array>(array: T): T};
 
@@ -238,5 +238,14 @@ export function usePasswordManager({
     return s ? s.remainingMs : null;
   }, [backend]);
 
-  return {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey, policy, timeLeft};
+  /* the person's choice of how long the store stays open (kept in the store, stores.setPolicy) */
+  const choosePolicy = useCallback(
+    async (p: StorePolicy) => {
+      await stores.setPolicy(backend, await remember(backend), p);
+      notify();
+    },
+    [backend],
+  );
+
+  return {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey, policy, timeLeft, choosePolicy};
 }

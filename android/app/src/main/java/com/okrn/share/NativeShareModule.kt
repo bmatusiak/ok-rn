@@ -36,6 +36,9 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
    */
   private var pending: Promise? = null
 
+  /* the text a "save to" picker is placing, held until the user has chosen where */
+  private var pendingSave: String? = null
+
   /*
    * A share is in flight: the chooser (or the app chosen from it) is reading the
    * staged file. Opening the chooser itself sends this app to the background, so
@@ -56,6 +59,27 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
         if (requestCode == SHARE_REQUEST) {
           sharing = false
           wipeSharedDir(reactApplicationContext)
+          return
+        }
+        if (requestCode == SAVE_FILE_REQUEST) {
+          val promise = pending ?: return
+          val content = pendingSave
+          pending = null
+          pendingSave = null
+          try {
+            val uri = if (resultCode == Activity.RESULT_OK) data?.data else null
+            if (uri == null || content == null) {
+              promise.resolve(Arguments.createMap().apply { putBoolean("saved", false); putString("name", "") })
+              return
+            }
+            /* "wt": a file chosen to be overwritten is truncated, not left with a longer old tail */
+            val out = reactApplicationContext.contentResolver.openOutputStream(uri, "wt")
+              ?: throw IllegalStateException("the chosen file could not be opened for writing")
+            out.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+            promise.resolve(Arguments.createMap().apply { putBoolean("saved", true); putString("name", displayName(uri)) })
+          } catch (e: Exception) {
+            promise.reject(ERR, e.message ?: "could not write the chosen file", e)
+          }
           return
         }
         if (requestCode != PICK_FILE_REQUEST) return
@@ -88,6 +112,7 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
      */
     pending?.reject(ERR, "the module was torn down while the picker was open")
     pending = null
+    pendingSave = null
     super.invalidate()
   }
 
@@ -261,6 +286,32 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  override fun saveFile(filename: String, content: String, mimeType: String, promise: Promise) {
+    try {
+      val activity = getCurrentActivity()
+      if (activity == null) {
+        promise.reject(ERR, "no activity; the app is not in the foreground")
+        return
+      }
+      if (pending != null) {
+        promise.reject(ERR, "a file picker is already open")
+        return
+      }
+      val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = mimeType
+        putExtra(Intent.EXTRA_TITLE, filename)
+      }
+      pending = promise
+      pendingSave = content
+      activity.startActivityForResult(intent, SAVE_FILE_REQUEST)
+    } catch (e: Exception) {
+      pending = null
+      pendingSave = null
+      promise.reject(ERR, e.message ?: "could not open the save picker", e)
+    }
+  }
+
   /** What the provider calls the file. Not a path — there need not be one. */
   private fun displayName(uri: Uri): String {
     runCatching {
@@ -343,6 +394,9 @@ class NativeShareModule(reactContext: ReactApplicationContext) :
 
     /** Distinguishes our result from any other activity the app started. */
     const val PICK_FILE_REQUEST = 0x0C51
+
+    /** The "save to" picker's result (saveFile). */
+    const val SAVE_FILE_REQUEST = 0x0C53
 
     /**
      * 4 MB. A backup is kilobytes and a signed firmware release about 430 KB;

@@ -16,7 +16,7 @@ import {nameDerivedDerive} from '../DerivedViews';
 import {openEntry} from '../innerKeys';
 import {namePhraseDerive} from '../PhraseViews';
 import {stores, storesChanged, type PhraseOkcrypto} from '../usePasswordManager';
-import {TotpProgress} from '../TotpViews';
+import {ClockWarning, TotpProgress} from '../TotpViews';
 import {formName, hostOf, matching, matchingCodes, type FormTarget} from './match';
 
 /*
@@ -299,6 +299,7 @@ export default function AutofillSheet() {
       <View style={styles.root}>
         <View style={styles.progress}>
           <TotpProgress period={period} />
+          <ClockWarning />
         </View>
         <EdgeList items={items} />
         <View style={styles.bar}>

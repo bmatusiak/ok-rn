@@ -128,6 +128,17 @@ class AutofillModule(private val context: ReactApplicationContext) : ReactContex
     }
   }
 
+  /**
+   * Whether the phone sets its clock from the network (Settings > Date & time > Set time
+   * automatically). Authenticator codes come from the clock; a hand-set clock that drifts is the
+   * usual reason a site refuses one (spec "Using a code"). Unreadable -> true, so no false alarm.
+   */
+  @ReactMethod
+  fun isAutoTime(promise: Promise) {
+    val auto = runCatching { Settings.Global.getInt(context.contentResolver, Settings.Global.AUTO_TIME, 1) == 1 }.getOrDefault(true)
+    promise.resolve(auto)
+  }
+
   companion object {
     const val NAME = "OkAutofill"
   }

@@ -74,6 +74,17 @@ export interface Spec extends TurboModule {
   pickTextFile(mimeType: string): Promise<PickedFile>;
 
   /**
+   * Save text to a file the user places: ACTION_CREATE_DOCUMENT, the system's "save to" screen,
+   * which reaches the phone's folders and any provider (Drive, a USB stick, the user's own cloud).
+   * The Password Manager's "Save (sealed) to a folder" (spec "Storage, backup and a second
+   * device": "Save to a folder through Android's file picker"). Nothing is staged in the app's
+   * cache: the text goes straight into the chosen file.
+   *
+   * Resolves {saved: false} when the user backs out.
+   */
+  saveFile(filename: string, content: string, mimeType: string): Promise<{saved: boolean; name: string}>;
+
+  /**
    * The names of the files bundled under one asset directory.
    *
    * Assets are the only place a file can be shipped INSIDE the app, which is

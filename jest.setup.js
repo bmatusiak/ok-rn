@@ -181,6 +181,7 @@ jest.mock('./specs/NativeShare', () => ({
     pickTextFile: jest.fn(() =>
       Promise.resolve({picked: false, name: '', content: ''}),
     ),
+    saveFile: jest.fn(() => Promise.resolve({saved: false, name: ''})),
   },
 }));
 
