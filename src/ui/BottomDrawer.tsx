@@ -9,7 +9,8 @@
  * row is never under the handle (src/ui/EdgeList.tsx).
  */
 import React, {useMemo, useState} from 'react';
-import {Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {PanResponder, Pressable, StyleSheet, Text, View} from 'react-native';
+import {Sheet} from './Sheet';
 import {theme} from './theme';
 
 /* the handle's height - what a list under it leaves free */
@@ -32,26 +33,30 @@ export function BottomDrawer({title, count, children}: {title: string; count?: n
   const label = count !== undefined ? `${title} (${count})` : title;
   return (
     <>
+      {/* pinned to the bottom of the screen's content, which already ends above the gesture / 3-button
+          bar (the Shell's SafeAreaView) - adding the inset here counted it twice (Pixel, 2026-10-12) */}
       <View style={styles.handleBar} {...swipe.panHandlers}>
         <Pressable onPress={() => setOpen(true)} accessibilityRole="button" accessibilityLabel={`Open ${title}`} style={styles.handleTap}>
           <View style={styles.grip} />
           <Text style={styles.handleText}>{`▲ ${label}`}</Text>
         </Pressable>
       </View>
-      <Modal transparent animationType="slide" visible={open} onRequestClose={() => setOpen(false)}>
-        <View style={styles.fill}>
-          <Pressable style={styles.backdrop} onPress={() => setOpen(false)} accessibilityLabel={`Close ${title}`} />
-          <View style={styles.sheet}>
-            <View {...swipe.panHandlers}>
-              <Pressable onPress={() => setOpen(false)} accessibilityRole="button" accessibilityLabel={`Close ${title}`} style={styles.handleTap}>
-                <View style={styles.grip} />
-                <Text style={styles.handleText}>{`▼ ${label}`}</Text>
-              </Pressable>
-            </View>
-            <ScrollView contentContainerStyle={styles.body}>{children}</ScrollView>
+      {/* open: the app's Sheet - it keeps the panel clear of the system bars */}
+      <Sheet
+        visible={open}
+        flush
+        extraBottom={16}
+        onClose={() => setOpen(false)}
+        header={
+          <View {...swipe.panHandlers}>
+            <Pressable onPress={() => setOpen(false)} accessibilityRole="button" accessibilityLabel={`Close ${title}`} style={styles.handleTap}>
+              <View style={styles.grip} />
+              <Text style={styles.handleText}>{`▼ ${label}`}</Text>
+            </Pressable>
           </View>
-        </View>
-      </Modal>
+        }>
+        {children}
+      </Sheet>
     </>
   );
 }
@@ -70,12 +75,5 @@ const styles = StyleSheet.create({
   handleTap: {height: DRAWER_HANDLE, alignItems: 'center', justifyContent: 'center', gap: 4},
   grip: {width: 40, height: 4, borderRadius: 2, backgroundColor: theme.border},
   handleText: {color: theme.text, fontWeight: '600', fontSize: 14},
-  fill: {flex: 1, justifyContent: 'flex-end'},
-  backdrop: {position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(0,0,0,0.5)'},
-  sheet: {
-    maxHeight: '85%', backgroundColor: theme.surface,
-    borderTopLeftRadius: 14, borderTopRightRadius: 14, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.border,
-  },
-  body: {paddingBottom: 24},
   area: {paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.border, gap: 8},
 });

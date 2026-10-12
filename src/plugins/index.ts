@@ -2,7 +2,9 @@ import {useEffect, useState} from 'react';
 import Rectify from '@bmatusiak/rectify';
 
 import tabs, {type TabsService} from './tabs';
+import recipients, {type RecipientSource, type RecipientsService} from './recipients';
 import passwords from './passwords/plugin';
+import guestbook from './guestbook/plugin';
 import type {AppTab, AppWatch} from './types';
 
 /*
@@ -14,9 +16,10 @@ import type {AppTab, AppWatch} from './types';
  * "i want the password manager to act as its own plugin, keeping it easy to remove and work on
  * seperatly").
  */
-const PLUGINS: any[] = [tabs, passwords];
+const PLUGINS: any[] = [tabs, recipients, passwords, guestbook];
 
 let started: TabsService | null = null;
+let recipientsService: RecipientsService | null = null;
 const waiting = new Set<() => void>();
 
 const app = Rectify.build(PLUGINS, (err: Error | null, ready: any) => {
@@ -25,6 +28,7 @@ const app = Rectify.build(PLUGINS, (err: Error | null, ready: any) => {
     return;
   }
   started = ready.services.tabs as TabsService;
+  recipientsService = ready.services.recipients as RecipientsService;
   for (const w of waiting) w();
   waiting.clear();
 });
@@ -33,6 +37,11 @@ app.start();
 /** The plugins' tabs; empty until they have started (a moment after launch, before login). */
 export function pluginTabs(): readonly AppTab[] {
   return started ? started.list() : [];
+}
+
+/** The plugins that offer people's public keys to core screens (src/plugins/recipients.ts). */
+export function pluginRecipientSources(): readonly RecipientSource[] {
+  return recipientsService ? recipientsService.list() : [];
 }
 
 export function pluginWatches(): readonly AppWatch[] {
@@ -58,6 +67,7 @@ export function usePluginsStarted(): boolean {
  */
 const E2E: Record<string, () => any> = {
   passwords: () => require('./passwords/e2e'),
+  guestbook: () => require('./guestbook/e2e'),
 };
 export function pluginE2E(name: string): ((harness: any) => void)[] {
   const load = E2E[name];

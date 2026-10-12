@@ -10,24 +10,18 @@
  * Nothing here needs the key's press: pairing and sync are all app.
  */
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {Modal, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {StyleSheet, Text, View} from 'react-native';
 import {approveHeld, declineHeld, notMine, onDevicesChanged, reviewHeld, type HeldView} from '../edgeDevices';
 import {consentRefusal} from '../debugGuard';
 import {netTag} from '../net';
 import {Btn} from './components';
+import {Sheet} from './Sheet';
 import {theme} from './theme';
 
 const short = (id: string) => `${id.slice(0, 8)}…${id.slice(-8)}`;
 
 export function MergeSheet({visible, onClose}: {visible: boolean; onClose: () => void}) {
-  /*
-   * ABOVE THE NAVIGATION BAR (A13, 2026-10-10: "the native android action bar is covering the
-   * close button on the sheet, and cant close the sheet"). The app draws edge to edge, so a sheet
-   * pinned to the bottom runs under the system's navigation bar - a thin gesture handle on the
-   * Pixel, three buttons on the A13. Its bottom inset is added under the sheet's last row.
-   */
-  const insets = useSafeAreaInsets();
+  /* the system bars (the A13's 3-button bar once covered this sheet's Close) are the Sheet's job */
   const [rows, setRows] = useState<HeldView[]>([]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -67,11 +61,7 @@ export function MergeSheet({visible, onClose}: {visible: boolean; onClose: () =>
   const waiting = rows.filter(r => !r.declined && !r.leak);
   const kept = rows.length - waiting.length;
   return (
-    <Modal transparent animationType="slide" visible={visible} onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <View style={[styles.sheet, {paddingBottom: 16 + insets.bottom}]}>
-          <ScrollView>
-            <Text style={styles.title}>{netTag() + 'Sync wants to merge new devices'}</Text>
+    <Sheet visible={visible} tone="edge" title={netTag() + 'Sync wants to merge new devices'} titleColor={theme.text} onClose={onClose} footer={<Btn title="Close" onPress={onClose} />}>
             <Text style={styles.dim}>Logs a computer brought, held on this phone until you answer. A log made with your OnlyKey shows its device's own nametag; nothing merges until you approve it.</Text>
             {waiting.map(r => (
               <View key={r.deviceId} style={styles.item}>
@@ -113,18 +103,11 @@ export function MergeSheet({visible, onClose}: {visible: boolean; onClose: () =>
             {!waiting.length ? <Text style={[styles.op, {marginTop: 12}]}>Nothing waits to be merged.</Text> : null}
             {kept ? <Text style={[styles.dim, {marginTop: 12}]}>{`${kept} log${kept === 1 ? '' : 's'} kept as evidence on this phone.`}</Text> : null}
             {note ? <Text style={[styles.op, {marginTop: 10}]}>{note}</Text> : null}
-            <View style={[styles.row, {marginTop: 14}]}><Btn title="Close" onPress={onClose} /></View>
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
+    </Sheet>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end'},
-  sheet: {backgroundColor: theme.surface, borderTopLeftRadius: 16, borderTopRightRadius: 16, borderTopWidth: 2, borderTopColor: theme.warn, padding: 16, maxHeight: '88%'},
-  title: {color: theme.text, fontSize: 17, fontWeight: '600', marginBottom: 6},
   op: {color: theme.text, fontSize: 14, lineHeight: 20},
   dim: {color: theme.textDim, fontSize: 13, lineHeight: 19},
   row: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6},

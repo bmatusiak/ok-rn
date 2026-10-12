@@ -6,6 +6,16 @@ import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {missingNote, supports} from '../firmwareFeatures';
 import {theme} from '../ui/theme';
 import {lookup, type Found, type Source} from '../keySearch';
+import {pluginRecipientSources} from '../plugins';
+import type {RecipientKey} from '../plugins/recipients';
+
+/* where a look-up result came from, by its exact handle - what a keeper of keys refreshes it from */
+const sourceOf = (f: Found): {kind: string; handle: string} =>
+  f.source === 'keybase'
+    ? {kind: 'keybase', handle: decodeURIComponent((/keybase\.io\/([^/]+)\//.exec(f.where) || [])[1] || f.label)}
+    : f.source === 'protonmail'
+      ? {kind: 'protonmail', handle: f.label}
+      : {kind: 'url', handle: f.where};
 import {splitPublicKeys, summarizeKey, type KeySummary} from '../armoredKeys';
 import {bytes as okbytes} from 'node-onlykey-lib';
 /*
@@ -208,6 +218,10 @@ export function MessagesScreen({
   const [lookupBusy, setLookupBusy] = useState(false);
   const [lookupFound, setLookupFound] = useState<Found[] | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  /* plugins that keep people's public keys (src/plugins/recipients.ts - Guest Book) */
+  const keySources = pluginRecipientSources();
+  const [pickKeys, setPickKeys] = useState<RecipientKey[] | null>(null);
+  const [pickNote, setPickNote] = useState<string | null>(null);
   const runLookup = useCallback(async () => {
     setLookupBusy(true);
     setLookupError(null);
@@ -611,6 +625,52 @@ export function MessagesScreen({
             {lookupFound && lookupFound.length === 1 ? (
               <Text style={styles.lookupHint}>Filled in from {lookupFound[0].where}</Text>
             ) : null}
+            {/* keep what was found, in a plugin that offers it (Guest Book: "Save to Guest Book") */}
+            {lookupFound?.length
+              ? keySources
+                  .filter(s => s.save)
+                  .flatMap(s =>
+                    lookupFound.map(f => (
+                      <Btn
+                        key={`${s.name}:${f.where}`}
+                        title={lookupFound.length > 1 ? `Save ${f.label} to ${s.name}` : `Save to ${s.name}`}
+                        onPress={() =>
+                          void s.save!(f.armored, f.label.replace(/ \(.*\)$/, ''), sourceOf(f))
+                            .then(note => setPickNote(note), e => setPickNote(String(e?.message ?? e)))
+                        }
+                      />
+                    )),
+                  )
+              : null}
+          </View>
+        ) : null}
+        {/* other people's keys kept in a plugin (Guest Book: "Add from Guest Book"), appended to the box */}
+        {keySources.length ? (
+          <View style={styles.lookup}>
+            <View style={styles.pickRow}>
+              {keySources.map(s => (
+                <Btn
+                  key={s.name}
+                  title={pickKeys ? 'Close' : `Add from ${s.name}`}
+                  onPress={() => {
+                    if (pickKeys) return setPickKeys(null);
+                    void s.pgpKeys().then(setPickKeys, e => setPickNote(String(e?.message ?? e)));
+                  }}
+                />
+              ))}
+            </View>
+            {pickKeys && !pickKeys.length ? <Text style={styles.lookupHint}>No PGP keys there yet.</Text> : null}
+            {pickKeys?.map(k => (
+              <Btn
+                key={`${k.contact}:${k.text.length}:${k.label}`}
+                title={`${k.contact} - ${k.label}${k.verified ? ' ✓' : ' (not verified)'}`}
+                onPress={() => {
+                  setKeyText(t => (t.includes(k.text) ? t : t.trim() ? `${t.trim()}\n${k.text}` : k.text));
+                  setPickNote(`Added ${k.contact}'s key${k.verified ? '' : ' - not verified: compare its fingerprint with them'}.`);
+                }}
+              />
+            ))}
+            {pickNote ? <Text style={styles.lookupHint}>{pickNote}</Text> : null}
           </View>
         ) : null}
         <TextInput
@@ -803,6 +863,7 @@ const styles = StyleSheet.create({
   },
   key: {minHeight: 90, fontFamily: 'monospace', fontSize: 11},
   lookup: {marginBottom: 10, gap: 8},
+  pickRow: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
   lookupHint: {color: theme.textDim, fontSize: 11, lineHeight: 16},
   lookupError: {color: theme.warn, fontSize: 12, lineHeight: 17},
   keyCard: {

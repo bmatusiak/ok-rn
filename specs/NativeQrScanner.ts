@@ -12,6 +12,13 @@ import {TurboModuleRegistry} from 'react-native';
 
 export interface Spec extends TurboModule {
   scan(prompt: string): Promise<string | null>;
+  /**
+   * Draws a QR code of `text`, `size` pixels square, as a PNG data URI: error correction H with
+   * the OnlyKey logo in the middle, read back natively - if the logo made it unreadable, the plain
+   * code comes back instead. Rejects TOO_BIG when the text does not fit one QR code (Guest Book's
+   * My card offers Share / Copy then).
+   */
+  render(text: string, size: number): Promise<string>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('NativeQrScanner');

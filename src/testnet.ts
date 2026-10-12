@@ -15,8 +15,12 @@ import OkEmu from './transport/OkEmu';
 import NativeOkEmu from '../specs/NativeOkEmu';
 import {currentNet, TEST_PREFIX} from './net';
 
-/* every phone record that belongs to the testnet: Edge (net.ts edgeKey) and its Key Chain list */
-const TEST_KEYS = (k: string) => k.startsWith(TEST_PREFIX) || k === 'okrn.keychain.test.list';
+/*
+ * every phone record that belongs to the testnet: Edge (net.ts edgeKey), its Key Chain list, and
+ * any feature's own test records, named okrn.<feature>.test... (a plugin keeps its testnet data
+ * there - e.g. Guest Book's okrn.guestbook.test:v1 - and core never has to name it)
+ */
+const TEST_KEYS = (k: string) => k.startsWith(TEST_PREFIX) || k === 'okrn.keychain.test.list' || /^okrn\.[a-z]+\.test[.:]/.test(k);
 /* not under the testnet's prefix, or clearing would remove its own mark mid-way */
 const SCHEDULED = 'okrn.testnetClearNext';
 

@@ -19,8 +19,7 @@
  * says where the code is, and the keypad is on the sheet.
  */
 import React, {useEffect, useRef, useState} from 'react';
-import {Modal, PixelRatio, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {PixelRatio, StyleSheet, Text, View} from 'react-native';
 import OkEmu, {type KeyWaiting} from '../transport/OkEmu';
 import NativeOkEmu from '../../specs/NativeOkEmu';
 import {describeWaiting} from '../hooks/useKeyWaiting';
@@ -32,6 +31,7 @@ import {
 import {consentRefusal} from '../debugGuard';
 import {currentNet} from '../net';
 import {Btn} from './components';
+import {Sheet} from './Sheet';
 import {theme} from './theme';
 
 /* the core firmware closes every wait at 20 s (okcore.cpp Usertimeout) */
@@ -55,13 +55,7 @@ type Who = {label: string; listed: boolean; name: string | null};
 type Fido = {needed: boolean; canPress: boolean; confirm: () => void};
 
 export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: Fido}) {
-  /*
-   * ABOVE THE NAVIGATION BAR (A13, 2026-10-10: "the native android action bar is covering the
-   * close button on the sheet, and cant close the sheet"). The app draws edge to edge, so a sheet
-   * pinned to the bottom runs under the system's navigation bar - a thin gesture handle on the
-   * Pixel, three buttons on the A13. Its bottom inset is added under the sheet's last row.
-   */
-  const insets = useSafeAreaInsets();
+  /* the system bars (the A13's 3-button bar once covered a sheet's Close) are the Sheet's job */
   useEffect(() => startPressRecords(), []);
   /* the Edge request sheet asks for its own press: this one waits while that one is up */
   const [edge, setEdge] = useState<SheetState | null>(null);
@@ -140,10 +134,8 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
   const hush = () => { try { NativeOkEmu.hushPress(); } catch { /* no native side (jest, an old build) */ } };
 
   return (
-    <Modal transparent animationType="slide" visible onRequestClose={() => undefined}>
-      <View style={styles.backdrop}>
-        <View style={[styles.sheet, {paddingBottom: insets.bottom}]}>
-          <ScrollView contentContainerStyle={styles.body}>
+    /* not dismissable: it goes when the key stops waiting. extraBottom: in debug builds React Native's warning toasts sit along the bottom and catch taps */
+    <Sheet tone="edge" extraBottom={48}>
             {currentNet() === 'test' ? <Text style={[styles.title, {color: theme.io}]}>TESTNET</Text> : null}
             {showDerive ? (
               <DeriveBody d={derive!} />
@@ -191,10 +183,7 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
               }} />
             )}
             <Text style={styles.dim}>This phone is also the key, so its press proves less than a hard key's.</Text>
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
+    </Sheet>
   );
 }
 
@@ -326,13 +315,6 @@ function VendorButtons({w, what, ready, pressed, onPress}: {w: KeyWaiting; what:
 }
 
 const styles = StyleSheet.create({
-  backdrop: {flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end'},
-  sheet: {
-    backgroundColor: theme.surface, borderTopLeftRadius: 14, borderTopRightRadius: 14,
-    borderTopWidth: 2, borderColor: theme.warn, maxHeight: '88%',
-  },
-  /* room under the buttons: in debug builds React Native's warning toasts sit along the bottom and catch taps */
-  body: {padding: 16, paddingBottom: 64, gap: 8},
   title: {fontWeight: '600', fontSize: 17},
   op: {color: theme.text, fontSize: theme.fontSize, lineHeight: theme.lineHeight},
   dim: {color: theme.textDim, fontSize: 13, lineHeight: 19},

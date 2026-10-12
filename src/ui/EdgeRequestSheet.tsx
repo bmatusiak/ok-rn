@@ -9,11 +9,11 @@
  * The state lives in src/edgeAgents.ts; this only draws it.
  */
 import React, {useEffect, useState} from 'react';
-import {Modal, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {StyleSheet, Text, View} from 'react-native';
 import {answerSheet, closeSheet, onSheet, pressFromSheet, type SheetState} from '../edgeAgents';
 import {Btn} from './components';
 import {Locate} from './PressSheet';
+import {Sheet} from './Sheet';
 import {theme} from './theme';
 import {consentRefusal} from '../debugGuard';
 import {BudgetCard} from '../screens/EdgeScreen';
@@ -106,13 +106,7 @@ function ApprovedBudget({grantId}: {grantId: number}) {
 }
 
 export function EdgeRequestSheet() {
-  /*
-   * ABOVE THE NAVIGATION BAR (A13, 2026-10-10: "the native android action bar is covering the
-   * close button on the sheet, and cant close the sheet"). The app draws edge to edge, so a sheet
-   * pinned to the bottom runs under the system's navigation bar - a thin gesture handle on the
-   * Pixel, three buttons on the A13. Its bottom inset is added under the sheet's last row.
-   */
-  const insets = useSafeAreaInsets();
+  /* the system bars (the A13's 3-button bar once covered this sheet's Close) are the Sheet's job */
   const [s, setS] = useState<SheetState | null>(null);
   /* no second confirm since 2026-10-08: no "yours" mark - the identities asked for are on the sheet (Brad) */
   useEffect(() => onSheet(next => { setS(next); }), []);
@@ -154,10 +148,8 @@ export function EdgeRequestSheet() {
   });
 
   return (
-    <Modal transparent animationType="slide" visible onRequestClose={() => (s.phase === 'done' ? closeSheet() : undefined)}>
-      <View style={styles.backdrop}>
-        <View style={[styles.sheet, {paddingBottom: insets.bottom}]}>
-          <ScrollView contentContainerStyle={styles.body}>
+    /* closable only when done; extraBottom: in debug builds React Native's warning toasts sit along the bottom and catch taps (2026-10-04) */
+    <Sheet tone="edge" onClose={s.phase === 'done' ? closeSheet : undefined} extraBottom={48}>
             {/* the testnet (src/net.ts): a throwaway key - said before anything is approved */}
             {currentNet() === 'test' ? <Text style={[styles.title, {color: theme.io}]}>TESTNET</Text> : null}
             {(
@@ -258,21 +250,11 @@ export function EdgeRequestSheet() {
                 )}
               </>
             ) : null}
-          </ScrollView>
-        </View>
-      </View>
-    </Modal>
+    </Sheet>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end'},
-  sheet: {
-    backgroundColor: theme.surface, borderTopLeftRadius: 14, borderTopRightRadius: 14,
-    borderTopWidth: 2, borderColor: theme.warn, maxHeight: '88%',
-  },
-  /* room under the buttons: in debug builds React Native's warning toasts sit along the bottom and catch taps (2026-10-04) */
-  body: {padding: 16, paddingBottom: 64, gap: 8},
   title: {fontWeight: '600', fontSize: 17},
   op: {color: theme.text, fontSize: theme.fontSize, lineHeight: theme.lineHeight},
   dim: {color: theme.textDim, fontSize: 13, lineHeight: 19},

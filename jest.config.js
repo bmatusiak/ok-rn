@@ -3,6 +3,15 @@ module.exports = {
   setupFiles: ['<rootDir>/jest.setup.js'],
 
   /*
+   * 20 s per test, not jest's 5 s. These tests check what happens, not how fast: in a full run
+   * every worker is busy, and tests that do real crypto (Edge's owner key, ML-DSA) or a first
+   * render of a large screen passed 5 s there while passing alone in well under it -
+   * mergeSheetAnswer and edgeOwnerKey each failed full runs on "Exceeded timeout of 5000 ms"
+   * (2026-10-12). A test that truly hangs still fails, after 20 s.
+   */
+  testTimeout: 20000,
+
+  /*
    * @noble/* ships ESM, and under Jest's export conditions that is what gets
    * resolved - so `require('@noble/ciphers/utils.js')` from inside
    * node-onlykey-lib lands on `export function ...` and Jest cannot parse it.

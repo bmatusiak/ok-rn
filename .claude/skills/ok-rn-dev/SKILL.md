@@ -131,6 +131,22 @@ arms itself in its first test and every later test skips when unarmed -
 `__e2e_tests__/only.js` must read `[]` between runs. The runner resets it,
 and doctor warns if it did not (a killed run on Windows runs no handlers).
 
+## New UI: the system bars are never an afterthought
+
+The app draws edge to edge: the status bar (and a camera cutout) at the top,
+the gesture bar (Pixel) or the 3-button bar (A13) at the bottom. [The A13's
+3-button bar covered a sheet's Close; the Autofill picker drew under the clock;
+the QR scanner's Cancel sat in the gesture bar - each fixed one at a time.]
+
+- A prompt, a picker, a list of actions: `src/ui/Sheet.tsx` - it keeps off the
+  bars, and its `tone` gives each feature its colour (Edge yellow, Guest Book
+  blue). Never a hand-made Modal.
+- Anything else pinned to an edge, or a new window/activity: take the insets
+  (`useSafeAreaInsets`; native `WindowInsetsCompat` systemBars + displayCutout).
+- In testing mode, no continuous motion (bars step every 5 s) - or tap.js
+  cannot read the screen.
+- Look at every new screen on both bar styles: Pixel and A13.
+
 ## Bench-key safety
 
 A press on a LOCKED hard key is a PIN attempt; ten wipe it. [FINDING #43 -
