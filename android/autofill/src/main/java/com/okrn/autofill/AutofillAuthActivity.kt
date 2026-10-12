@@ -36,6 +36,8 @@ class AutofillAuthActivity : ReactActivity() {
     val password: String = "",
     val phraseId: AutofillId? = null,
     val codeId: AutofillId? = null,
+    /* an app form: the SHA-256 of each signing certificate of the app asking */
+    val certs: List<String> = emptyList(),
   )
 
   var pending: Pending? = null
@@ -69,7 +71,10 @@ class AutofillAuthActivity : ReactActivity() {
   }
 
   @Suppress("DEPRECATION")
-  private fun read(i: Intent?): Pending? {
+  private fun read(i: Intent?): Pending? = readOnly(i)?.copy(certs = i?.getStringArrayListExtra(OkAutofillService.EXTRA_CERTS) ?: emptyList())
+
+  @Suppress("DEPRECATION")
+  private fun readOnly(i: Intent?): Pending? {
     if (i == null) return null
     if (i.action == OkAutofillService.ACTION_CODE) {
       val box = i.getParcelableExtra<AutofillId>(OkAutofillService.EXTRA_CODE_ID) ?: return null

@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    To read the signing certificate of the app asking to be filled (an app matches a login by its
+    package AND certificate): Android 11+ hides other apps' package info without it. A password
+    manager's autofill is a use Android allows it for.
+  -->
+  <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
   <application>
     <!--
       The phone's autofill asks this service about each form. It reads which fields are a

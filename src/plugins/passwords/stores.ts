@@ -52,6 +52,9 @@ export type Okcrypto = {
     isUnlocked(label: string): boolean;
     lock(label: string): unknown;
     reap(): string[];
+    /* read-only: the policy and the cached keys' time left (neither counts as a use) */
+    getPolicy?(label: string): string;
+    status?(): {serviceId: string; policy: string; remainingMs: number}[];
   };
 };
 

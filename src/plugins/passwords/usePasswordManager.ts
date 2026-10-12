@@ -16,6 +16,7 @@ import {AppState} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {getOnlyKey} from '../../onlykey';
+import {supportsKnown} from '../../firmwareFeatures';
 import {createStores, LABEL, type Backend, type Manager, type Okcrypto, type OpenWhy} from './stores';
 
 declare const crypto: {getRandomValues<T extends Uint8Array>(array: T): T};
@@ -103,6 +104,8 @@ function notify() {
 export type ManagerView =
   | {state: 'unsupported'}
   | {state: 'locked-key'}
+  /* unlocked, but the key has not said its firmware yet: nothing is opened or written until it has */
+  | {state: 'reading'}
   | {state: 'checking'}
   | {state: 'button'; storeId: string; isNew: boolean}
   | {state: 'pressing'; storeId: string}
@@ -132,6 +135,8 @@ export function usePasswordManager({
   const held = useRef<string | null>(null);
 
   const supported = !caps || caps.deviceVault !== false;
+  /* writes (a store made, an entry sealed) only once the key has said it has the vault: unknown is no */
+  const vaultKnown = supportsKnown(caps as any, 'deviceVault');
   const touchFree = (caps?.touchFreeDerive ?? 'preference') as 'always' | 'preference' | 'broken';
 
   /* follow stores opened or closed elsewhere */
@@ -144,6 +149,7 @@ export function usePasswordManager({
   useEffect(() => {
     if (!supported) return setView({state: 'unsupported'});
     if (!unlocked) return setView({state: 'locked-key'});
+    if (!vaultKnown) return setView({state: 'reading'});
     if (busy.current) return;
     const open = stores.current(backend);
     if (held.current && !open) return setView({state: 'button', storeId: held.current, isNew: false});
@@ -176,7 +182,7 @@ export function usePasswordManager({
     return () => {
       live = false;
     };
-  }, [backend, unlocked, supported, touchFree, rev]);
+  }, [backend, unlocked, supported, vaultKnown, touchFree, rev]);
 
   const openWithKey = useCallback(async () => {
     if (view.state !== 'button' || busy.current) return;
@@ -225,5 +231,12 @@ export function usePasswordManager({
     return {okcrypto: okcrypto as unknown as PhraseOkcrypto, press: meta ? meta.press : true};
   }, [backend]);
 
-  return {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey};
+  /* the session, read-only (never isUnlocked: that counts as a use and slides the window) */
+  const policy = useCallback((): string | null => known.get(backend)?.deviceVault.getPolicy?.(LABEL) ?? null, [backend]);
+  const timeLeft = useCallback((): number | null => {
+    const s = known.get(backend)?.deviceVault.status?.().find(e => e.serviceId === LABEL);
+    return s ? s.remainingMs : null;
+  }, [backend]);
+
+  return {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey, policy, timeLeft};
 }

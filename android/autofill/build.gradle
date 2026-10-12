@@ -26,4 +26,6 @@ android {
 
 dependencies {
     implementation "com.facebook.react:react-android"
+    /* the keyboard's inline suggestion chip (Android 11+): InlineSuggestionUi */
+    implementation "androidx.autofill:autofill:1.1.0"
 }

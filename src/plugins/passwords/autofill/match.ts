@@ -2,18 +2,30 @@
  * WHICH ENTRIES BELONG TO THE FORM - the anti-phishing half of Autofill.
  *
  * A browser form names its site (`webDomain`); an app's form names only the app (its package).
- * An entry matches a site when the form's host IS the entry's host or a subdomain of it
- * (accounts.github.com fills from an entry saved for github.com), compared on whole labels:
- * "evil-github.com" and "github.com.evil.io" are not github.com. Never the other way round - an
- * entry saved for login.example.com is not offered on example.com, which could be anyone's
- * subdomain host. An app matches only an entry that names its package as android://<package>.
+ * An entry matches a site when both have the same REGISTRABLE DOMAIN (eTLD+1, the public suffix
+ * list - tldts, vendored in the lib): accounts.github.com and github.com are one site, both ways;
+ * "evil-github.com", "github.com.evil.io", and foo.co.uk vs bar.co.uk are not. Private suffixes
+ * count (allowPrivateDomains): alice.github.io and bob.github.io are two sites, not one. A host
+ * with no registrable domain (localhost, an IP address) matches only itself.
+ * An app matches only an entry that names it in androidApps by package AND signing certificate
+ * (SHA-256): an app that only took the package name gets nothing.
  *
  * Anything else is not offered as a match; the sheet can still show every entry, with the
  * site's name in a warning, for a site saved under another address.
  */
 
-export type FormTarget = {domain: string; packageName: string};
-type Entry = {kind: string; urls?: string[]; totp?: unknown};
+import {getDomain} from 'node-onlykey-lib/vendor/tldts';
+
+/* certs: an app form's signing certificates (SHA-256, hex), from the Autofill service */
+export type FormTarget = {domain: string; packageName: string; certs?: string[]};
+
+/** The registrable domain of a host, private suffixes counted; null for localhost or an IP. */
+export const siteOf = (host: string): string | null => getDomain(host, {allowPrivateDomains: true});
+type Entry = {kind: string; urls?: string[]; totp?: unknown; inner?: unknown; androidApps?: {package: string; cert: string}[]};
+
+/** The app linked by package and certificate. */
+export const linksApp = (e: Entry, form: FormTarget): boolean =>
+  !!form.packageName && (e.androidApps ?? []).some(a => a.package === form.packageName && (form.certs ?? []).includes(a.cert));
 
 /** The host of a URL or bare host, lowercased, without "www." and without a port. */
 export function hostOf(url: string): string {
@@ -27,8 +39,8 @@ export function matchesSite(entryUrl: string, domain: string): boolean {
   const have = hostOf(entryUrl);
   if (!want || !have) return false;
   if (want === have) return true;
-  /* a subdomain only of a dotted host: an entry saved for "com" must not match every .com site */
-  return have.includes('.') && want.endsWith('.' + have);
+  const site = siteOf(want);
+  return site !== null && site === siteOf(have);
 }
 
 export function matchesApp(entryUrl: string, packageName: string): boolean {
@@ -36,21 +48,18 @@ export function matchesApp(entryUrl: string, packageName: string): boolean {
   return !!m && !!packageName && m[1].toLowerCase() === packageName.toLowerCase();
 }
 
-/** The logins that belong to this form. */
+/** The logins (and derived passwords) that belong to this form. */
 export function matching<E extends Entry>(entries: E[], form: FormTarget): E[] {
-  return entries.filter(
-    e =>
-      e.kind === 'login' &&
-      (e.urls ?? []).some(u => (form.domain ? matchesSite(u, form.domain) : matchesApp(u, form.packageName))),
-  );
+  return entries.filter(e => (e.kind === 'login' || e.kind === 'derived') && belongs(e, form));
 }
 
 const belongs = (e: Entry, form: FormTarget) =>
-  (e.urls ?? []).some(u => (form.domain ? matchesSite(u, form.domain) : matchesApp(u, form.packageName)));
+  form.domain ? (e.urls ?? []).some(u => matchesSite(u, form.domain)) : linksApp(e, form);
 
 /** The codes that belong to this form: a login carrying one, or an authenticator entry, by its sites. */
 export function matchingCodes<E extends Entry>(entries: E[], form: FormTarget): E[] {
-  return entries.filter(e => !!e.totp && (e.kind === 'login' || e.kind === 'totp') && belongs(e, form));
+  /* a code sealed a second time is inside `inner`: listed, opened at the pick */
+  return entries.filter(e => (!!e.totp || !!e.inner) && (e.kind === 'login' || e.kind === 'totp') && belongs(e, form));
 }
 
 /** What the sheet calls the form: the site's host, or the app's package. */

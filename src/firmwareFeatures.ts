@@ -109,6 +109,15 @@ export function supports(caps: Capabilities, feature: FirmwareFeature): boolean 
   return caps[feature] !== false;
 }
 
+/**
+ * May this be WRITTEN with? Only when the key has said so (PASSWORD-MANAGER-SPEC.md "Unknown means
+ * no, for writes"). supports() above answers true while nothing is known so a screen is not
+ * faded for nothing; a write - a store made, an entry sealed - waits for the key's own answer.
+ */
+export function supportsKnown(caps: Capabilities, feature: FirmwareFeature): boolean {
+  return !!caps && caps[feature] === true;
+}
+
 /** The sentence a faded section shows, naming the feature and what it needs. */
 export function missingNote(feature: FirmwareFeature): string {
   const {what, is, needs} = FEATURES[feature];

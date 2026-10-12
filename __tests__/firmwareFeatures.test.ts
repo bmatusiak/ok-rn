@@ -11,7 +11,7 @@
  * and its own tests pin that against the firmware sources. These tests pin
  * the other half - when a screen is entitled to act on that answer.
  */
-import {supports, missingNote} from '../src/firmwareFeatures';
+import {supports, supportsKnown, missingNote} from '../src/firmwareFeatures';
 import {device as deviceLib} from 'node-onlykey-lib';
 
 describe('supports', () => {
@@ -77,4 +77,14 @@ describe('missingNote', () => {
   it('says "is" for the vault, a single thing', () => {
     expect(missingNote('deviceVault')).toContain('The vault is not on this key');
   });
+});
+
+test('supportsKnown: a write waits for the key to say so - unknown is no, a known yes is yes', () => {
+  expect(supportsKnown(null, 'deviceVault')).toBe(false);
+  expect(supportsKnown(undefined, 'deviceVault')).toBe(false);
+  expect(supportsKnown({}, 'deviceVault')).toBe(false);
+  expect(supportsKnown({deviceVault: false}, 'deviceVault')).toBe(false);
+  expect(supportsKnown({deviceVault: true}, 'deviceVault')).toBe(true);
+  /* the lenient one, for showing a screen, stays as it was */
+  expect(supports(null, 'deviceVault')).toBe(true);
 });

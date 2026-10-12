@@ -1,15 +1,19 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {NativeModules, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {Alert, NativeModules, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 
 import {chooseTarget, pressKeyButton, readKeyState, targetLabel, type Target} from '../../../credprovider/flow';
+import {supportsKnown} from '../../../firmwareFeatures';
+import {useSecureScreen} from '../../../hooks/useSecureScreen';
 import {getOnlyKey} from '../../../onlykey';
 import {Btn, Section} from '../../../ui/components';
 import {EdgeList, type EdgeListItem} from '../../../ui/EdgeList';
 import {Keypad} from '../../../ui/Keypad';
 import {theme} from '../../../ui/theme';
 import type {Manager, Okcrypto} from '../stores';
-import {mnemonic, totp as totpLib} from 'node-onlykey-lib/passwords';
+import {derived, mnemonic, totp as totpLib} from 'node-onlykey-lib/passwords';
+import {nameDerivedDerive} from '../DerivedViews';
+import {openEntry} from '../innerKeys';
 import {namePhraseDerive} from '../PhraseViews';
 import {stores, storesChanged, type PhraseOkcrypto} from '../usePasswordManager';
 import {TotpProgress} from '../TotpViews';
@@ -31,7 +35,7 @@ import {formName, hostOf, matching, matchingCodes, type FormTarget} from './matc
 
 type Native = {
   getPendingRequest(): Promise<
-    | (FormTarget & {mode: 'fill' | 'save' | 'phrase' | 'code'; username: boolean; password: boolean; savedUsername?: string; savedPassword?: string})
+    | (Omit<FormTarget, 'certs'> & {mode: 'fill' | 'save' | 'phrase' | 'code'; username: boolean; password: boolean; savedUsername?: string; savedPassword?: string; certs?: string})
     | null
   >;
   fill(username: string | null, password: string | null): Promise<boolean>;
@@ -51,6 +55,8 @@ type Step =
   | {kind: 'error'; message: string};
 
 export default function AutofillSheet() {
+  /* no screenshots of the sheet in a release build (titles, usernames; a phrase passes through it) - App's rule, BLOCK_SCREENSHOTS */
+  useSecureScreen(!__DEV__);
   const [form, setForm] = useState<FormTarget | null>(null);
   /* a save: what the person typed into the form, kept here only until Save or Not now */
   const [saving, setSaving] = useState<{username: string; password: string} | null>(null);
@@ -58,6 +64,9 @@ export default function AutofillSheet() {
   const [phrase, setPhrase] = useState(false);
   /* a one-time-code box: the code of the entry picked here, as it is now */
   const [codeBox, setCodeBox] = useState(false);
+  /* an entry sealed with a passphrase, waiting for it here before it fills */
+  const [askPass, setAskPass] = useState<{entry: Entry; use: (open: Entry) => Promise<void>} | null>(null);
+  const [passphrase, setPassphrase] = useState('');
   const [step, setStep] = useState<Step>({kind: 'starting'});
   const [showAll, setShowAll] = useState(false);
   const [digits, setDigits] = useState(0);
@@ -69,7 +78,12 @@ export default function AutofillSheet() {
 
   /* the store, once the key is unlocked */
   const openStore = useCallback(async (target: Target, withKey: boolean) => {
-    const okcrypto = (await getOnlyKey(target.backend)).okcrypto as Okcrypto;
+    const app = await getOnlyKey(target.backend);
+    /* unknown means no (the tab's rule too): the key connected above, so it has said what it is */
+    if (!supportsKnown(app.device.capabilities, 'deviceVault')) {
+      throw new Error(`the ${targetLabel(target)} has not said it has the password vault (firmware 3.1.0 or newer)`);
+    }
+    const okcrypto = app.okcrypto as Okcrypto;
     setStep({kind: 'opening', target});
     const r = withKey
       ? await stores.openWithKey(target.backend, okcrypto)
@@ -84,7 +98,7 @@ export default function AutofillSheet() {
       const req = await OkAutofill.getPendingRequest();
       if (!req) throw new Error('there is no form waiting');
       if (!alive) return;
-      setForm({domain: req.domain, packageName: req.packageName});
+      setForm({domain: req.domain, packageName: req.packageName, certs: (req.certs ?? '').split(',').filter(Boolean)});
       if (req.mode === 'save') setSaving({username: req.savedUsername ?? '', password: req.savedPassword ?? ''});
       if (req.mode === 'phrase') setPhrase(true);
       if (req.mode === 'code') setCodeBox(true);
@@ -114,13 +128,107 @@ export default function AutofillSheet() {
     [openStore],
   );
 
-  const pick = (e: Entry) => {
-    OkAutofill?.fill(e.username ?? null, e.password ?? null).catch(err => setStep({kind: 'error', message: String(err?.message ?? err)}));
+  /* the store's press flag (a sealed entry's own derive uses it too) */
+  const pressOf = async (backend: Target['backend'], okcrypto: Okcrypto) =>
+    (await stores.readMeta(await stores.identify(backend, okcrypto)))?.press ?? true;
+
+  /*
+   * An entry with its secrets: sealed with the key - one more press now; with a passphrase - asked
+   * here first (askPass); plain - as it is.
+   */
+  const withSecrets = (e: Entry, use: (open: Entry) => Promise<void>) =>
+    (async () => {
+      if (!e.inner || step.kind !== 'open') return use(e);
+      if ((e.inner as any).seal === 'entry-passphrase') return setAskPass({entry: e, use});
+      const okcrypto = (await getOnlyKey(step.target.backend)).okcrypto as Okcrypto;
+      return use(await openEntry(e, okcrypto as any, await pressOf(step.target.backend, okcrypto)));
+    })().catch(err => setStep({kind: 'error', message: String(err?.message ?? err)}));
+
+  const pick = (sealed: Entry) =>
+    withSecrets(sealed, async e => {
+      let password = e.password ?? null;
+      /* a derived password: made again from the key now, checked against its recipe */
+      if (e.kind === 'derived' && step.kind === 'open') {
+        const okcrypto = (await getOnlyKey(step.target.backend)).okcrypto as unknown as PhraseOkcrypto;
+        nameDerivedDerive(derived.nameOf(e.recipe));
+        password = await derived.openRecipe({okcrypto, recipe: e.recipe});
+      }
+      await OkAutofill?.fill(e.username ?? null, password);
+    });
+
+  /*
+   * LINK THIS APP (spec "Matching": an unknown app, the person picks an entry, the app is linked
+   * with its certificate after a confirmation naming it). An app form only; a web page is matched
+   * by its address, never linked.
+   */
+  const linkThen = (e: Entry, then: (e: Entry) => void) => {
+    if (!form || form.domain || step.kind !== 'open') return then(e);
+    const cert = form.certs?.[0];
+    if (!cert) {
+      Alert.alert('This app could not be checked', `${form.packageName}'s signing certificate could not be read, so it is not linked. Fill once anyway?`, [
+        {text: 'Cancel', style: 'cancel'},
+        {text: 'Fill once', onPress: () => then(e)},
+      ]);
+      return;
+    }
+    const manager = step.manager;
+    Alert.alert(
+      `Use "${e.title}" with this app?`,
+      `${form.packageName} (certificate ${cert.slice(0, 16)}…). OnlyKey fills it into this app from now on; another app with the same name but another certificate gets nothing.`,
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Link and fill',
+          onPress: () =>
+            (async () => {
+              const apps = [...((e as any).androidApps ?? []), {package: form.packageName, cert}];
+              await manager.put({...(manager.get(e.id) as any), androidApps: apps});
+              storesChanged();
+              then(e);
+            })().catch(err => setStep({kind: 'error', message: String(err?.message ?? err)})),
+        },
+      ],
+    );
   };
 
   const name = form ? formName(form) : '';
   let body: React.ReactNode;
-  if (step.kind === 'open' && saving && form) {
+  if (askPass && step.kind === 'open') {
+    body = (
+      <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
+        <Section title={askPass.entry.title}>
+          <Text style={styles.body}>Sealed with a passphrase: enter it to fill.</Text>
+          <TextInput
+            value={passphrase}
+            onChangeText={setPassphrase}
+            placeholder="Passphrase"
+            placeholderTextColor={theme.textDim}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            importantForAutofill="no"
+            style={styles.input}
+          />
+          <View style={styles.bar}>
+            <Btn
+              title="Open and fill"
+              tone="primary"
+              disabled={!passphrase}
+              onPress={() =>
+                (async () => {
+                  const okcrypto = (await getOnlyKey(step.target.backend)).okcrypto as Okcrypto;
+                  const open = await openEntry(askPass.entry, okcrypto as any, await pressOf(step.target.backend, okcrypto), passphrase);
+                  setPassphrase('');
+                  await askPass.use(open);
+                })().catch(err => setStep({kind: 'error', message: String(err?.message ?? err)}))
+              }
+            />
+            <Btn title="Back" onPress={() => { setPassphrase(''); setAskPass(null); }} />
+          </View>
+        </Section>
+      </ScrollView>
+    );
+  } else if (step.kind === 'open' && saving && form) {
     /*
      * SAVE: the login typed into the form, into this store - an update when the site already has
      * an entry with that username, else a new login under the site's address. Nothing is kept on
@@ -169,20 +277,20 @@ export default function AutofillSheet() {
      * A 2FA CODE BOX: the codes saved for this site (a login carrying one, or an authenticator
      * entry with the site in its Sites) - the code is computed at the pick, so it is the current one.
      */
-    const all = (step.manager.list() as Entry[]).filter(e => e.totp);
+    const all = (step.manager.list() as Entry[]).filter(e => e.totp || (e.inner && (e.kind === 'totp' || e.kind === 'login')));
     const mine = matchingCodes(all, form);
     const others = all.filter(e => !mine.includes(e));
-    const fillCode = (e: Entry) =>
-      (async () => {
+    const fillCode = (sealed: Entry) =>
+      withSecrets(sealed, async e => {
         await OkAutofill?.fill(null, totpLib.codeOf(e.totp).code);
-      })().catch(err => setStep({kind: 'error', message: String(err?.message ?? err)}));
+      });
     const items: EdgeListItem[] = [{key: 's-mine', kind: 'section', title: `Codes for ${name}`, right: String(mine.length)}];
     if (!mine.length) items.push({key: 'none', kind: 'row', tone: 'dim', title: `No code saved for ${name}`, subtitle: 'Add the site to an authenticator entry (its Sites), or a setup key to its login.'});
     for (const e of mine) items.push({key: e.id, kind: 'row', title: e.title, subtitle: e.username || e.totp?.issuer, onPress: () => void fillCode(e)});
     if (showAll) {
       items.push({key: 's-all', kind: 'section', title: 'Other codes', right: String(others.length)});
       items.push({key: 'warn', kind: 'row', tone: 'warn', title: `Not saved for ${name}`, subtitle: `Fill one of these only if you know ${name} is where it belongs.`});
-      for (const e of others) items.push({key: 'o-' + e.id, kind: 'row', title: e.title, subtitle: e.totp?.issuer, onPress: () => void fillCode(e)});
+      for (const e of others) items.push({key: 'o-' + e.id, kind: 'row', title: e.title, subtitle: e.totp?.issuer, onPress: () => linkThen(e, x => void fillCode(x))});
     }
     /* one bar at the top for the whole list (Brad, 2026-10-11: "for autofill, we just need 1
        progress bar at the top"): the codes listed share a window - the first one's period */
@@ -242,7 +350,7 @@ export default function AutofillSheet() {
       </View>
     );
   } else if (step.kind === 'open') {
-    const all = (step.manager.list() as Entry[]).filter(e => e.kind === 'login' && !e.inner && (e.password || e.username));
+    const all = (step.manager.list() as Entry[]).filter(e => (e.kind === 'login' && (e.inner || e.password || e.username)) || e.kind === 'derived');
     const mine = form ? matching(all, form) : [];
     const others = all.filter(e => !mine.includes(e));
     const items: EdgeListItem[] = [{key: 's-mine', kind: 'section', title: `Saved for ${name}`, right: String(mine.length)}];
@@ -260,7 +368,7 @@ export default function AutofillSheet() {
         subtitle: `Fill one of these only if you know ${name} is where it belongs. A look-alike address is how phishing works.`,
       });
       for (const e of others) {
-        items.push({key: 'o-' + e.id, kind: 'row', title: e.title, subtitle: [e.username, e.urls?.[0] && hostOf(e.urls[0])].filter(Boolean).join(' · '), onPress: () => pick(e)});
+        items.push({key: 'o-' + e.id, kind: 'row', title: e.title, subtitle: [e.username, e.urls?.[0] && hostOf(e.urls[0])].filter(Boolean).join(' · '), onPress: () => linkThen(e, x => void pick(x))});
       }
     }
     body = (
@@ -328,6 +436,7 @@ const styles = StyleSheet.create({
   pad: {padding: 16},
   bar: {flexDirection: 'row', gap: 8, padding: 16, flexWrap: 'wrap'},
   progress: {paddingHorizontal: 16, paddingBottom: 8},
+  input: {marginTop: 8, color: theme.text, fontSize: 14, paddingHorizontal: 10, paddingVertical: 9, borderRadius: theme.radius, borderWidth: 1, borderColor: theme.border, backgroundColor: theme.inputBg},
   body: {color: theme.text, fontSize: 14, lineHeight: 20},
   dim: {color: theme.textDim, fontSize: 18, letterSpacing: 4, marginTop: 8},
 });

@@ -30,6 +30,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- the QR scanner (specs/NativeQrScanner.ts): asked only when Scan is pressed; a phone without a camera still installs -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!--
       Android 11 hides other apps from this one unless they are declared here.
       Without it Linking.canOpenURL() answers FALSE for https on a phone that
@@ -140,6 +143,14 @@
         android:excludeFromRecents="true"
         android:taskAffinity=""
         android:launchMode="singleTask" />
+
+      <!-- the QR scanner's camera (specs/NativeQrScanner.ts): same process, opened for a result -->
+      <activity
+        android:name=".qr.QrScanActivity"
+        android:exported="false"
+        android:theme="@style/AppTheme"
+        android:screenOrientation="portrait"
+        android:excludeFromRecents="true" />
 
       <activity
         android:name=".MainActivity"

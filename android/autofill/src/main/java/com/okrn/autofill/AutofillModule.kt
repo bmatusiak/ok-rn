@@ -38,6 +38,7 @@ class AutofillModule(private val context: ReactApplicationContext) : ReactContex
       putString("mode", p.mode)
       putString("domain", p.domain)
       putString("packageName", p.packageName)
+      putString("certs", p.certs.joinToString(","))
       putBoolean("username", p.usernameId != null)
       putBoolean("password", p.passwordId != null)
       /* a save hands JS what was typed, to seal; a fill hands nothing */

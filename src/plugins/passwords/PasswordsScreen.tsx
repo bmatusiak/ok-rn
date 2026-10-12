@@ -8,14 +8,19 @@ import {missingNote} from '../../firmwareFeatures';
 import {useSharedBtKeyboard} from '../../hooks/BtKeyboardContext';
 import {BACKEND_NAME} from '../../hooks/keySession';
 import {useSecureScreen} from '../../hooks/useSecureScreen';
-import {Btn, KeyValue, Section} from '../../ui/components';
+import {getOnlyKey} from '../../onlykey';
+import {SlotsScreen} from '../../screens/SlotsScreen';
+import {Btn, KeyValue, Section, Segmented} from '../../ui/components';
 import {EdgeList, type EdgeListItem} from '../../ui/EdgeList';
 import {theme} from '../../ui/theme';
 import type {TabContext} from '../types';
 import {AutofillCard} from './autofill/AutofillCard';
 import {EntryEditor} from './EntryEditor';
+import {DerivedEntry, NewDerived} from './DerivedViews';
+import {openEntry, sealEntry, stripInner} from './innerKeys';
 import {NewPhrase, PhraseEntry} from './PhraseViews';
 import {TotpCode} from './TotpViews';
+import {policyWords, timeLeftWords} from './session';
 import {usePasswordManager, type OldVault} from './usePasswordManager';
 import type {Manager} from './stores';
 
@@ -28,20 +33,30 @@ import type {Manager} from './stores';
  */
 
 const CLIPBOARD_TTL_MS = 45000;
-const KIND_TITLE: Record<string, string> = {login: 'Logins', note: 'Notes', card: 'Cards', totp: 'Authenticators', mnemonic: 'Wallet phrases'};
+/* the kind filter's labels, and the entry kind each picks */
+const KIND_FILTERS = ['All', 'Logins', 'Notes', 'Cards', 'Codes', 'Phrases'] as const;
+type KindFilter = (typeof KIND_FILTERS)[number];
+/* Logins also holds derived passwords: both sign in to a site */
+const KIND_OF_FILTER: Record<Exclude<KindFilter, 'All'>, string[]> = {Logins: ['login', 'derived'], Notes: ['note'], Cards: ['card'], Codes: ['totp'], Phrases: ['mnemonic']};
+
+const KIND_TITLE: Record<string, string> = {login: 'Logins', derived: 'Derived passwords', note: 'Notes', card: 'Cards', totp: 'Authenticators', mnemonic: 'Wallet phrases'};
 
 type Entry = {
   id: string;
-  kind: 'login' | 'note' | 'card' | 'mnemonic' | 'totp';
+  kind: 'login' | 'note' | 'card' | 'mnemonic' | 'totp' | 'derived';
   totp?: any;
   recipe?: {label: string; out: string; press: boolean; check: string};
   title: string;
   username?: string;
   password?: string;
   urls?: string[];
+  folder?: string;
+  tags?: string[];
+  /* apps linked by package + signing certificate (Autofill's Link this app) */
+  androidApps?: {package: string; cert: string}[];
   notes?: string;
   history?: {password: string; changedAt: string}[];
-  inner?: unknown;
+  inner?: {seal: string; ref?: string; salt?: string; blob: string};
   updatedAt?: string;
 };
 
@@ -51,7 +66,9 @@ type Page =
   | {kind: 'add'; id: null}
   | {kind: 'entry'; id: string}
   | {kind: 'edit'; id: string | null; newKind?: NewKind}
-  | {kind: 'phrase'; id: null};
+  | {kind: 'phrase'; id: null}
+  | {kind: 'derive-new'; id: null}
+  | {kind: 'to-slot'; id: string};
 
 const hostOf = (url: string) => url.replace(/^[a-z]+:\/\//i, '').split(/[/?#]/)[0];
 
@@ -62,7 +79,7 @@ async function copy(text: string | undefined, what: string) {
 }
 
 export function PasswordsScreen({ctx}: {ctx: TabContext}) {
-  const {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey} = usePasswordManager({
+  const {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey, policy, timeLeft} = usePasswordManager({
     backend: ctx.backend,
     unlocked: ctx.unlocked,
     caps: ctx.caps,
@@ -70,13 +87,20 @@ export function PasswordsScreen({ctx}: {ctx: TabContext}) {
   const keyName = BACKEND_NAME[ctx.backend];
   useSecureScreen(ctx.blockScreenshots && view.state === 'open');
 
-  if (view.state === 'open') return <OpenStore manager={view.manager} keyName={keyName} touch={touch} lockNow={lockNow} oldVault={oldVault} phraseKey={phraseKey} />;
+  /* an authenticator's setup key into one of the active key's TOTP slots (lib device.totpFields, as the slot editor writes it) */
+  const writeSlot = async (slotId: string, secret: string) => {
+    const {device} = await getOnlyKey(ctx.backend);
+    await device.setSlot(slotId, device.totpFields(secret));
+  };
+  if (view.state === 'open') return <OpenStore manager={view.manager} keyName={keyName} touch={touch} lockNow={lockNow} oldVault={oldVault} phraseKey={phraseKey} timeLeft={timeLeft} writeSlot={writeSlot} />;
 
   return (
     <ScrollView contentContainerStyle={styles.pad}>
       <Section title="Passwords">
         {view.state === 'unsupported' ? (
           <Text style={styles.body}>{missingNote('deviceVault')}</Text>
+        ) : view.state === 'reading' ? (
+          <Text style={styles.body}>Reading the {keyName}'s firmware…</Text>
         ) : view.state === 'locked-key' ? (
           <Text style={styles.body}>Unlock the {keyName} to see its passwords.</Text>
         ) : view.state === 'checking' ? (
@@ -90,7 +114,7 @@ export function PasswordsScreen({ctx}: {ctx: TabContext}) {
             <Text style={styles.body}>
               {view.isNew
                 ? `No password store for this key on this phone yet. Opening makes one, sealed to the ${keyName}: only this key, or a key restored from its backup, opens it.`
-                : `Your passwords are sealed to the ${keyName}. Opening asks the key once; the store then stays open for 30 minutes of use, or until the key locks.`}
+                : `Your passwords are sealed to the ${keyName}. Opening asks the key once; the store then stays open for ${policyWords(policy())}, or until the key locks.`}
             </Text>
             <Text style={styles.store}>Store {view.storeId.slice(0, 8)}</Text>
             <Btn title="Open with OnlyKey" tone="primary" onPress={openWithKey} />
@@ -113,6 +137,8 @@ function OpenStore({
   lockNow,
   oldVault,
   phraseKey,
+  timeLeft,
+  writeSlot,
 }: {
   manager: Manager;
   keyName: string;
@@ -120,15 +146,35 @@ function OpenStore({
   lockNow: () => void;
   oldVault: () => Promise<OldVault>;
   phraseKey: Parameters<typeof PhraseEntry>[0]['phraseKey'];
+  timeLeft: () => number | null;
+  writeSlot: (slotId: string, secret: string) => Promise<void>;
 }) {
+  /* the session's time left, redrawn every 15 s (read-only: it does not keep the session open) */
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 15000);
+    return () => clearInterval(t);
+  }, []);
+  const left = timeLeft();
   const [page, setPage] = useState<Page>({kind: 'list'});
+  /*
+   * Entries sealed a second time, opened while their page is up: {entry with its secrets, the
+   * passphrase if it took one}. In memory only; gone when the list is shown again.
+   */
+  const [opened, setOpened] = useState<Record<string, {entry: any; passphrase?: string}>>({});
+  useEffect(() => {
+    if (page.kind === 'list') setOpened({});
+  }, [page.kind]);
   const [search, setSearch] = useState('');
+  /* the list's filters: one kind, one folder (spec UI: "search, folders, kind filter") */
+  const [kindFilter, setKindFilter] = useState<KindFilter>('All');
+  const [folderFilter, setFolderFilter] = useState<string | null>(null);
   const [rev, setRev] = useState(0);
   /* Back: an edit to its entry, a new entry's form (or a phrase) to the Add page, the rest to the list */
   const back = useCallback(
     () =>
       setPage(p =>
-        p.kind === 'edit' && p.id ? {kind: 'entry', id: p.id} : (p.kind === 'edit' || p.kind === 'phrase') ? {kind: 'add', id: null} : {kind: 'list'},
+        (p.kind === 'edit' && p.id) || p.kind === 'to-slot' ? {kind: 'entry', id: p.id!} : (p.kind === 'edit' || p.kind === 'phrase' || p.kind === 'derive-new') ? {kind: 'add', id: null} : {kind: 'list'},
       ),
     [],
   );
@@ -153,9 +199,11 @@ function OpenStore({
   const refused = manager.locked ? 0 : manager.refused().length;
 
   if (page.kind !== 'list') {
-    const entry = page.id ? (manager.get(page.id) as Entry | null) : null;
+    const stored = page.id ? (manager.get(page.id) as Entry | null) : null;
+    /* a sealed entry, once opened, is shown and edited with its secrets */
+    const entry = page.id && opened[page.id] ? (opened[page.id].entry as Entry) : stored;
     const title =
-      page.kind === 'add' ? 'Add' : page.kind === 'phrase' ? 'New wallet phrase' : page.kind === 'edit' ? (entry ? `Edit ${entry.title}` : 'New entry') : entry?.title ?? '';
+      page.kind === 'add' ? 'Add' : page.kind === 'to-slot' ? 'Put on a key slot' : page.kind === 'derive-new' ? 'New derived password' : page.kind === 'phrase' ? 'New wallet phrase' : page.kind === 'edit' ? (entry ? `Edit ${entry.title}` : 'New entry') : entry?.title ?? '';
     return (
       <View style={styles.root}>
         <View style={styles.row}>
@@ -174,16 +222,73 @@ function OpenStore({
               setPage({kind: 'entry', id});
             }}
           />
+        ) : page.kind === 'to-slot' && entry?.totp ? (
+          /* PUT ON A KEY SLOT (spec "Using a code"): the key types the code itself from then on */
+          <ScrollView contentContainerStyle={styles.pad}>
+            <Text style={styles.body}>
+              Pick the slot for "{entry.title}". Its setup key is written into that slot's TOTP; the key then types the code from the
+              slot itself. The slot's own code, if it has one, is replaced.
+            </Text>
+            <SlotsScreen
+              panel
+              onOpen={slot =>
+                Alert.alert('Write the code to this slot?', `Slot ${slot.id}${slot.label ? ` ("${slot.label}")` : ''} gets this setup key. Its own code, if any, is replaced.`, [
+                  {text: 'Cancel', style: 'cancel'},
+                  {
+                    text: 'Write',
+                    onPress: () =>
+                      act(async () => {
+                        await writeSlot(slot.id, entry.totp.secret);
+                        Alert.alert('Written', `Slot ${slot.id} has the code.`);
+                        setPage({kind: 'entry', id: entry.id});
+                      }),
+                  },
+                ])
+              }
+            />
+          </ScrollView>
+        ) : page.kind === 'derive-new' ? (
+          <NewDerived
+            manager={manager}
+            deriveKey={phraseKey}
+            act={act}
+            onSaved={id => {
+              setRev(n => n + 1);
+              setPage({kind: 'entry', id});
+            }}
+          />
         ) : page.kind === 'add' ? (
-          <AddPage onPick={next => setPage(next === 'phrase' ? {kind: 'phrase', id: null} : {kind: 'edit', id: null, newKind: next})} />
+          <AddPage
+            onPick={next =>
+              setPage(next === 'phrase' ? {kind: 'phrase', id: null} : next === 'derived' ? {kind: 'derive-new', id: null} : {kind: 'edit', id: null, newKind: next})
+            }
+          />
         ) : page.kind === 'edit' ? (
           <EntryEditor
             newKind={page.newKind}
             /* never a phrase: a phrase entry has no Edit (its recipe is the entry) */
             entry={entry as (Entry & {kind: 'login' | 'note' | 'card' | 'totp'}) | null}
-            onSave={input =>
+            onSave={(input, how) =>
               act(async () => {
-                const saved = await manager.put(input);
+                let toSave: any = input;
+                const was = page.id ? opened[page.id] : undefined;
+                if (how.seal !== 'none') {
+                  /* sealed: the history stays inside the seal (the store keeps none outside it) */
+                  const base: any = was?.entry ?? stored;
+                  let history = base?.history ?? [];
+                  if (base?.password && input.password !== base.password) {
+                    history = [{password: base.password, changedAt: new Date().toISOString()}, ...history].slice(0, 5);
+                  }
+                  const {okcrypto, press} = await phraseKey();
+                  toSave = await sealEntry(
+                    {...input, ...(history.length ? {history} : {}), ...(stored?.inner ? {inner: stored.inner} : {})},
+                    {seal: how.seal, passphrase: how.passphrase ?? was?.passphrase},
+                    okcrypto as any,
+                    press,
+                  );
+                }
+                const saved = await manager.put(toSave);
+                if (was) setOpened(o => ({...o, [saved.id]: {entry: {...stripInner(input), id: saved.id, sealedWith: how.seal}, passphrase: how.passphrase ?? was.passphrase}}));
                 setRev(n => n + 1);
                 setPage({kind: 'entry', id: saved.id});
               })
@@ -207,10 +312,36 @@ function OpenStore({
                 : undefined
             }
           />
+        ) : entry?.kind === 'derived' ? (
+          <DerivedEntry entry={entry} deriveKey={phraseKey} act={act} copy={copy} />
         ) : entry?.kind === 'mnemonic' ? (
           <PhraseEntry entry={entry} phraseKey={phraseKey} act={act} />
+        ) : entry?.inner ? (
+          <SealedEntry
+            entry={entry}
+            act={act}
+            onOpen={async passphrase => {
+              const {okcrypto, press} = await phraseKey();
+              const open = await openEntry(entry, okcrypto as any, press, passphrase);
+              setOpened(o => ({...o, [entry.id]: {entry: open, passphrase}}));
+            }}
+          />
         ) : entry ? (
-          <EntryView entry={entry} act={act} onEdit={() => setPage({kind: 'edit', id: entry.id})} />
+          <EntryView
+            entry={entry}
+            act={act}
+            onEdit={() => setPage({kind: 'edit', id: entry.id})}
+            /* HOTP's counter is saved through the store; an entry sealed again keeps it inside its seal (Edit) */
+            onCounter={
+              stored?.inner
+                ? undefined
+                : async next => {
+                    await manager.put({...stored, totp: {...stored!.totp, counter: next}});
+                    setRev(n => n + 1);
+                  }
+            }
+            onToSlot={() => setPage({kind: 'to-slot', id: entry.id})}
+          />
         ) : (
           <Text style={[styles.body, styles.pad]}>This entry is gone.</Text>
         )}
@@ -219,9 +350,14 @@ function OpenStore({
   }
 
   const q = search.trim().toLowerCase();
-  const shown = q
-    ? entries.filter(e => [e.title, e.username, ...(e.urls ?? [])].some(s => s && s.toLowerCase().includes(q)))
-    : entries;
+  const folders = [...new Set(entries.map(e => e.folder).filter((f): f is string => !!f))].sort((a, b) => a.localeCompare(b));
+  const shown = entries.filter(
+    e =>
+      (kindFilter === 'All' || KIND_OF_FILTER[kindFilter].includes(e.kind)) &&
+      (folderFilter === null || e.folder === folderFilter) &&
+      (!q || [e.title, e.username, e.folder, ...(e.urls ?? []), ...(e.tags ?? [])].some(s => s && s.toLowerCase().includes(q))),
+  );
+  const filtered = !!q || kindFilter !== 'All' || folderFilter !== null;
   const items: EdgeListItem[] = [];
   if (refused) {
     items.push({
@@ -232,7 +368,7 @@ function OpenStore({
       subtitle: 'They are not shown. A record that does not open with this key, or that was moved onto another record, is refused - never shown as an entry.',
     });
   }
-  for (const kind of ['login', 'note', 'card', 'totp', 'mnemonic'] as const) {
+  for (const kind of ['login', 'derived', 'note', 'card', 'totp', 'mnemonic'] as const) {
     const of = shown.filter(e => e.kind === kind);
     if (!of.length) continue;
     items.push({key: `s-${kind}`, kind: 'section', title: KIND_TITLE[kind], right: String(of.length)});
@@ -246,7 +382,9 @@ function OpenStore({
             ? `${e.recipe?.out === 'bip39-12' ? 12 : 24} words, from the key`
             : e.kind === 'totp'
               ? e.totp?.issuer || 'authenticator'
-              : e.username || (e.urls?.[0] ? hostOf(e.urls[0]) : undefined),
+              : e.kind === 'derived'
+                ? e.username || 'made from the key'
+                : e.username || (e.urls?.[0] ? hostOf(e.urls[0]) : undefined),
         right: e.inner ? 'sealed' : undefined,
         onPress: () => act(() => setPage({kind: 'entry', id: e.id})),
       });
@@ -289,8 +427,10 @@ function OpenStore({
           : `${r.imported} brought in.${r.failed.length ? ` ${r.failed.length} did not open: ${r.failed.map(f => f.serviceId).join(', ')}.` : ''}`,
       );
     });
+  if (filtered && !shown.length) items.push({key: 'nomatch', kind: 'row', tone: 'dim', title: 'Nothing matches'});
   if (!q && !entries.length) items.push({key: 'none', kind: 'row', tone: 'dim', title: 'No passwords yet', subtitle: '+ Add makes the first one.'});
-  if (!q) {
+  /* the panels below belong to the whole store, not to a filtered view */
+  if (!filtered) {
     items.push({key: 's-autofill', kind: 'section', title: 'Autofill'});
     items.push({key: 'autofill', kind: 'node', render: () => <AutofillCard />});
     items.push({key: 's-move', kind: 'section', title: 'Move passwords'});
@@ -300,12 +440,12 @@ function OpenStore({
       render: () => (
         <View>
           <Text style={styles.dim}>
-            A sealed export opens only with this key or a key restored from its backup. The old vault asks a press for each site.
+            A sealed export opens only with this key or a key restored from its backup.
           </Text>
           <View style={styles.buttons}>
             <Btn title="Export (sealed)" onPress={() => move('export')} />
             <Btn title="Import (sealed)" onPress={() => move('import')} />
-            <Btn title="Import old vault" onPress={() => move('old')} />
+            {/* Import old vault: hidden - no legacy support yet (Brad, 2026-10-11); move('old') and lib legacy.js stay */}
           </View>
         </View>
       ),
@@ -327,6 +467,18 @@ function OpenStore({
         <Btn title="+ Add" tone="primary" onPress={() => act(() => setPage({kind: 'add', id: null}))} />
         <Btn title="Lock" onPress={lockNow} />
       </View>
+      <View style={styles.filters}>
+        <Segmented options={KIND_FILTERS} value={kindFilter} onChange={setKindFilter} />
+        {folders.length ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+            <Btn title="All folders" tone={folderFilter === null ? 'primary' : 'default'} onPress={() => setFolderFilter(null)} />
+            {folders.map(f => (
+              <Btn key={f} title={f} tone={folderFilter === f ? 'primary' : 'default'} onPress={() => setFolderFilter(folderFilter === f ? null : f)} />
+            ))}
+          </ScrollView>
+        ) : null}
+      </View>
+      {left !== null ? <Text style={[styles.dim, styles.session]}>{timeLeftWords(left)}</Text> : null}
       <EdgeList items={items} empty="Nothing matches." />
     </View>
   );
@@ -336,15 +488,16 @@ function OpenStore({
  * + ADD: one button per kind (Brad, 2026-10-11: "the +add button need to go into a view to a list
  * of button, like + Wallet Phrase"). Authenticator: TOTP, in 0.0.7 (Brad, same day).
  */
-const ADD_KINDS: {kind: NewKind | 'phrase'; title: string; what: string}[] = [
+const ADD_KINDS: {kind: NewKind | 'phrase' | 'derived'; title: string; what: string}[] = [
   {kind: 'login', title: '+ Login', what: 'A username and password for a site or an app.'},
+  {kind: 'derived', title: '+ Derived password', what: 'A password made from this OnlyKey and a name - nothing of it is stored; the same name gives it again.'},
   {kind: 'note', title: '+ Note', what: 'Text kept sealed: a code, an answer, anything.'},
   {kind: 'card', title: '+ Card', what: 'A card number or a PIN.'},
   {kind: 'totp', title: '+ Authenticator', what: 'The 6-digit code for two-step sign-in (GitHub and others), from its setup key or QR link.'},
   {kind: 'phrase', title: '+ Wallet phrase', what: 'A BIP39 phrase made from this OnlyKey and a name - nothing of it is stored.'},
 ];
 
-function AddPage({onPick}: {onPick: (kind: NewKind | 'phrase') => void}) {
+function AddPage({onPick}: {onPick: (kind: NewKind | 'phrase' | 'derived') => void}) {
   return (
     <ScrollView contentContainerStyle={styles.pad}>
       {ADD_KINDS.map(k => (
@@ -357,29 +510,75 @@ function AddPage({onPick}: {onPick: (kind: NewKind | 'phrase') => void}) {
   );
 }
 
-function EntryView({entry, act, onEdit}: {entry: Entry; act: (fn: () => void | Promise<void>) => void; onEdit: () => void}) {
+/*
+ * AN ENTRY SEALED A SECOND TIME, not opened yet: its title and username show (they are the
+ * store's), its secrets wait for one more press of the key, or for its passphrase (innerKeys.ts).
+ */
+function SealedEntry({entry, act, onOpen}: {entry: Entry; act: (fn: () => void | Promise<void>) => void; onOpen: (passphrase?: string) => Promise<void>}) {
+  const [passphrase, setPassphrase] = useState('');
+  const byKey = (entry.inner as any)?.seal === 'entry-derive';
+  return (
+    <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
+      <Section title={byKey ? 'Sealed with one more press' : 'Sealed with a passphrase'}>
+        {entry.username ? <KeyValue label="Username" value={entry.username} /> : null}
+        {entry.urls?.length ? <KeyValue label={entry.urls.length > 1 ? 'Sites' : 'Site'} value={entry.urls.join('\n')} /> : null}
+        <Text style={styles.body}>
+          {byKey
+            ? 'Its password, notes and code open with one more press of the key, each time.'
+            : 'Its password, notes and code open with the passphrase it was sealed with.'}
+        </Text>
+        {byKey ? null : (
+          <TextInput
+            value={passphrase}
+            onChangeText={setPassphrase}
+            placeholder="Passphrase"
+            placeholderTextColor={theme.textDim}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            importantForAutofill="no"
+            style={styles.input}
+          />
+        )}
+        <View style={styles.buttons}>
+          <Btn
+            title={byKey ? 'Open with OnlyKey' : 'Open'}
+            tone="primary"
+            disabled={!byKey && !passphrase}
+            onPress={() => act(() => onOpen(byKey ? undefined : passphrase))}
+          />
+        </View>
+      </Section>
+    </ScrollView>
+  );
+}
+
+function EntryView({
+  entry,
+  act,
+  onEdit,
+  onCounter,
+  onToSlot,
+}: {
+  entry: Entry;
+  act: (fn: () => void | Promise<void>) => void;
+  onEdit: () => void;
+  onCounter?: (next: number) => Promise<void>;
+  onToSlot?: () => void;
+}) {
   const [show, setShow] = useState(false);
   /* Type: the phone as the computer's Bluetooth keyboard, US layout (useBtKeyboard typeSecret) */
   const bt = useSharedBtKeyboard();
   const canType = bt.state === 'connected' && bt.forwarding;
-  const type = (text: string | undefined, then: 'tab' | null) =>
+  const type = (text: string | undefined, then: 'tab' | 'enter' | null) =>
     act(async () => {
       if (text) await bt.typeSecret(text, {then});
     });
-  if (entry.inner) {
-    return (
-      <ScrollView contentContainerStyle={styles.pad}>
-        <Section title="Sealed a second time">
-          <Text style={styles.body}>This entry has its own key. Opening it is not in this release yet.</Text>
-        </Section>
-      </ScrollView>
-    );
-  }
   /* an authenticator entry: its code, and Edit */
   if (entry.kind === 'totp') {
     return (
       <ScrollView contentContainerStyle={styles.pad}>
-        <TotpCode totp={entry.totp} act={act} copy={copy} title={entry.title} />
+        <TotpCode totp={entry.totp} act={act} copy={copy} title={entry.title} onCounter={onCounter} onToSlot={onToSlot} />
         {entry.notes ? <Section title="Notes"><KeyValue label="Notes" value={entry.notes} /></Section> : null}
         <View style={styles.buttons}>
           <Btn title="Edit" onPress={() => act(onEdit)} />
@@ -394,6 +593,12 @@ function EntryView({entry, act, onEdit}: {entry: Entry; act: (fn: () => void | P
         {entry.password ? <KeyValue label="Password" value={show ? entry.password : '••••••••••'} /> : null}
         {entry.urls?.length ? <KeyValue label={entry.urls.length > 1 ? 'Sites' : 'Site'} value={entry.urls.join('\n')} /> : null}
         {entry.notes ? <KeyValue label="Notes" value={entry.notes} /> : null}
+        {(entry as any).sealedWith && (entry as any).sealedWith !== 'none' ? (
+          <Text style={styles.dim}>{(entry as any).sealedWith === 'key' ? 'Sealed again with the key: opened for this visit.' : 'Sealed again with a passphrase: opened for this visit.'}</Text>
+        ) : null}
+        {entry.androidApps?.length ? <KeyValue label="Apps" value={entry.androidApps.map(a => a.package).join('\n')} /> : null}
+        {entry.folder ? <KeyValue label="Folder" value={entry.folder} /> : null}
+        {entry.tags?.length ? <KeyValue label="Tags" value={entry.tags.join(', ')} /> : null}
         <View style={styles.buttons}>
           {entry.password ? <Btn title="Copy password" tone="primary" onPress={() => act(() => copy(entry.password, 'Password'))} /> : null}
           {entry.username ? <Btn title="Copy username" onPress={() => act(() => copy(entry.username, 'Username'))} /> : null}
@@ -409,6 +614,7 @@ function EntryView({entry, act, onEdit}: {entry: Entry; act: (fn: () => void | P
               <View style={styles.buttons}>
                 {entry.username ? <Btn title="Type username + Tab" onPress={() => type(entry.username, 'tab')} /> : null}
                 {entry.password ? <Btn title="Type password" tone="primary" onPress={() => type(entry.password, null)} /> : null}
+                {entry.password ? <Btn title="Type password + Enter" onPress={() => type(entry.password, 'enter')} /> : null}
               </View>
             </>
           ) : (
@@ -419,7 +625,7 @@ function EntryView({entry, act, onEdit}: {entry: Entry; act: (fn: () => void | P
         </Section>
       ) : null}
       {/* a login's own authenticator code (GitHub: the password, then this) */}
-      {entry.totp ? <TotpCode totp={entry.totp} act={act} copy={copy} /> : null}
+      {entry.totp ? <TotpCode totp={entry.totp} act={act} copy={copy} onCounter={onCounter} onToSlot={onToSlot} /> : null}
       {entry.history?.length ? (
         <Section title="Earlier passwords">
           {entry.history.map((h, i) => (
@@ -460,5 +666,8 @@ const styles = StyleSheet.create({
   buttons: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
   history: {flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap'},
   addRow: {flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4},
+  session: {paddingHorizontal: 16, paddingBottom: 6},
+  filters: {paddingHorizontal: 16, paddingBottom: 6, gap: 4},
+  chips: {gap: 8},
   addWhat: {flex: 1},
 });

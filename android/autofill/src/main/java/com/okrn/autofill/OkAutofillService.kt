@@ -55,6 +55,8 @@ class OkAutofillService : AutofillService() {
       return
     }
     val caller = structure.activityComponent?.packageName ?: ""
+    callerNow = caller
+    inlineNow = if (Build.VERSION.SDK_INT >= 30) request.inlineSuggestionsRequest else null
     /* never offer to fill the app's own fields: its secrets are typed by the person, here */
     if (caller == packageName) {
       callback.onSuccess(null)
@@ -62,6 +64,7 @@ class OkAutofillService : AutofillService() {
     }
     val f = Fields()
     for (i in 0 until structure.windowNodeCount) walk(structure.getWindowNodeAt(i).rootViewNode, f)
+    webNow = !f.webDomain.isNullOrEmpty()
     /*
      * What each form looks like, without its values: which app asked, how many text fields, and
      * their hints / html types. This is how an app's form (a wallet's recovery-phrase box, Brad
@@ -120,6 +123,7 @@ class OkAutofillService : AutofillService() {
       if (f.webDomain.isNullOrEmpty()) "an app" else "a web page")
 
     val sheet = Intent(this, AutofillAuthActivity::class.java).apply {
+      putStringArrayListExtra(EXTRA_CERTS, certsFor(callerNow))
       putExtra(EXTRA_DOMAIN, f.webDomain ?: "")
       putExtra(EXTRA_PACKAGE, caller)
       putExtra(EXTRA_USERNAME_ID, username)
@@ -131,10 +135,7 @@ class OkAutofillService : AutofillService() {
     val sender = PendingIntent.getActivity(this, nextRequest++, sheet, flags).intentSender
 
     @Suppress("DEPRECATION")
-    val dataset = Dataset.Builder(row(this, ROW_TEXT)).apply {
-      listOfNotNull(username, password).forEach { setValue(it, null) }
-      setAuthentication(sender)
-    }.build()
+    val dataset = dataset(ROW_TEXT, listOfNotNull(username, password), sender)
     /*
      * SAVE (Brad, 2026-10-11: "see if autofill can automatically save passwords to the app while
      * using chrome, like offer to save it to our app"): the save info makes the phone offer
@@ -152,6 +153,7 @@ class OkAutofillService : AutofillService() {
   /** The OnlyKey code row for a one-time-code box: the sheet fills the picked entry's current code. */
   private fun codeResponse(caller: String, domain: String, box: AutofillId): FillResponse {
     val sheet = Intent(this, AutofillAuthActivity::class.java).apply {
+      putStringArrayListExtra(EXTRA_CERTS, certsFor(callerNow))
       action = ACTION_CODE
       putExtra(EXTRA_DOMAIN, domain)
       putExtra(EXTRA_PACKAGE, caller)
@@ -161,16 +163,14 @@ class OkAutofillService : AutofillService() {
       (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
     val sender = PendingIntent.getActivity(this, nextRequest++, sheet, flags).intentSender
     @Suppress("DEPRECATION")
-    val dataset = Dataset.Builder(row(this, ROW_CODE)).apply {
-      setValue(box, null)
-      setAuthentication(sender)
-    }.build()
+    val dataset = dataset(ROW_CODE, listOf(box), sender)
     return FillResponse.Builder().addDataset(dataset).build()
   }
 
   /** The OnlyKey row for a username box alone: the sheet fills only the username. */
   private fun usernameResponse(caller: String, domain: String, box: AutofillId): FillResponse {
     val sheet = Intent(this, AutofillAuthActivity::class.java).apply {
+      putStringArrayListExtra(EXTRA_CERTS, certsFor(callerNow))
       putExtra(EXTRA_DOMAIN, domain)
       putExtra(EXTRA_PACKAGE, caller)
       putExtra(EXTRA_USERNAME_ID, box)
@@ -179,16 +179,14 @@ class OkAutofillService : AutofillService() {
       (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
     val sender = PendingIntent.getActivity(this, nextRequest++, sheet, flags).intentSender
     @Suppress("DEPRECATION")
-    val dataset = Dataset.Builder(row(this, ROW_TEXT)).apply {
-      setValue(box, null)
-      setAuthentication(sender)
-    }.build()
+    val dataset = dataset(ROW_TEXT, listOf(box), sender)
     return FillResponse.Builder().addDataset(dataset).build()
   }
 
   /** The one OnlyKey phrase row for a wallet's phrase box; its tap opens the sheet in phrase mode. */
   private fun phraseResponse(caller: String, box: AutofillId): FillResponse {
     val sheet = Intent(this, AutofillAuthActivity::class.java).apply {
+      putStringArrayListExtra(EXTRA_CERTS, certsFor(callerNow))
       action = ACTION_PHRASE
       putExtra(EXTRA_PACKAGE, caller)
       putExtra(EXTRA_PHRASE_ID, box)
@@ -197,10 +195,7 @@ class OkAutofillService : AutofillService() {
       (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
     val sender = PendingIntent.getActivity(this, nextRequest++, sheet, flags).intentSender
     @Suppress("DEPRECATION")
-    val dataset = Dataset.Builder(row(this, ROW_PHRASE)).apply {
-      setValue(box, null)
-      setAuthentication(sender)
-    }.build()
+    val dataset = dataset(ROW_PHRASE, listOf(box), sender)
     return FillResponse.Builder().addDataset(dataset).build()
   }
 
@@ -211,12 +206,14 @@ class OkAutofillService : AutofillService() {
    */
   override fun onSaveRequest(request: SaveRequest, callback: SaveCallback) {
     val structure = request.fillContexts.lastOrNull()?.structure
+    callerNow = structure?.activityComponent?.packageName ?: ""
     if (structure == null || Build.VERSION.SDK_INT < 28) {
       callback.onSuccess()
       return
     }
     val f = Fields()
     for (i in 0 until structure.windowNodeCount) walk(structure.getWindowNodeAt(i).rootViewNode, f)
+    webNow = !f.webDomain.isNullOrEmpty()
     val password = f.password?.let { valueOf(structure, it) }
     if (password.isNullOrEmpty()) {
       callback.onSuccess()
@@ -225,6 +222,7 @@ class OkAutofillService : AutofillService() {
     val username = (f.username ?: f.textBefore)?.let { valueOf(structure, it) } ?: ""
     Log.i(TAG, "save request: password, username ${if (username.isEmpty()) "none" else "given"}")
     val sheet = Intent(this, AutofillAuthActivity::class.java).apply {
+      putStringArrayListExtra(EXTRA_CERTS, certsFor(callerNow))
       action = ACTION_SAVE
       putExtra(EXTRA_DOMAIN, f.webDomain ?: "")
       putExtra(EXTRA_PACKAGE, structure.activityComponent?.packageName ?: "")
@@ -247,6 +245,67 @@ class OkAutofillService : AutofillService() {
       for (i in 0 until node.childCount) find(node.getChildAt(i))
     }
     for (i in 0 until structure.windowNodeCount) find(structure.getWindowNodeAt(i).rootViewNode)
+    return out
+  }
+
+  /* the keyboard's inline-suggestion request of the current fill request (Android 11+), if any */
+  private var inlineNow: Any? = null
+
+  /**
+   * One OnlyKey row: the dropdown's, and - when the keyboard asks (Android 11+) - the same row as
+   * a chip in its suggestion strip. Either opens the sheet; neither carries a value.
+   */
+  @Suppress("DEPRECATION")
+  private fun dataset(text: String, ids: List<AutofillId>, sender: android.content.IntentSender): Dataset {
+    val b = Dataset.Builder(row(this, text))
+    val inline = if (Build.VERSION.SDK_INT >= 30) inlineFor(text) else null
+    for (id in ids) {
+      if (inline != null && Build.VERSION.SDK_INT >= 30) b.setValue(id, null, row(this, text), inline as android.service.autofill.InlinePresentation)
+      else b.setValue(id, null)
+    }
+    b.setAuthentication(sender)
+    return b.build()
+  }
+
+  /* the chip, in the keyboard's style; null when the keyboard did not ask or cannot draw v1 */
+  @androidx.annotation.RequiresApi(30)
+  private fun inlineFor(text: String): Any? {
+    val req = inlineNow as? android.view.inputmethod.InlineSuggestionsRequest ?: return null
+    val spec = req.inlinePresentationSpecs.firstOrNull() ?: return null
+    if (!androidx.autofill.inline.UiVersions.getVersions(spec.style).contains(androidx.autofill.inline.UiVersions.INLINE_UI_VERSION_1)) return null
+    /* a long press on the chip opens the app - the attribution Android asks every chip for */
+    val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return null
+    val attribution = PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE)
+    val content = androidx.autofill.inline.v1.InlineSuggestionUi.newContentBuilder(attribution).setTitle(text).build()
+    return android.service.autofill.InlinePresentation(content.slice, spec, false)
+  }
+
+  /* the app the current request is for (set at the top of each request; the service runs one at a time) */
+  private var callerNow = ""
+  /* the web page of the current request, if any: an app form's certificates matter, a browser's do not */
+  private var webNow = false
+
+  /**
+   * The SHA-256 of each signing certificate of the app asking (spec: an app matches by package AND
+   * certificate). Empty for a web page - the browser's certificate says nothing about the site.
+   */
+  private fun certsFor(pkg: String): ArrayList<String> {
+    val out = ArrayList<String>()
+    if (webNow || pkg.isEmpty()) return out
+    try {
+      val sigs = if (Build.VERSION.SDK_INT >= 28) {
+        val info = packageManager.getPackageInfo(pkg, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+        val si = info.signingInfo ?: return out
+        if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory
+      } else {
+        @Suppress("DEPRECATION")
+        packageManager.getPackageInfo(pkg, android.content.pm.PackageManager.GET_SIGNATURES).signatures
+      }
+      val md = java.security.MessageDigest.getInstance("SHA-256")
+      sigs?.forEach { sig -> out.add(md.digest(sig.toByteArray()).joinToString("") { "%02x".format(it) }) }
+    } catch (e: Exception) {
+      Log.w(TAG, "no signing certificate for the asking app")
+    }
     return out
   }
 
@@ -320,6 +379,7 @@ class OkAutofillService : AutofillService() {
     const val EXTRA_PACKAGE = "com.okrn.autofill.PACKAGE"
     const val EXTRA_USERNAME_ID = "com.okrn.autofill.USERNAME_ID"
     const val EXTRA_PASSWORD_ID = "com.okrn.autofill.PASSWORD_ID"
+    const val EXTRA_CERTS = "com.okrn.autofill.CERTS"
     const val ACTION_SAVE = "com.okrn.autofill.SAVE"
     const val EXTRA_USERNAME = "com.okrn.autofill.USERNAME"
     const val EXTRA_PASSWORD = "com.okrn.autofill.PASSWORD"
