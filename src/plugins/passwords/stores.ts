@@ -61,6 +61,11 @@ export type OpenWhy = 'session' | 'touch-free' | 'press';
 export const LABEL = m.LABEL;
 const PUBLIC_LABEL = `vault:${LABEL}`;
 const META = 'meta';
+/*
+ * CTAP keepalive status 2: the key waits for a press. The library also calls onKeepAlive with
+ * {retry: true} before a derive's retry, and with status 1 (processing) - neither is a press.
+ */
+const UP_NEEDED = 2;
 
 export const prefixOf = (id: string) => `okrn.passwords.${id}/`;
 
@@ -141,59 +146,64 @@ export function createStores({
     async tryOpen(
       backend: Backend,
       okcrypto: Okcrypto,
-      {touchFree, onKeepAlive}: {touchFree: 'always' | 'preference' | 'broken'; onKeepAlive?: () => void},
+      {onKeepAlive}: {onKeepAlive?: () => void} = {},
     ): Promise<{manager: Manager; why: OpenWhy} | null> {
       const id = await identify(backend, okcrypto);
       if (open.has(id)) return {manager: await attach(id, backend, null), why: 'session'};
       const meta = await readMeta(id);
+      /* a store not made yet, or one whose open asked a press: never by itself (Brad, 2026-10-11) */
+      if (!meta || meta.press || meta.asked) {
+        if (!meta || !okcrypto.deviceVault.isUnlocked(LABEL)) return null;
+      }
       if (okcrypto.deviceVault.isUnlocked(LABEL)) {
-        if (!meta) return null; /* a cached key with no store to say which flag made it */
         const key = await okcrypto.deviceVault.key(LABEL, {requirePress: meta.press});
         return {manager: await attach(id, backend, key), why: 'session'};
       }
-      if (meta?.press || meta?.asked) return null;
-      if (!meta && touchFree === 'broken') return null;
-      let asked = false;
-      let key: Uint8Array;
-      try {
-        key = await okcrypto.deviceVault.key(LABEL, {
-          requirePress: false,
-          onKeepAlive: () => {
-            asked = true;
-            onKeepAlive?.();
-          },
-        });
-      } catch (err) {
-        if (!meta && isTouchFreeRefusal(err)) return null;
-        throw err;
-      }
-      await writeMeta(id, {v: 1, press: false, asked, createdAt: meta?.createdAt ?? now().toISOString()});
-      return {manager: await attach(id, backend, key), why: 'touch-free'};
-    },
-
-    /**
-     * "Open with OnlyKey": the derive this store was made with, pressed if it needs a press. A new
-     * store here is a press store - the touch-free try already came back refused.
-     */
-    async openWithKey(
-      backend: Backend,
-      okcrypto: Okcrypto,
-      {onKeepAlive}: {onKeepAlive?: () => void} = {},
-    ): Promise<{manager: Manager; why: OpenWhy}> {
-      const id = await identify(backend, okcrypto);
-      const meta = await readMeta(id);
-      const press = meta ? meta.press : true;
+      /* a touch-free store whose last open asked no press: the same derive, by itself */
       let asked = false;
       const key = await okcrypto.deviceVault.key(LABEL, {
-        requirePress: press,
-        onKeepAlive: () => {
+        requirePress: false,
+        onKeepAlive: (status: unknown) => {
+          if (status !== UP_NEEDED) return;
           asked = true;
           onKeepAlive?.();
         },
       });
-      if (!meta || meta.asked !== asked) {
-        await writeMeta(id, {v: 1, press, asked: press ? true : asked, createdAt: meta?.createdAt ?? now().toISOString()});
+      if (asked) await writeMeta(id, {...meta, asked: true});
+      return {manager: await attach(id, backend, key), why: 'touch-free'};
+    },
+
+    /**
+     * "Open with OnlyKey" - the person chose to open. A store already made: its own derive (its
+     * flag), pressed if the key asks. A NEW store: the touch-free derive first; a key that refuses
+     * it outright (no press asked) gets a press store instead. Whether the key asked a press is
+     * recorded either way, so the tab knows whether it may ever open the store by itself.
+     */
+    async openWithKey(
+      backend: Backend,
+      okcrypto: Okcrypto,
+      {onKeepAlive, touchFree = 'preference'}: {onKeepAlive?: () => void; touchFree?: 'always' | 'preference' | 'broken'} = {},
+    ): Promise<{manager: Manager; why: OpenWhy}> {
+      const id = await identify(backend, okcrypto);
+      const meta = await readMeta(id);
+      let asked = false;
+      const watch = (status: unknown) => {
+        if (status !== UP_NEEDED) return;
+        asked = true;
+        onKeepAlive?.();
+      };
+      let press = meta ? meta.press : touchFree === 'broken';
+      let key: Uint8Array;
+      try {
+        key = await okcrypto.deviceVault.key(LABEL, {requirePress: press, onKeepAlive: watch});
+      } catch (err) {
+        /* only a new store's touch-free try may turn into a press store, and only on a refusal */
+        if (meta || press || !isTouchFreeRefusal(err)) throw err;
+        press = true;
+        key = await okcrypto.deviceVault.key(LABEL, {requirePress: true, onKeepAlive: watch});
       }
+      const next: StoreMeta = {v: 1, press, asked: press || asked, createdAt: meta?.createdAt ?? now().toISOString()};
+      if (!meta || meta.asked !== next.asked) await writeMeta(id, next);
       return {manager: await attach(id, backend, key), why: press ? 'press' : 'touch-free'};
     },
 

@@ -26,8 +26,8 @@ import NativeOkEmu from '../../specs/NativeOkEmu';
 import {describeWaiting} from '../hooks/useKeyWaiting';
 import {onSheet, type SheetState} from '../edgeAgents';
 import {
-  fidoAskNow, firmwarePressFor, latestPressAt, nameOfLabel, onPressAsk, startPressRecords,
-  type FidoAsk, type FirmwarePress,
+  deriveNameOf, deriveWaitNow, fidoAskNow, firmwarePressFor, latestPressAt, nameOfLabel, onPressAsk, startPressRecords,
+  type DeriveWait, type FidoAsk, type FirmwarePress,
 } from '../pressAsk';
 import {consentRefusal} from '../debugGuard';
 import {currentNet} from '../net';
@@ -110,7 +110,10 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
     return () => { alive = false; };
   }, [fw?.label]);
 
-  const since = fido.needed ? fidoSince : wait?.since ?? 0;
+  /* a derive's wait (the firmware's derive record): only when no sign or passkey is waiting */
+  void tick;
+  const derive: DeriveWait | null = !fido.needed && !wait ? deriveWaitNow() : null;
+  const since = fido.needed ? fidoSince : wait?.since ?? derive?.since ?? 0;
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!since) return;
@@ -131,7 +134,8 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
 
   const showFido = fido.needed;
   const showVendor = !showFido && !!wait && !(wait.w.what === 'edge' && edgeAsking);
-  if (!showFido && !showVendor) return null;
+  const showDerive = !showFido && !showVendor && !!derive;
+  if (!showFido && !showVendor && !showDerive) return null;
   const left = Math.max(0, Math.ceil((since + WAIT_MS - now) / 1000));
   const hush = () => { try { NativeOkEmu.hushPress(); } catch { /* no native side (jest, an old build) */ } };
 
@@ -141,7 +145,9 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
         <View style={[styles.sheet, {paddingBottom: insets.bottom}]}>
           <ScrollView contentContainerStyle={styles.body}>
             {currentNet() === 'test' ? <Text style={[styles.title, {color: theme.io}]}>TESTNET</Text> : null}
-            {showFido ? (
+            {showDerive ? (
+              <DeriveBody d={derive!} />
+            ) : showFido ? (
               <FidoBody ask={fidoAskNow()} />
             ) : (
               <VendorBody w={wait!.w} fw={fw} named={fw?.label && named?.label === fw.label ? named : undefined} />
@@ -151,11 +157,19 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
               <Text style={[styles.op, {color: theme.warn}]}>Pressed - the key is answering…</Text>
             ) : (
               <Text style={[styles.countdown, left <= 10 && {color: theme.error}]}>
-                {`${!showFido && wait!.w.mode === 'code' ? 'Enter the code' : 'Press'} within 0:${String(left).padStart(2, '0')}`}
+                {`${(showDerive ? derive!.mode === 'code' : !showFido && wait!.w.mode === 'code') ? 'Enter the code' : 'Press'} within 0:${String(left).padStart(2, '0')}`}
               </Text>
             )}
 
-            {showFido ? (
+            {showDerive ? (
+              /* a derive is not an Edge approval: no consent check (that one is the vendor branch's, below) */
+              <DeriveButtons d={derive!} ready={ready} pressed={pressed} onPress={(key: string) => {
+                if (!ready || (derive!.mode === 'press' && pressed)) return;
+                hush();
+                if (derive!.mode === 'press') setPressed(true);
+                void OkEmu.pressQueue(key);
+              }} />
+            ) : showFido ? (
               fido.canPress ? (
                 !pressed ? (
                   <View style={styles.row}>
@@ -246,6 +260,40 @@ function VendorBody({w, fw, named}: {w: KeyWaiting; fw: FirmwarePress | null; na
 function vendorWhat(w: KeyWaiting, fw: FirmwarePress | null, named: Who | undefined): string {
   const who = fw ? (fw.label ? named === undefined ? 'naming…' : named.name ?? `${named.listed ? 'unnamed' : 'unlisted'} ${fw.label.slice(0, 8)}` : keyName(fw.slot)) : 'no firmware record';
   return `${w.what} slot ${w.slot} ${who}`;
+}
+
+/* A DERIVE: what it is for, as the feature that asked it named it; else the label's hash. */
+function DeriveBody({d}: {d: DeriveWait}) {
+  const what = deriveNameOf(d.label);
+  return (
+    <>
+      <Text style={[styles.title, {color: theme.warn}]}>{what ?? 'A derived key'}</Text>
+      <Text style={styles.op}>{what ? 'The key derives it from its label.' : `label ${d.label.slice(0, 16)}… - not one this app named`}</Text>
+    </>
+  );
+}
+
+/* press: one button; code: the 3 digits, worked out from the firmware's record as the key does */
+function DeriveButtons({d, ready, pressed, onPress}: {d: DeriveWait; ready: boolean; pressed: boolean; onPress: (b: string) => void}) {
+  if (d.mode === 'press') {
+    return pressed ? null : (
+      <View style={styles.row}>
+        <Locate what={`derive ${deriveNameOf(d.label) ?? d.label.slice(0, 8)}`}>
+          <Btn large title="Press the soft key" tone="primary" disabled={!ready} onPress={() => onPress('1')} />
+        </Locate>
+      </View>
+    );
+  }
+  return (
+    <>
+      <Text style={styles.op}>Enter this code on the key: <Text style={[styles.title, {color: theme.text}]}>{d.code?.join(' ')}</Text></Text>
+      <View style={styles.keypad}>
+        {['1', '2', '3', '4', '5', '6'].map(b => (
+          <Btn key={b} large title={b} disabled={!ready} onPress={() => onPress(b)} />
+        ))}
+      </View>
+    </>
+  );
 }
 
 function VendorButtons({w, what, ready, pressed, onPress}: {w: KeyWaiting; what: string; ready: boolean; pressed: boolean; onPress: (b: string) => void}) {

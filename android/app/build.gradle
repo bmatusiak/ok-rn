@@ -239,6 +239,8 @@ dependencies {
     implementation project(':okemu')
     // OpenSSL (native-sea-openssl) for Key Chain's RSA keygen and PBKDF2 - see android/okssl.
     implementation project(':okssl')
+    // The Password Manager's Autofill service + sheet - see android/autofill (removable with the plugin).
+    implementation project(':autofill')
 
     /*
      * BiometricPrompt, and the Keystore integration that makes it mean

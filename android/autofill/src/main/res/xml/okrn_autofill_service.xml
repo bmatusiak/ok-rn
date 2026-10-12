@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The autofill service's settings. Chrome asks for the compatibility list only from services
+     that fill web content; the OnlyKey sheet is where everything happens, so nothing more here. -->
+<autofill-service xmlns:android="http://schemas.android.com/apk/res/android" />

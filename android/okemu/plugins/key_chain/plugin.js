@@ -26,6 +26,10 @@
  *   8 okcore.cpp         include the plugin header
  *   9 okcore.cpp         okcore_prime_user_confirmation(): the press record - what waits for a press,
  *                        for the app to present beside its press button
+ *  10 ok_extension.cpp   web_agent_derive_gate(): a slot-128 shared-secret derive starts waiting for
+ *                        its confirmation (field 30: a press or the 3-digit code) - the same press
+ *                        record, marked as a derive, with the mode
+ *  11 ok_extension.cpp   web_agent_derive_gate(): that wait ended (pressed, wrong code, timed out)
  *
  * The app side: okemu_plugin_event() (jni/okemu_jni.cpp) -> NativeOkEmu
  * onPluginEvent -> src/keyChainRecorder.ts (derive records) and src/pressAsk.ts ->
@@ -48,6 +52,19 @@ module.exports = {
       anchor: '    user_input_mode = okcore_user_input_mode_for_slot(slot);\n',
       insert: 'after',
       text: '    okplugin_key_chain_primed(outputmode, opcode, slot, msg, msg_len);\n',
+    },
+    /* ok_extension.cpp: the derive gate's wait, its start and its end */
+    {
+      file: 'libraries/fido2/ok_extension.cpp',
+      anchor: '    device_set_status(CTAPHID_STATUS_UPNEEDED);\n',
+      insert: 'after',
+      text: '    okplugin_key_chain_derive_wait(outputmode, need, data, len);\n',
+    },
+    {
+      file: 'libraries/fido2/ok_extension.cpp',
+      anchor: '    if (but == -2) {\n',
+      insert: 'before',
+      text: '    okplugin_key_chain_derive_done(but);\n',
     },
     {
       file: 'okcrypto.cpp',

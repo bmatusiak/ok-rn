@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The one row the autofill dropdown shows: tapping it opens the OnlyKey sheet. The text colour
+     is the theme's, not fixed: Chrome draws this dropdown dark in dark mode, where a fixed dark
+     grey was unreadable (the Pixel, 2026-10-11). -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/okrn_autofill_text"
+  android:layout_width="match_parent"
+  android:layout_height="wrap_content"
+  android:padding="12dp"
+  android:textSize="15sp"
+  android:textColor="?android:attr/textColorPrimary" />

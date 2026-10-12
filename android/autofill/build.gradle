@@ -1,0 +1,29 @@
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+
+/*
+ * AUTOFILL - the Password Manager's Android piece (Brad, 2026-10-11: "autofill service for android
+ * itself, so in chrome i can select a password and it autofills it like googles password manager").
+ *
+ * Its own module so it is removable with the plugin (Brad chose this layout, 2026-10-11): its
+ * manifest brings the AutofillService and the sheet activity in by merging, and its package is
+ * the module JS talks to. Removing it = this folder, `include ':autofill'` in settings.gradle,
+ * `implementation project(':autofill')` in app/build.gradle, `add(AutofillPackage())` in
+ * MainApplication, and src/plugins/passwords.
+ *
+ * A classic AutofillService (API 26+), not a Credential Manager provider: providers need Android
+ * 14, and the A13 is Android 13 (ok-rn/FINDING-autofill-route-android-13-and-17.md).
+ */
+android {
+    namespace "com.okrn.autofill"
+    compileSdk rootProject.ext.compileSdkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+    }
+}
+
+dependencies {
+    implementation "com.facebook.react:react-android"
+}

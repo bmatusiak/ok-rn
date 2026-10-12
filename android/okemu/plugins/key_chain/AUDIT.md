@@ -17,10 +17,13 @@ Brad, 2026-10-03). Remove the folder and it is gone.
 | 7 | ok_extension.cpp | after the FIDO derived X-Wing recipient | one call: code 128, X-Wing, the rpId hash |
 | 8 | okcore.cpp | after `#include "onlykey.h"` | the plugin header |
 | 9 | okcore.cpp | in `okcore_prime_user_confirmation()`, after `user_input_mode = okcore_user_input_mode_for_slot(slot);` | one call: the press record |
+| 10 | ok_extension.cpp | in `web_agent_derive_gate()`, after `device_set_status(CTAPHID_STATUS_UPNEEDED);` | one call: the derive's press record (press or code) |
+| 11 | ok_extension.cpp | in `web_agent_derive_gate()`, before `if (but == -2) {` | one call: the derive's wait ended |
 
 Each derive call happens after the public key was computed and before it is
 sent; the press record is made as a sign or decrypt starts waiting for its
-press. Neither changes anything the firmware sends, stores or decides.
+press, or a slot-128 shared-secret derive starts (and ends) waiting for its
+confirmation. None changes anything the firmware sends, stores or decides.
 
 **Soft key only, by design** (Brad, 2026-10-10: "a hardkey is secure, it will
 never expose this hook, its a softkey only thing"). The soft key's app is a
@@ -41,6 +44,15 @@ version, transport, opcode, slot, a label flag, the SHA-256 of exactly the bytes
 handed to the press wait, and on a derived code (201-203, 221-223) the request's
 32-byte label hash. Public data only - the request's own bytes, hashed - never
 the message itself or any key.
+
+The derive's press record (`okplugin_key_chain_derive_wait`), event `press`,
+70 bytes: the same layout with opcode 0xE4 (OKCONNECT), slot 128, the label
+flag set, the SHA-256 of the bytes the gate's challenge code is computed from
+(the label hash, then the input public key), the label hash, and one more byte:
+the confirmation asked (1 a press, 0 the 3-digit code). The code itself is not
+sent; the app computes it from the hash as the firmware does. Its end
+(`okplugin_key_chain_derive_done`), event `press_end`, 2 bytes: version and the
+test's result.
 
 Both go to `okemu_plugin_event()`, declared weak: the soft key's JNI layer
 provides it (onPluginEvent → `src/keyChainRecorder.ts` for derives,

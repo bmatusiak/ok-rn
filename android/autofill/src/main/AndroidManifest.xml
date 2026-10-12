@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <!--
+      The phone's autofill asks this service about each form. It reads which fields are a
+      username and a password and which site or app the form belongs to, and offers ONE row,
+      "OnlyKey", that opens the sheet below. It never holds or offers a secret itself
+      (Brad, 2026-10-11: always open OnlyKey's sheet).
+    -->
+    <service
+      android:name=".OkAutofillService"
+      android:label="OnlyKey"
+      android:exported="true"
+      android:permission="android.permission.BIND_AUTOFILL_SERVICE">
+      <intent-filter>
+        <action android:name="android.service.autofill.AutofillService" />
+      </intent-filter>
+      <meta-data
+        android:name="android.autofill"
+        android:resource="@xml/okrn_autofill_service" />
+    </service>
+
+    <!--
+      The sheet, in front of the browser: the shared ReactHost renders the OkRNAutofill root (the
+      Password Manager plugin's JS). Same process as the app on purpose - a second process would
+      start a second soft key on the same flash (see CredProviderActivity in the app's manifest).
+    -->
+    <activity
+      android:name=".AutofillAuthActivity"
+      android:exported="false"
+      android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+      android:windowSoftInputMode="adjustResize"
+      android:excludeFromRecents="true"
+      android:taskAffinity=""
+      android:launchMode="singleTask" />
+  </application>
+</manifest>

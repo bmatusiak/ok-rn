@@ -31,7 +31,7 @@ module.exports = {
    * node-onlykey-lib, would have excluded the vendored ESM from the transform.
    */
   transformIgnorePatterns: [
-    'node_modules/(?!((jest-)?react-native|@react-native(-community|-async-storage)?|@noble|node-onlykey-lib)/)',
+    'node_modules/(?!((jest-)?react-native|@react-native(-community|-async-storage)?|@noble|@scure|node-onlykey-lib)/)',
   ],
 
   /*

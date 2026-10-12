@@ -22,6 +22,7 @@ module.exports = [
     require('./11-compositePgp.e2e.js'),
     require('./12-identity.e2e.js'),
     require('./13-deriveParity.e2e.js'),
+    require('./13b-passwords.e2e.js'),
     require('./14-biometrics.e2e.js'),
     require('./14a-passkeys.e2e.js'),
     require('./14a5-keychain.e2e.js'),

@@ -5,4 +5,6 @@ rootProject.name = 'OkRN'
 include ':app'
 include ':okemu'
 include ':okssl'
+// The Password Manager's Autofill (removable with src/plugins/passwords) - see android/autofill.
+include ':autofill'
 includeBuild('../node_modules/@react-native/gradle-plugin')

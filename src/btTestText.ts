@@ -19,9 +19,9 @@
  * reported rather than silently dropped, so a test that types half a word says
  * so.
  *
- * Backslash and pipe are the two printable ASCII characters left out, and it
- * is deliberate rather than an oversight: nothing here needs them, and a test
- * string is not the place to be careful about escaping.
+ * The Password Manager types with the same map (useBtKeyboard typeSecret), so
+ * it covers ALL of printable ASCII, backslash and pipe included: a password may
+ * hold any of them. Still US layout only (Brad, 2026-10-11).
  */
 
 /** Report layout: modifiers, reserved, then up to six concurrent keys. */
@@ -36,14 +36,14 @@ const DIGITS = '1234567890';
 const SHIFTED: Record<string, string> = {
   '!': '1', '@': '2', '#': '3', $: '4', '%': '5',
   '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
-  _: '-', '+': '=', '{': '[', '}': ']',
+  _: '-', '+': '=', '{': '[', '}': ']', '|': '\\',
   ':': ';', '"': "'", '~': '`', '<': ',', '>': '.', '?': '/',
 };
 
 /** Keys that are neither letters nor digits, by usage code. */
 const PUNCT: Record<string, number> = {
   '\n': 0x28, '\t': 0x2b, ' ': 0x2c,
-  '-': 0x2d, '=': 0x2e, '[': 0x2f, ']': 0x30,
+  '-': 0x2d, '=': 0x2e, '[': 0x2f, ']': 0x30, '\\': 0x31,
   ';': 0x33, "'": 0x34, '`': 0x35, ',': 0x36, '.': 0x37, '/': 0x38,
 };
 

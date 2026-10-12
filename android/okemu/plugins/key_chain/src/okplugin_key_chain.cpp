@@ -82,6 +82,51 @@ static int derived_code(uint8_t slot) {
   return (slot >= 201 && slot <= 203) || (slot >= 221 && slot <= 223);
 }
 
+/*
+ * The derive's press record: the press record's layout, with
+ *   [2]  0xE4 (OKCONNECT) and [3] 128: a slot-128 derive, not a sign or decrypt
+ *   [4]  1: [37..68] is the label hash (data[0..31])
+ *   [5..36]  SHA-256(data): the challenge code is (h[0] % 6) + 1, (h[15] % 6) + 1, (h[31] % 6) + 1
+ *   [69] the confirmation asked: 1 a button press, 0 the 3-digit code
+ * Its end, event "press_end": [0] 1, [1] the test's result as a signed byte.
+ */
+#define DERIVE_OPCODE 0xE4
+#define DERIVE_SLOT 128
+
+void okplugin_key_chain_derive_wait(int transport, uint8_t need, const uint8_t *data, int len) {
+#ifdef KC_HAVE_SINK
+  uint8_t rec[PRESS_BYTES + 1];
+  if (!okemu_plugin_event || !data || len < 32) return;
+  memset(rec, 0, sizeof(rec));
+  rec[0] = 1;
+  rec[1] = (uint8_t)transport;
+  rec[2] = DERIVE_OPCODE;
+  rec[3] = DERIVE_SLOT;
+  rec[4] = 1;
+  SHA256_CTX ctx;
+  sha256_init(&ctx);
+  sha256_update(&ctx, data, (size_t)len);
+  sha256_final(&ctx, rec + 5);
+  memcpy(rec + 37, data, 32);
+  rec[PRESS_BYTES] = need == 1 ? 1 : 0;
+  okemu_plugin_event("press", rec, sizeof(rec));
+#else
+  (void)transport; (void)need; (void)data; (void)len;
+#endif
+}
+
+void okplugin_key_chain_derive_done(int result) {
+#ifdef KC_HAVE_SINK
+  uint8_t rec[2];
+  if (!okemu_plugin_event) return;
+  rec[0] = 1;
+  rec[1] = (uint8_t)(int8_t)result;
+  okemu_plugin_event("press_end", rec, 2);
+#else
+  (void)result;
+#endif
+}
+
 void okplugin_key_chain_primed(int transport, uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len) {
 #ifdef KC_HAVE_SINK
   uint8_t rec[PRESS_BYTES];

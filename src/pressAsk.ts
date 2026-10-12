@@ -22,6 +22,7 @@ import type {KeyWaiting} from './transport/OkEmu';
 import {readKeyChainList} from './keyChainRecorder';
 
 const {press: kcPress} = require('node-onlykey-lib/keychain');
+const {okconnect} = require('node-onlykey-lib/crypto');
 
 /* ------------------------------------------------------------ 1. the firmware's press record */
 
@@ -31,6 +32,7 @@ export type FirmwarePress = {
   slot: number;
   subject: string; /* hex, SHA-256 of the bytes to sign */
   label: string | null; /* hex, the derived identity's label */
+  mode: 'press' | 'code' | null; /* a derive's record: the confirmation it waits for; null on a sign's */
   at: number;
 };
 
@@ -51,8 +53,20 @@ export function startPressRecords(): void {
   listening = true;
   try {
     NativeOkEmu.onPluginEvent(ev => {
+      if (ev.name === 'press_end') {
+        if (deriveWait) { deriveWait = null; changed(); }
+        return;
+      }
       if (ev.name !== 'press') return;
       const p = decodePress(ev.hex);
+      /* a derive's wait is its own sheet (deriveWaitNow), not a sign's record */
+      if (p && p.opcode === kcPress.DERIVE_OPCODE && p.slot === kcPress.DERIVE_SLOT && p.label) {
+        const mode: 'press' | 'code' = p.mode === 'code' ? 'code' : 'press';
+        deriveWait = {since: Date.now(), mode, code: mode === 'code' ? kcPress.codeOf(p.subject) : null, label: p.label};
+        changed();
+        if (__DEV__) console.log(`[press] firmware record: a derive, ${mode}, label ${p.label.slice(0, 8)}`);
+        return;
+      }
       if (p) { lastPress = p; changed(); }
       if (__DEV__) console.log(`[press] firmware record: op 0x${p ? p.opcode.toString(16) : "?"} slot ${p?.slot} label ${p?.label ? p.label.slice(0, 8) : "none"}`);
     });
@@ -62,6 +76,36 @@ export function startPressRecords(): void {
 }
 
 /* when the firmware last handed over a sign or decrypt (0: never) - each one is a new wait */
+/*
+ * A DERIVE WAITING FOR ITS CONFIRMATION (the key_chain plugin's derive record, hooks 10/11): the
+ * soft key's derive gate asks a press or a 3-digit code (field 30) and nothing else tells the app
+ * - without this the press had no sheet at all (the live Pixel key, 2026-10-11: "no sheet for
+ * press confirm"). The code is computed from the record, as the gate computes it. The record's
+ * end (press_end) closes it; DERIVE_WAIT_MS is the gate's own 19 s with room, in case the end
+ * never comes.
+ */
+export type DeriveWait = {since: number; mode: 'press' | 'code'; code: number[] | null; label: string};
+let deriveWait: DeriveWait | null = null;
+const DERIVE_WAIT_MS = 25_000;
+export function deriveWaitNow(now = Date.now()): DeriveWait | null {
+  return deriveWait && now - deriveWait.since < DERIVE_WAIT_MS ? deriveWait : null;
+}
+
+/*
+ * What a derive is FOR, named by the feature that asks it: label text -> words for the sheet. The
+ * firmware gives only the label's hash; a feature registers the labels it derives (the Password
+ * Manager: its store, each wallet phrase), so the sheet can say "Passwords: open your store"
+ * instead of a hash. A label nobody registered stays a hash.
+ */
+const deriveNames = new Map<string, string>();
+const hashOf = (label: string) => Array.from(okconnect.derivationHash(label) as Uint8Array, b => b.toString(16).padStart(2, '0')).join('');
+export function nameDerive(label: string, what: string): void {
+  deriveNames.set(hashOf(label), what);
+}
+export function deriveNameOf(labelHash: string): string | null {
+  return deriveNames.get(labelHash.toLowerCase()) ?? null;
+}
+
 export function latestPressAt(): number {
   return lastPress ? lastPress.at : 0;
 }
@@ -102,6 +146,10 @@ export function onPressAsk(l: () => void): () => void {
 export function _resetPressAsk() {
   lastPress = null;
   lastFido = null;
+  deriveWait = null;
+}
+export function _setDeriveWait(w: DeriveWait | null) {
+  deriveWait = w;
 }
 export function _setPress(p: FirmwarePress | null) {
   lastPress = p;

@@ -33,6 +33,9 @@ export type OldVault = {
   load(serviceId: string, opts?: object): Promise<string | null>;
 };
 
+/** The derive a phrase needs (okcrypto.deriveSharedSecretFor). */
+export type PhraseOkcrypto = {deriveSharedSecretFor(label: string, opts: object): Promise<Uint8Array>};
+
 /** The parts of the capabilities reading this needs; null before one. */
 export type PasswordCaps = {deviceVault?: boolean; touchFreeDerive?: string} | null | undefined;
 
@@ -89,6 +92,10 @@ export function usePasswordWatch(unlocked: Record<Backend, boolean>): void {
 
 /* screens listening for a store opening or closing elsewhere (a lock, the reaper, the other key) */
 const listeners = new Set<() => void>();
+/** A store's entries changed elsewhere (the Autofill sheet saved one): redraw the tab. */
+export function storesChanged() {
+  notify();
+}
 function notify() {
   for (const l of listeners) l();
 }
@@ -141,6 +148,12 @@ export function usePasswordManager({
     const open = stores.current(backend);
     if (held.current && !open) return setView({state: 'button', storeId: held.current, isNew: false});
     if (open) {
+      /*
+       * Opened elsewhere (the Autofill sheet, the other key's tab): this screen still needs the
+       * key's okcrypto for touch() - without it every tap on the list was refused, silently (the
+       * Pixel, 2026-10-11, after a save from Chrome).
+       */
+      if (!known.has(backend)) void remember(backend).then(() => setRev(n => n + 1));
       setView(v => (v.state === 'open' && v.manager === open ? v : {state: 'open', storeId: stores.idFor(backend) ?? '', manager: open, why: 'session'}));
       return;
     }
@@ -150,7 +163,7 @@ export function usePasswordManager({
     (async () => {
       const o = await remember(backend);
       const storeId = await stores.identify(backend, o);
-      const r = await stores.tryOpen(backend, o, {touchFree, onKeepAlive: () => live && setPressAsked(true)});
+      const r = await stores.tryOpen(backend, o, {onKeepAlive: () => live && setPressAsked(true)});
       if (!live) return;
       if (r) setView({state: 'open', storeId, manager: r.manager, why: r.why});
       else setView({state: 'button', storeId, isNew: !(await stores.readMeta(storeId))});
@@ -172,7 +185,7 @@ export function usePasswordManager({
     setView({state: 'pressing', storeId: view.storeId});
     try {
       const o = await remember(backend);
-      const r = await stores.openWithKey(backend, o, {onKeepAlive: () => setPressAsked(true)});
+      const r = await stores.openWithKey(backend, o, {touchFree, onKeepAlive: () => setPressAsked(true)});
       setView({state: 'open', storeId: view.storeId, manager: r.manager, why: r.why});
       notify();
     } catch (err: any) {
@@ -181,7 +194,7 @@ export function usePasswordManager({
       busy.current = false;
       setPressAsked(false);
     }
-  }, [backend, view]);
+  }, [backend, view, touchFree]);
 
   /** Call before each action on the open store: slides the session, false when it ran out. */
   const touch = useCallback((): boolean => {
@@ -202,5 +215,15 @@ export function usePasswordManager({
   /** The old single-password vault of this key (CryptoScreen's), for the import. */
   const oldVault = useCallback(async () => (await remember(backend)).deviceVault as unknown as OldVault, [backend]);
 
-  return {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault};
+  /*
+   * For a derived phrase: this key's okcrypto, and the press flag its store was made with - a
+   * phrase is derived with the same flag, so it opens wherever the store does (mnemonic.js).
+   */
+  const phraseKey = useCallback(async () => {
+    const okcrypto = await remember(backend);
+    const meta = await stores.readMeta(await stores.identify(backend, okcrypto));
+    return {okcrypto: okcrypto as unknown as PhraseOkcrypto, press: meta ? meta.press : true};
+  }, [backend]);
+
+  return {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey};
 }

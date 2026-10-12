@@ -1,17 +1,21 @@
-import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {Alert, BackHandler, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 
 import {legacy} from 'node-onlykey-lib/passwords';
 import NativeSecrets from '../../../specs/NativeSecrets';
 import NativeShare from '../../../specs/NativeShare';
 import {missingNote} from '../../firmwareFeatures';
+import {useSharedBtKeyboard} from '../../hooks/BtKeyboardContext';
 import {BACKEND_NAME} from '../../hooks/keySession';
 import {useSecureScreen} from '../../hooks/useSecureScreen';
 import {Btn, KeyValue, Section} from '../../ui/components';
 import {EdgeList, type EdgeListItem} from '../../ui/EdgeList';
 import {theme} from '../../ui/theme';
 import type {TabContext} from '../types';
+import {AutofillCard} from './autofill/AutofillCard';
 import {EntryEditor} from './EntryEditor';
+import {NewPhrase, PhraseEntry} from './PhraseViews';
+import {TotpCode} from './TotpViews';
 import {usePasswordManager, type OldVault} from './usePasswordManager';
 import type {Manager} from './stores';
 
@@ -24,11 +28,13 @@ import type {Manager} from './stores';
  */
 
 const CLIPBOARD_TTL_MS = 45000;
-const KIND_TITLE: Record<string, string> = {login: 'Logins', note: 'Notes', card: 'Cards'};
+const KIND_TITLE: Record<string, string> = {login: 'Logins', note: 'Notes', card: 'Cards', totp: 'Authenticators', mnemonic: 'Wallet phrases'};
 
 type Entry = {
   id: string;
-  kind: 'login' | 'note' | 'card';
+  kind: 'login' | 'note' | 'card' | 'mnemonic' | 'totp';
+  totp?: any;
+  recipe?: {label: string; out: string; press: boolean; check: string};
   title: string;
   username?: string;
   password?: string;
@@ -39,7 +45,13 @@ type Entry = {
   updatedAt?: string;
 };
 
-type Page = {kind: 'list'} | {kind: 'entry'; id: string} | {kind: 'edit'; id: string | null};
+type NewKind = 'login' | 'note' | 'card' | 'totp';
+type Page =
+  | {kind: 'list'}
+  | {kind: 'add'; id: null}
+  | {kind: 'entry'; id: string}
+  | {kind: 'edit'; id: string | null; newKind?: NewKind}
+  | {kind: 'phrase'; id: null};
 
 const hostOf = (url: string) => url.replace(/^[a-z]+:\/\//i, '').split(/[/?#]/)[0];
 
@@ -50,7 +62,7 @@ async function copy(text: string | undefined, what: string) {
 }
 
 export function PasswordsScreen({ctx}: {ctx: TabContext}) {
-  const {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault} = usePasswordManager({
+  const {view, pressAsked, openWithKey, touch, lockNow, retry, oldVault, phraseKey} = usePasswordManager({
     backend: ctx.backend,
     unlocked: ctx.unlocked,
     caps: ctx.caps,
@@ -58,7 +70,7 @@ export function PasswordsScreen({ctx}: {ctx: TabContext}) {
   const keyName = BACKEND_NAME[ctx.backend];
   useSecureScreen(ctx.blockScreenshots && view.state === 'open');
 
-  if (view.state === 'open') return <OpenStore manager={view.manager} keyName={keyName} touch={touch} lockNow={lockNow} oldVault={oldVault} />;
+  if (view.state === 'open') return <OpenStore manager={view.manager} keyName={keyName} touch={touch} lockNow={lockNow} oldVault={oldVault} phraseKey={phraseKey} />;
 
   return (
     <ScrollView contentContainerStyle={styles.pad}>
@@ -100,17 +112,26 @@ function OpenStore({
   touch,
   lockNow,
   oldVault,
+  phraseKey,
 }: {
   manager: Manager;
   keyName: string;
   touch: () => boolean;
   lockNow: () => void;
   oldVault: () => Promise<OldVault>;
+  phraseKey: Parameters<typeof PhraseEntry>[0]['phraseKey'];
 }) {
   const [page, setPage] = useState<Page>({kind: 'list'});
   const [search, setSearch] = useState('');
   const [rev, setRev] = useState(0);
-  const back = useCallback(() => setPage(p => (p.kind === 'edit' && p.id ? {kind: 'entry', id: p.id} : {kind: 'list'})), []);
+  /* Back: an edit to its entry, a new entry's form (or a phrase) to the Add page, the rest to the list */
+  const back = useCallback(
+    () =>
+      setPage(p =>
+        p.kind === 'edit' && p.id ? {kind: 'entry', id: p.id} : (p.kind === 'edit' || p.kind === 'phrase') ? {kind: 'add', id: null} : {kind: 'list'},
+      ),
+    [],
+  );
   useEffect(() => {
     if (page.kind === 'list') return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -126,12 +147,15 @@ function OpenStore({
     Promise.resolve(fn()).catch(err => Alert.alert('Passwords', String(err?.message ?? err)));
   }, [touch]);
 
-  const entries = useMemo(() => (manager.locked ? [] : (manager.list() as Entry[])), [manager, rev]); // eslint-disable-line react-hooks/exhaustive-deps
+  /* read on every draw, not memoised: the Autofill sheet adds entries to this same store */
+  void rev;
+  const entries = manager.locked ? [] : (manager.list() as Entry[]);
   const refused = manager.locked ? 0 : manager.refused().length;
 
   if (page.kind !== 'list') {
     const entry = page.id ? (manager.get(page.id) as Entry | null) : null;
-    const title = page.kind === 'edit' ? (entry ? `Edit ${entry.title}` : 'New entry') : entry?.title ?? '';
+    const title =
+      page.kind === 'add' ? 'Add' : page.kind === 'phrase' ? 'New wallet phrase' : page.kind === 'edit' ? (entry ? `Edit ${entry.title}` : 'New entry') : entry?.title ?? '';
     return (
       <View style={styles.root}>
         <View style={styles.row}>
@@ -140,9 +164,23 @@ function OpenStore({
             <Text style={styles.title} numberOfLines={1}>{title}</Text>
           </View>
         </View>
-        {page.kind === 'edit' ? (
+        {page.kind === 'phrase' ? (
+          <NewPhrase
+            manager={manager}
+            phraseKey={phraseKey}
+            act={act}
+            onSaved={id => {
+              setRev(n => n + 1);
+              setPage({kind: 'entry', id});
+            }}
+          />
+        ) : page.kind === 'add' ? (
+          <AddPage onPick={next => setPage(next === 'phrase' ? {kind: 'phrase', id: null} : {kind: 'edit', id: null, newKind: next})} />
+        ) : page.kind === 'edit' ? (
           <EntryEditor
-            entry={entry}
+            newKind={page.newKind}
+            /* never a phrase: a phrase entry has no Edit (its recipe is the entry) */
+            entry={entry as (Entry & {kind: 'login' | 'note' | 'card' | 'totp'}) | null}
             onSave={input =>
               act(async () => {
                 const saved = await manager.put(input);
@@ -169,6 +207,8 @@ function OpenStore({
                 : undefined
             }
           />
+        ) : entry?.kind === 'mnemonic' ? (
+          <PhraseEntry entry={entry} phraseKey={phraseKey} act={act} />
         ) : entry ? (
           <EntryView entry={entry} act={act} onEdit={() => setPage({kind: 'edit', id: entry.id})} />
         ) : (
@@ -192,7 +232,7 @@ function OpenStore({
       subtitle: 'They are not shown. A record that does not open with this key, or that was moved onto another record, is refused - never shown as an entry.',
     });
   }
-  for (const kind of ['login', 'note', 'card'] as const) {
+  for (const kind of ['login', 'note', 'card', 'totp', 'mnemonic'] as const) {
     const of = shown.filter(e => e.kind === kind);
     if (!of.length) continue;
     items.push({key: `s-${kind}`, kind: 'section', title: KIND_TITLE[kind], right: String(of.length)});
@@ -201,7 +241,12 @@ function OpenStore({
         key: e.id,
         kind: 'row',
         title: e.title,
-        subtitle: e.username || (e.urls?.[0] ? hostOf(e.urls[0]) : undefined),
+        subtitle:
+          e.kind === 'mnemonic'
+            ? `${e.recipe?.out === 'bip39-12' ? 12 : 24} words, from the key`
+            : e.kind === 'totp'
+              ? e.totp?.issuer || 'authenticator'
+              : e.username || (e.urls?.[0] ? hostOf(e.urls[0]) : undefined),
         right: e.inner ? 'sealed' : undefined,
         onPress: () => act(() => setPage({kind: 'entry', id: e.id})),
       });
@@ -246,6 +291,8 @@ function OpenStore({
     });
   if (!q && !entries.length) items.push({key: 'none', kind: 'row', tone: 'dim', title: 'No passwords yet', subtitle: '+ Add makes the first one.'});
   if (!q) {
+    items.push({key: 's-autofill', kind: 'section', title: 'Autofill'});
+    items.push({key: 'autofill', kind: 'node', render: () => <AutofillCard />});
     items.push({key: 's-move', kind: 'section', title: 'Move passwords'});
     items.push({
       key: 'move',
@@ -277,7 +324,7 @@ function OpenStore({
           autoCorrect={false}
           style={[styles.input, styles.search]}
         />
-        <Btn title="+ Add" tone="primary" onPress={() => act(() => setPage({kind: 'edit', id: null}))} />
+        <Btn title="+ Add" tone="primary" onPress={() => act(() => setPage({kind: 'add', id: null}))} />
         <Btn title="Lock" onPress={lockNow} />
       </View>
       <EdgeList items={items} empty="Nothing matches." />
@@ -285,14 +332,58 @@ function OpenStore({
   );
 }
 
+/*
+ * + ADD: one button per kind (Brad, 2026-10-11: "the +add button need to go into a view to a list
+ * of button, like + Wallet Phrase"). Authenticator: TOTP, in 0.0.7 (Brad, same day).
+ */
+const ADD_KINDS: {kind: NewKind | 'phrase'; title: string; what: string}[] = [
+  {kind: 'login', title: '+ Login', what: 'A username and password for a site or an app.'},
+  {kind: 'note', title: '+ Note', what: 'Text kept sealed: a code, an answer, anything.'},
+  {kind: 'card', title: '+ Card', what: 'A card number or a PIN.'},
+  {kind: 'totp', title: '+ Authenticator', what: 'The 6-digit code for two-step sign-in (GitHub and others), from its setup key or QR link.'},
+  {kind: 'phrase', title: '+ Wallet phrase', what: 'A BIP39 phrase made from this OnlyKey and a name - nothing of it is stored.'},
+];
+
+function AddPage({onPick}: {onPick: (kind: NewKind | 'phrase') => void}) {
+  return (
+    <ScrollView contentContainerStyle={styles.pad}>
+      {ADD_KINDS.map(k => (
+        <View key={k.kind} style={styles.addRow}>
+          <Btn title={k.title} tone="primary" onPress={() => onPick(k.kind)} />
+          <Text style={[styles.dim, styles.addWhat]}>{k.what}</Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
 function EntryView({entry, act, onEdit}: {entry: Entry; act: (fn: () => void | Promise<void>) => void; onEdit: () => void}) {
   const [show, setShow] = useState(false);
+  /* Type: the phone as the computer's Bluetooth keyboard, US layout (useBtKeyboard typeSecret) */
+  const bt = useSharedBtKeyboard();
+  const canType = bt.state === 'connected' && bt.forwarding;
+  const type = (text: string | undefined, then: 'tab' | null) =>
+    act(async () => {
+      if (text) await bt.typeSecret(text, {then});
+    });
   if (entry.inner) {
     return (
       <ScrollView contentContainerStyle={styles.pad}>
         <Section title="Sealed a second time">
           <Text style={styles.body}>This entry has its own key. Opening it is not in this release yet.</Text>
         </Section>
+      </ScrollView>
+    );
+  }
+  /* an authenticator entry: its code, and Edit */
+  if (entry.kind === 'totp') {
+    return (
+      <ScrollView contentContainerStyle={styles.pad}>
+        <TotpCode totp={entry.totp} act={act} copy={copy} title={entry.title} />
+        {entry.notes ? <Section title="Notes"><KeyValue label="Notes" value={entry.notes} /></Section> : null}
+        <View style={styles.buttons}>
+          <Btn title="Edit" onPress={() => act(onEdit)} />
+        </View>
       </ScrollView>
     );
   }
@@ -310,6 +401,25 @@ function EntryView({entry, act, onEdit}: {entry: Entry; act: (fn: () => void | P
           <Btn title="Edit" onPress={() => act(onEdit)} />
         </View>
       </Section>
+      {entry.kind === 'login' && (entry.username || entry.password) ? (
+        <Section title="Type on the computer">
+          {canType ? (
+            <>
+              <Text style={styles.dim}>Typed into whatever has focus on {bt.host || 'the connected computer'}. US keyboard layout.</Text>
+              <View style={styles.buttons}>
+                {entry.username ? <Btn title="Type username + Tab" onPress={() => type(entry.username, 'tab')} /> : null}
+                {entry.password ? <Btn title="Type password" tone="primary" onPress={() => type(entry.password, null)} /> : null}
+              </View>
+            </>
+          ) : (
+            <Text style={styles.dim}>
+              {bt.state === 'connected' ? 'Typing to the computer is switched off (the keyboard IO switch).' : 'Connect a computer on the Bluetooth tab to type here.'}
+            </Text>
+          )}
+        </Section>
+      ) : null}
+      {/* a login's own authenticator code (GitHub: the password, then this) */}
+      {entry.totp ? <TotpCode totp={entry.totp} act={act} copy={copy} /> : null}
       {entry.history?.length ? (
         <Section title="Earlier passwords">
           {entry.history.map((h, i) => (
@@ -349,4 +459,6 @@ const styles = StyleSheet.create({
   store: {color: theme.textDim, fontSize: 12, fontFamily: theme.mono, marginTop: 8},
   buttons: {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
   history: {flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap'},
+  addRow: {flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 4},
+  addWhat: {flex: 1},
 });

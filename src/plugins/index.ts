@@ -8,7 +8,8 @@ import type {AppTab, AppWatch} from './types';
 /*
  * THE APP PLUGINS, composed with Rectify as src/onlykey.ts composes the library's (Brad: Rectify
  * is the plugin system). A feature that is its own plugin lives in one folder under src/plugins/
- * and is named once, here. Removing it = deleting its folder and its line below; App.tsx never
+ * and is named only here (PLUGINS, and E2E for its in-app suite). Removing it = deleting its
+ * folder and its lines here; App.tsx never
  * names it - it draws whatever tabs the plugins added (Brad, 2026-10-11, the Password Manager:
  * "i want the password manager to act as its own plugin, keeping it easy to remove and work on
  * seperatly").
@@ -49,4 +50,16 @@ export function usePluginsStarted(): boolean {
     return () => void waiting.delete(w);
   }, [ok]);
   return ok;
+}
+
+/*
+ * Each plugin's in-app e2e suite, by plugin name (__e2e_tests__/13b-passwords.e2e.js asks for it):
+ * the e2e folder never names a plugin's files, so removing a plugin leaves its suite empty.
+ */
+const E2E: Record<string, () => any> = {
+  passwords: () => require('./passwords/e2e'),
+};
+export function pluginE2E(name: string): ((harness: any) => void)[] {
+  const load = E2E[name];
+  return load ? [load()] : [];
 }

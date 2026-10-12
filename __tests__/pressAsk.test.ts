@@ -20,14 +20,17 @@ test('decodePress: the key_chain plugin\'s press record - version, transport, op
   const subject = Array.from({length: 32}, (_, i) => i);
   const label = Array.from({length: 32}, (_, i) => 0xa0 + (i % 16));
   const p = decodePress(hex([1, 0, 0xed, 221, 1, ...subject, ...label]), 1000)!;
-  expect(p).toEqual({transport: 'vendor', opcode: 0xed, slot: 221, subject: hex(subject), label: hex(label), at: 1000});
+  expect(p).toEqual({transport: 'vendor', opcode: 0xed, slot: 221, subject: hex(subject), label: hex(label), mode: null, at: 1000});
+  /* a derive's record (70 bytes): OKCONNECT, slot 128, and the confirmation it waits for */
+  expect(decodePress(hex([1, 0, 0xe4, 128, 1, ...subject, ...label, 0]))!.mode).toBe('code');
+  expect(decodePress(hex([1, 0, 0xe4, 128, 1, ...subject, ...label, 1]))!.mode).toBe('press');
   expect(decodePress(hex([1, 1, 0xf0, 2, 0, ...subject, ...new Array(32).fill(0)]))!.label).toBeNull();
   expect(decodePress(hex([2, 0, 0xed, 221, 1, ...subject, ...label]))).toBeNull(); /* another version */
   expect(decodePress('00')).toBeNull();
 });
 
 test('firmwarePressFor: only the record of THIS wait - same opcode and slot, made just before it', () => {
-  const rec = {transport: 'vendor' as const, opcode: 0xed, slot: 221, subject: 'aa', label: null, at: 10_000};
+  const rec = {transport: 'vendor' as const, opcode: 0xed, slot: 221, subject: 'aa', label: null, mode: null, at: 10_000};
   _setPress(rec);
   expect(firmwarePressFor(wait(221), 11_000)).toBe(rec);
   expect(firmwarePressFor(wait(222), 11_000)).toBeNull(); /* another slot */

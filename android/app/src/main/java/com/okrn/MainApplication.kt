@@ -16,6 +16,8 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           // App-local TurboModules (USB HID + FIDO2 BLE) are not autolinked.
           add(OkRnPackage())
+          // The Password Manager's Autofill (android/autofill): removed with the plugin.
+          add(com.okrn.autofill.AutofillPackage())
         },
     )
   }

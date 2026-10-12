@@ -129,6 +129,16 @@ export type BtKeyboard = {
    */
   sendText: (text: string) => Promise<{sent: number; skipped: string[]}>;
   /**
+   * Types a SECRET at the connected computer - the Password Manager's Type.
+   *
+   * The same gates as the forwarder (the IO switch, a suspend, a connected
+   * computer), and nothing is sent unless ALL of it can be typed: printable
+   * ASCII on a US layout, checked before the first report. A password typed
+   * half-way is worse than one not typed. `then` adds Tab or Enter after it.
+   * Never logged; the error names how many characters, never which.
+   */
+  typeSecret: (text: string, opts?: {then?: 'tab' | 'enter' | null}) => Promise<void>;
+  /**
    * Stop relaying while the app is deliberately making the key type.
    *
    * A BACKUP IS TYPED. `captureBackup` holds button 1 into the gesture band and
@@ -692,7 +702,32 @@ export function useBtKeyboard(): BtKeyboard {
     return {sent: sentNow, skipped};
   }, []);
 
+  const typeSecret = useCallback(async (text: string, {then = null}: {then?: 'tab' | 'enter' | null} = {}) => {
+    if (!connectedRef.current) throw new Error('no computer is connected over Bluetooth');
+    if (!forwardingRef.current) throw new Error('typing to the computer is switched off (the keyboard IO switch)');
+    if (suspendedRef.current) throw new Error('the keyboard is busy - try again in a moment');
+    const outside = [...text].filter(ch => ch < ' ' || ch > '~').length;
+    const {reports, skipped} = reportsFor(text + (then === 'tab' ? '\t' : then === 'enter' ? '\n' : ''));
+    const bad = outside + skipped.length;
+    if (bad) throw new Error(`${bad} character${bad === 1 ? '' : 's'} cannot be typed on a US keyboard - nothing was typed`);
+    /* the key's own keystrokes must not land in the middle of this one */
+    suspendedRef.current = true;
+    let sentNow = 0;
+    try {
+      for (const report of reports) {
+        if (!connectedRef.current) throw new Error('the computer went away while typing');
+        if (!(await sendReport(okbytes.toHex(report)))) throw new Error('the computer did not take a keystroke');
+        sentNow += 1;
+      }
+    } finally {
+      sendReport(RELEASE_ALL).catch(() => {});
+      suspendedRef.current = false;
+      setSent(n => n + sentNow);
+    }
+  }, []);
+
   return {
+    typeSecret,
     supported,
     radioOn,
     ready,

@@ -25,4 +25,14 @@ void okplugin_key_chain_derived(int transport, int code, int keytype, const uint
 /* a sign or decrypt now waits for its press: its transport, opcode, slot, subject hash and label, to the app */
 void okplugin_key_chain_primed(int transport, uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len);
 
+/*
+ * a slot-128 shared-secret derive now waits for its confirmation (web_agent_derive_gate): need is
+ * USER_INPUT_PRESS or USER_INPUT_CHALLENGE; data/len are the bytes the challenge code is computed
+ * from (the 32-byte label hash, then the input public key)
+ */
+void okplugin_key_chain_derive_wait(int transport, uint8_t need, const uint8_t *data, int len);
+
+/* that wait ended: the confirmation test's result (1 entered, 0 timed out, -2 wrong button, -1 cancelled) */
+void okplugin_key_chain_derive_done(int result);
+
 #endif

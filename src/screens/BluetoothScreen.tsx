@@ -347,10 +347,16 @@ export function BluetoothScreen({
                 {bt.state}
               </Text>
             </View>
-            {bt.message ? <Text style={styles.note}>{bt.message}</Text> : null}
+            {/* connected: the native message says "typing to …" whatever the switch is - the line below says what is true */}
+            {bt.message && bt.state !== 'connected' ? <Text style={styles.note}>{bt.message}</Text> : null}
             {bt.error ? <Text style={styles.error}>{bt.error}</Text> : null}
 
-            {bt.state === 'connected' ? (
+            {bt.state === 'connected' && !bt.forwarding ? (
+              <Text style={styles.note}>
+                Connected to {bt.host || 'the target'}, and the switch is off: nothing {keyName} types is sent.
+              </Text>
+            ) : null}
+            {bt.state === 'connected' && bt.forwarding ? (
               /*
                * NO SEPARATE ARM. The switch above is the arm: the target says
                * WHERE, the switch says WHETHER, and a third control asking
