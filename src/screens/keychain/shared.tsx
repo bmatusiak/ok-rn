@@ -23,6 +23,8 @@ export type Entry = {
   artifacts: {hex: string; base64: string; ssh?: string; age?: string};
   /* an armored PGP public key block, when the entry is a PGP key */
   pgp?: string;
+  /* a composite key's PGP fingerprint: it has no raw public key, so this names it */
+  pgpFingerprint?: string;
   /* the OnlyKey slots this entry stands for (a key made or loaded there) - what the remove Wizard wipes */
   slots?: number[];
 };
@@ -152,15 +154,18 @@ export function Choice({
   selected,
   onPress,
   outcome,
+  disabled,
 }: {
   title: string;
   info: string;
   selected: boolean;
   onPress: () => void;
   outcome?: {text: string; warn: boolean};
+  /* faded and not pressable; `info` says why */
+  disabled?: boolean;
 }) {
   return (
-    <Pressable onPress={onPress} style={[styles.choice, selected ? styles.choiceOn : null]}>
+    <Pressable onPress={onPress} disabled={disabled} style={[styles.choice, selected ? styles.choiceOn : null, disabled ? {opacity: 0.45} : null]}>
       <Text style={styles.choiceTitle}>{title}</Text>
       <Text style={styles.note}>{info}</Text>
       {outcome ? <Text style={outcome.warn ? styles.outcomeWarn : styles.outcomeOk}>{outcome.text}</Text> : null}

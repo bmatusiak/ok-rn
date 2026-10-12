@@ -18,7 +18,8 @@ export type MyKey = {id: string; title: string; format: 'PGP' | 'SSH' | 'age'; t
 
 /** A Key Chain entry's name, for the row: its label, its slot, or its key type. */
 function nameOf(e: any): string {
-  if (e.kind === 'slot') return `slot ${e.slot}`;
+  /* a composite key is a PGP identity: its user id names it better than its slot */
+  if (e.kind === 'slot') return e.type === 'composite' && e.name ? e.name : `slot ${e.slot}`;
   return e.label || e.name || e.type;
 }
 
@@ -32,7 +33,9 @@ export async function readMyCard(): Promise<MyKey[]> {
      */
     if (!e.name && String(e.label || '').startsWith('hash:')) continue;
     const name = nameOf(e);
-    if (e.pgp) out.push({id: `${e.id}:pgp`, title: `${name} - PGP`, format: 'PGP', text: e.pgp});
+    /* X-Wing and the composite PGP key resist a quantum computer (Key Chain's quantum-safe keys): said in the title */
+    const pq = e.type === 'xwing' || e.type === 'composite' ? ' (quantum-safe)' : '';
+    if (e.pgp) out.push({id: `${e.id}:pgp`, title: `${name} - PGP${pq}`, format: 'PGP', text: e.pgp});
     let forms: any = null;
     try {
       forms = e.publicKey ? keychain.artifacts.forKey({type: e.type, publicKey: e.publicKey, comment: name}) : null;
@@ -40,7 +43,7 @@ export async function readMyCard(): Promise<MyKey[]> {
       forms = null; /* a key type with no shareable form (raw only) */
     }
     if (forms?.ssh) out.push({id: `${e.id}:ssh`, title: `${name} - SSH`, format: 'SSH', text: forms.ssh});
-    if (forms?.age) out.push({id: `${e.id}:age`, title: `${name} - age`, format: 'age', text: forms.age});
+    if (forms?.age) out.push({id: `${e.id}:age`, title: `${name} - age${pq}`, format: 'age', text: forms.age});
   }
   /* public only, checked here too: a form that somehow carries private text is not shown */
   return out.filter(k => {

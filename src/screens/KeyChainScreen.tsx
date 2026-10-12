@@ -11,6 +11,7 @@ import type {EmuSession} from '../hooks/useOkEmu';
 import OkEmu from '../transport/OkEmu';
 import NativeSecrets from '../../specs/NativeSecrets';
 import NativeShare from '../../specs/NativeShare';
+import {supports} from '../firmwareFeatures';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const keychain = require('node-onlykey-lib/keychain');
 import {keychainListKey, onKeyChainRecorded} from '../keyChainRecorder';
@@ -649,6 +650,43 @@ export function KeyChainScreen({
     }
   }, [getKey, entries, saveEntries, addCopy]);
 
+  /*
+   * A QUANTUM-SAFE PGP IDENTITY: the composite key (keychain.composite) made
+   * in the App, loaded into an RSA slot, its private half zeroed the moment
+   * the OnlyKey has it. The certificate is kept as the entry - the OnlyKey
+   * cannot give it back, so this list is the only place it exists.
+   */
+  const makeCompositeWith = useCallback(async (g: {slot: number; name: string; email: string; tagName: string}) => {
+    setBusy('host');
+    setError(null);
+    setStatus(null);
+    let made: {blob: Uint8Array | null} | null = null;
+    try {
+      const stages = ['Making the quantum-safe PGP key', 'Writing it to the OnlyKey'];
+      setProgress({stages, at: 0, pct: null});
+      const openpgp = require('node-onlykey-lib/crypto/pgp');
+      made = await keychain.composite.make(openpgp, {name: g.name.trim(), email: g.email.trim()});
+      setProgress({stages, at: 1, pct: null});
+      const {device} = await getKey();
+      const tag = g.tagName.trim() ? keychain.tag.formatTag('pqc', g.tagName.trim()) : null;
+      const entry = await keychain.composite.load(device, g.slot, made, {label: tag});
+      await addPending([{slot: g.slot, type: 'rsa', tag}]);
+      /* a key this one replaced is destroyed: its certificate encrypts to nothing any more */
+      const kept = entries.filter(x => !(x.type === 'composite' && (x.slots || []).includes(g.slot)));
+      await saveEntries(keychain.list.merge(kept, [entry]).entries);
+      setWritten(true);
+      setStatus(`Quantum-safe PGP key made and loaded in ${slotName(g.slot)}. Its public key is in Key Chain. Restart to finish.`);
+      return true;
+    } catch (e) {
+      setError(String((e as Error)?.message ?? e));
+      return false;
+    } finally {
+      keychain.composite.discard(made);
+      setProgress(null);
+      setBusy(null);
+    }
+  }, [getKey, entries, saveEntries]);
+
   /* The panel's "Make the key": its fields checked, then the shared action. */
   const makeHost = useCallback(async () => {
     setError(null);
@@ -819,24 +857,28 @@ export function KeyChainScreen({
     };
   };
 
-  const artifactRows = (a: Entry['artifacts'], more?: {name: string; pgp?: string; id?: string}) => (
+  const artifactRows = (a: Entry['artifacts'], more?: {name: string; pgp?: string; id?: string; fp?: string}) => {
+    /* read from the certificate when the entry opens; a composite entry carries it already */
+    const fp = (more?.id && fingerprints[more.id]) || more?.fp?.toUpperCase();
+    return (
     <View style={styles.detail}>
       {more?.pgp ? (
         <>
           <CopyRow
             title="finger­print"
-            value={more.id && fingerprints[more.id] ? fingerprints[more.id].replace(/(.{4})/g, '$1 ').trim() : 'reading…'}
-            onCopy={() => more.id && fingerprints[more.id] && copy(fingerprints[more.id], 'Fingerprint')}
+            value={fp ? fp.replace(/(.{4})/g, '$1 ').trim() : 'reading…'}
+            onCopy={() => fp && copy(fp, 'Fingerprint')}
           />
           <CopyRow title="PGP" value="public key block (to import into PGP software)" onCopy={() => copy(more.pgp as string, 'PGP public key')} />
         </>
       ) : null}
       {a.ssh ? <CopyRow title="SSH" value={a.ssh} onCopy={() => copy(a.ssh as string, 'SSH key')} /> : null}
       {a.age ? <CopyRow title="age" value={a.age} onCopy={() => copy(a.age as string, 'age recipient')} /> : null}
-      <CopyRow title="hex" value={a.hex} onCopy={() => copy(a.hex, 'Public key')} />
+      {a.hex ? <CopyRow title="hex" value={a.hex} onCopy={() => copy(a.hex, 'Public key')} /> : null}
       {more ? <Btn title={more.pgp ? 'Share PGP public key' : 'Share public key'} tone="primary" onPress={() => shareKey(more.name, a, more.pgp)} /> : null}
     </View>
-  );
+    );
+  };
 
   const slotRows = (slots || []).filter(p => p.kind !== 'empty' || p.label);
   /* The use flag the key being made will get - what decides each slot's outcome. */
@@ -1179,6 +1221,8 @@ export function KeyChainScreen({
           makeHostWith={makeHostWith}
           makePgpInApp={makePgpInApp}
           deriveWith={deriveWith}
+          makeCompositeWith={makeCompositeWith}
+          pqOk={supports(emu.capabilities, 'postQuantum')}
           onImportPgp={() => {
             setWizard(0);
             setScope('app');
@@ -1312,6 +1356,8 @@ export function KeyChainScreen({
             const id = `slot${p.slot}`;
             const tag = keychain.tag.parseTag(p.label);
             const a = p.publicKey ? keychain.artifacts.forKey({type: p.kind, publicKey: p.publicKey}) : null;
+            /* a composite key gives nothing back: its certificate is the one Key Chain kept */
+            const kept = p.kind === 'composite' ? entries.find(x => x.pgp && (x.slots || []).includes(p.slot)) : undefined;
             return (
               <View key={id}>
                 <Pressable onPress={() => setOpen(o => (o === id ? null : id))} style={styles.row}>
@@ -1324,6 +1370,7 @@ export function KeyChainScreen({
                 {open === id ? (
                   <>
                     {a ? artifactRows(a, {name: tag ? `${tag.kind}-${tag.name}` : slotName(p.slot)}) : null}
+                    {!a && kept ? artifactRows(kept.artifacts, {name: kept.name || slotName(p.slot), pgp: kept.pgp, id: kept.id, fp: kept.pgpFingerprint}) : null}
                     <Btn title="Remove…" tone="danger" disabled={busy !== null} onPress={() => setRemoving(targetForSlot(p))} />
                   </>
                 ) : null}

@@ -145,6 +145,30 @@ export function recordDerive(r: DeriveRecord): Promise<void> {
   return run;
 }
 
+/*
+ * A KEY DERIVED HERE BY ITS NAME (owner, 2026-10-12: post-quantum keys made
+ * in Crypto were never kept by name). The soft key records a derive by the
+ * label HASH it saw; the screen that asked knows the name. Merged by the
+ * twin rule, so the hash entry and this one become one entry under the name.
+ */
+export function recordNamed(fields: {scheme: string; label: string; type: string; publicKey: Uint8Array; tool: string}): Promise<void> {
+  const run = queue.then(async () => {
+    const now = new Date().toISOString();
+    const e = keychain.list.createEntry({
+      kind: 'derived', scheme: fields.scheme, label: fields.label, type: fields.type,
+      publicKey: fields.publicKey, firstSeen: now, lastSeen: now, tools: [fields.tool],
+    });
+    const raw = await AsyncStorage.getItem(keychainListKey());
+    const entries: any[] = raw ? keychain.list.parse(raw) : [];
+    const {entries: next, added, paired, joined} = keychain.list.merge(entries, [e]);
+    if (!added && !paired && !joined) return;
+    await AsyncStorage.setItem(keychainListKey(), keychain.list.serialize(next));
+    for (const l of listeners) l();
+  });
+  queue = run.catch(() => {});
+  return run;
+}
+
 /** This phone's Key Chain list as it is now (public entries). */
 export async function readKeyChainList(): Promise<any[]> {
   const raw = await AsyncStorage.getItem(keychainListKey());

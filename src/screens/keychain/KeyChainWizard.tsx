@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section} from '../../ui/components';
 import {theme} from '../../ui/theme';
+import {missingNote} from '../../firmwareFeatures';
 import {
   type DeviceType, type HostType, type Job, type Probe, type Progress, Choice, ProgressList, SLOTS, labelText, slotName, slotOrder, slotOutcome,
 } from './shared';
@@ -28,7 +29,9 @@ const keychain = require('node-onlykey-lib/keychain');
 type Answers = {
   leave?: 'no' | 'yes';
   unsure?: boolean;
-  use?: 'ssh' | 'pgp' | 'files' | 'apps' | 'site' | 'other';
+  use?: 'ssh' | 'pgp' | 'files' | 'apps' | 'site' | 'other' | 'pq';
+  /* quantum-safe: a derived X-Wing key by name, or a composite PGP identity in an RSA slot */
+  pqKind?: 'xwing' | 'pgp';
   sshP256?: boolean;
   pq?: boolean;
   pgpModern?: boolean;
@@ -51,7 +54,7 @@ type Answers = {
   pass?: string;
 };
 
-type Option = {label: string; info: string; set: Partial<Answers>; recommended?: boolean};
+type Option = {label: string; info: string; set: Partial<Answers>; recommended?: boolean; disabled?: boolean};
 type Question =
   | {kind: 'choice'; id: string; ask: string; why?: string; list?: string[]; options: Option[]}
   | {kind: 'text'; id: string; ask: string; why?: string; fields: {key: 'person' | 'email' | 'name' | 'label'; placeholder: string; max?: number; optional?: boolean}[]}
@@ -65,7 +68,8 @@ type Plan =
   | {act: 'host'; type: HostType; bits: number; slot: number | null; kind: string; copy: boolean; what: string}
   | {act: 'pgp-app'; ecc: boolean; bits: number; copy: boolean; what: string}
   | {act: 'derive'; scheme: string; type: string; what: string}
-  | {act: 'import-pgp'; what: string};
+  | {act: 'import-pgp'; what: string}
+  | {act: 'composite'; what: string};
 
 function planOf(a: Answers): Plan | null {
   const inside = a.leave === 'no';
@@ -93,6 +97,10 @@ function planOf(a: Answers): Plan | null {
       return {act: 'host', type: 'rsa', bits: a.bits || 3072, slot: null, kind: 'sig', copy: Boolean(a.copyOk), what: `an RSA signing key (${a.bits || 3072} bits) for apps and code, made in the App`};
     case 'site':
       return {act: 'derive', scheme: 'label', type: 'p256', what: 'a key the OnlyKey re-creates from a name (nothing is stored)'};
+    case 'pq':
+      if (a.pqKind === 'xwing') return {act: 'derive', scheme: 'label', type: 'xwing', what: 'a quantum-safe key (X-Wing) the OnlyKey re-creates from a name, for files and messages'};
+      if (a.pqKind === 'pgp') return {act: 'composite', what: 'a quantum-safe PGP identity (ML-KEM + X25519 to decrypt, ML-DSA + Ed25519 to sign), made in the App and loaded onto the OnlyKey'};
+      return null;
     case 'other':
       if (!a.otherType) return null;
       if (a.otherType === 'rsa') return {act: 'host', type: 'rsa', bits: a.bits || 3072, slot: null, kind: 'sig', copy: !inside || Boolean(a.copyOk), what: 'an RSA key made in the App'};
@@ -114,7 +122,7 @@ function insideType(a: Answers): [DeviceType, string] {
 function needsSlot(a: Answers, plan: Plan | null): boolean {
   if (!plan) return false;
   if (plan.act === 'jobs') return !(a.use === 'pgp'); // the PGP pair goes to ECC1/ECC2 by itself
-  if (plan.act === 'host') return true;
+  if (plan.act === 'host' || plan.act === 'composite') return true;
   return false;
 }
 
@@ -170,7 +178,7 @@ function overview(keys: Existing[]): string[] {
  * free any more, though the OnlyKey does not know it yet (the count said "11
  * free" with two of them already queued for a PGP pair).
  */
-function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = []): Question {
+function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [], pqOk = true): Question {
   /*
    * WHAT IS IT FOR? FIRST (owner): the answer often decides the rest. A
    * website key is re-created from its address and never stored; a
@@ -185,6 +193,9 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [])
       {label: 'Encrypted email (PGP)', info: 'People send you encrypted email and you sign yours.', set: {use: 'pgp'}},
       {label: 'Receiving encrypted files (age)', info: 'People encrypt files to you; only your OnlyKey can open them.', set: {use: 'files'}},
       {label: 'Signing Android apps or code', info: 'Proves an app or file came from you.', set: {use: 'apps'}},
+      {label: 'Quantum-safe keys', info: pqOk
+        ? 'Keys that stay safe against future quantum computers: one for files and messages, or a PGP identity for email.'
+        : missingNote('postQuantum'), set: {use: 'pq'}, disabled: !pqOk},
       {label: 'A website (or any name)', info: 'A key for one website. The OnlyKey re-creates it from the address whenever it is needed - nothing is stored anywhere.', set: {use: 'site'}},
       {label: 'Something else', info: 'Choose the key type yourself.', set: {use: 'other'}},
     ]};
@@ -204,6 +215,25 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [])
       ]};
   }
   if (a.use === 'pgp' && a.pgpBack) return {kind: 'review', id: 'review'};
+  /*
+   * QUANTUM-SAFE (owner, 2026-10-12: "keychain ... is unaware how to use
+   * quantum safe or setup"). Two keys, each safe while either of its halves
+   * holds. The X-Wing key is derived, like a website key: the OnlyKey
+   * re-creates it from the name, nothing is stored, a restored backup gives
+   * it back. The PGP identity is a composite key the App makes and loads into
+   * an RSA slot; its certificate exists only in Key Chain, because the
+   * OnlyKey cannot give it back.
+   */
+  if (a.use === 'pq' && !a.pqKind) {
+    return {kind: 'choice', id: 'pqKind', ask: 'Which quantum-safe key?', options: [
+      {label: 'For files and messages', info: 'X-Wing. The OnlyKey re-creates it from a name you choose - nothing stored, no slot used, back after a backup restore. Shared as an age recipient (age1onlykey…).', set: {pqKind: 'xwing'}, recommended: true},
+      {label: 'A PGP identity for email', info: 'A composite PGP key, made in the App and loaded into an RSA slot. Its public key is kept in Key Chain - the OnlyKey cannot give it back. Needs PGP software that reads post-quantum keys.', set: {pqKind: 'pgp'}},
+    ]};
+  }
+  if (a.use === 'pq' && a.pqKind === 'xwing' && !a.label) {
+    return {kind: 'text', id: 'label', ask: 'Which name should the OnlyKey make it from?', why: 'The same name always gives the same key on this OnlyKey, and again after a backup restore. Pick one you will remember, e.g. "files" or your email.',
+      fields: [{key: 'label', placeholder: 'files'}]};
+  }
   if (a.use === 'pgp' && a.pgpModern === undefined) {
     return {kind: 'choice', id: 'pgpModern', ask: 'Does your email or PGP software handle modern (ECC) keys?',
       why: 'Thunderbird, GnuPG 2.2 or newer, and the OnlyKey web app all do. Some old software only understands RSA keys.',
@@ -271,7 +301,7 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [])
     ];
     return {kind: 'choice', id: 'other', ask: 'Which kind of key?', options: types.map(([t, info]) => ({label: info.split(' — ')[0], info: info.split(' — ')[1], set: {otherType: t}}))};
   }
-  if (a.use === 'pgp' && (a.person === undefined)) {
+  if ((a.use === 'pgp' || a.pqKind === 'pgp') && (a.person === undefined)) {
     return {kind: 'text', id: 'who', ask: 'Who is this PGP key for?', why: 'This is what people see on your public key, so they know it is yours.',
       fields: [{key: 'person', placeholder: 'your name'}, {key: 'email', placeholder: 'your email (optional)', optional: true}]};
   }
@@ -309,7 +339,7 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [])
         options: [{label: 'Yes — replace them', info: 'The keys there now are destroyed. Anyone who used them needs your new PGP public key.', set: {replace: true}}]};
     }
   }
-  const family = plan0?.act === 'host' && plan0.type === 'rsa' ? 'rsa' : 'ecc';
+  const family = (plan0?.act === 'host' && plan0.type === 'rsa') || plan0?.act === 'composite' ? 'rsa' : 'ecc';
   const replaceable = existing.filter(e => (family === 'rsa' ? e.slot <= 4 : e.slot >= 101));
   if (needsSlot(a, plan0) && a.replace === undefined && replaceable.length && a.replaceUnsure) {
     /* "I'm not sure" (owner): show what is used and what is free, then ask again. */
@@ -344,15 +374,15 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [])
       if (tag && ['age', 'xwg', 'mlk', 'enc'].includes(tag.kind)) return 'destroyed - files already encrypted to it can no longer be opened; share the new recipient';
       return 'destroyed and replaced by the new key';
     };
-    return {kind: 'choice', id: 'replaceWhich', ask: 'Which key does it replace?', why: 'The new key takes its slot and its name.',
+    return {kind: 'choice', id: 'replaceWhich', ask: 'Which key does it replace?', why: a.use === 'pq' ? 'The new key takes its slot; it is named after you, like a PGP key.' : 'The new key takes its slot and its name.',
       options: replaceable.map(e => ({
         label: describeKey(e).replace(/^./, c => c.toUpperCase()),
         info: `${lost(e)}  ·  ${slotName(e.slot)}`,
-        set: {replaceSlot: e.slot, slot: e.slot, slotConfirmed: true, name: keychain.tag.parseTag(e.label)?.name ?? a.name ?? ''},
+        set: {replaceSlot: e.slot, slot: e.slot, slotConfirmed: true, ...(a.use === 'pq' ? {} : {name: keychain.tag.parseTag(e.label)?.name ?? a.name ?? ''})},
       }))};
   }
 
-  if (a.use !== 'site' && a.use !== 'pgp' && a.name === undefined) {
+  if (a.use !== 'site' && a.use !== 'pgp' && a.use !== 'pq' && a.name === undefined) {
     return {kind: 'text', id: 'name', ask: 'What should we call it?', why: 'Up to 12 letters - saved on the Key so every OnlyKey app shows it (e.g. "laptop", "backups", "myapp").',
       fields: [{key: 'name', placeholder: 'a short name', max: 12, optional: true}]};
   }
@@ -374,8 +404,9 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [])
 function trail(a: Answers): string[] {
   const t: string[] = [];
   if (a.leave) t.push(a.leave === 'no' ? 'Stays inside the OnlyKey' : 'A copy is kept');
-  const use: Record<string, string> = {ssh: 'SSH login', pgp: 'Encrypted email (PGP)', files: 'Receiving files', apps: 'Signing apps / code', site: 'Website key', other: 'Other'};
+  const use: Record<string, string> = {ssh: 'SSH login', pgp: 'Encrypted email (PGP)', files: 'Receiving files', apps: 'Signing apps / code', site: 'Website key', other: 'Other', pq: 'Quantum-safe'};
   if (a.use) t.push(use[a.use]);
+  if (a.pqKind) t.push(a.pqKind === 'xwing' ? 'Files and messages' : 'PGP identity');
   if (a.sshP256 !== undefined) t.push(a.sshP256 ? 'P-256' : 'Ed25519');
   if (a.pq !== undefined) t.push(a.pq ? 'Post-quantum' : 'Classic');
   if (a.pgpModern !== undefined) t.push(a.pgpModern ? 'Modern PGP' : 'RSA PGP');
@@ -411,7 +442,9 @@ export function KeyChainWizard({
   addJobs,
   makeHostWith,
   makePgpInApp,
+  makeCompositeWith,
   deriveWith,
+  pqOk,
   onImportPgp,
   onQueued,
   configPanel,
@@ -427,6 +460,9 @@ export function KeyChainWizard({
   makeHostWith: (h: {type: HostType; bits: number; slot: number | null; kind: string; name: string; pass: string | null}) => Promise<boolean>;
   makePgpInApp: (g: {name: string; email: string; bits: number; pass: string | null; tagName: string; ecc: boolean}) => Promise<boolean>;
   deriveWith: (d: {scheme: string; type: string; label: string}) => Promise<boolean>;
+  makeCompositeWith: (g: {slot: number; name: string; email: string; tagName: string}) => Promise<boolean>;
+  /* the firmware has post-quantum keys (lib capability postQuantum) */
+  pqOk: boolean;
   /* close the Wizard and open Key Chain's Import PGP key */
   onImportPgp: () => void;
   onQueued: () => void;
@@ -466,7 +502,7 @@ export function KeyChainWizard({
   };
 
   const reserved = SLOTS.filter(n => taken(n) && !existing.some(e => e.slot === n));
-  const q = useMemo(() => nextQuestion(answers, existing, reserved), [answers, slots, reserved.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const q = useMemo(() => nextQuestion(answers, existing, reserved, pqOk), [answers, slots, reserved.join(), pqOk]); // eslint-disable-line react-hooks/exhaustive-deps
   const plan = planOf(answers);
   const answer = (set: Partial<Answers>) => {
     setHistory(h => [...h, answers]);
@@ -483,7 +519,7 @@ export function KeyChainWizard({
   };
 
   /* The slot the plan suggests: free, of the right kind, nothing else using it. */
-  const isRsa = plan?.act === 'host' && plan.type === 'rsa';
+  const isRsa = (plan?.act === 'host' && plan.type === 'rsa') || plan?.act === 'composite';
   const candidates = (isRsa ? [1, 2, 3, 4] : SLOTS.filter(n => n >= 101)).slice().sort((x, y) => slotOrder(x, taken) - slotOrder(y, taken));
   const suggested = candidates.find(n => slotOrder(n, taken) === 0) ?? candidates[0];
   const [insT] = insideType(answers);
@@ -494,11 +530,15 @@ export function KeyChainWizard({
     const a = answers;
     if (!plan) return;
     if (plan.act === 'derive') {
-      if (await deriveWith({scheme: 'label', type: 'p256', label: a.label || ''})) close();
+      if (await deriveWith({scheme: plan.scheme, type: plan.type, label: a.label || ''})) close();
       return;
     }
     if (plan.act === 'pgp-app') {
       if (await makePgpInApp({name: a.person || '', email: a.email || '', bits: plan.bits, pass: plan.copy ? a.pass || '' : null, tagName: (a.person || '').split(' ')[0].slice(0, 12), ecc: plan.ecc})) close();
+      return;
+    }
+    if (plan.act === 'composite') {
+      if (await makeCompositeWith({slot: a.slot as number, name: a.person || '', email: a.email || '', tagName: (a.person || '').split(' ')[0].slice(0, 12)})) close();
       return;
     }
     if (plan.act === 'host') {
@@ -533,7 +573,7 @@ export function KeyChainWizard({
           {q.why ? <Text style={styles.why}>{q.why}</Text> : null}
           {q.list ? q.list.map((l, i) => <Text key={i} style={styles.line}>•  {l}</Text>) : null}
           {q.options.map(o => (
-            <Choice key={o.label} title={o.recommended ? `${o.label}  (recommended)` : o.label} info={o.info} selected={false} onPress={() => answer(o.set)} />
+            <Choice key={o.label} title={o.recommended ? `${o.label}  (recommended)` : o.label} info={o.info} selected={false} disabled={o.disabled} onPress={() => answer(o.set)} />
           ))}
         </>
       ) : null}
@@ -639,7 +679,7 @@ export function KeyChainWizard({
           ) : (
             <>
               {(() => {
-                const needsConfig = plan.act === 'pgp-app' || (plan.act === 'host' && answers.slot !== undefined);
+                const needsConfig = plan.act === 'pgp-app' || plan.act === 'composite' || (plan.act === 'host' && answers.slot !== undefined);
                 const blocked = busy !== null || locked || (needsConfig && !inConfig);
                 return (
                   <>
@@ -694,6 +734,13 @@ function reviewLines(a: Answers, plan: Plan): string[] {
     l.push('Made in the App, loaded onto the OnlyKey where PGP looks for it (decrypt in slot 1, sign in slot 2), then wiped from the App.');
     if (plan.copy) l.push('An encrypted copy of the whole PGP key stays in "On this App", to share or save as a file later.');
     l.push('Its public key (to share) is kept in "On this App". Needs config mode; a restart finishes it.');
+  } else if (plan.act === 'composite') {
+    l.push(`Made in the App, loaded onto the OnlyKey in ${a.slot !== undefined ? slotName(a.slot) : '?'}, then wiped from the App - the OnlyKey decrypts and signs with it, nothing else has it.`);
+    l.push('Its public key (to share) is kept in Key Chain. The OnlyKey cannot give it back: export Key Chain with your backup, or nobody can encrypt to this key after a reset.');
+    l.push('Needs config mode; a restart finishes it.');
+  } else if (plan.type === 'xwing') {
+    l.push(`From "${a.label}". Nothing is stored: the OnlyKey re-creates it from that name every time, and again after a backup restore.`);
+    l.push('Its age recipient (age1onlykey…) is kept in Key Chain, to share with people who send you files and messages. No config mode.');
   } else {
     l.push(`For "${a.label}". Nothing is stored: the OnlyKey re-creates it from that name every time. Its public key is kept in "On this App". No config mode.`);
   }

@@ -3,6 +3,7 @@ import {AppState, ScrollView, StyleSheet, Text, TextInput, View} from 'react-nat
 import {Btn, Section, Segmented} from '../ui/components';
 import {NOT_IN_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
 import {missingNote, supports} from '../firmwareFeatures';
+import {recordNamed} from '../keyChainRecorder';
 import {Keypad} from '../ui/Keypad';
 import {VaultList} from '../ui/VaultList';
 import {theme} from '../ui/theme';
@@ -560,6 +561,8 @@ export function CryptoScreen({
       const id = await okcrypto.deviceAge.identity(ageLabel.trim(), vaultOpts());
       setWaiting(false);
       setRecipient(id.recipientString);
+      /* kept in Key Chain by its name, not only the hash the soft key saw */
+      recordNamed({scheme: 'label', label: ageLabel.trim(), type: 'xwing', publicKey: id.recipient, tool: 'Crypto'}).catch(() => {});
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
