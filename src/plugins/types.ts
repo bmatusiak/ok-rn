@@ -24,6 +24,8 @@ export type TabContext = {
 export type WatchContext = {
   /** each key: running and unlocked */
   unlocked: Record<Backend, boolean>;
+  /** bring a tab forward by its name (a link that belongs to a plugin's tab arrived) */
+  openTab: (name: string) => void;
 };
 
 export type AppTab = {

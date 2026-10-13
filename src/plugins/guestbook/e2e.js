@@ -1,4 +1,5 @@
 'use strict';
+/* global crypto */ /* react-native-get-random-values puts it on the global */
 
 /*
  * GUEST BOOK on the phone (GUEST-BOOK-SPEC.md, implementation: "An e2e suite guestBook that adds a

@@ -1,5 +1,6 @@
 import {formats} from 'node-onlykey-lib/guestbook';
 import {readKeyChainList} from '../../keyChainRecorder';
+import {CONTACT_LABEL} from './swapLink';
 
 /* the lib's Key Chain plugin, as the Key Chain tab loads it */
 const keychain = require('node-onlykey-lib/keychain');
@@ -32,6 +33,8 @@ export async function readMyCard(): Promise<MyKey[]> {
      * a website or tool made for itself - nobody shares those, and dozens would bury the card.
      */
     if (!e.name && String(e.label || '').startsWith('hash:')) continue;
+    /* the swap's own identity: the other phone learns it in the handshake, it is not a key to give (Brad, 2026-10-12: hide it) */
+    if (e.kind === 'derived' && e.label === CONTACT_LABEL) continue;
     const name = nameOf(e);
     /* X-Wing and the composite PGP key resist a quantum computer (Key Chain's quantum-safe keys): said in the title */
     const pq = e.type === 'xwing' || e.type === 'composite' ? ' (quantum-safe)' : '';

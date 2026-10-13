@@ -20,6 +20,15 @@ export const randomBytes = (n: number) => crypto.getRandomValues(new Uint8Array(
 /* one list per net, as Key Chain's: the testnet's is cleared with the testnet (src/testnet.ts) */
 export const storageKey = () => (currentNet() === 'test' ? 'okrn.guestbook.test:v1' : store.KEY);
 export const openBook = () => store.createGuestBook({storage: AsyncStorage, randomBytes, key: storageKey()});
+/*
+ * YOUR NAME ON A SWAP (Brad, 2026-10-12: "a name for the contact can be provided by the person
+ * offering the key, in Me ... give yourself a name, and send the name with the pubkey, and the
+ * receiver can edit the name if they want"). Set on the Me page, sent on every card, kept per net
+ * like the list.
+ */
+const myNameKey = () => (currentNet() === 'test' ? 'okrn.guestbook.test:myname' : 'okrn.guestbook:myname');
+export const readMyName = async () => (await AsyncStorage.getItem(myNameKey()).catch(() => null)) || '';
+export const saveMyName = (name: string) => AsyncStorage.setItem(myNameKey(), name.trim().slice(0, 64));
 /* the 1.2 MB OpenPGP fork, loaded the first time a PGP key is read (MessagesScreen does the same) */
 export const openpgp = () => require('node-onlykey-lib/crypto/pgp');
 

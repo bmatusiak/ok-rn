@@ -13,6 +13,10 @@
     <!-- Android 12+ split the old BLUETOOTH/BLUETOOTH_ADMIN grants apart. -->
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Guest Book's key swap finds the other phone by its swap service only: never for location. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission
         android:name="android.permission.BLUETOOTH"
         android:maxSdkVersion="30" />
@@ -168,6 +172,14 @@
         <!-- Brings the app forward when a matching device is plugged in. -->
         <intent-filter>
             <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+        </intent-filter>
+
+        <!-- Guest Book's swap invite (okrn://connect?...), when the phone's own camera reads the QR. -->
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="okrn" android:host="connect" />
         </intent-filter>
         <meta-data
             android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"

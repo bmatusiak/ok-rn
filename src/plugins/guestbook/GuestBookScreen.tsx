@@ -10,6 +10,9 @@ import {theme} from '../../ui/theme';
 import type {TabContext} from '../types';
 import {readMyCard, type MyKey} from './myCard';
 import {useGuestBook, type Contact, type Found, type Source} from './useGuestBook';
+import {ExchangeSheet} from './ExchangeSheet';
+import {isInvite, onInvite, takeInvite} from './swapNative';
+import {readMyName, saveMyName} from './service';
 
 /*
  * GUEST BOOK (onlykey-edge/features/GUEST-BOOK-SPEC.md): other people's PUBLIC keys, laid out like
@@ -55,13 +58,47 @@ const copy = async (text: string, what: string) => {
   Alert.alert('Copied', `${what} copied. The clipboard is cleared in ${CLIPBOARD_TTL_MS / 1000} seconds.`);
 };
 
+type Swap = 'host' | {join: string};
+
+/*
+ * THE SWAP SHEET SITS OVER EVERY PAGE: started from My card (show / scan), from Add's Scan when
+ * the QR is an invite, or from outside (the phone's camera opened an okrn://connect link).
+ */
 export function GuestBookScreen({ctx}: {ctx: TabContext}) {
+  const [swap, setSwap] = useState<Swap | null>(null);
+  useEffect(() => {
+    const waiting = takeInvite();
+    if (waiting) setSwap({join: waiting});
+    return onInvite(url => setSwap({join: url}));
+  }, []);
+  return (
+    <>
+      <GuestBookPages ctx={ctx} onSwap={setSwap} />
+      {swap ? <SwapOverlay start={swap} onClose={() => setSwap(null)} /> : null}
+    </>
+  );
+}
+
+function SwapOverlay({start, onClose}: {start: Swap; onClose: () => void}) {
+  const gb = useGuestBook();
+  const [mine, setMine] = useState<MyKey[] | null>(null);
+  useEffect(() => {
+    readMyCard().then(setMine, () => setMine([]));
+  }, []);
+  return mine ? <ExchangeSheet start={start} mine={mine} gb={gb} onClose={onClose} /> : null;
+}
+
+function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => void}) {
   /* who you talk to is not public: no screenshots of the list in a release build (spec Security) */
   useSecureScreen(ctx.blockScreenshots);
   const gb = useGuestBook();
   const [page, setPage] = useState<Page>({kind: 'list'});
   const [mine, setMine] = useState<MyKey[] | null>(null);
   const [search, setSearch] = useState('');
+  const [myName, setMyName] = useState('');
+  useEffect(() => {
+    readMyName().then(setMyName, () => {});
+  }, []);
 
   useEffect(() => {
     readMyCard().then(setMine, () => setMine([]));
@@ -101,6 +138,30 @@ export function GuestBookScreen({ctx}: {ctx: TabContext}) {
           <Btn title="‹ Back" onPress={() => setPage({kind: 'list'})} />
           <Text style={styles.dim}>From Key Chain. Public keys only - safe to give to anyone.</Text>
         </View>
+        {/* your name on a swap: sent with your keys, the other person can change it (Brad, 2026-10-12) */}
+        <View style={styles.bar}>
+          <Text style={styles.dim}>Your name on swaps</Text>
+          <TextInput
+            style={[styles.input, {flex: 1, marginTop: 0}]}
+            value={myName}
+            onChangeText={setMyName}
+            onEndEditing={() => void saveMyName(myName)}
+            placeholder="your name on swaps"
+            placeholderTextColor={theme.textSecondary}
+            accessibilityLabel="Your name on swaps"
+          />
+        </View>
+        {/* in person, over Bluetooth: one phone shows, the other scans (Brad, 2026-10-12) */}
+        <View style={styles.bar}>
+          <Btn title="Swap keys: show my QR" tone="primary" onPress={() => onSwap('host')} />
+          <Btn title="Scan their QR" onPress={() => act(async () => {
+            const NativeQrScanner = require('../../../specs/NativeQrScanner').default;
+            const t: string | null = await NativeQrScanner.scan('Point the camera at the other phone\'s swap QR');
+            if (!t) return;
+            if (!isInvite(t)) throw new Error('That QR is not a swap invite. Add → Scan reads a key QR.');
+            onSwap({join: t});
+          })} />
+        </View>
         <EdgeList items={items} />
       </View>
     );
@@ -111,6 +172,7 @@ export function GuestBookScreen({ctx}: {ctx: TabContext}) {
         gb={gb}
         contactId={page.contactId}
         onDone={id => setPage(id ? {kind: 'contact', id} : {kind: 'list'})}
+        onInvite={url => onSwap({join: url})}
       />
     );
   }
@@ -249,7 +311,7 @@ function SharePage({page, onBack}: {page: Extract<Page, {kind: 'share'}>; onBack
 
 /* ---- add: paste, scan, or look up ----------------------------------------------------------- */
 
-function AddPage({gb, contactId, onDone}: {gb: ReturnType<typeof useGuestBook>; contactId?: string; onDone: (id?: string) => void}) {
+function AddPage({gb, contactId, onDone, onInvite: startSwap}: {gb: ReturnType<typeof useGuestBook>; contactId?: string; onDone: (id?: string) => void; onInvite?: (url: string) => void}) {
   const [how, setHow] = useState<SourceChoice>('Paste');
   const [name, setName] = useState('');
   const [text, setText] = useState('');
@@ -281,7 +343,9 @@ function AddPage({gb, contactId, onDone}: {gb: ReturnType<typeof useGuestBook>; 
     try {
       const NativeQrScanner = require('../../../specs/NativeQrScanner').default;
       const t: string | null = await NativeQrScanner.scan("Point the camera at the person's key QR");
-      if (t) {
+      if (t && isInvite(t) && startSwap) {
+        startSwap(t);
+      } else if (t) {
         setText(t);
         await readText(t, {kind: 'qr', handle: ''});
       }

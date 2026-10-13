@@ -15,6 +15,8 @@ import com.okrn.specs.NativeRsaGenSpec
 import com.okrn.specs.NativeKdfSpec
 import com.okrn.specs.NativeQrScannerSpec
 import com.okrn.qr.NativeQrScannerModule
+import com.okrn.specs.NativeContactLinkSpec
+import com.okrn.contact.NativeContactLinkModule
 import com.okrn.specs.NativeOkSslSpec
 import com.okrn.specs.NativeSecretsSpec
 import com.okrn.specs.NativeShareSpec
@@ -54,6 +56,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeKdfSpec.NAME -> NativeKdfModule(reactContext)
       NativeOkSslSpec.NAME -> NativeOkSslModule(reactContext)
       NativeQrScannerSpec.NAME -> NativeQrScannerModule(reactContext)
+      NativeContactLinkSpec.NAME -> NativeContactLinkModule(reactContext)
       else -> null
     }
 
@@ -71,6 +74,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeKdfSpec.NAME to moduleInfo(NativeKdfSpec.NAME),
       NativeOkSslSpec.NAME to moduleInfo(NativeOkSslSpec.NAME),
       NativeQrScannerSpec.NAME to moduleInfo(NativeQrScannerSpec.NAME),
+      NativeContactLinkSpec.NAME to moduleInfo(NativeContactLinkSpec.NAME),
     )
   }
 

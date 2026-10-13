@@ -1,12 +1,14 @@
-import React, {useCallback, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Btn, Section, Segmented} from '../ui/components';
-import {NEEDS_CONFIG_MODE, NOT_IN_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
+import {NOT_IN_CONFIG_MODE, ON, type ConfigState} from '../ui/configModeNotes';
 import {ConfigModePanel} from '../ui/ConfigModePanel';
 import {missingNote, supports} from '../firmwareFeatures';
 import {theme} from '../ui/theme';
 import {lookup, type Found, type Source} from '../keySearch';
 import {pluginRecipientSources} from '../plugins';
+import {readKeyChainList} from '../keyChainRecorder';
+import {openKeyChainWizard, QUANTUM_SAFE_PGP} from '../keyChainNav';
 import type {RecipientKey} from '../plugins/recipients';
 
 /* where a look-up result came from, by its exact handle - what a keeper of keys refreshes it from */
@@ -162,19 +164,26 @@ export function MessagesScreen({
   const [outName, setOutName] = useState<string | null>(null);
 
   /*
-   * THE COMPOSITE KEY ON THE DEVICE.
+   * THE COMPOSITE KEY ON THE DEVICE: decrypt and sign THROUGH it - openpgp's
+   * private-key operations are routed to the key by the fork's hardware
+   * hooks, and the private half never exists on the phone.
    *
-   * The web app's composite page ends by printing a CLI command to copy,
-   * because a browser cannot load a private key onto the key. This app can:
-   * generate (on the phone, with the vendored fork), load the 160-byte seed
-   * blob into an RSA slot over the vendor interface (OKSETPRIV, type 0x67,
-   * the same op and the same slots python-onlykey's setpqc uses), and then
-   * decrypt and sign THROUGH the device - openpgp's private-key operations
-   * are routed to it by the fork's hardware hooks, and the private material
-   * never exists on the phone once the blob is gone.
+   * MADE IN KEY CHAIN, NOT HERE (Brad, 2026-10-12: "a redesign on the better
+   * user frendly flow that does not take away from security"). This screen
+   * used to generate one, load it, and forget its public certificate - which
+   * the key cannot give back, so the key in the slot became one nobody could
+   * encrypt to. Key Chain's Wizard makes it and keeps the certificate; here
+   * the kept ones are offered by name, and a pasted one still works for a key
+   * loaded some other way (legacy).
    */
-  const [generated, setGenerated] = useState<{armoredPublicKey: string} | null>(null);
-  const blobRef = React.useRef<Uint8Array | null>(null);
+  const [kept, setKept] = useState<{id: string; name: string; slot: number; pgp: string}[]>([]);
+  useEffect(() => {
+    readKeyChainList()
+      .then(list => setKept(list
+        .filter(e => e.type === 'composite' && e.pgp && (e.slots || []).length)
+        .map(e => ({id: e.id, name: e.name || 'composite key', slot: e.slots[0], pgp: e.pgp}))))
+      .catch(() => {});
+  }, []);
   const [rsaSlot, setRsaSlot] = useState<(typeof RSA_SLOTS)[number]>('1');
   const [onDevice, setOnDevice] = useState(false);
   const [challenge, setChallenge] = useState<number[] | null>(null);
@@ -393,53 +402,6 @@ export function MessagesScreen({
     }
   }, [mode, keyText, passphrase, input, file, reset, onDevice, rsaSlot, getKey]);
 
-  /** Generate a composite key on the phone; the blob waits in memory for a load. */
-  const generate = useCallback(async () => {
-    reset();
-    setBusy(true);
-    try {
-      const openpgp = require('node-onlykey-lib/crypto/pgp');
-      const {okcrypto} = await getKey();
-      const result = await okcrypto.composite.generateCompositeKey(openpgp, {
-        userId: {name: 'OnlyKey', email: 'onlykey@example.invalid'},
-      });
-      blobRef.current = result.blob;
-      setGenerated({armoredPublicKey: String(result.armoredPublicKey)});
-      setKeyText(String(result.armoredPublicKey));
-      setStatus('Generated. Load it onto the key, then only the key can use it.');
-    } catch (e) {
-      setError(translate(String((e as Error)?.message ?? e)));
-    } finally {
-      setBusy(false);
-    }
-  }, [getKey, reset]);
-
-  /**
-   * Load the blob into an RSA slot. OKSETPRIV is allowed only in config mode
-   * (or on a key that has never been set up); outside it the device answers
-   * "Error not in config mode" and the library reports that by name.
-   * On success the blob is zeroed here: from then on the key is the only
-   * holder.
-   */
-  const load = useCallback(async () => {
-    const blob = blobRef.current;
-    if (!blob) return;
-    reset();
-    setBusy(true);
-    try {
-      const {device, okcrypto} = await getKey();
-      await device.loadKey(Number(rsaSlot), {type: okcrypto.composite.PQC_KEY_TYPE_BYTE, key: blob});
-      blob.fill(0);
-      blobRef.current = null;
-      setOnDevice(true);
-      setStatus(`Loaded into RSA slot ${rsaSlot}. The private half now exists only on the key.`);
-    } catch (e) {
-      setError(String((e as Error)?.message ?? e));
-    } finally {
-      setBusy(false);
-    }
-  }, [getKey, reset, rsaSlot]);
-
   /** Press the challenge digits through the key's console, when it takes presses. */
   const pressChallenge = useCallback(async () => {
     if (!challenge) return;
@@ -528,35 +490,37 @@ export function MessagesScreen({
       </Section>
 
       {showComposite ? (
-      <Section title={`Composite key on the device — ${keyName}`} faded={!pqc}
-        unavailable={configMode === ON ? null : NEEDS_CONFIG_MODE}>
+      <Section title={`Composite key on the device — ${keyName}`} faded={!pqc}>
         {pqc ? null : <Text style={styles.hint}>{missingNote('postQuantum')}</Text>}
         <Text style={styles.hint}>
           A post-quantum composite key (ML-DSA-65 + Ed25519, ML-KEM-768 +
-          X25519) made here and kept on the key. Decrypting and signing then
-          happen on the key, one button challenge per half.
+          X25519) kept on the key. Decrypting and signing happen on the key,
+          one button challenge per half.
         </Text>
-        <View style={styles.row}>
+        {kept.map(k => (
           <Btn
-            title={busy ? 'Working…' : 'Generate'}
-            onPress={generate}
-            disabled={busy || !pqc}
+            key={k.id}
+            title={`Use ${k.name} (RSA${k.slot})`}
+            tone={onDevice && keyText === k.pgp ? 'primary' : undefined}
+            disabled={!pqc}
+            onPress={() => {
+              setKeyText(k.pgp);
+              setRsaSlot(String(k.slot) as (typeof RSA_SLOTS)[number]);
+              setOnDevice(true);
+            }}
           />
-          <Btn
-            title="Load onto the key"
-            tone="primary"
-            disabled={busy || !pqc || !blobRef.current}
-            onPress={load}
-          />
-        </View>
-        <Text style={styles.hint}>RSA slot to hold it</Text>
+        ))}
+        <Btn
+          title={kept.length ? 'Make another in Key Chain' : 'Make one in Key Chain'}
+          disabled={!pqc}
+          onPress={() => void openKeyChainWizard(QUANTUM_SAFE_PGP)}
+        />
+        <Text style={styles.hint}>
+          Made in Key Chain, its public key is kept with your other keys. A key
+          loaded some other way: pick its slot and paste its public key below.
+        </Text>
+        <Text style={styles.hint}>RSA slot that holds it</Text>
         <Segmented options={RSA_SLOTS} value={rsaSlot} onChange={setRsaSlot} />
-        {generated ? (
-          <Text style={styles.hint}>
-            The public key is in the key box below; copy it from there. Loading
-            needs config mode on the key.
-          </Text>
-        ) : null}
         <Btn
           title={onDevice ? 'Using the key on the device for decrypt and sign' : 'Use the key on the device for decrypt and sign'}
           tone={onDevice ? 'primary' : undefined}
@@ -565,8 +529,9 @@ export function MessagesScreen({
         />
         {onDevice ? (
           <Text style={styles.hint}>
-            Paste the composite PUBLIC key below; the private half is on RSA
-            slot {rsaSlot}.
+            {kept.some(k => k.pgp === keyText)
+              ? `Its public key is filled in below; the private half is on RSA slot ${rsaSlot}.`
+              : `Paste the composite PUBLIC key below; the private half is on RSA slot ${rsaSlot}.`}
           </Text>
         ) : null}
         {challenge ? (
@@ -582,7 +547,8 @@ export function MessagesScreen({
       </Section>
       ) : null}
 
-      <Section title={KEY_LABEL[mode]}>
+      {/* on the device, the box holds YOUR composite PUBLIC key: the private half is in the slot */}
+      <Section title={onDevice && (mode === 'decrypt' || mode === 'sign') ? 'Your composite public key' : KEY_LABEL[mode]}>
         {mode === 'encrypt' || mode === 'verify' ? (
           <View style={styles.lookup}>
             <Text style={styles.lookupHint}>
@@ -644,8 +610,9 @@ export function MessagesScreen({
               : null}
           </View>
         ) : null}
-        {/* other people's keys kept in a plugin (Guest Book: "Add from Guest Book"), appended to the box */}
-        {keySources.length ? (
+        {/* other people's keys kept in a plugin (Guest Book: "Add from Guest Book"), appended to the box -
+            only where the box takes someone else's key: a contact is never your own private key */}
+        {keySources.length && (mode === 'encrypt' || mode === 'verify') ? (
           <View style={styles.lookup}>
             <View style={styles.pickRow}>
               {keySources.map(s => (

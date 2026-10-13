@@ -2,7 +2,7 @@ import {useCallback, useEffect, useMemo, useState} from 'react';
 
 import {formats, refresh, sources, store} from 'node-onlykey-lib/guestbook';
 import NativeShare from '../../../specs/NativeShare';
-import {onGuestBookChanged, openBook, openpgp} from './service';
+import {guestBookChanged, onGuestBookChanged, openBook, openpgp} from './service';
 
 /*
  * GUEST BOOK'S STATE (onlykey-edge/features/GUEST-BOOK-SPEC.md): the contacts list, kept by the
@@ -56,6 +56,8 @@ export function useGuestBook() {
     async (next: Contact[]) => {
       const saved = await book.save(next);
       setContacts(saved);
+      /* another view of the book (the swap sheet has its own) reads it in */
+      guestBookChanged();
       return saved;
     },
     [book],

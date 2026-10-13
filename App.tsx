@@ -17,6 +17,7 @@ import {Logo} from './src/ui/Logo';
 import {ledColor, stateColor, theme} from './src/ui/theme';
 import {IO_STEP_MS, ioPurple, nextShow, onIo, type IoChannel, type IoShow} from './src/btActivity';
 import {onOpenBudget} from './src/edgeNav';
+import {onOpenKeyChainWizard} from './src/keyChainNav';
 
 import {useLog} from './src/hooks/useLog';
 import {useKey} from './src/hooks/useKey';
@@ -856,6 +857,8 @@ function Shell() {
   /* the request sheet's budget card, tapped: the Edge tab, on that budget's details (edgeNav.ts) */
   const [edgeBudget, setEdgeBudget] = useState<number | null>(null);
   useEffect(() => onOpenBudget(id => { setTab(EDGE_TAB); setEdgeBudget(id); }), []);
+  /* another screen's 'Set up in Key Chain': the Key Chain tab, its Wizard already started (keyChainNav.ts) */
+  useEffect(() => onOpenKeyChainWizard(() => setTab('Key Chain')), []);
   useEffect(() => {
     const look = () => {
       const s = takeOpenedAlarm();
@@ -1092,6 +1095,7 @@ function Shell() {
             embedded: keys.soft.state === 'running' && keys.soft.device === 'unlocked',
             usb: keys.hard.state === 'running' && keys.hard.device === 'unlocked',
           }}
+          openTab={name => setTab(name as Tab)}
         />
       ))}
       <SafeAreaView style={styles.safe} edges={['top', 'left', 'right', 'bottom']}>

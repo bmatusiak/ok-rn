@@ -209,6 +209,19 @@ jest.mock('./specs/NativeEdgeAlert', () => ({
   default: {post: jest.fn(), takeOpenedSeq: jest.fn(() => -1), beat: jest.fn(), setWatching: jest.fn(), takeHoldRequest: jest.fn(() => false), onHoldRequested: jest.fn(() => ({remove: jest.fn()})), onWatchTick: jest.fn(() => ({remove: jest.fn()}))},
 }));
 
+/* Guest Book's swap link: no radio under jest (swapLink.test.ts runs two phones on a fake one) */
+jest.mock('./specs/NativeContactLink', () => ({
+  __esModule: true,
+  default: {
+    requestPermissions: jest.fn(async () => true),
+    host: jest.fn(async () => {}),
+    join: jest.fn(async () => 182),
+    send: jest.fn(async () => {}),
+    close: jest.fn(async () => {}),
+    onContactLink: jest.fn(() => ({remove: jest.fn()})),
+  },
+}));
+
 jest.mock('./specs/NativeCredProvider', () => ({
   __esModule: true,
   default: {
