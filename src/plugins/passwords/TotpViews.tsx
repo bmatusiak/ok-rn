@@ -1,11 +1,15 @@
-import React, {useEffect, useRef, useState} from 'react';
-import {Animated, Easing, NativeModules, StyleSheet, Text, View} from 'react-native';
+import React, {useEffect, useState} from 'react';
+import {NativeModules, StyleSheet, Text, View} from 'react-native';
 
 import {totp as totpLib} from 'node-onlykey-lib/passwords';
 import {useSharedBtKeyboard} from '../../hooks/BtKeyboardContext';
-import {currentNet, onNet} from '../../net';
 import {Btn, Section} from '../../ui/components';
 import {theme} from '../../ui/theme';
+import {CountdownBar, useQuietMotion} from '../../ui/CountdownBar';
+
+export {useQuietMotion};
+/* the code's time left, as a bar: the shared countdown (src/ui/CountdownBar.tsx) */
+export const TotpProgress = CountdownBar;
 
 /*
  * AN AUTHENTICATOR CODE (Brad, 2026-10-11: "we can do authenticator topt for github in
@@ -16,18 +20,6 @@ import {theme} from '../../ui/theme';
 
 type Act = (fn: () => void | Promise<void>) => void;
 
-/*
- * QUIET MOTION IN TESTING MODE (Brad, 2026-10-12: "during test mode disable animation if you
- * need to"). The screen tools (tools/tap.js, uiautomator) read a screen only after a second with
- * no change, and a moving time bar or a seconds counter never gives one - so in testing mode
- * (a debug build on the testnet, src/net.ts) the bars step every 5 s and the counters tick on
- * 5-second marks. Everyday use keeps the smooth bar.
- */
-export function useQuietMotion(): boolean {
-  const [quiet, setQuiet] = useState(() => __DEV__ && currentNet() === 'test');
-  useEffect(() => onNet(net => setQuiet(__DEV__ && net === 'test')), []);
-  return quiet;
-}
 
 /* the clock a code view redraws on: every second, or on 5-second marks in testing mode */
 function useCodeClock(): number {
@@ -41,66 +33,6 @@ function useCodeClock(): number {
   return now;
 }
 
-/*
- * THE TIME LEFT, as a bar (Brad, 2026-10-11: "i want to add a progress bar"): full when a code
- * starts, empty when it changes; yellow in its last 5 s. Its own clock, so a screen can drop it in
- * anywhere - the picker has one at its top for every code it lists (they share the 30 s window).
- */
-/*
- * One native animation per window (useNativeDriver), not a redraw every 250 ms: React draws the
- * bar twice per window (the start, and yellow at 5 s left). A screen that repaints all the time
- * also never goes idle for the UI tooling (tools/tap.js: "something on screen is repainting
- * continuously"), which a live code row in the list would otherwise cause.
- */
-export function TotpProgress({period = 30, stepSeconds}: {period?: number; stepSeconds?: number}) {
-  const quiet = useQuietMotion();
-  const steps = stepSeconds ?? (quiet ? 5 : undefined);
-  const left = useRef(new Animated.Value(1)).current;
-  const [width, setWidth] = useState(0);
-  const [warn, setWarn] = useState(false);
-  /*
-   * Steps instead of motion (stepSeconds, or every 5 s in testing mode - useQuietMotion): the bar
-   * jumps every N seconds. A screen with ANY continuous motion, native or not, never gives the UI
-   * tooling the quiet second it reads in (measured on the Pixel 2026-10-12: the list stayed
-   * unreadable with the native bar); steps leave quiet gaps.
-   */
-  useEffect(() => {
-    if (!steps) return;
-    let timer: ReturnType<typeof setTimeout>;
-    const step = () => {
-      const s = period - ((Date.now() / 1000) % period);
-      const shown = Math.ceil(s / steps) * steps;
-      left.setValue(Math.min(1, shown / period));
-      setWarn(s <= 5);
-      timer = setTimeout(step, (s - (shown - steps)) * 1000 + 20);
-    };
-    step();
-    return () => clearTimeout(timer);
-  }, [period, steps, left]);
-  useEffect(() => {
-    if (steps) return;
-    let timers: ReturnType<typeof setTimeout>[] = [];
-    const run = () => {
-      const s = period - ((Date.now() / 1000) % period);
-      left.setValue(s / period);
-      setWarn(s <= 5);
-      Animated.timing(left, {toValue: 0, duration: s * 1000, easing: Easing.linear, useNativeDriver: true}).start();
-      timers = [setTimeout(() => setWarn(true), Math.max(0, (s - 5) * 1000)), setTimeout(run, s * 1000 + 20)];
-    };
-    run();
-    return () => {
-      timers.forEach(clearTimeout);
-      left.stopAnimation();
-    };
-  }, [period, left, steps]);
-  /* the fill slides out to the left as the window runs out; the track clips it */
-  const translateX = left.interpolate({inputRange: [0, 1], outputRange: [-width, 0]});
-  return (
-    <View style={styles.track} onLayout={e => setWidth(e.nativeEvent.layout.width)}>
-      <Animated.View style={[styles.fill, {width: '100%', backgroundColor: warn ? theme.warn : theme.ok, transform: [{translateX}]}]} />
-    </View>
-  );
-}
 
 /** "123456" -> "123 456"; Steam's 5 characters stay as they are */
 const grouped = (code: string) => (/^\d{6}$/.test(code) ? `${code.slice(0, 3)} ${code.slice(3)}` : /^\d{8}$/.test(code) ? `${code.slice(0, 4)} ${code.slice(4)}` : code);
@@ -327,6 +259,4 @@ const styles = StyleSheet.create({
   rowLine: {flexDirection: 'row', alignItems: 'center', gap: 8},
   rowTitle: {color: theme.text, fontSize: 16},
   rowCode: {color: theme.text, fontSize: 20, fontFamily: theme.mono, letterSpacing: 1},
-  track: {height: 4, borderRadius: 2, backgroundColor: theme.inputBg, overflow: 'hidden', marginTop: 8},
-  fill: {height: 4, borderRadius: 2},
 });

@@ -27,7 +27,7 @@ test('named keys give their SSH and age forms; an unnamed site derive is left ou
   expect(card.some(k => k.title.includes('hash:'))).toBe(false);
 });
 
-test('quantum-safe keys say so: an X-Wing key by its age1onlykey recipient, a composite PGP identity by its name', async () => {
+test('PQC keys say so (+PQC for composite): an X-Wing key by its age1onlykey recipient, a composite PGP identity by its name', async () => {
   const openpgp = require('node-onlykey-lib/crypto/pgp');
   const made = await keychain.composite.make(openpgp, {name: 'Brad'});
   const fakeDevice = {loadKey: async () => ({response: 'Success'})};
@@ -37,7 +37,7 @@ test('quantum-safe keys say so: an X-Wing key by its age1onlykey recipient, a co
     await keychain.composite.load(fakeDevice, 3, made),
   );
   const card = await readMyCard();
-  expect(card.map(k => k.title).sort()).toEqual(['Brad - PGP (quantum-safe)', 'qfiles - age (quantum-safe)']);
+  expect(card.map(k => k.title).sort()).toEqual(['Brad - PGP (+PQC)', 'qfiles - age (PQC)']);
   expect(card.find(k => k.format === 'age')!.text).toMatch(/^age1onlykey1/);
   expect(card.find(k => k.format === 'PGP')!.text).toMatch(/BEGIN PGP PUBLIC KEY BLOCK/);
 });

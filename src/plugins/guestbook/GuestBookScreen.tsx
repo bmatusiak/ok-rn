@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useState} from 'react';
-import {Alert, BackHandler, Dimensions, Image, PixelRatio, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
+import {Alert, BackHandler, Dimensions, Image, PixelRatio, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 
 import NativeSecrets from '../../../specs/NativeSecrets';
 import NativeShare from '../../../specs/NativeShare';
@@ -9,8 +9,9 @@ import {EdgeList, type EdgeListItem} from '../../ui/EdgeList';
 import {theme} from '../../ui/theme';
 import type {TabContext} from '../types';
 import {readMyCard, type MyKey} from './myCard';
-import {useGuestBook, type Contact, type Found, type Source} from './useGuestBook';
-import {ExchangeSheet} from './ExchangeSheet';
+import {useGuestBook, type Contact, type Found, type Labelled, type Source} from './useGuestBook';
+import {ListEditor, type ListRow} from '../../ui/ListEditor';
+import {ExchangeSheet, type SwapStart} from './ExchangeSheet';
 import {isInvite, onInvite, takeInvite} from './swapNative';
 import {readMyName, readOffered, saveMyName, setOffered} from './service';
 
@@ -59,7 +60,7 @@ const copy = async (text: string, what: string) => {
   Alert.alert('Copied', `${what} copied. The clipboard is cleared in ${CLIPBOARD_TTL_MS / 1000} seconds.`);
 };
 
-type Swap = 'host' | {join: string};
+type Swap = SwapStart;
 
 /*
  * THE SWAP SHEET SITS OVER EVERY PAGE: started from My card (show / scan), from Add's Scan when
@@ -136,7 +137,10 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
         key: k.id,
         kind: 'row',
         title: k.title,
-        subtitle: `${k.format} · ${offered.has(k.id) ? 'offered in key swaps' : 'not offered in swaps'} · Share, Copy, QR`,
+        subtitle: `${k.format} · Share, Copy, QR`,
+        /* green when a swap offers it (Brad, 2026-10-12: "lets make that green") */
+        detail: offered.has(k.id) ? 'offered in key swaps' : 'not offered in swaps',
+        detailTone: offered.has(k.id) ? 'ok' : 'dim',
         onPress: () => setPage({kind: 'share', title: k.title, text: k.text, file: fileFor({format: k.format === 'PGP' ? 'openpgp' : k.format === 'SSH' ? 'ssh' : 'age'}, k.title), offerId: k.id}),
       });
     }
@@ -162,13 +166,8 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
         {/* in person, over Bluetooth: one phone shows, the other scans (Brad, 2026-10-12) */}
         <View style={styles.bar}>
           <Btn title="Swap keys: show my QR" tone="primary" onPress={() => onSwap('host')} />
-          <Btn title="Scan their QR" onPress={() => act(async () => {
-            const NativeQrScanner = require('../../../specs/NativeQrScanner').default;
-            const t: string | null = await NativeQrScanner.scan('Point the camera at the other phone\'s swap QR');
-            if (!t) return;
-            if (!isInvite(t)) throw new Error('That QR is not a swap invite. Add → Scan reads a key QR.');
-            onSwap({join: t});
-          })} />
+          {/* keys are picked first, in the sheet; the camera opens from there (Brad, 2026-10-13) */}
+          <Btn title="Scan their QR" onPress={() => onSwap('scan')} />
         </View>
         <EdgeList items={items} />
       </View>
@@ -216,7 +215,8 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
     items.push({
       key: 'me',
       kind: 'row',
-      title: 'Me',
+      /* the name you go by in swaps, when you set one (Brad, 2026-10-12) */
+      title: myName.trim() ? `Me - ${myName.trim()}` : 'Me',
       subtitle: `${[...new Set(mine.map(k => k.format))].join(' · ')} - ${mine.length} key${mine.length === 1 ? '' : 's'} to share`,
       onPress: () => setPage({kind: 'me'}),
     });
@@ -230,8 +230,15 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
   }
   for (const c of shown) {
     const formatsHeld = [...new Set(c.keys.map((k: any) => formatName(k.format)))].join(' · ');
+    /*
+     * VERIFIED AT A GLANCE (Brad, 2026-10-13: "i need to tell the difference between verified and
+     * unverified ... they should be noticable"): green ✓ when every key was checked - handed over
+     * in a swap, or its fingerprint compared and marked - amber ! otherwise.
+     */
+    const checked = c.keys.filter((k: any) => k.verified).length;
+    const all = c.keys.length > 0 && checked === c.keys.length;
+    const verifiedLine = all ? '✓ verified' : checked ? `! ${checked} of ${c.keys.length} verified` : '! unverified';
     const badges = [
-      c.keys.length && c.keys.every((k: any) => k.verified) ? 'verified' : '',
       c.keys.some((k: any) => k.pending) ? 'pending' : '',
       c.keys.some((k: any) => k.sources.some((s: any) => s.lastResult === 'missing')) ? 'missing' : '',
       c.keys.some((k: any) => k.info?.revoked) ? 'revoked' : '',
@@ -241,6 +248,8 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
       kind: 'row',
       title: c.name,
       subtitle: formatsHeld,
+      detail: verifiedLine,
+      detailTone: all ? 'ok' : 'warn',
       right: badges.join(' · ') || undefined,
       tone: badges.includes('revoked') ? 'warn' : undefined,
       onPress: () => setPage({kind: 'contact', id: c.id}),
@@ -487,6 +496,14 @@ function AddPage({gb, contactId, onDone, onInvite: startSwap}: {gb: ReturnType<t
 
 /* ---- one contact ---------------------------------------------------------------------------- */
 
+/*
+ * ONE CONTACT, LIKE A PHONE'S CONTACTS APP (Brad, 2026-10-13: "i need the contact details to be
+ * more like a native contact list, i can add remove phone numbers, emails, nicknames"; his choice:
+ * the phone-contacts style - a header with the letter, then grouped rows). Three views on one page:
+ *   details  the header, KEYS (each with ✓ / !), PHONE, EMAIL, NOTES
+ *   key      one key: fingerprint, sources, pending choices, Share / Copy / Mark verified / Remove
+ *   edit     name, nicknames, labelled phones and emails, keys, notes - Save or Cancel
+ */
 function ContactPage({
   c,
   gb,
@@ -502,104 +519,241 @@ function ContactPage({
   onAddKey: () => void;
   onShare: (title: string, text: string, file: string) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(c.name);
-  const [note, setNote] = useState(c.note ?? '');
+  const [view, setView] = useState<{kind: 'details'} | {kind: 'key'; id: string} | {kind: 'edit'}>({kind: 'details'});
   const fetchable = c.keys.some((k: any) => k.sources.some((s: any) => ['keybase', 'protonmail', 'github', 'url'].includes(s.kind)));
+  const key = view.kind === 'key' ? c.keys.find((k: any) => k.id === view.id) : null;
+  if (view.kind === 'key' && key) return <KeyView c={c} k={key} gb={gb} act={act} onBack={() => setView({kind: 'details'})} onShare={onShare} />;
+  if (view.kind === 'edit') return <EditView c={c} gb={gb} act={act} onDone={() => setView({kind: 'details'})} onAddKey={onAddKey} onDeleted={onBack} />;
+
+  const nicknames: string[] = c.nicknames ?? [];
   return (
     <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
-      <View style={styles.buttons}>
+      <View style={styles.topbar}>
+        <Btn title="‹ Back" onPress={onBack} />
+        <Btn title="Edit" onPress={() => setView({kind: 'edit'})} />
+      </View>
+      <View style={styles.header}>
+        <View style={styles.avatar}>
+          <Text style={styles.avatarText}>{(c.name.trim()[0] || '?').toUpperCase()}</Text>
+        </View>
+        <Text style={styles.headerName}>{c.name}</Text>
+        {nicknames.length ? <Text style={styles.dim}>{nicknames.map(n => `"${n}"`).join(' · ')}</Text> : null}
+      </View>
+
+      <Text style={styles.group}>Keys</Text>
+      <View style={styles.card}>
+        {c.keys.map((k: any, i: number) => (
+          <Pressable key={k.id} onPress={() => setView({kind: 'key', id: k.id})} style={[styles.line, i ? styles.lineBorder : null]} accessibilityRole="button">
+            <Text style={[styles.mark, {color: k.verified ? theme.ok : theme.warn}]}>{k.verified ? '✓' : '!'}</Text>
+            <View style={{flex: 1}}>
+              <Text style={styles.body}>{k.label || formatName(k.format)}</Text>
+              <Text style={styles.dim}>{`${formatName(k.format)} · ${k.verified ? 'verified' : 'unverified'}${k.info?.revoked ? ' · REVOKED' : ''}${k.pending ? ' · a new key waits' : ''}`}</Text>
+            </View>
+            <Text style={styles.chev}>›</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {(c.phones ?? []).length ? (
+        <>
+          <Text style={styles.group}>Phone</Text>
+          <View style={styles.card}>
+            {c.phones.map((p: Labelled, i: number) => (
+              <Pressable key={i} onPress={() => act(() => copy(p.value, 'Phone number'))} style={[styles.line, i ? styles.lineBorder : null]}>
+                <Text style={styles.lineLabel}>{p.label}</Text>
+                <Text style={[styles.body, {flex: 1}]}>{p.value}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      ) : null}
+
+      {(c.emails ?? []).length ? (
+        <>
+          <Text style={styles.group}>Email</Text>
+          <View style={styles.card}>
+            {c.emails.map((e: Labelled, i: number) => (
+              <Pressable key={i} onPress={() => act(() => copy(e.value, 'Email'))} style={[styles.line, i ? styles.lineBorder : null]}>
+                <Text style={styles.lineLabel}>{e.label}</Text>
+                <Text style={[styles.body, {flex: 1}]}>{e.value}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      ) : null}
+
+      {c.note ? (
+        <>
+          <Text style={styles.group}>Notes</Text>
+          <View style={[styles.card, styles.line]}>
+            <Text style={styles.body}>{c.note}</Text>
+          </View>
+        </>
+      ) : null}
+
+      {fetchable ? (
+        <View style={styles.buttons}>
+          <Btn
+            title={gb.refreshing ? 'Checking…' : 'Refresh keys'}
+            disabled={!!gb.refreshing}
+            onPress={() => act(async () => { const ch = await gb.refreshOne(c.id); Alert.alert('Refresh', ch.length ? ch.join('\n') : 'Nothing changed.'); })}
+          />
+        </View>
+      ) : null}
+    </ScrollView>
+  );
+}
+
+/* ---- one key of a contact ------------------------------------------------------------------- */
+
+function KeyView({c, k, gb, act, onBack, onShare}: {
+  c: Contact;
+  k: any;
+  gb: ReturnType<typeof useGuestBook>;
+  act: (fn: () => unknown) => void;
+  onBack: () => void;
+  onShare: (title: string, text: string, file: string) => void;
+}) {
+  return (
+    <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
+      <View style={styles.topbar}>
         <Btn title="‹ Back" onPress={onBack} />
       </View>
-      <Section title={c.name}>
-        {c.note && !editing ? <Text style={styles.body}>{c.note}</Text> : null}
-        {editing ? (
-          <>
-            <Field label="Name" value={name} onChange={setName} />
-            <Field label="Note" value={note} onChange={setNote} multiline />
-            <View style={styles.buttons}>
-              <Btn title="Save" tone="primary" onPress={() => act(async () => { await gb.rename(c.id, name, note); setEditing(false); })} />
-              <Btn title="Cancel" onPress={() => setEditing(false)} />
-            </View>
-          </>
-        ) : (
-          <View style={styles.buttons}>
-            {fetchable ? (
-              <Btn
-                title={gb.refreshing ? 'Checking…' : 'Refresh'}
-                disabled={!!gb.refreshing}
-                onPress={() => act(async () => { const ch = await gb.refreshOne(c.id); Alert.alert('Refresh', ch.length ? ch.join('\n') : 'Nothing changed.'); })}
-              />
-            ) : null}
-            <Btn title="Add a key" onPress={onAddKey} />
-            <Btn title="Edit" onPress={() => setEditing(true)} />
-            <Btn
-              title="Delete"
-              tone="danger"
-              onPress={() =>
-                Alert.alert('Delete contact', `Remove ${c.name} and their keys from Guest Book?`, [
-                  {text: 'Cancel', style: 'cancel'},
-                  {text: 'Delete', style: 'destructive', onPress: () => act(async () => { await gb.remove(c.id); onBack(); })},
-                ])
-              }
-            />
-          </View>
-        )}
-      </Section>
-
-      {c.keys.map((k: any) => (
-        <Section key={k.id} title={`${formatName(k.format)}${k.verified ? ' ✓ verified' : ''}${k.info?.revoked ? ' - REVOKED' : ''}`}>
-          <KeyValue label="Fingerprint" value={showFingerprint(k)} />
-          {k.label ? <KeyValue label="Label" value={k.label} /> : null}
-          {k.format === 'openpgp' && k.info?.users?.length ? <KeyValue label="User ids" value={k.info.users.join('\n')} /> : null}
-          {k.info?.created ? <KeyValue label="Created" value={k.info.created.slice(0, 10)} /> : null}
-          {k.info?.expires ? <KeyValue label="Expires" value={k.info.expires.slice(0, 10)} /> : null}
-          {k.sources.length ? (
-            <KeyValue
-              label="From"
-              value={k.sources
-                .map((s: any) => `${s.kind}${s.handle ? ` ${s.handle}` : ''}${s.lastResult ? ` - ${s.lastResult}${s.lastChecked ? `, ${s.lastChecked.slice(0, 16).replace('T', ' ')}` : ''}` : ''}`)
-                .join('\n')}
-            />
-          ) : null}
-          {k.pending ? (
-            <View style={styles.pending}>
-              <Text style={[styles.body, {color: theme.warn}]}>
-                {k.pending.conflict ? 'Two sources serve two different keys - keep yours, or pick one.' : 'A source now serves a different key. It is NOT used until you accept it.'}
-              </Text>
-              <KeyValue label="Current" value={showFingerprint(k)} />
-              {k.pending.candidates.map((cand: any) => (
-                <View key={cand.fingerprint}>
-                  <KeyValue label={`New, from ${cand.source.kind} ${cand.source.handle}`} value={showFingerprint({format: k.format, fingerprint: cand.fingerprint})} />
-                  <View style={styles.buttons}>
-                    <Btn title="Accept this key" onPress={() => act(() => gb.accept(c.id, k.id, cand.fingerprint))} />
-                  </View>
+      <Section title={`${c.name} - ${k.label || formatName(k.format)}`}>
+        <Text style={[styles.body, {color: k.verified ? theme.ok : theme.warn}]}>
+          {k.verified ? '✓ Verified - handed over in a swap, or its fingerprint compared with them.' : '! Unverified - compare the fingerprint with them, then mark it verified.'}
+        </Text>
+        <KeyValue label="Format" value={`${formatName(k.format)}${k.info?.revoked ? ' - REVOKED' : ''}`} />
+        <KeyValue label="Fingerprint" value={showFingerprint(k)} stacked />
+        {k.format === 'openpgp' && k.info?.users?.length ? <KeyValue label="User ids" value={k.info.users.join('\n')} /> : null}
+        {k.info?.created ? <KeyValue label="Created" value={k.info.created.slice(0, 10)} /> : null}
+        {k.info?.expires ? <KeyValue label="Expires" value={k.info.expires.slice(0, 10)} /> : null}
+        {k.sources.length ? (
+          <KeyValue
+            stacked
+            label="From"
+            value={k.sources
+              .map((s: any) => `${s.kind}${s.handle ? ` ${s.handle}` : ''}${s.lastResult ? ` - ${s.lastResult}${s.lastChecked ? `, ${s.lastChecked.slice(0, 16).replace('T', ' ')}` : ''}` : ''}`)
+              .join('\n')}
+          />
+        ) : null}
+        {k.pending ? (
+          <View style={styles.pending}>
+            <Text style={[styles.body, {color: theme.warn}]}>
+              {k.pending.conflict ? 'Two sources serve two different keys - keep yours, or pick one.' : 'A source now serves a different key. It is NOT used until you accept it.'}
+            </Text>
+            <KeyValue label="Current" value={showFingerprint(k)} stacked />
+            {k.pending.candidates.map((cand: any) => (
+              <View key={cand.fingerprint}>
+                <KeyValue label={`New, from ${cand.source.kind} ${cand.source.handle}`} value={showFingerprint({format: k.format, fingerprint: cand.fingerprint})} stacked />
+                <View style={styles.buttons}>
+                  <Btn title="Accept this key" onPress={() => act(() => gb.accept(c.id, k.id, cand.fingerprint))} />
                 </View>
-              ))}
-              <View style={styles.buttons}>
-                <Btn title="Keep current" tone="primary" onPress={() => act(() => gb.keepCurrent(c.id, k.id))} />
-                <Btn title="Keep and remove the source" onPress={() => act(() => gb.keepAndRemove(c.id, k.id))} />
               </View>
+            ))}
+            <View style={styles.buttons}>
+              <Btn title="Keep current" tone="primary" onPress={() => act(() => gb.keepCurrent(c.id, k.id))} />
+              <Btn title="Keep and remove the source" onPress={() => act(() => gb.keepAndRemove(c.id, k.id))} />
             </View>
-          ) : null}
-          <View style={styles.buttons}>
-            <Btn title="Share" onPress={() => onShare(`${c.name} - ${formatName(k.format)}`, k.text, fileFor(k, c.name))} />
-            <Btn title="Copy" onPress={() => act(() => copy(k.text, 'Public key'))} />
-            <Btn
-              title={k.verified ? 'Clear verified' : 'Mark verified'}
-              onPress={() =>
-                k.verified
-                  ? act(() => gb.setVerified(c.id, k.id, false))
-                  : Alert.alert('Mark verified', 'Only when you compared this fingerprint with the person directly (in person, or on a call you trust).', [
-                      {text: 'Cancel', style: 'cancel'},
-                      {text: 'They match', onPress: () => act(() => gb.setVerified(c.id, k.id, true))},
-                    ])
-              }
-            />
-            {c.keys.length > 1 ? <Btn title="Remove key" tone="danger" onPress={() => act(() => gb.removeKey(c.id, k.id))} /> : null}
           </View>
-        </Section>
-      ))}
+        ) : null}
+        <View style={styles.buttons}>
+          <Btn title="Share" onPress={() => onShare(`${c.name} - ${formatName(k.format)}`, k.text, fileFor(k, c.name))} />
+          <Btn title="Copy" onPress={() => act(() => copy(k.text, 'Public key'))} />
+          <Btn
+            title={k.verified ? 'Clear verified' : 'Mark verified'}
+            tone={k.verified ? 'default' : 'primary'}
+            onPress={() =>
+              k.verified
+                ? act(() => gb.setVerified(c.id, k.id, false))
+                : Alert.alert('Mark verified', 'Only when you compared this fingerprint with the person directly (in person, or on a call you trust).', [
+                    {text: 'Cancel', style: 'cancel'},
+                    {text: 'They match', onPress: () => act(() => gb.setVerified(c.id, k.id, true))},
+                  ])
+            }
+          />
+        </View>
+      </Section>
+    </ScrollView>
+  );
+}
+
+/* ---- edit a contact ------------------------------------------------------------------------- */
+
+const LABELS = ['Mobile', 'Home', 'Work', 'Other'];
+/* the same four (store.js DETAIL_LABELS), an email starting on Home - Mobile suits a phone, not an email */
+const EMAIL_LABELS = ['Home', 'Work', 'Other', 'Mobile'];
+
+function EditView({c, gb, act, onDone, onAddKey, onDeleted}: {
+  c: Contact;
+  gb: ReturnType<typeof useGuestBook>;
+  act: (fn: () => unknown) => void;
+  onDone: () => void;
+  onAddKey: () => void;
+  onDeleted: () => void;
+}) {
+  const [name, setName] = useState<string>(c.name);
+  const [nicknames, setNicknames] = useState<ListRow[]>((c.nicknames ?? []).map((n: string) => ({value: n})));
+  const [phones, setPhones] = useState<ListRow[]>(c.phones ?? []);
+  const [emails, setEmails] = useState<ListRow[]>(c.emails ?? []);
+  const [note, setNote] = useState<string>(c.note ?? '');
+  /* keys taken off here go when Save is pressed, like every other change on this page */
+  const [dropKeys, setDropKeys] = useState<Set<string>>(new Set());
+  const keysLeft = c.keys.filter((k: any) => !dropKeys.has(k.id));
+  const save = () =>
+    act(async () => {
+      await gb.setDetails(c.id, {
+        name,
+        nicknames: nicknames.map(n => n.value),
+        phones: phones.map(p => ({label: p.label ?? 'Mobile', value: p.value})),
+        emails: emails.map(e => ({label: e.label ?? 'Home', value: e.value})),
+        note,
+      });
+      for (const id of dropKeys) await gb.removeKey(c.id, id);
+      onDone();
+    });
+  return (
+    <ScrollView contentContainerStyle={styles.pad} keyboardShouldPersistTaps="handled">
+      <View style={styles.topbar}>
+        <Btn title="Cancel" onPress={onDone} />
+        <Text style={styles.editTitle}>Edit contact</Text>
+        <Btn title="Save" tone="primary" disabled={!name.trim()} onPress={save} />
+      </View>
+      <Field label="Name" value={name} onChange={setName} />
+      <ListEditor title="Nicknames" rows={nicknames} onChange={setNicknames} addTitle="Add nickname" placeholder="nickname" />
+      <ListEditor title="Phone" rows={phones} onChange={setPhones} addTitle="Add phone" labels={LABELS} placeholder="phone number" keyboardType="phone-pad" />
+      <ListEditor title="Email" rows={emails} onChange={setEmails} addTitle="Add email" labels={EMAIL_LABELS} placeholder="email address" keyboardType="email-address" />
+      <View style={{gap: 6}}>
+        <Text style={styles.group}>Keys</Text>
+        {keysLeft.map((k: any) => (
+          <View key={k.id} style={[styles.card, styles.line]}>
+            <Text style={[styles.mark, {color: k.verified ? theme.ok : theme.warn}]}>{k.verified ? '✓' : '!'}</Text>
+            <Text style={[styles.body, {flex: 1}]}>{`${k.label || formatName(k.format)} · ${formatName(k.format)}`}</Text>
+            {/* a contact keeps at least one key: removing the last is Delete contact */}
+            {keysLeft.length > 1 ? (
+              <Pressable onPress={() => setDropKeys(s => new Set([...s, k.id]))} accessibilityRole="button" accessibilityLabel={`Remove key ${k.label || k.format}`}>
+                <Text style={styles.removeX}>✕</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ))}
+        <Pressable onPress={onAddKey} accessibilityRole="button">
+          <Text style={styles.addLink}>+ Add a key</Text>
+        </Pressable>
+      </View>
+      <Field label="Notes" value={note} onChange={setNote} multiline />
+      <View style={styles.buttons}>
+        <Btn
+          title="Delete contact"
+          tone="danger"
+          onPress={() =>
+            Alert.alert('Delete contact', `Remove ${c.name} and their keys from Guest Book?`, [
+              {text: 'Cancel', style: 'cancel'},
+              {text: 'Delete', style: 'destructive', onPress: () => act(async () => { await gb.remove(c.id); onDeleted(); })},
+            ])
+          }
+        />
+      </View>
     </ScrollView>
   );
 }
@@ -637,6 +791,22 @@ const styles = StyleSheet.create({
   subbar: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 16, paddingVertical: 6},
   search: {flex: 1, color: theme.text, backgroundColor: theme.inputBg, borderRadius: 8, borderWidth: 1, borderColor: theme.border, paddingHorizontal: 12, paddingVertical: 8, fontSize: 15},
   pad: {padding: 16, gap: 12},
+  /* the contact page, phone-contacts style */
+  topbar: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8},
+  editTitle: {color: theme.text, fontSize: 16, fontWeight: '600'},
+  header: {alignItems: 'center', gap: 6, paddingVertical: 8},
+  avatar: {width: 76, height: 76, borderRadius: 38, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center'},
+  avatarText: {color: '#fff', fontSize: 34, fontWeight: '700'},
+  headerName: {color: theme.text, fontSize: 22, fontWeight: '600'},
+  group: {color: theme.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', marginTop: 4},
+  card: {backgroundColor: theme.surface, borderRadius: theme.radius, borderWidth: 1, borderColor: theme.border},
+  line: {flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 12},
+  lineBorder: {borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: theme.border},
+  lineLabel: {color: theme.textDim, fontSize: 13, width: 64},
+  mark: {fontSize: 18, fontWeight: '700', width: 18, textAlign: 'center'},
+  chev: {color: theme.textDim, fontSize: 22},
+  removeX: {color: theme.error, fontSize: 18, paddingHorizontal: 6},
+  addLink: {color: theme.link, fontSize: 15, paddingVertical: 8},
   buttons: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8},
   dim: {color: theme.textDim, fontSize: 13, flexShrink: 1},
   body: {color: theme.text, fontSize: 14, lineHeight: 20},

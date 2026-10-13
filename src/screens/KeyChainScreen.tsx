@@ -662,7 +662,7 @@ export function KeyChainScreen({
     setStatus(null);
     let made: {blob: Uint8Array | null} | null = null;
     try {
-      const stages = ['Making the quantum-safe PGP key', 'Writing it to the OnlyKey'];
+      const stages = ['Making the +PQC PGP key', 'Writing it to the OnlyKey'];
       setProgress({stages, at: 0, pct: null});
       const openpgp = require('node-onlykey-lib/crypto/pgp');
       made = await keychain.composite.make(openpgp, {name: g.name.trim(), email: g.email.trim()});
@@ -675,7 +675,7 @@ export function KeyChainScreen({
       const kept = entries.filter(x => !(x.type === 'composite' && (x.slots || []).includes(g.slot)));
       await saveEntries(keychain.list.merge(kept, [entry]).entries);
       setWritten(true);
-      setStatus(`Quantum-safe PGP key made and loaded in ${slotName(g.slot)}. Its public key is in Key Chain. Restart to finish.`);
+      setStatus(`+PQC PGP key made and loaded in ${slotName(g.slot)}. Its public key is in Key Chain. Restart to finish.`);
       return true;
     } catch (e) {
       setError(String((e as Error)?.message ?? e));

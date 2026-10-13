@@ -24,6 +24,8 @@ export type EdgeListItem =
       title: string;
       subtitle?: string;
       detail?: string;
+      /* the detail line's colour (Guest Book's "offered in key swaps" is green) */
+      detailTone?: EdgeListTone;
       right?: string;
       tone?: EdgeListTone;
       /* 1 = hangs under the row above (a receipt under its use) */
@@ -49,7 +51,7 @@ function Row({item}: {item: Extract<EdgeListItem, {kind: 'row'}>}) {
       <View style={styles.main}>
         <Text style={[styles.title, {color: toneColor(item.tone)}]}>{item.title}</Text>
         {item.subtitle ? <Text style={styles.subtitle}>{item.subtitle}</Text> : null}
-        {item.detail ? <Text style={styles.detail}>{item.detail}</Text> : null}
+        {item.detail ? <Text style={[styles.detail, item.detailTone ? {color: toneColor(item.detailTone)} : null]}>{item.detail}</Text> : null}
       </View>
       {item.right ? <Text style={styles.right}>{item.right}</Text> : null}
     </View>

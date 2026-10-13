@@ -72,7 +72,7 @@ const until = async (pred: () => boolean, what: string) => {
   throw new Error(`timed out waiting for ${what}`);
 };
 
-const ALICE = {name: 'Alice', keys: [{format: 'age', label: 'files (quantum-safe)', text: 'age1onlykey1qtestrecipientforswaplinktest'}]};
+const ALICE = {name: 'Alice', keys: [{format: 'age', label: 'files (PQC)', text: 'age1onlykey1qtestrecipientforswaplinktest'}]};
 const BOB = {name: 'Bob', keys: [{format: 'ssh', label: 'laptop', text: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFRlc3RLZXlGb3JTd2FwTGlua1Rlc3RPbmx5MDA bob@laptop'}]};
 
 test('a QR, one scan: both phones link, each OnlyKey presses once, the picked keys cross', async () => {
@@ -121,4 +121,35 @@ test('a photo of an old QR finds no phone; a QR that is not an invite is refused
   await carol.join('https://example.com/not-an-invite');
   expect(bv.step).toBe('failed');
   expect((bv as any).message).toMatch(/not an OnlyKey contact invite/);
+});
+
+/** two linked phones on a fake radio, for the goodbye tests */
+async function linkedPair() {
+  const [hostLink, joinLink] = radio();
+  const views: {a: SwapView; b: SwapView} = {a: {step: 'connecting'}, b: {step: 'connecting'}};
+  const alice = createSwap({link: hostLink, identity: onlyKey().identity, randomBytes, onView: v => (views.a = v)});
+  const bob = createSwap({link: joinLink, identity: onlyKey().identity, randomBytes, onView: v => (views.b = v)});
+  await alice.host();
+  await bob.join((views.a as any).url);
+  await until(() => views.a.step === 'linked' && views.b.step === 'linked', 'both linked');
+  return {alice, bob, views};
+}
+
+test('GOODBYE: once both cards have crossed, the link ends on both phones - the sheet stays to save', async () => {
+  const {alice, bob, views} = await linkedPair();
+  await alice.send(ALICE);
+  await bob.send(BOB);
+  await until(() => (views.a as any).link === 'done' && (views.b as any).link === 'done', 'both links done');
+  expect((views.a as any).received).toEqual(BOB);
+  expect((views.b as any).received).toEqual(ALICE);
+});
+
+test('GOODBYE: a phone that closes without giving keys tells the other, which stops waiting for them', async () => {
+  const {alice, bob, views} = await linkedPair();
+  await alice.send(ALICE);
+  await until(() => !!(views.b as any).received, 'Bob has Alice\'s card');
+  await bob.close();
+  await until(() => (views.a as any).link === 'left', 'Alice hears Bob left');
+  expect((views.a as any).received).toBeNull();
+  expect(views.a.step).toBe('linked'); /* not a failure: what crossed is still there */
 });

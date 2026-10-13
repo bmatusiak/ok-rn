@@ -193,6 +193,8 @@ class NativeContactLinkModule(private val reactContext: ReactApplicationContext)
               }
               if (descriptor.uuid == CCCD_UUID && value != null && value.isNotEmpty() && value[0].toInt() != 0) {
                 peer = device
+                /* one swap, one partner: nobody else needs to find this phone now */
+                stopAdvertising()
                 emit("connected", mtu = peerMtu)
               }
             }
@@ -432,10 +434,15 @@ class NativeContactLinkModule(private val reactContext: ReactApplicationContext)
   }
 
   @SuppressLint("MissingPermission")
-  private fun closeAll(why: String?) {
-    stopScan()
+  private fun stopAdvertising() {
     advertising?.let { cb -> try { manager.adapter?.bluetoothLeAdvertiser?.stopAdvertisingSet(cb) } catch (_: Exception) {} }
     advertising = null
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun closeAll(why: String?) {
+    stopScan()
+    stopAdvertising()
     try { peer?.let { server?.cancelConnection(it) } } catch (_: Exception) {}
     try { server?.close() } catch (_: Exception) {}
     server = null

@@ -34,7 +34,13 @@ export type SwapView =
   | {step: 'waiting'; url: string}
   | {step: 'connecting'}
   | {step: 'press'; digits: number[] | null}
-  | {step: 'linked'; peerId: string; sent: boolean; received: Card | null}
+  /*
+   * link: 'open' while cards can still cross; 'done' both crossed and the link was ended with a
+   * goodbye; 'left' they closed without giving keys; 'dropped' the radio went with no goodbye.
+   * Only 'open' can still bring their keys - the sheet stops promising them otherwise.
+   */
+  /* receiving: how much of their card has arrived, while a large one is on its way (null otherwise) */
+  | {step: 'linked'; peerId: string; sent: boolean; received: Card | null; receiving: {have: number; want: number} | null; sending: {have: number; want: number} | null; link: 'open' | 'done' | 'left' | 'dropped'}
   | {step: 'failed'; message: string};
 
 export type Deps = {
@@ -44,6 +50,8 @@ export type Deps = {
   randomBytes: (n: number) => Uint8Array;
   onView: (v: SwapView) => void;
   joinTimeoutMs?: number;
+  /** the clock (tests move it): the rotating QR and the token check read it */
+  now?: () => number;
 };
 
 /** A short readable form of the other phone's contact id, to say who you are linked with. */
@@ -63,6 +71,10 @@ export function createSwap(deps: Deps) {
   let session: any = null;
   let unlisten: (() => void) | null = null;
   let ended = false;
+  const clock = deps.now ?? (() => Date.now());
+  let rotate: ReturnType<typeof setTimeout> | null = null;
+  /* the radio is closed but the sheet still shows what crossed (saving needs no link) */
+  let linkClosed = false;
   let view: SwapView = {step: 'connecting'};
   const show = (v: SwapView) => {
     view = v;
@@ -70,8 +82,13 @@ export function createSwap(deps: Deps) {
   };
 
   /* one message out: fragments one after another, each acknowledged before the next */
-  const sendMsg = async (msg: Uint8Array) => {
-    for (const f of frames.fragment(msg, size)) await deps.link.send(toHex(f));
+  const sendMsg = async (msg: Uint8Array, onProgress?: (have: number, want: number) => void) => {
+    let have = 0;
+    for (const f of frames.fragment(msg, size)) {
+      await deps.link.send(toHex(f));
+      have += f.length;
+      onProgress?.(have, msg.length);
+    }
   };
 
   const fail = (e: unknown) => {
@@ -96,18 +113,58 @@ export function createSwap(deps: Deps) {
   };
 
   let onMessage: (msg: Uint8Array) => Promise<void> = async () => {};
-  const linked = (peer: {id: Uint8Array}) => show({step: 'linked', peerId: shortId(peer.id), sent: false, received: null});
-  const onCard = (msg: Uint8Array) => {
-    const card = swap.openCard(session, msg);
-    if (view.step === 'linked') show({...view, received: card});
+  const linked = (peer: {id: Uint8Array}) => show({step: 'linked', peerId: shortId(peer.id), sent: false, received: null, receiving: null, sending: null, link: 'open'});
+
+  /*
+   * NO LINK LONGER THAN IT IS USED (Brad, 2026-10-12: "there is no reason to keep a link open if
+   * nothing will be send"). The radio ends here; the sheet stays to read and save what came.
+   */
+  const closeLink = (why: 'done' | 'left' | 'dropped') => {
+    if (linkClosed) return;
+    linkClosed = true;
+    unlisten?.();
+    void deps.link.close().catch(() => {});
+    if (view.step === 'linked') show({...view, link: why});
+  };
+  /* this phone has sent and received: say goodbye ("done") and end the link */
+  const finishIfDone = async () => {
+    if (view.step !== 'linked' || !view.sent || !view.received || linkClosed) return;
+    await sendMsg(swap.sealBye(session, 'done')).catch(() => {});
+    closeLink('done');
+  };
+  const onSealed = async (msg: Uint8Array) => {
+    const m = swap.openMessage(session, msg);
+    if (view.step !== 'linked') return;
+    if (m.kind === 'card') {
+      show({...view, received: m.card, receiving: null});
+      return finishIfDone();
+    }
+    /* their goodbye: "done" - both cards crossed; "leaving" - they closed, nothing more will come */
+    closeLink(m.reason === 'done' ? 'done' : 'left');
+  };
+
+  /*
+   * THEIR CARD COMING IN (Brad, 2026-10-13: "can we add progress bar for recieving a key? the data
+   * is sent in chunks because its key is large in size"). Only for a card big enough to take a
+   * while (a +PQC certificate is ~15 KB), and in 10% steps - a screen redrawn on every chunk would
+   * never give the UI tools a quiet moment.
+   */
+  let lastTenth = -1;
+  const reportProgress = () => {
+    const p = asm.progress();
+    if (!p || p.want < 4096 || view.step !== 'linked') return;
+    const tenth = Math.floor((p.have * 10) / p.want);
+    if (tenth === lastTenth) return;
+    lastTenth = tenth;
+    show({...view, receiving: p});
   };
 
   const listen = () => {
     unlisten = deps.link.listen(e => {
       if (ended) return;
       if (e.type === 'closed') {
-        /* their card is here: a goodbye, not a failure - it can still be saved */
-        if (view.step === 'linked' && view.received) return;
+        /* once linked, a radio that goes without a goodbye ends the link, not the sheet */
+        if (view.step === 'linked') return closeLink('dropped');
         return fail(new Error(e.message || 'the other phone left'));
       }
       if (e.type === 'connected') {
@@ -121,7 +178,8 @@ export function createSwap(deps: Deps) {
       } catch (err) {
         return fail(err);
       }
-      if (msg) onMessage(msg).catch(fail);
+      if (msg) return void onMessage(msg).catch(fail);
+      reportProgress();
     });
   };
 
@@ -135,17 +193,18 @@ export function createSwap(deps: Deps) {
       try {
         listen();
         const identity = await identityFor();
-        const made = inv.makeInvite({publicKey: identity.publicKey, randomBytes: deps.randomBytes});
+        /* a rotating invite: the QR's token turns over every 30 s (invite.js), so a photo of it goes stale */
+        const made = inv.makeRotatingInvite({publicKey: identity.publicKey, randomBytes: deps.randomBytes});
         state = swap.showerStart({identity, invite: made, randomBytes: deps.randomBytes});
         onMessage = async msg => {
-          if (!state) return onCard(msg);
+          if (!state) return onSealed(msg);
           if (state.step === 'open') {
             const r = swap.showerOnOpen(state, msg);
             state = r.state;
             return sendMsg(r.msg);
           }
           if (state.step === 'reveal') {
-            const r = await swap.showerOnReveal(state, msg);
+            const r = await swap.showerOnReveal(state, msg, clock());
             state = r.state;
             return sendMsg(r.msg);
           }
@@ -155,7 +214,14 @@ export function createSwap(deps: Deps) {
           linked(done.peer);
         };
         await deps.link.host(toHex(made.link));
-        show({step: 'waiting', url: made.url});
+        /* redraw the QR as its token turns over, for as long as it is waiting to be scanned */
+        const redraw = () => {
+          if (ended || (view.step !== 'waiting' && view.step !== 'connecting')) return;
+          const at = inv.inviteUrlAt(made, clock());
+          show({step: 'waiting', url: at.url});
+          rotate = setTimeout(redraw, Math.max(250, at.nextAt - clock()));
+        };
+        redraw();
       } catch (e) {
         fail(e);
       }
@@ -171,7 +237,7 @@ export function createSwap(deps: Deps) {
         const start = swap.scannerStart({identity, invite, randomBytes: deps.randomBytes});
         state = start.state;
         onMessage = async msg => {
-          if (!state) return onCard(msg);
+          if (!state) return onSealed(msg);
           if (state.step === 'keys') {
             const r = swap.scannerOnKeys(state, msg);
             state = r.state;
@@ -192,18 +258,36 @@ export function createSwap(deps: Deps) {
 
     /** Send the keys the person picked - once. */
     async send(card: Card) {
-      if (view.step !== 'linked' || view.sent || !session) return;
+      if (view.step !== 'linked' || view.sent || !session || linkClosed) return;
       try {
-        await sendMsg(swap.sealCard(session, card));
-        if (view.step === 'linked') show({...view, sent: true});
+        /*
+         * YOUR CARD GOING OUT (Brad, 2026-10-13: "i also want progress bar for sending"): the bytes
+         * the other phone has acknowledged, for a card big enough to take a while, in 10% steps.
+         */
+        let sentTenth = -1;
+        await sendMsg(swap.sealCard(session, card), (have, want) => {
+          if (want < 4096 || view.step !== 'linked') return;
+          const tenth = Math.floor((have * 10) / want);
+          if (tenth === sentTenth) return;
+          sentTenth = tenth;
+          show({...view, sending: {have: Math.min(have, want), want}});
+        });
+        if (view.step === 'linked') show({...view, sent: true, sending: null});
+        await finishIfDone();
       } catch (e) {
         fail(e);
       }
     },
 
-    /** Close: nothing is kept, the link and its advertising stop. */
+    /** Close: nothing is kept, the link and its advertising stop; a link still open gets a goodbye first. */
     async close() {
+      if (rotate) clearTimeout(rotate);
+      if (session && !linkClosed && view.step === 'linked') {
+        /* "leaving": the other phone stops waiting for keys that will never come - but never hang a close on it */
+        await Promise.race([sendMsg(swap.sealBye(session, 'leaving')), new Promise<void>(r => setTimeout(r, 2000))]).catch(() => {});
+      }
       ended = true;
+      linkClosed = true;
       unlisten?.();
       await deps.link.close().catch(() => {});
     },

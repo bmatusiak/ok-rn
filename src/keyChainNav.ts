@@ -14,7 +14,7 @@ import {WIZARD_SAVE_KEY} from './screens/keychain/KeyChainWizard';
 type Start = {answers: Record<string, unknown>; history: Record<string, unknown>[]};
 const listeners = new Set<() => void>();
 
-/** The Wizard at Quantum-safe → A PGP identity for email. */
+/** The Wizard at PQC keys → A PGP identity for email. */
 export const QUANTUM_SAFE_PGP: Start = {answers: {use: 'pq', pqKind: 'pgp'}, history: [{}, {use: 'pq'}]};
 
 export async function openKeyChainWizard(start: Start): Promise<void> {

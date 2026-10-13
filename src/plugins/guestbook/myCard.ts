@@ -36,8 +36,12 @@ export async function readMyCard(): Promise<MyKey[]> {
     /* the swap's own identity: the other phone learns it in the handshake, it is not a key to give (Brad, 2026-10-12: hide it) */
     if (e.kind === 'derived' && e.label === CONTACT_LABEL) continue;
     const name = nameOf(e);
-    /* X-Wing and the composite PGP key resist a quantum computer (Key Chain's quantum-safe keys): said in the title */
-    const pq = e.type === 'xwing' || e.type === 'composite' ? ' (quantum-safe)' : '';
+    /*
+     * Post-quantum keys say so in the title, in the real term (Brad, 2026-10-13): "+PQC" for the
+     * composite PGP key (post-quantum and classic halves together - the "+" signals composite),
+     * "PQC" for the others (X-Wing).
+     */
+    const pq = e.type === 'composite' ? ' (+PQC)' : e.type === 'xwing' ? ' (PQC)' : '';
     if (e.pgp) out.push({id: `${e.id}:pgp`, title: `${name} - PGP${pq}`, format: 'PGP', text: e.pgp});
     let forms: any = null;
     try {

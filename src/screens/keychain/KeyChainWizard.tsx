@@ -30,7 +30,7 @@ type Answers = {
   leave?: 'no' | 'yes';
   unsure?: boolean;
   use?: 'ssh' | 'pgp' | 'files' | 'apps' | 'site' | 'other' | 'pq';
-  /* quantum-safe: a derived X-Wing key by name, or a composite PGP identity in an RSA slot */
+  /* PQC: a derived X-Wing key by name, or a composite (+PQC) PGP identity in an RSA slot */
   pqKind?: 'xwing' | 'pgp';
   sshP256?: boolean;
   pq?: boolean;
@@ -98,8 +98,8 @@ function planOf(a: Answers): Plan | null {
     case 'site':
       return {act: 'derive', scheme: 'label', type: 'p256', what: 'a key the OnlyKey re-creates from a name (nothing is stored)'};
     case 'pq':
-      if (a.pqKind === 'xwing') return {act: 'derive', scheme: 'label', type: 'xwing', what: 'a quantum-safe key (X-Wing) the OnlyKey re-creates from a name, for files and messages'};
-      if (a.pqKind === 'pgp') return {act: 'composite', what: 'a quantum-safe PGP identity (ML-KEM + X25519 to decrypt, ML-DSA + Ed25519 to sign), made in the App and loaded onto the OnlyKey'};
+      if (a.pqKind === 'xwing') return {act: 'derive', scheme: 'label', type: 'xwing', what: 'a PQC key (X-Wing) the OnlyKey re-creates from a name, for files and messages'};
+      if (a.pqKind === 'pgp') return {act: 'composite', what: 'a +PQC PGP identity (ML-KEM + X25519 to decrypt, ML-DSA + Ed25519 to sign), made in the App and loaded onto the OnlyKey'};
       return null;
     case 'other':
       if (!a.otherType) return null;
@@ -193,7 +193,7 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [],
       {label: 'Encrypted email (PGP)', info: 'People send you encrypted email and you sign yours.', set: {use: 'pgp'}},
       {label: 'Receiving encrypted files (age)', info: 'People encrypt files to you; only your OnlyKey can open them.', set: {use: 'files'}},
       {label: 'Signing Android apps or code', info: 'Proves an app or file came from you.', set: {use: 'apps'}},
-      {label: 'Quantum-safe keys', info: pqOk
+      {label: 'PQC keys', info: pqOk
         ? 'Keys that stay safe against future quantum computers: one for files and messages, or a PGP identity for email.'
         : missingNote('postQuantum'), set: {use: 'pq'}, disabled: !pqOk},
       {label: 'A website (or any name)', info: 'A key for one website. The OnlyKey re-creates it from the address whenever it is needed - nothing is stored anywhere.', set: {use: 'site'}},
@@ -225,7 +225,7 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [],
    * OnlyKey cannot give it back.
    */
   if (a.use === 'pq' && !a.pqKind) {
-    return {kind: 'choice', id: 'pqKind', ask: 'Which quantum-safe key?', options: [
+    return {kind: 'choice', id: 'pqKind', ask: 'Which PQC key?', options: [
       {label: 'For files and messages', info: 'X-Wing. The OnlyKey re-creates it from a name you choose - nothing stored, no slot used, back after a backup restore. Shared as an age recipient (age1onlykey…).', set: {pqKind: 'xwing'}, recommended: true},
       {label: 'A PGP identity for email', info: 'A composite PGP key, made in the App and loaded into an RSA slot. Its public key is kept in Key Chain - the OnlyKey cannot give it back. Needs PGP software that reads post-quantum keys.', set: {pqKind: 'pgp'}},
     ]};
@@ -404,7 +404,7 @@ function nextQuestion(a: Answers, existing: Existing[], reserved: number[] = [],
 function trail(a: Answers): string[] {
   const t: string[] = [];
   if (a.leave) t.push(a.leave === 'no' ? 'Stays inside the OnlyKey' : 'A copy is kept');
-  const use: Record<string, string> = {ssh: 'SSH login', pgp: 'Encrypted email (PGP)', files: 'Receiving files', apps: 'Signing apps / code', site: 'Website key', other: 'Other', pq: 'Quantum-safe'};
+  const use: Record<string, string> = {ssh: 'SSH login', pgp: 'Encrypted email (PGP)', files: 'Receiving files', apps: 'Signing apps / code', site: 'Website key', other: 'Other', pq: 'PQC'};
   if (a.use) t.push(use[a.use]);
   if (a.pqKind) t.push(a.pqKind === 'xwing' ? 'Files and messages' : 'PGP identity');
   if (a.sshP256 !== undefined) t.push(a.sshP256 ? 'P-256' : 'Ed25519');

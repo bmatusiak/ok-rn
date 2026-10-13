@@ -101,20 +101,40 @@ class NativeQrScannerModule(private val reactContext: ReactApplicationContext) :
     }.start()
   }
 
-  /* the OnlyKey mark (res/drawable-nodpi/ic_o_mark.png) on a white pad, 30% of the side */
+  /*
+   * The OnlyKey mark (res/drawable-nodpi/ic_o_mark.png) in the middle, with NO square behind it
+   * (Brad, 2026-10-13: "the logo in the center can be a transparent background" - the code's
+   * modules run up to the logo's own outline). Only the logo's silhouette is cleared: each pixel
+   * row of the mark filled from its leftmost to its rightmost stroke, drawn white a little larger
+   * than the mark so no module touches a stroke. That clears less of the code than the old square
+   * did; the read-back below still drops the logo for any code it would make unreadable.
+   */
   private fun drawLogo(bmp: Bitmap) {
     val mark = BitmapFactory.decodeResource(reactContext.resources, com.okrn.R.drawable.ic_o_mark) ?: return
-    val side = bmp.width * 0.30f
-    val pad = side * 0.12f
-    val left = (bmp.width - side) / 2f
-    val top = (bmp.height - side) / 2f
-    val canvas = Canvas(bmp)
-    canvas.drawRect(RectF(left, top, left + side, top + side), Paint().apply { color = Color.WHITE })
-    val scale = minOf((side - 2 * pad) / mark.width, (side - 2 * pad) / mark.height)
+    val box = bmp.width * 0.30f * 0.76f
+    val scale = minOf(box / mark.width, box / mark.height)
     val w = mark.width * scale
     val h = mark.height * scale
     val dst = RectF((bmp.width - w) / 2f, (bmp.height - h) / 2f, (bmp.width + w) / 2f, (bmp.height + h) / 2f)
+    val canvas = Canvas(bmp)
+    val edge = h * 0.07f
+    canvas.drawBitmap(silhouette(mark), null, RectF(dst.left - edge, dst.top - edge, dst.right + edge, dst.bottom + edge), Paint(Paint.FILTER_BITMAP_FLAG))
     canvas.drawBitmap(mark, null, dst, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+  }
+
+  /* the mark's outer shape, white and solid: each row filled between its outermost opaque pixels */
+  private fun silhouette(mark: Bitmap): Bitmap {
+    val out = Bitmap.createBitmap(mark.width, mark.height, Bitmap.Config.ARGB_8888)
+    val row = IntArray(mark.width)
+    for (y in 0 until mark.height) {
+      mark.getPixels(row, 0, mark.width, 0, y, mark.width, 1)
+      var first = -1
+      var last = -1
+      for (x in 0 until mark.width) if (Color.alpha(row[x]) > 16) { if (first < 0) first = x; last = x }
+      if (first < 0) continue
+      for (x in first..last) out.setPixel(x, y, Color.WHITE)
+    }
+    return out
   }
 
   private fun readsBack(bmp: Bitmap, text: String): Boolean = try {

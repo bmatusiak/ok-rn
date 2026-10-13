@@ -33,6 +33,7 @@ import {currentNet} from '../net';
 import {Btn} from './components';
 import {Sheet} from './Sheet';
 import {theme} from './theme';
+import {useQuietMotion} from './CountdownBar';
 
 /* the core firmware closes every wait at 20 s (okcore.cpp Usertimeout) */
 const WAIT_MS = 20_000;
@@ -109,12 +110,18 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
   const derive: DeriveWait | null = !fido.needed && !wait ? deriveWaitNow() : null;
   const since = fido.needed ? fidoSince : wait?.since ?? derive?.since ?? 0;
   const [now, setNow] = useState(Date.now());
+  /*
+   * QUIET IN TESTING MODE (useQuietMotion): the countdown steps every 5 s there, not every second.
+   * A screen that changes every second never gives the UI tools a quiet read, and the press tool's
+   * testnet check then saw nothing and refused the press (Pixel + A13 swap, 2026-10-13).
+   */
+  const quiet = useQuietMotion();
   useEffect(() => {
     if (!since) return;
     setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const t = setInterval(() => setNow(Date.now()), quiet ? 5000 : 1000);
     return () => clearInterval(t);
-  }, [since]);
+  }, [since, quiet]);
 
   /* no double taps: the buttons wake 1 s after the sheet appears, and one tap is all (EdgeRequestSheet) */
   const [ready, setReady] = useState(false);
@@ -130,7 +137,8 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
   const showVendor = !showFido && !!wait && !(wait.w.what === 'edge' && edgeAsking);
   const showDerive = !showFido && !showVendor && !!derive;
   if (!showFido && !showVendor && !showDerive) return null;
-  const left = Math.max(0, Math.ceil((since + WAIT_MS - now) / 1000));
+  const exact = Math.max(0, Math.ceil((since + WAIT_MS - now) / 1000));
+  const left = quiet ? Math.ceil(exact / 5) * 5 : exact;
   const hush = () => { try { NativeOkEmu.hushPress(); } catch { /* no native side (jest, an old build) */ } };
 
   return (

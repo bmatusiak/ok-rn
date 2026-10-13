@@ -19,6 +19,9 @@ import {guestBookChanged, onGuestBookChanged, openBook, openpgp} from './service
 export type Contact = any;
 export type Found = {format: string; text: string; fingerprint: string; label: string; info?: any};
 export type Source = {kind: string; handle: string};
+/* a contact's own details (store.js DETAIL_LABELS: Mobile, Home, Work, Other) */
+export type Labelled = {label: string; value: string};
+export type Details = {name: string; nicknames: string[]; phones: Labelled[]; emails: Labelled[]; note: string};
 
 /* the phone's fetch as the lib wants it: status, final URL (https check), text */
 const fetchFn = async (url: string) => {
@@ -149,7 +152,19 @@ export function useGuestBook() {
       const at = next.findIndex((c: Contact) =>
         c.keys.some((k: any) => incoming.keys.some((i: any) => i.format === k.format && i.fingerprint === k.fingerprint)),
       );
-      if (at >= 0) next[at] = book.addKeys(next[at], incoming.keys, {kind: 'paste', handle: ''});
+      if (at >= 0) {
+        /* the same person: their keys merge in, and so do details this book does not have yet */
+        const have: Contact = book.addKeys(next[at], incoming.keys, {kind: 'paste', handle: ''});
+        const inc: Contact = incoming;
+        const union = (a: any[] = [], b: any[] = [], key: (x: any) => string) => [...a, ...b.filter(x => !a.some(y => key(y) === key(x)))];
+        next[at] = book.setDetails(have, {
+          name: have.name,
+          nicknames: union(have.nicknames, inc.nicknames, (x: string) => x.toLowerCase()),
+          phones: union(have.phones, inc.phones, (x: any) => x.value),
+          emails: union(have.emails, inc.emails, (x: any) => String(x.value).toLowerCase()),
+          note: have.note || inc.note,
+        });
+      }
       else {
         next.push(incoming);
         added += 1;
@@ -177,6 +192,8 @@ export function useGuestBook() {
     keepAndRemove: (id: string, keyId: string) => update(id, c => refresh.keepAndRemoveSources(c, keyId)),
     setVerified: (id: string, keyId: string, v: boolean) => update(id, c => book.setVerified(c, keyId, v)),
     rename: (id: string, name: string, note?: string) => update(id, c => book.rename(c, name, note)),
+    /* the edit page: name, nicknames, labelled phones and emails, note */
+    setDetails: (id: string, d: Details) => update(id, c => book.setDetails(c, d)),
     removeKey: (id: string, keyId: string) => update(id, c => book.removeKey(c, keyId)),
     exportFile,
     importFile,

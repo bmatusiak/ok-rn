@@ -298,11 +298,16 @@ export function Segmented<T extends string>({
   );
 }
 
-export function KeyValue({label, value}: {label: string; value: string}) {
+/*
+ * A label and its value. A long value WRAPS in its row (it used to run past the card's edge -
+ * a fingerprint, 2026-10-13); stacked puts the value under its label, full width, for the long
+ * ones a screen knows about (fingerprints, user ids, sources).
+ */
+export function KeyValue({label, value, stacked}: {label: string; value: string; stacked?: boolean}) {
   return (
-    <View style={styles.kv}>
+    <View style={stacked ? styles.kvStacked : styles.kv}>
       <Text style={styles.kvLabel}>{label}</Text>
-      <Text style={styles.kvValue}>{value}</Text>
+      <Text style={stacked ? styles.kvValueStacked : styles.kvValue}>{value}</Text>
     </View>
   );
 }
@@ -431,9 +436,11 @@ const styles = StyleSheet.create({
   segmentText: {color: theme.textDim, fontSize: 12, fontWeight: '600'},
   segmentTextActive: {color: '#0b0d10'},
 
-  kv: {flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3},
+  kv: {flexDirection: 'row', justifyContent: 'space-between', gap: 12, paddingVertical: 3},
+  kvStacked: {paddingVertical: 3, gap: 2},
   kvLabel: {color: theme.textDim, fontSize: 12},
-  kvValue: {color: theme.text, fontSize: 12, fontFamily: theme.mono},
+  kvValue: {color: theme.text, fontSize: 12, fontFamily: theme.mono, flexShrink: 1, textAlign: 'right'},
+  kvValueStacked: {color: theme.text, fontSize: 12, fontFamily: theme.mono},
 
   log: {
     // No flex. It sizes to its content and the page scrolls; claiming a share
