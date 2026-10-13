@@ -79,6 +79,7 @@ import {EdgeScreen} from './src/screens/EdgeScreen';
 import {EdgeRequestSheet} from './src/ui/EdgeRequestSheet';
 import {PressSheet} from './src/ui/PressSheet';
 import {buildInfo, hasSoftKeyPlugin} from './src/buildInfo';
+import {appSignature} from './src/appSignature';
 import {pluginTabs, pluginWatches, usePluginsStarted} from './src/plugins';
 import {setFirmwareConsoleToLogcat} from './src/hooks/useOkEmu';
 import {startKeyChainRecorder} from './src/keyChainRecorder';
@@ -1176,6 +1177,20 @@ function Shell() {
           <View style={[styles.testing, {borderColor: theme.error}]}>
             <Text style={[styles.testingText, {color: theme.error}]}>
               TEST BUILD - debugging lock OFF: with adb on, a computer could approve and press
+            </Text>
+          </View>
+        ) : null}
+
+        {/*
+          NOT SIGNED BY THE OFFICIAL RELEASE KEY (Brad, 2026-10-13: "if the app is not signed by the
+          official release key, it shows a banner like test build ... the banner will be called
+          unofficial release"). A repackaged APK runs under someone else's certificate; said in
+          red on every screen, like the TEST BUILD banner (src/appSignature.ts).
+        */}
+        {appSignature.unofficial ? (
+          <View style={[styles.testing, {borderColor: theme.error}]}>
+            <Text style={[styles.testingText, {color: theme.error}]}>
+              UNOFFICIAL RELEASE - this app is not signed with the OnlyKey release key
             </Text>
           </View>
         ) : null}

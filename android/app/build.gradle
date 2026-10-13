@@ -129,6 +129,17 @@ try {
  * Gradle reads this while it configures, before stage.js rewrites that file, so the file still
  * describes the PREVIOUS build - a lock-on pre-release after a TEST build was named "-TEST-nolock".
  */
+/*
+ * The certificates an OFFICIAL release is signed with (SHA-256, comma-separated), built into the
+ * app so it can say "UNOFFICIAL RELEASE" when it runs under any other (specs/NativeAppSignature.ts).
+ * Until there is a release key this is the repo debug.keystore - React Native's stock template
+ * key, public, so it proves nothing yet; it only lets the check be tried. OKRN_OFFICIAL_SIGNERS
+ * replaces the list for one build (a test that the banner shows, without signing with a new key).
+ */
+def officialSigners = {
+    return System.getenv("OKRN_OFFICIAL_SIGNERS") ?: "FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C"
+}
+
 def stagedLockOff = {
     return System.getenv('OKRN_DEBUG_LOCK') == 'off'
 }
@@ -206,6 +217,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode buildNumber
         versionName "0.0.7"
+        buildConfigField "String", "OKRN_OFFICIAL_SIGNERS", "\"${officialSigners()}\""
     }
     signingConfigs {
         debug {
