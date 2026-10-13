@@ -233,6 +233,8 @@ function VendorBody({w, fw, named}: {w: KeyWaiting; fw: FirmwarePress | null; na
           <Text style={styles.op}>
             {`${opName(fw.opcode, w.what)} with ${fw.label ? (named === undefined ? '…' : named.name ?? (named.listed ? 'an unnamed identity in your Key Chain' : 'an identity not in your Key Chain')) : keyName(fw.slot)}`}
           </Text>
+          {/* what the feature that derives this label uses it for (pressAsk nameDerive): Guest Book's swap, the Password Manager's store */}
+          {fw.label && deriveNameOf(fw.label) ? <Text style={styles.dim}>{deriveNameOf(fw.label)}</Text> : null}
           {fw.label && named && !named.listed ? <Text style={[styles.dim, {color: theme.error}]}>{`identity ${fingerprint(fw.label)} - nobody listed it. If you did not ask for it, let it run out.`}</Text> : null}
           <Text style={styles.dim}>{`${keyName(fw.slot)} · message ${fingerprint(fw.subject)}`}</Text>
         </View>

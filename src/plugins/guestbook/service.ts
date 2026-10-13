@@ -29,6 +29,29 @@ export const openBook = () => store.createGuestBook({storage: AsyncStorage, rand
 const myNameKey = () => (currentNet() === 'test' ? 'okrn.guestbook.test:myname' : 'okrn.guestbook:myname');
 export const readMyName = async () => (await AsyncStorage.getItem(myNameKey()).catch(() => null)) || '';
 export const saveMyName = (name: string) => AsyncStorage.setItem(myNameKey(), name.trim().slice(0, 64));
+/*
+ * WHICH OF YOUR KEYS A SWAP OFFERS (Brad, 2026-10-12: "lets put a toggle, all default off, the
+ * toggled ones are the keys that get offered"). Guest Book collects the keys people encrypt
+ * messages to and check signatures with - "SSH ... is not something normal to trade" - so nothing
+ * goes out until its owner turns it on, key by key, on the Me page. Ids are My card's (myCard.ts).
+ */
+const offeredKey = () => (currentNet() === 'test' ? 'okrn.guestbook.test:offered' : 'okrn.guestbook:offered');
+export async function readOffered(): Promise<Set<string>> {
+  try {
+    const raw = await AsyncStorage.getItem(offeredKey());
+    const ids = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(ids) ? ids.filter((x: unknown) => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+export async function setOffered(id: string, on: boolean): Promise<Set<string>> {
+  const ids = await readOffered();
+  if (on) ids.add(id);
+  else ids.delete(id);
+  await AsyncStorage.setItem(offeredKey(), JSON.stringify([...ids]));
+  return ids;
+}
 /* the 1.2 MB OpenPGP fork, loaded the first time a PGP key is read (MessagesScreen does the same) */
 export const openpgp = () => require('node-onlykey-lib/crypto/pgp');
 

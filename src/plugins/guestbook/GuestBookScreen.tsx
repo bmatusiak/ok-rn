@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useState} from 'react';
-import {Alert, BackHandler, Dimensions, Image, PixelRatio, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
+import {Alert, BackHandler, Dimensions, Image, PixelRatio, ScrollView, StyleSheet, Switch, Text, TextInput, View} from 'react-native';
 
 import NativeSecrets from '../../../specs/NativeSecrets';
 import NativeShare from '../../../specs/NativeShare';
@@ -12,7 +12,7 @@ import {readMyCard, type MyKey} from './myCard';
 import {useGuestBook, type Contact, type Found, type Source} from './useGuestBook';
 import {ExchangeSheet} from './ExchangeSheet';
 import {isInvite, onInvite, takeInvite} from './swapNative';
-import {readMyName, saveMyName} from './service';
+import {readMyName, readOffered, saveMyName, setOffered} from './service';
 
 /*
  * GUEST BOOK (onlykey-edge/features/GUEST-BOOK-SPEC.md): other people's PUBLIC keys, laid out like
@@ -33,7 +33,8 @@ type Page =
   | {kind: 'add'; contactId?: string}
   | {kind: 'contact'; id: string}
   | {kind: 'me'}
-  | {kind: 'share'; title: string; text: string; file: string};
+  /* offerId: one of YOUR keys (from Me) - its page has the "offer in key swaps" toggle */
+  | {kind: 'share'; title: string; text: string; file: string; offerId?: string};
 
 const FORMAT_NAME: Record<string, string> = {openpgp: 'PGP', age: 'age', ssh: 'SSH'};
 const formatName = (f: string) => FORMAT_NAME[f] ?? (f.startsWith('raw-') ? `raw ${f.slice(4)}` : f);
@@ -83,8 +84,10 @@ function SwapOverlay({start, onClose}: {start: Swap; onClose: () => void}) {
   const gb = useGuestBook();
   const [mine, setMine] = useState<MyKey[] | null>(null);
   useEffect(() => {
-    readMyCard().then(setMine, () => setMine([]));
+    Promise.all([readMyCard(), readOffered()])
+      .then(([all, ids]) => setMine(all.filter(k => ids.has(k.id))), () => setMine([]));
   }, []);
+  /* only the keys turned on under Me (all off by default) */
   return mine ? <ExchangeSheet start={start} mine={mine} gb={gb} onClose={onClose} /> : null;
 }
 
@@ -99,6 +102,11 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
   useEffect(() => {
     readMyName().then(setMyName, () => {});
   }, []);
+  /* the keys you offer in swaps: read again each time a page changes (a key's page sets them) */
+  const [offered, setOfferedIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    readOffered().then(setOfferedIds, () => {});
+  }, [page]);
 
   useEffect(() => {
     readMyCard().then(setMine, () => setMine([]));
@@ -120,7 +128,7 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
       .catch((e: any) => Alert.alert('Guest Book', String(e?.message ?? e)));
   }, []);
 
-  if (page.kind === 'share') return <SharePage page={page} onBack={() => setPage({kind: 'list'})} />;
+  if (page.kind === 'share') return <SharePage page={page} onBack={() => setPage(page.offerId ? {kind: 'me'} : {kind: 'list'})} />;
   if (page.kind === 'me') {
     const items: EdgeListItem[] = [{key: 's-me', kind: 'section', title: 'My card - your public keys', right: String(mine?.length ?? 0)}];
     for (const k of mine ?? []) {
@@ -128,8 +136,8 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
         key: k.id,
         kind: 'row',
         title: k.title,
-        subtitle: `${k.format} · Share, Copy, QR`,
-        onPress: () => setPage({kind: 'share', title: k.title, text: k.text, file: fileFor({format: k.format === 'PGP' ? 'openpgp' : k.format === 'SSH' ? 'ssh' : 'age'}, k.title)}),
+        subtitle: `${k.format} · ${offered.has(k.id) ? 'offered in key swaps' : 'not offered in swaps'} · Share, Copy, QR`,
+        onPress: () => setPage({kind: 'share', title: k.title, text: k.text, file: fileFor({format: k.format === 'PGP' ? 'openpgp' : k.format === 'SSH' ? 'ssh' : 'age'}, k.title), offerId: k.id}),
       });
     }
     return (
@@ -279,6 +287,10 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
 function SharePage({page, onBack}: {page: Extract<Page, {kind: 'share'}>; onBack: () => void}) {
   const [qr, setQr] = useState<string | null>(null);
   const [qrNote, setQrNote] = useState<string | null>(null);
+  const [offer, setOffer] = useState(false);
+  useEffect(() => {
+    if (page.offerId) readOffered().then(ids => setOffer(ids.has(page.offerId!)), () => {});
+  }, [page.offerId]);
   const showQr = async () => {
     try {
       const NativeQrScanner = require('../../../specs/NativeQrScanner').default;
@@ -301,6 +313,26 @@ function SharePage({page, onBack}: {page: Extract<Page, {kind: 'share'}>; onBack
           <Btn title="Copy" onPress={() => void copy(page.text, 'Public key')} />
           <Btn title="Show QR" onPress={() => void showQr()} />
         </View>
+        {page.offerId ? (
+          <View style={styles.offer}>
+            <View style={{flex: 1}}>
+              <Text style={styles.offerTitle}>Offer in key swaps</Text>
+              <Text style={styles.dim}>
+                {offer
+                  ? 'On: when you swap keys in person, this key is offered - the other person can encrypt messages to you with it, or check your signatures.'
+                  : 'Off: a swap never sends this key. Turn on the keys people use to message you or check your signatures - a PGP or age key, not an SSH login.'}
+              </Text>
+            </View>
+            <Switch
+              value={offer}
+              onValueChange={on => {
+                setOffer(on);
+                void setOffered(page.offerId!, on);
+              }}
+              accessibilityLabel="Offer in key swaps"
+            />
+          </View>
+        ) : null}
         {qr ? <Image source={{uri: qr}} style={styles.qr} accessibilityLabel={`QR code of ${page.title}`} /> : null}
         {qrNote ? <Text style={[styles.dim, {color: theme.warn}]}>{qrNote}</Text> : null}
         <Text selectable style={styles.mono}>{page.text}</Text>
@@ -611,6 +643,8 @@ const styles = StyleSheet.create({
   mono: {color: theme.text, fontFamily: theme.mono, fontSize: 11, marginTop: 12},
   /* full width of the card (Brad, 2026-10-12: "the QR code must be full width"), square */
   qr: {alignSelf: 'stretch', aspectRatio: 1, marginTop: 12, backgroundColor: '#fff'},
+  offer: {flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 12, padding: 10, borderRadius: 8, borderWidth: 1, borderColor: theme.border},
+  offerTitle: {color: theme.text, fontSize: 15, fontWeight: '600'},
   pending: {marginTop: 8, padding: 8, borderRadius: 8, borderWidth: 1, borderColor: theme.warn},
   field: {marginTop: 8},
   input: {marginTop: 4, color: theme.text, fontSize: 14, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: theme.inputBg, borderRadius: 8, borderWidth: 1, borderColor: theme.border},

@@ -26,6 +26,13 @@ void okplugin_key_chain_derived(int transport, int code, int keytype, const uint
 void okplugin_key_chain_primed(int transport, uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len);
 
 /*
+ * a slot-128 derived decapsulation is about to wait for its press: the 32-byte label hash that
+ * picks the key, which the press record (primed) carries in place of nothing - the message the
+ * wait is given is SHA-256(label || ciphertext), from which the label cannot be read back
+ */
+void okplugin_key_chain_decaps_label(const uint8_t *label32);
+
+/*
  * a slot-128 shared-secret derive now waits for its confirmation (web_agent_derive_gate): need is
  * USER_INPUT_PRESS or USER_INPUT_CHALLENGE; data/len are the bytes the challenge code is computed
  * from (the 32-byte label hash, then the input public key)

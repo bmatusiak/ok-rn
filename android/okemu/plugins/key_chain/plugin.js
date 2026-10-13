@@ -55,6 +55,13 @@ module.exports = {
     },
     /* ok_extension.cpp: the derive gate's wait, its start and its end */
     {
+      /* a slot-128 decapsulation's press is given only SHA-256(label || ct): hand over the label first */
+      file: 'okcrypto.cpp',
+      anchor: '            okcore_prime_user_confirmation(OKDECRYPT, RESERVED_KEY_WEB_AGENT_DERIVATION,\n',
+      insert: 'before',
+      text: '            okplugin_key_chain_decaps_label(derive_label);\n',
+    },
+    {
       file: 'libraries/fido2/ok_extension.cpp',
       anchor: '    device_set_status(CTAPHID_STATUS_UPNEEDED);\n',
       insert: 'after',

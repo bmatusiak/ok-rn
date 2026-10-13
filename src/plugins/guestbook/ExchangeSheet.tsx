@@ -43,8 +43,8 @@ export function ExchangeSheet({
   const getKey = useActiveKey();
   const [view, setView] = useState<SwapView>({step: 'connecting'});
   const [qr, setQr] = useState<string | null>(null);
-  /* quantum-safe keys are picked to start with: they are what this swap is for */
-  const [picked, setPicked] = useState<Set<string>>(() => new Set(mine.filter(k => /quantum-safe/.test(k.title)).map(k => k.id)));
+  /* every offered key is picked to start with: offering it (Me) was the choice; unpick one here for this swap */
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(mine.map(k => k.id)));
   const [arrived, setArrived] = useState<Found[] | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   /*
@@ -153,7 +153,7 @@ export function ExchangeSheet({
               />
             ))
           ) : (
-            <Text style={styles.dim}>No shareable keys in Key Chain yet - you can still receive theirs.</Text>
+            <Text style={styles.dim}>You offer no keys in swaps yet - on Me, open a key and turn on "Offer in key swaps". You can still receive theirs.</Text>
           )}
           <Text style={styles.dim}>{myName ? `They will see you as "${myName}".` : 'No name set - they will name you themselves. Set yours on the Me page.'}</Text>
           <Btn

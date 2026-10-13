@@ -127,9 +127,24 @@ void okplugin_key_chain_derive_done(int result) {
 #endif
 }
 
+/*
+ * The label of the slot-128 decapsulation about to be primed, held for that one press record and
+ * cleared by it: [37..68] of the record, with [4] = 1, as a derived code's label is.
+ */
+static uint8_t decaps_label[32];
+static int decaps_label_set = 0;
+
+void okplugin_key_chain_decaps_label(const uint8_t *label32) {
+  if (!label32) return;
+  memcpy(decaps_label, label32, 32);
+  decaps_label_set = 1;
+}
+
 void okplugin_key_chain_primed(int transport, uint8_t opcode, uint8_t slot, const uint8_t *msg, size_t msg_len) {
 #ifdef KC_HAVE_SINK
   uint8_t rec[PRESS_BYTES];
+  int label_held = decaps_label_set && slot == DERIVE_SLOT;
+  decaps_label_set = 0;
   if (!okemu_plugin_event || !msg) return;
   memset(rec, 0, sizeof(rec));
   rec[0] = 1;
@@ -143,7 +158,11 @@ void okplugin_key_chain_primed(int transport, uint8_t opcode, uint8_t slot, cons
   if (derived_code(slot) && msg_len >= 32) {
     rec[4] = 1;
     memcpy(rec + 37, msg + msg_len - 32, 32);
+  } else if (label_held) {
+    rec[4] = 1;
+    memcpy(rec + 37, decaps_label, 32);
   }
+  memset(decaps_label, 0, sizeof(decaps_label));
   okemu_plugin_event("press", rec, PRESS_BYTES);
 #else
   (void)transport; (void)opcode; (void)slot; (void)msg; (void)msg_len;

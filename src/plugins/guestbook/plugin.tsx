@@ -6,6 +6,11 @@ import type {TabsService} from '../tabs';
 import {GuestBookScreen} from './GuestBookScreen';
 import {recipientSource} from './service';
 import {isInvite, openInvite} from './swapNative';
+import {CONTACT_LABEL} from './swapLink';
+import {nameDerive} from '../../pressAsk';
+
+/* what the press sheet says when the swap asks this OnlyKey to open the other phone's seal */
+nameDerive(CONTACT_LABEL, 'Guest Book key swap: prove this OnlyKey to the other phone');
 import type {WatchContext} from '../types';
 
 /*
