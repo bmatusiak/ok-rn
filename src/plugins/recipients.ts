@@ -1,28 +1,47 @@
 /*
- * RECIPIENT SOURCES: the core app plugin through which a feature plugin offers people's public keys
- * to the screens that take one (Messages' recipient box), and takes a key a screen found to keep.
- * Guest Book is the first (GUEST-BOOK-SPEC.md: "Add from Guest Book", "Save to Guest Book").
+ * RECIPIENT SOURCES: the core app plugin through which a feature plugin offers the people whose
+ * public keys a screen can use (Encrypt / Decrypt: who to encrypt to, who signed a message).
+ * Guest Book is the one (Brad, 2026-10-18: "guestbook will be how we get and store pubkey, and
+ * encrypt/decrypt uses guestbook" - people trade keys in Guest Book, then use them here).
  *
  * Core screens ask this list and never name a plugin: with Guest Book removed the list is empty
- * and its buttons simply are not drawn.
+ * and Encrypt / Decrypt says there is nobody to pick.
  */
 
 export type RecipientKey = {
-  /* the contact's name, and which of their keys */
-  contact: string;
+  /* which of the person's keys (its label in their Guest Book entry) */
   label: string;
   /* the armored public key block (only public keys travel here) */
   text: string;
-  /* the person compared the fingerprint out of band (spec: unverified ones say so plainly) */
+  /* the person compared its fingerprint out of band (unverified ones say so plainly) */
   verified: boolean;
+  /* a composite (+PQC) PGP key: post-quantum and classic halves together */
+  composite: boolean;
+};
+
+export type RecipientContact = {
+  id: string;
+  name: string;
+  /* their usable PGP keys - a revoked one is never offered */
+  keys: RecipientKey[];
 };
 
 export type RecipientSource = {
   name: string;
-  /** Every contact's PGP public key. */
-  pgpKeys(): Promise<RecipientKey[]>;
-  /** Keep a key a screen found (a look-up result) - adds a contact, or the key onto one. */
-  save?(armored: string, label: string, from: {kind: string; handle: string}): Promise<string>;
+  /**
+   * YOU, as a person to pick (Brad, 2026-10-18: "we should be able to encrypt or decrypt for our
+   * self, our own ME keys"): your own PGP public keys, so a message can be encrypted to you and
+   * opened with your key, and your own signature is named. null when you have none.
+   */
+  me(): Promise<RecipientContact | null>;
+  /** Every person with at least one usable PGP public key, sorted by name. */
+  pgpContacts(): Promise<RecipientContact[]>;
+  /**
+   * Check ONE person's keys at their sources, now (Brad, 2026-10-18: refresh "only ... on a
+   * single contact, with a button press, or if i select the contact to use to encrypt or
+   * decrypt"). Returns the change lines; a changed key waits for approval in the source.
+   */
+  refresh(contactId: string): Promise<string[]>;
 };
 
 export type RecipientsService = {

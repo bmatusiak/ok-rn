@@ -5,6 +5,7 @@ import tabs, {type TabsService} from './tabs';
 import recipients, {type RecipientSource, type RecipientsService} from './recipients';
 import passwords from './passwords/plugin';
 import guestbook from './guestbook/plugin';
+import cryptobox from './cryptobox/plugin';
 import type {AppTab, AppWatch} from './types';
 
 /*
@@ -16,7 +17,7 @@ import type {AppTab, AppWatch} from './types';
  * "i want the password manager to act as its own plugin, keeping it easy to remove and work on
  * seperatly").
  */
-const PLUGINS: any[] = [tabs, recipients, passwords, guestbook];
+const PLUGINS: any[] = [tabs, recipients, passwords, guestbook, cryptobox];
 
 let started: TabsService | null = null;
 let recipientsService: RecipientsService | null = null;

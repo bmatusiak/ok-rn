@@ -19,7 +19,7 @@ import {EntryEditor} from './EntryEditor';
 import {DerivedEntry, NewDerived} from './DerivedViews';
 import {openEntry, sealEntry, stripInner} from './innerKeys';
 import {NewPhrase, PhraseEntry} from './PhraseViews';
-import {RowActions, type RowAction} from './RowActions';
+import {RowActions, type RowAction} from '../../ui/RowActions';
 import {TotpCode, TotpRowCode} from './TotpViews';
 import {policyWords, timeLeftWords} from './session';
 import {usePasswordManager, type OldVault} from './usePasswordManager';

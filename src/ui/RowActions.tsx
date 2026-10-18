@@ -1,9 +1,9 @@
 import React from 'react';
 import {StyleSheet, Text} from 'react-native';
 
-import {Btn} from '../../ui/components';
-import {Sheet} from '../../ui/Sheet';
-import {theme} from '../../ui/theme';
+import {Btn} from './components';
+import {Sheet} from './Sheet';
+import {theme} from './theme';
 
 /*
  * A ROW'S ACTIONS, from a long press in the Passwords list (spec UI, "List": "Row actions: Copy

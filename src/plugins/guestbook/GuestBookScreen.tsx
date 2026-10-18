@@ -279,12 +279,8 @@ function GuestBookPages({ctx, onSwap}: {ctx: TabContext; onSwap: (s: Swap) => vo
         <Btn title="+ Add" tone="primary" onPress={() => setPage({kind: 'add'})} />
       </View>
       <View style={styles.subbar}>
-        <Text style={styles.dim}>{gb.refreshing ? `Checking ${gb.refreshing}…` : 'Keys are checked only when you press Refresh.'}</Text>
-        <Btn
-          title="Refresh all"
-          disabled={!!gb.refreshing || !gb.contacts.length}
-          onPress={() => act(async () => { const changes = await gb.refreshAll(); Alert.alert('Refresh all', changes.length ? changes.join('\n') : 'Nothing changed.'); })}
-        />
+        {/* no Refresh all (Brad, 2026-10-18): one contact at a time - its page, or picking it in Encrypt / Decrypt */}
+        <Text style={styles.dim}>{gb.refreshing ? `Checking ${gb.refreshing}…` : "A contact's keys are checked when you press Refresh on it, or pick it to encrypt to."}</Text>
       </View>
       <EdgeList items={items} empty="Nothing matches." />
     </View>

@@ -42,7 +42,7 @@ function InviteLinks({openTab}: WatchContext) {
  */
 export default function setup({tabs, recipients}: {tabs: TabsService; recipients: RecipientsService}, register: (err: Error | null, services: {guestbook: object}) => void) {
   tabs.add({name: 'Guest Book', after: 'Passwords', render: ctx => <GuestBookScreen ctx={ctx} />}, InviteLinks);
-  /* Messages' "Add from Guest Book" and "Save to Guest Book" */
+  /* Encrypt / Decrypt picks people from here, and names who signed a message */
   recipients.add(recipientSource);
   register(null, {guestbook: {}});
 }

@@ -1,17 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import {formats, store} from 'node-onlykey-lib/guestbook';
+import {refresh, store} from 'node-onlykey-lib/guestbook';
 import {currentNet} from '../../net';
-import type {RecipientKey, RecipientSource} from '../recipients';
+import type {RecipientContact, RecipientKey, RecipientSource} from '../recipients';
 
 /*
- * GUEST BOOK OUTSIDE ITS TAB (GUEST-BOOK-SPEC.md, UI: "In Encrypt, the recipient box gains 'Add
- * from Guest Book' ... After an online lookup in Messages, a 'Save to Guest Book' button appears
- * on each result"). Offered to core screens through the recipients service (src/plugins/
- * recipients.ts), so Messages never imports this plugin.
+ * GUEST BOOK OUTSIDE ITS TAB (Brad, 2026-10-18: "guestbook will be how we get and store pubkey,
+ * and encrypt/decrypt uses guestbook"). Encrypt / Decrypt picks people from here - to encrypt to,
+ * and to name who signed a message - through the recipients service (src/plugins/recipients.ts),
+ * so that screen never imports this plugin.
  *
- * The store setup lives here, shared with the tab's hook (useGuestBook), and a change made from
- * Messages tells the tab to read the list again.
+ * The store setup lives here, shared with the tab's hook (useGuestBook), and a refresh made from
+ * Encrypt / Decrypt tells the tab to read the list again.
  */
 
 declare const crypto: {getRandomValues<T extends Uint8Array>(array: T): T};
@@ -63,32 +63,52 @@ export function onGuestBookChanged(l: () => void): () => void {
 }
 export const guestBookChanged = () => listeners.forEach(l => l());
 
+/* a composite PGP key's primary is ML-DSA-65 + Ed25519 (the fork's pqc_mldsa_ed25519) */
+const isComposite = (algorithm: unknown) => /pqc|mldsa|mlkem/i.test(String(algorithm || ''));
+
+const fetchFn = async (url: string) => {
+  const res = await fetch(url);
+  return {ok: res.ok, status: res.status, url: res.url, text: () => res.text()};
+};
+
 export const recipientSource: RecipientSource = {
   name: 'Guest Book',
 
-  async pgpKeys(): Promise<RecipientKey[]> {
-    const {contacts} = await openBook().load();
-    const out: RecipientKey[] = [];
-    for (const c of contacts) {
-      for (const k of c.keys) {
-        /* a revoked key is never offered to encrypt to (spec Security: "Encrypt refuses it") */
-        if (k.format !== 'openpgp' || k.info?.revoked) continue;
-        out.push({contact: c.name, label: k.label || 'PGP key', text: k.text, verified: !!k.verified});
-      }
-    }
-    return out.sort((a, b) => a.contact.localeCompare(b.contact));
+  async me() {
+    /* My card's PGP certificates (Key Chain keeps them), the same keys the Me page shows */
+    const {readMyCard} = require('./myCard');
+    const mine = (await readMyCard()).filter((k: any) => k.format === 'PGP');
+    if (!mine.length) return null;
+    const name = await readMyName();
+    return {
+      id: 'me',
+      name: name ? `Me - ${name}` : 'Me',
+      keys: mine.map((k: any) => ({label: k.title, text: k.text, verified: true, composite: k.title.includes('(+PQC)')})),
+    };
   },
 
-  async save(armored, label, from) {
-    const {found} = await formats.detectAll(armored, {openpgp: openpgp()});
-    if (!found.length) throw new Error('no public key in that to save');
+  async pgpContacts(): Promise<RecipientContact[]> {
+    const {contacts} = await openBook().load();
+    const out: RecipientContact[] = [];
+    for (const c of contacts) {
+      const keys: RecipientKey[] = c.keys
+        /* a revoked key is never offered to encrypt to (spec Security: "Encrypt refuses it") */
+        .filter((k: any) => k.format === 'openpgp' && !k.info?.revoked)
+        .map((k: any) => ({label: k.label || 'PGP key', text: k.text, verified: !!k.verified, composite: isComposite(k.info?.algorithm)}));
+      if (keys.length) out.push({id: c.id, name: c.name, keys});
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  },
+
+  async refresh(contactId) {
     const book = openBook();
     const {contacts} = await book.load();
-    const at = contacts.findIndex((c: any) => c.keys.some((k: any) => found.some((f: any) => f.format === k.format && f.fingerprint === k.fingerprint)));
-    if (at >= 0) contacts[at] = book.addKeys(contacts[at], found, from);
-    else contacts.push(book.newContact({name: label, found, source: from}));
+    const at = contacts.findIndex((c: any) => c.id === contactId);
+    if (at < 0) return [];
+    const r = await refresh.refreshContact(contacts[at], {fetchFn, openpgp: openpgp()});
+    contacts[at] = r.contact;
     await book.save(contacts);
     guestBookChanged();
-    return at >= 0 ? `Already in Guest Book as ${contacts[at].name} - its source was added.` : `Saved to Guest Book as ${contacts[contacts.length - 1].name}.`;
+    return r.changes;
   },
 };

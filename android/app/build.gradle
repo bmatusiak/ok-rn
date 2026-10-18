@@ -132,12 +132,15 @@ try {
 /*
  * The certificates an OFFICIAL release is signed with (SHA-256, comma-separated), built into the
  * app so it can say "UNOFFICIAL RELEASE" when it runs under any other (specs/NativeAppSignature.ts).
- * Until there is a release key this is the repo debug.keystore - React Native's stock template
- * key, public, so it proves nothing yet; it only lets the check be tried. OKRN_OFFICIAL_SIGNERS
- * replaces the list for one build (a test that the banner shows, without signing with a new key).
+ * EMPTY until the Play Store release keystore exists (Brad, 2026-10-18: "we dont have a production
+ * release signing keystore for android for playstore, the pre-release is a unofficial build") - so
+ * every build today, TEST and pre-release alike, says UNOFFICIAL RELEASE. The release key's
+ * fingerprint goes here then (with Play App Signing: the app signing key from Play Console).
+ * OKRN_OFFICIAL_SIGNERS sets the list for one build (to try the check, e.g. with the repo
+ * debug.keystore: FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C).
  */
 def officialSigners = {
-    return System.getenv("OKRN_OFFICIAL_SIGNERS") ?: "FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C"
+    return System.getenv("OKRN_OFFICIAL_SIGNERS") ?: ""
 }
 
 def stagedLockOff = {

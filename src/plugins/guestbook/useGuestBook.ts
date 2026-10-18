@@ -11,7 +11,7 @@ import {guestBookChanged, onGuestBookChanged, openBook, openpgp} from './service
  * One list per net, as Key Chain's: the testnet's list is `okrn.guestbook.test:v1` (cleared with
  * the testnet, src/testnet.ts), so trying things in testing mode never touches the real one.
  *
- * The network is touched only by a person's press (Look up, Refresh, Refresh all) - ok-rn is
+ * The network is touched only by a person's press (Look up, Refresh on one contact) - ok-rn is
  * air-gapped by default. PUBLIC ONLY: every way in goes through the lib's guard; a private key is
  * refused with a reason and nothing is saved (Brad, 2026-10-12).
  */
@@ -102,7 +102,7 @@ export function useGuestBook() {
 
   const remove = useCallback((id: string) => save(contacts.filter((c: Contact) => c.id !== id)), [contacts, save]);
 
-  /** Refresh one contact, or all of them (one at a time); returns the change lines for the screen. */
+  /** Refresh one contact; returns the change lines for the screen. */
   const refreshOne = useCallback(
     async (id: string) => {
       const c = contacts.find((x: Contact) => x.id === id);
@@ -118,17 +118,6 @@ export function useGuestBook() {
     },
     [contacts, save],
   );
-
-  const refreshAll = useCallback(async () => {
-    setRefreshing('everyone');
-    try {
-      const r = await refresh.refreshAll(contacts, {fetchFn, openpgp: openpgp(), onContact: (c: Contact) => setRefreshing(c.name)});
-      await save(r.contacts);
-      return r.changes;
-    } finally {
-      setRefreshing(null);
-    }
-  }, [contacts, save]);
 
   /** Export: the contacts list as a file - public keys only, the store's guard ran on every one. */
   const exportFile = useCallback(async () => {
@@ -186,7 +175,6 @@ export function useGuestBook() {
     update,
     remove,
     refreshOne,
-    refreshAll,
     accept: (id: string, keyId: string, fp: string) => update(id, c => refresh.acceptPending(c, keyId, fp)),
     keepCurrent: (id: string, keyId: string) => update(id, c => refresh.keepCurrent(c, keyId)),
     keepAndRemove: (id: string, keyId: string) => update(id, c => refresh.keepAndRemoveSources(c, keyId)),
