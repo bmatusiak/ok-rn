@@ -6,7 +6,7 @@
  * BOTH module bodies have already been evaluated, so anything that reached for
  * WebCrypto while loading would still have missed it. Importing a module for
  * its side effect is the only way to order this against other imports, which is
- * why `react-native-get-random-values` is shaped the same way.
+ * why src/installRandom.js is shaped the same way.
  *
  * ## Why it is needed at all
  *

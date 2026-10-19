@@ -11,16 +11,18 @@
  * exception thrown before a single byte is written, which surfaces as "the
  * device did not answer" and sends you looking at the firmware.
  *
- * react-native-get-random-values bridges to Android's SecureRandom. That
- * matters more here than in most apps: this key is one half of the session
- * key protecting everything the device is told, so a weak source would not
- * fail loudly, it would just make the session predictable. There is no
+ * src/installRandom.js bridges to Android's SecureRandom through our own
+ * native module (specs/NativeRandom.ts - it replaced the
+ * react-native-get-random-values package, 2026-10-18: crypto code lives in this
+ * repo). That matters more here than in most apps: this key is one half of the
+ * session key protecting everything the device is told, so a weak source would
+ * not fail loudly, it would just make the session predictable. There is no
  * acceptable pure-JS fallback for it.
  *
  * It must be imported before anything that reaches for randomness, which in
  * practice means before App - the soft-key screen connects on mount.
  */
-import 'react-native-get-random-values';
+import './src/installRandom';
 
 /*
  * SECOND, and it depends on the first.

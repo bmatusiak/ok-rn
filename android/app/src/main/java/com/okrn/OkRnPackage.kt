@@ -18,6 +18,8 @@ import com.okrn.qr.NativeQrScannerModule
 import com.okrn.specs.NativeContactLinkSpec
 import com.okrn.specs.NativeAppSignatureSpec
 import com.okrn.sig.NativeAppSignatureModule
+import com.okrn.specs.NativeRandomSpec
+import com.okrn.random.NativeRandomModule
 import com.okrn.contact.NativeContactLinkModule
 import com.okrn.specs.NativeOkSslSpec
 import com.okrn.specs.NativeSecretsSpec
@@ -60,6 +62,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeQrScannerSpec.NAME -> NativeQrScannerModule(reactContext)
       NativeContactLinkSpec.NAME -> NativeContactLinkModule(reactContext)
       NativeAppSignatureSpec.NAME -> NativeAppSignatureModule(reactContext)
+      NativeRandomSpec.NAME -> NativeRandomModule(reactContext)
       else -> null
     }
 
@@ -79,6 +82,7 @@ class OkRnPackage : BaseReactPackage() {
       NativeQrScannerSpec.NAME to moduleInfo(NativeQrScannerSpec.NAME),
       NativeContactLinkSpec.NAME to moduleInfo(NativeContactLinkSpec.NAME),
       NativeAppSignatureSpec.NAME to moduleInfo(NativeAppSignatureSpec.NAME),
+      NativeRandomSpec.NAME to moduleInfo(NativeRandomSpec.NAME),
     )
   }
 

@@ -9,12 +9,14 @@ import {getOnlyKey} from '../../../onlykey';
 import {Btn, Section} from '../../../ui/components';
 import {EdgeList, type EdgeListItem} from '../../../ui/EdgeList';
 import {Keypad} from '../../../ui/Keypad';
+import {PressSheet} from '../../../ui/PressSheet';
+import {useKeyWaiting} from '../../../hooks/useKeyWaiting';
 import {theme} from '../../../ui/theme';
 import type {Manager, Okcrypto} from '../stores';
 import {derived, mnemonic, totp as totpLib} from 'node-onlykey-lib/passwords';
 import {nameDerivedDerive} from '../DerivedViews';
 import {openEntry} from '../innerKeys';
-import {namePhraseDerive} from '../PhraseViews';
+import {NewPhrase, namePhraseDerive} from '../PhraseViews';
 import {stores, storesChanged, type PhraseOkcrypto} from '../usePasswordManager';
 import {ClockWarning, TotpProgress} from '../TotpViews';
 import {formName, hostOf, matching, matchingCodes, type FormTarget} from './match';
@@ -69,6 +71,15 @@ export default function AutofillSheet() {
   const [passphrase, setPassphrase] = useState('');
   const [step, setStep] = useState<Step>({kind: 'starting'});
   const [showAll, setShowAll] = useState(false);
+  /* the phrase box's "+ Derive": Passwords' own new-phrase steps, here, then the new phrase fills */
+  const [deriving, setDeriving] = useState(false);
+  /*
+   * THE SOFT KEY'S PRESS, SHOWN HERE (the Pixel, 2026-10-18): a derive that asks for a press (a
+   * wallet phrase, the store) raised its sheet in the app's own window, behind this one - the fill
+   * timed out (CTAP2_ERR_ACTION_TIMEOUT) unless someone switched to ok-rn to press. The same sheet
+   * the app mounts, over this one.
+   */
+  const keyWaiting = useKeyWaiting('target' in step && step.target.backend === 'embedded');
   const [digits, setDigits] = useState(0);
   const checkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -332,7 +343,7 @@ export default function AutofillSheet() {
       },
       {key: 's-phrases', kind: 'section', title: 'Your wallet phrases', right: String(phrases.length)},
     ];
-    if (!phrases.length) items.push({key: 'none', kind: 'row', tone: 'dim', title: 'No wallet phrases yet', subtitle: 'Make one on the Passwords tab: + Phrase.'});
+    if (!phrases.length) items.push({key: 'none', kind: 'row', tone: 'dim', title: 'No wallet phrases yet', subtitle: 'Derive one below.'});
     for (const e of phrases) {
       items.push({
         key: e.id,
@@ -342,7 +353,50 @@ export default function AutofillSheet() {
         onPress: () => void fillPhrase(e),
       });
     }
-    body = (
+    /*
+     * + DERIVE (Brad, 2026-10-18: "i want to be able to derive a wallet phrase from here, add a
+     * '+ derive' list item to open a input for the data to derive the phrase, and then autofill the
+     * new phrase"). The same steps as Passwords' + Phrase (PhraseViews NewPhrase): a name and a
+     * length, the words from the key, shown once and three asked back from the paper copy, kept as
+     * a recipe - then this wallet's box gets it.
+     */
+    items.push({
+      key: 'derive',
+      kind: 'row',
+      title: '+ Derive',
+      subtitle: 'A new phrase from this OnlyKey and a name you give - kept in Passwords, then filled here',
+      onPress: () => setDeriving(true),
+    });
+    if (deriving) {
+      const target = step.target;
+      const manager = step.manager;
+      body = (
+        <View style={styles.root}>
+          <NewPhrase
+            manager={manager}
+            phraseKey={async () => {
+              const okcrypto = (await getOnlyKey(target.backend)).okcrypto as unknown as Okcrypto;
+              return {okcrypto: okcrypto as unknown as PhraseOkcrypto, press: await pressOf(target.backend, okcrypto)};
+            }}
+            act={fn => {
+              Promise.resolve()
+                .then(fn)
+                .catch(err => setStep({kind: 'error', message: String(err?.message ?? err)}));
+            }}
+            onSaved={id => {
+              storesChanged();
+              setDeriving(false);
+              const made = (manager.list() as Entry[]).find(x => x.id === id);
+              if (made) fillPhrase(made);
+            }}
+          />
+          <View style={styles.bar}>
+            <Btn title="Back" onPress={() => setDeriving(false)} />
+            <Btn title="Cancel" onPress={cancel} />
+          </View>
+        </View>
+      );
+    } else body = (
       <View style={styles.root}>
         <EdgeList items={items} />
         <View style={styles.bar}>
@@ -426,6 +480,7 @@ export default function AutofillSheet() {
     <SafeAreaProvider>
       <SafeAreaView style={styles.screen} edges={['top', 'left', 'right', 'bottom']}>
         {body}
+        <PressSheet waiting={keyWaiting} fido={{needed: false, canPress: false, confirm: () => undefined}} />
       </SafeAreaView>
     </SafeAreaProvider>
   );

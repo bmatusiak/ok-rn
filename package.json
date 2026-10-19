@@ -22,7 +22,6 @@
     "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#0b362e40057a85288ba5d00ce98b614efc3f581e",
     "react": "19.2.3",
     "react-native": "0.87.1",
-    "react-native-get-random-values": "^2.0.0",
     "react-native-safe-area-context": "^5.5.2"
   },
   "devDependencies": {
