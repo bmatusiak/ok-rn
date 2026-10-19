@@ -13,7 +13,7 @@ So a key set to **challenge code (0)** writes nothing for field 30. The key it i
 
 ## What it changes
 
-- **The derived keys do not change.** On 3.1.0 the derive's salt does not depend on the mode (the press-flag byte is always 0; lib `src/device/version.js:869`, `deriveReqPress` false from 3.0.5). The same backup gives the same store, the same wallet phrases and the same derived passwords.
+- **The derived keys do not change.** On 3.1.0 the derive's salt does not depend on the mode (the press-flag byte is always 0; lib `src/device/version.js:869`, `deriveReqPress` false from 3.1.0). The same backup gives the same store, the same wallet phrases and the same derived passwords.
 - **Only the prompt changes:** after the restore the key asks a press where it asked a 3-digit code before. Challenge code can be set again through the lib preference `webAgentDeriveMode`, "Web and agent derived keys", in config mode (`src/device/preferences.js:183`).
 
 The same `if (*ptr != 0)` guard sits on field 21 (stored derived challenge mode, `okcore.cpp:6158`).

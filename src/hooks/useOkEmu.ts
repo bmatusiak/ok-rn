@@ -253,8 +253,8 @@ export function useOkEmu({log, autoStart = false}: Options) {
            * capabilities in React state just below, which were right, and the
            * session's, which stayed stale - and anything the LIBRARY decided
            * from its own copy was decided for the wrong firmware. Measured on
-           * the bench: the Preferences screen drew field 21 as a pre-3.0.5
-           * bitmask against a 3.0.5 key, offering the value-8 toggle that
+           * the bench: the Preferences screen drew field 21 as a pre-3.1.0
+           * bitmask against a 3.1.0 key, offering the value-8 toggle that
            * firmware refuses, because device.preferences() reads the session's
            * capabilities and not these.
            *

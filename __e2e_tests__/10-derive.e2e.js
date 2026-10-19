@@ -533,11 +533,11 @@ module.exports = function derive({describe, it}) {
         /*
          * TWO SPELLINGS OF "THE PREFERENCE IS OFF", one per firmware line.
          *
-         * Before 3.0.5 the refusal names itself - the device answers
+         * Before 3.1.0 the refusal names itself - the device answers
          * CTAP2_ERR_EXTENSION_NOT_SUPPORTED and the library turns that into
          * "derived keys per site without touch".
          *
-         * From 3.0.5 the gate is web_agent_derive_gate() reading field 30,
+         * From 3.1.0 the gate is web_agent_derive_gate() reading field 30,
          * which defaults to USER_INPUT_PRESS, and an unanswered confirmation is
          * CTAP2_ERR_OPERATION_DENIED. Nothing in that names a preference, so
          * matching only the old text rethrew and the setup below never ran -
@@ -729,7 +729,7 @@ module.exports = function derive({describe, it}) {
        *
        * It used to answer [pk_X(32) | mlkem_seed(32)] and leave the host to
        * expand the ML-KEM half from that seed, which meant a PUBLIC-KEY request
-       * returned private material. From 3.0.5 the device holds both halves.
+       * returned private material. From 3.1.0 the device holds both halves.
        *
        * THIS TEST PASSED THROUGHOUT THE CHANGE, on the wrong bytes. The payload
        * is 1216 either way, the library sliced the LAST 64 of it, and the two

@@ -335,7 +335,7 @@ const WANT_ENFORCE = process.env.OKEMU_ENFORCE_ORIGINS === '1';
  * @returns whether the staged tree ends up with it defined
  */
 /*
- * The version the STAGED SOURCES declare, as "v3.0.5".
+ * The version the STAGED SOURCES declare, as "v3.1.0".
  *
  * Read rather than recorded, because the point of it is to track the
  * maintainer. onlykey.h builds the banner the device answers with -
@@ -343,7 +343,7 @@ const WANT_ENFORCE = process.env.OKEMU_ENFORCE_ORIGINS === '1';
  *     #define OKversion "v" OKversionmaj "." OKversionmin "." OKversionpat  *                       OKversionkeyword
  *     #define UNLOCKED  "UNLOCKED" OKversion
  *
- * - so these three defines are the same number `UNLOCKEDv3.0.5-testc` carries
+ * - so these three defines are the same number `UNLOCKEDv3.1.0-testc` carries
  * on the wire, and reading them here cannot drift from what the firmware says
  * about itself.
  *
@@ -351,7 +351,7 @@ const WANT_ENFORCE = process.env.OKEMU_ENFORCE_ORIGINS === '1';
  * it stays null for the working tree on purpose: the app must not report an
  * unreleased tree as a release, and `unreleased` gates features on it. This is
  * the version the tree DECLARES, which for a working tree is the one being
- * worked towards - v3.0.5 while 3.0.4 is the newest tag. Both are wanted: one
+ * worked towards - v3.1.0 while 3.0.4 is the newest tag. Both are wanted: one
  * says what this is, the other says what it will become.
  *
  * The keyword suffix (-test / -prod) is left off deliberately; `production`
@@ -1693,7 +1693,7 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, pluginNam
      */
     version: release.pins ? release.version : null,
     /*
-     * What the SOURCES call themselves, e.g. "v3.0.5" - see
+     * What the SOURCES call themselves, e.g. "v3.1.0" - see
      * readDeclaredVersion(). Present for a pinned build too, where it should
      * agree with `version`; a disagreement there means ok-versions.json pins a
      * commit that is not the release it claims, which is worth seeing.
@@ -1715,7 +1715,7 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, pluginNam
      * until 2026-09, so a tree built as production answered v3.0.4-prodc -
      * byte-identical to the release it was ahead of, while carrying
      * post-quantum work no release had. They read 3/0/5 now, ahead of any
-     * v3.0.5 tag, which is the same situation one number along. The build
+     * v3.1.0 tag, which is the same situation one number along. The build
      * keyword used to separate the two lines and no longer can.
      *
      * `declaredVersion` records that string rather than replacing this flag:

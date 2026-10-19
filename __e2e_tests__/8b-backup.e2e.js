@@ -418,7 +418,7 @@ module.exports = function backupCapture({describe, it}) {
        * says nothing about whether it can be put back. A backup that cannot be
        * restored is not a backup.
        *
-       * It also matters more now than it did. With the vault gated to 3.0.5 no
+       * It also matters more now than it did. With the vault gated to 3.1.0 no
        * derived data can exist on older firmware, so backup and restore carry
        * everything an upgrade needs to preserve - stored keys, slots, labels -
        * and the seed in slot 128 with them (the backup walks ECC slots

@@ -153,11 +153,11 @@ test('the only pins without a signed file are the two that cannot have one', () 
    *           YET: one is named here when 3.1.0 is signed and tagged, and this
    *           list shrinks by one.
    *
-   * v3.0.5 was on this list until node-onlykey-lib 3dfbfd0 dropped its row
+   * v3.1.0 was on this list until node-onlykey-lib 3dfbfd0 dropped its row
    * (2026-09-29): never released or signed, superseded by 3.1.0.
    *
    * This used to assert `named === total - 1`, i.e. exactly one exception, and
-   * it broke the moment v3.0.5 was pinned. Counting made a new unreleased
+   * it broke the moment v3.1.0 was pinned. Counting made a new unreleased
    * version look like a missing file; naming them says which is which, and
    * still catches a pin that quietly loses its image.
    */

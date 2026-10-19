@@ -140,7 +140,7 @@ the starting state for any future work on third-party derives.
 
 ## Why the fix is not just raising the number
 
-The obvious repair is `atLeast([3, 0, 5])` and `patch <= 4 -> 'broken'`. It
+The obvious repair is `atLeast([3, 1, 0])` and `patch <= 4 -> 'broken'`. It
 does not work, for a reason this repository already knows:
 
 **THE DEVELOPMENT TREE ALSO CALLS ITSELF 3.0.4.** `OKversionpat` has not been

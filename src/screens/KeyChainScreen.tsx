@@ -956,7 +956,7 @@ export function KeyChainScreen({
                   <Segmented options={['v1', 'v2'] as const} value={deriveVersion} onChange={setDeriveVersion} />
                   <Text style={styles.note}>
                     {deriveVersion === 'v2'
-                      ? 'v2 (HKDF, firmware 3.0.5+): the derivation the Edge agent uses for its own keys.'
+                      ? 'v2 (HKDF, firmware 3.1.0+): the derivation the Edge agent uses for its own keys.'
                       : 'v1: the derivation onlykey-agent and your own SSH/GPG keys use.'}
                   </Text>
                 </>

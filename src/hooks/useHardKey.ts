@@ -329,7 +329,7 @@ export function useHardKey({log}: {log: (level: LogLevel, text: string) => void}
          * deadlock the probe exists to break: a LOCKED key answers
          * `INITIALIZED` with no version, so debugConsole is null, the probe was
          * skipped, and canPress stayed false on exactly the key that needed a
-         * press to unlock. Measured 2026-09-24 on a v3.0.5-testc developer
+         * press to unlock. Measured 2026-09-24 on a v3.1.0-testc developer
          * key: "usb connected: ... seremu=3", then "console is write-only".
          *
          * The guard it replaced was right about one thing: probing an unknown

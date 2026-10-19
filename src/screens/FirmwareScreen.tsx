@@ -109,7 +109,7 @@ export function FirmwareScreen({
   /*
    * WHAT THIS UPDATE WILL MAKE UNREADABLE, counted before it happens.
    *
-   * Firmware 3.0.5 changed how a derived key is built: libraries@40464ca took
+   * Firmware 3.1.0 changed how a derived key is built: libraries@40464ca took
    * the rpId out of okcrypto_hkdf() and replaced it with a fixed info string.
    * Before it, the origin was hashed into the SALT; after, it is absent. The
    * seed is untouched - slot 128 is the same slot number in both and lives in
@@ -123,7 +123,7 @@ export function FirmwareScreen({
    * AND THE OBVIOUS RECOVERY DOES NOT WORK. "Back it up, then restore onto the
    * new firmware" is what anyone would try, and the backup preserves the INPUT
    * rather than the CONSTRUCTION - the same seed, expanded differently. The
-   * only route back is to unwrap while pre-3.0.5 is still reachable: before
+   * only route back is to unwrap while pre-3.1.0 is still reachable: before
    * updating, or afterwards by restoring a backup onto an older instance.
    *
    * Which is why this is counted HERE. This screen is the thing that performs
@@ -134,7 +134,7 @@ export function FirmwareScreen({
   const [atRisk, setAtRisk] = useState<string[] | null>(null);
 
   /*
-   * TRUE when this key is 3.0.5 or newer, which is also when the vault is
+   * TRUE when this key is 3.1.0 or newer, which is also when the vault is
    * offered at all. Entries on such a key were sealed under the construction
    * it already has, so an update does not strand them and there is nothing to
    * warn about.
@@ -441,18 +441,18 @@ export function FirmwareScreen({
         *
         * When this warning was written the vault was available on any firmware
         * that could derive, so "there are entries" was reason enough to say
-        * something. The vault is now gated to 3.0.5+, and that quietly made
+        * something. The vault is now gated to 3.1.0+, and that quietly made
         * this wrong in both directions: entries can only exist on a key that
-        * is ALREADY 3.0.5 or newer, so the case described here - a pre-3.0.5
+        * is ALREADY 3.1.0 or newer, so the case described here - a pre-3.1.0
         * key with entries - can no longer arise, while the case that DOES
-        * arise (a 3.0.5 key updating to something later) would be told its
+        * arise (a 3.1.0 key updating to something later) would be told its
         * data breaks, which nothing has established.
         *
         * Two correct changes producing a false sentence between them. The
         * lesson is that a warning's CONDITION is part of the warning: this one
         * kept saying something true about the world it was written in.
         *
-        * `deviceVault` is false exactly when the key is pre-3.0.5, so it is
+        * `deviceVault` is false exactly when the key is pre-3.1.0, so it is
         * the condition rather than a version comparison of our own. The
         * warning now fires only for the legacy state - something sealed before
         * the gate existed - and is silent otherwise.

@@ -18,7 +18,7 @@ WAS RUN: `--only deviceFlow,thirdParty` instead of the whole sweep.
 Garbled status and different "key" bytes on every call is the transit v1
 signature - v1 framing applied to a v2 frame decrypts to noise. So
 `capabilities.transitV2` was FALSE, on a device that had just announced itself
-as `UNLOCKEDv3.0.5-testc` two lines above.
+as `UNLOCKEDv3.1.0-testc` two lines above.
 
 ## Why
 
@@ -38,7 +38,7 @@ answer - it is a specific device, the oldest one:
 
 ```
 INITIALIZED            version=null   transitV2=false  deriveReqPress=true   xwing=false
-UNLOCKEDv3.0.5-testc   version=3.0.5  transitV2=true   deriveReqPress=false  xwing=true
+UNLOCKEDv3.1.0-testc   version=3.1.0  transitV2=true   deriveReqPress=false  xwing=true
 ```
 
 And a device must be CONNECTED BEFORE IT CAN BE UNLOCKED. So the first
@@ -59,13 +59,13 @@ mattered.
 
 ## What it cost, and why nobody saw it
 
-Against a 3.0.5 key the library was speaking to a device it believed was
-pre-3.0.5:
+Against a 3.1.0 key the library was speaking to a device it believed was
+pre-3.1.0:
 
 - **transit v1 framing** over v2 frames - which decrypt to noise, or fail their
   tag and vanish entirely, since `okcrypto_transit_open()` dispatches nothing
   on a bad tag;
-- **derive opcodes 3 and 4** (`DERIVE_*_REQ_PRESS`), which 3.0.5 removed and
+- **derive opcodes 3 and 4** (`DERIVE_*_REQ_PRESS`), which 3.1.0 removed and
   deliberately left burned so an old client fails loudly;
 - **a 64-byte X-Wing pair** read out of a 1216-byte device-custody answer.
 
@@ -98,7 +98,7 @@ if (!seen || !seen.version) return false;
 `parseStatus('UNLOCKED')` - the bare marker unlock() resolves with when the
 firmware sent no status line to match - returns version `''`, an EMPTY STRING,
 not null. `!seen.version` catches both; `seen.version === null` would have let
-the empty string through and replaced a known v3.0.5 with a device carrying no
+the empty string through and replaced a known v3.1.0 with a device carrying no
 release at all. The same bug, one call later, introduced by the fix for it.
 `test/version.test.js` pins both spellings so that cannot come back.
 

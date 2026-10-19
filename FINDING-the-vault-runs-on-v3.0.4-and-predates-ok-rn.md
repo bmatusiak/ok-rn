@@ -2,16 +2,16 @@
 
 ## The question
 
-Firmware 3.0.5 changed how a derived key is built, so anything the vault sealed
+Firmware 3.1.0 changed how a derived key is built, so anything the vault sealed
 on older firmware stops opening after an upgrade. The obvious follow-up is who
 that hurts - and the answer decides whether it is a live defect or a thing to
 prevent before it can happen.
 
 Three separate questions get confused here, so they are answered separately.
 
-## Is the vault gated to 3.0.5 in the FIRMWARE?
+## Is the vault gated to 3.1.0 in the FIRMWARE?
 
-**No.** v3.0.4 defines `RESERVED_KEY_WEB_DERIVATION 128`; 3.0.5 renamed it to
+**No.** v3.0.4 defines `RESERVED_KEY_WEB_DERIVATION 128`; 3.1.0 renamed it to
 `RESERVED_KEY_WEB_AGENT_DERIVATION` and kept the old name as an alias for the
 same number. Same slot, both releases.
 
@@ -51,7 +51,7 @@ answer - the checkout is of uncertain currency, and whether onlyagent.app
 carried the feature to real users is the bench owner's question, not a fact in
 the tree. The honest answer is UNKNOWN rather than no.
 
-**And on 3.0.5 that origin is refused outright.** `onlyagent.app` is not in the
+**And on 3.1.0 that origin is refused outright.** `onlyagent.app` is not in the
 trusted table - `fido2/device.cpp` admits `apps.crp.to` and `apps.onlykey.io`
 and nothing else, after libraries@e44ff6c dropped it deliberately. So a user
 with vault data created at onlyagent.app would not merely find it unreadable
@@ -76,7 +76,7 @@ That is worth stating precisely because it decides the response:
 - It IS worth the pre-upgrade warning that now sits above the reboot button in
   FirmwareScreen, because the warning costs little and the failure it prevents
   is silent and unrecoverable after the fact.
-- It leaves a CHOICE still open: the vault could be gated to 3.0.5+ so the
+- It leaves a CHOICE still open: the vault could be gated to 3.1.0+ so the
   situation can never arise at all. That trades a capability a v3.0.4 key
   genuinely has against a hazard no one has hit. Left open deliberately on
   2026-09-23 - "it may be enabled in 3.0.4 but not used yet on the user side".

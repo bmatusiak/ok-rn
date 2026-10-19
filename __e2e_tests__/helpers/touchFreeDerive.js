@@ -43,12 +43,12 @@ const {pressDigits} = require('./pressDigits');
  * rather than 1: bit 0 makes raw-HID derives raise a three-button challenge,
  * bit 3 is the one that allows a FIDO2 derive without a touch.
  *
- * PRE-3.0.5 ONLY. See the note on setTouchFreeDerive().
+ * PRE-3.1.0 ONLY. See the note on setTouchFreeDerive().
  */
 const DERIVE_WITHOUT_TOUCH = 8;
 
 /**
- * The 3.0.5 spelling: an ENUM in field 30, not a bit in field 21.
+ * The 3.1.0 spelling: an ENUM in field 30, not a bit in field 21.
  *
  * Two things changed at once and the old value fails on both counts.
  *
@@ -88,7 +88,7 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
 async function setTouchFreeDerive(device, log) {
   /*
    * WHICH FIELD IS A CAPABILITY QUESTION, so both firmware lines keep working.
-   * Before 3.0.5 the only knob is field 21's bit 3; from 3.0.5 it is field 30's
+   * Before 3.1.0 the only knob is field 21's bit 3; from 3.1.0 it is field 30's
    * enum, and field 21 no longer reaches the derive gate at all.
    */
   const modern = device.capabilities && device.capabilities.deriveReqPress === false;
@@ -291,7 +291,7 @@ async function inConfigMode(device, pin, log, work) {
    *
    * This helper did not restart, and for a long time that went unnoticed
    * because its caller only reached it on firmware that named the preference in
-   * its refusal - which 3.0.5 does not, so the helper was never running. The
+   * its refusal - which 3.1.0 does not, so the helper was never running. The
    * moment it did, it set the preference correctly and then left the device
    * mute: every derive after it failed, INCLUDING ones that had just passed.
    * A fix that works and then breaks the six tests behind it is worse than the
@@ -306,7 +306,7 @@ async function inConfigMode(device, pin, log, work) {
    * pinning that refusal. The line could never have done what it said.
    *
    * It survived because the only caller reached it solely when a derive asked
-   * for confirmation, which 3.0.5 stops doing once field 30 is set - a dead
+   * for confirmation, which 3.1.0 stops doing once field 30 is set - a dead
    * branch on current firmware. Extracting this function for the
    * backup-passphrase suite is what first executed it, and it threw
    * immediately (2026-09-23).
@@ -334,7 +334,7 @@ async function enableTouchFreeDerive(device, pin, log) {
    * rejects unconditionally (1-softKey pins that refusal), so the call could
    * never have done what its log line claimed. It went unnoticed because the
    * only caller reaches it solely when a derive asks for confirmation, which
-   * 3.0.5 stops doing once field 30 is set - dead on current firmware, and
+   * 3.1.0 stops doing once field 30 is set - dead on current firmware, and
    * executing it at all is what exposed it (2026-09-23).
    *
    * The preference persists in EEPROM, so the pass after this one gets what

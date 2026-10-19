@@ -165,7 +165,7 @@ module.exports = function identity({describe, it}) {
          */
         const at = okdevice.version.atLeast;
         const duoBranchGone =
-          at(info.release, [3, 0, 2]) && !at(info.release, [3, 0, 5]);
+          at(info.release, [3, 0, 2]) && !at(info.release, [3, 1, 0]);
         log(`duo challenge branch present in firmware: ${!duoBranchGone}`);
 
         assert.equal(
@@ -304,10 +304,10 @@ module.exports = function identity({describe, it}) {
 
     it('the settings offered are the ones this firmware has', async ({log, assert}) => {
       /*
-       * Fields 30 and 31 do not exist before 3.0.5 - v3.0.4's set_slot() has
+       * Fields 30 and 31 do not exist before 3.1.0 - v3.0.4's set_slot() has
        * no case for either and never answers - so the table the Settings and
        * Advanced tabs draw from must leave them out there, and include them
-       * from 3.0.5. Read only: field 31 is a one-way latch, and writing it to
+       * from 3.1.0. Read only: field 31 is a one-way latch, and writing it to
        * prove a point would change the key for good.
        *
        * Run under the matrix this checks the gate against every release's

@@ -31,7 +31,7 @@ SCRIPT has its own copy of that problem, separate from the bond.
     OKCONNECT: 64 bytes in 4 fragments
     written in 11 ms
     REPLY after 181 ms (170 ms after the last write)
-    'UNLOCKEDv3.0.5-testc'
+    'UNLOCKEDv3.1.0-testc'
 
 END TO END: the host wrote, the phone relayed to IFACE.VENDOR, the soft
 firmware answered, and the answer came back.

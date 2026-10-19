@@ -39,10 +39,10 @@ export type FirmwareFeature = 'postQuantum' | 'hmacSha1' | 'deviceVault';
  *
  * The table (node-onlykey-lib/versions) is the one record of what each release
  * supports: its rows are generated from the library's capabilities() and a lib
- * test fails if they drift. Writing "firmware 3.0.5 or newer" by hand in this
+ * test fails if they drift. Writing "firmware 3.1.0 or newer" by hand in this
  * file was a second copy of that answer, and it went stale - it said no release
- * had post-quantum keys after the table gained 3.1.0, and named 3.0.5 after it
- * was dropped. Now a new row, or a dropped one, changes these sentences by
+ * had post-quantum keys after the table gained the interim pre-release row, and
+ * named that row after it was dropped. Now a new row, or a dropped one, changes these sentences by
  * itself. v3.1.0 is the proposed release, treated there like a signed one.
  */
 function oldestReleaseWith(feature: FirmwareFeature): string | null {
@@ -81,7 +81,7 @@ const FEATURES: Record<FirmwareFeature, {what: string; is: 'is' | 'are'; needs: 
    * NOT a limit of the firmware, unlike the two above, and the note says so
    * rather than implying an old key is incapable. A v3.0.4 key derives fine -
    * measured on a production build of the last signed release. What changed at
-   * 3.0.5 is HOW a key is derived from a label, so anything sealed on older
+   * 3.1.0 is HOW a key is derived from a label, so anything sealed on older
    * firmware stops opening after an upgrade, silently and unrecoverably by the
    * obvious route. Offering it on older firmware would create data that a
    * later update strands, for a feature no released app has carried.

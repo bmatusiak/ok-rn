@@ -140,10 +140,10 @@ export function CryptoScreen({
    * production build. A feature he has not released is a testing feature
    * here too.
    *
-   * It matters beyond parity: the password is a web-derived key, and 3.0.5
+   * It matters beyond parity: the password is a web-derived key, and 3.1.0
    * changed that derivation (libraries 40464ca), so the same label gives a
    * different password after a v3.0.4 key is updated - the reason the vault
-   * waits for 3.0.5 (firmwareFeatures.ts). Testing mode is __DEV__-only
+   * waits for 3.1.0 (firmwareFeatures.ts). Testing mode is __DEV__-only
    * (useTestingMode.ts), so a release build never shows it.
    */
   testing?: boolean;
@@ -240,10 +240,10 @@ export function CryptoScreen({
   const pqc = supports(emu.capabilities, 'postQuantum');
 
   /*
-   * THE VAULT IS A 3.0.5 FEATURE, by decision rather than by capability.
+   * THE VAULT IS A 3.1.0 FEATURE, by decision rather than by capability.
    *
    * Older firmware derives perfectly well - a v3.0.4 production build seals
-   * and opens a blob, measured. What 3.0.5 changed is HOW a key is derived
+   * and opens a blob, measured. What 3.1.0 changed is HOW a key is derived
    * from a label, so anything sealed before it stops opening after an upgrade,
    * silently, and the obvious recovery (back up, restore onto the new
    * firmware) does not work because a backup carries the seed rather than the

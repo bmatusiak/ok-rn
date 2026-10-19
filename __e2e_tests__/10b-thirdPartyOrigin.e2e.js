@@ -1,5 +1,5 @@
 /**
- * Per-origin key separation - and from firmware 3.0.5 there is none.
+ * Per-origin key separation - and from firmware 3.1.0 there is none.
  *
  * WHAT THIS FILE USED TO PIN. okcrypto_hkdf() v1 read the rpId out of the CTAP
  * buffer, SHA-256'd it and mixed that hash into the HKDF expand step, so the
@@ -7,7 +7,7 @@
  * Third-party sites asked under their own hostname and got keys only they
  * could ask for again.
  *
- * WHAT 3.0.5 DOES INSTEAD. libraries@40464ca replaced that with a fixed info
+ * WHAT 3.1.0 DOES INSTEAD. libraries@40464ca replaced that with a fixed info
  * string, "onlykey/derive/ecc/v2", and no origin at all, because per-origin
  * keyspaces were "too confusing and complicated for the user" (the maintainer,
  * 2026-09). Access control replaces key separation: webcryptcheck() admits
@@ -26,9 +26,9 @@
  * SO THERE ARE THREE STATES, not two, and the third is the one a shipped key
  * is actually in:
  *
- *   pre-3.0.5          the origin is in the HKDF info - different keys
- *   3.0.5, debug       trust-all: example.test is served, same key as crp.to
- *   3.0.5, ENFORCING   example.test is REFUSED; there is no key to compare
+ *   pre-3.1.0          the origin is in the HKDF info - different keys
+ *   3.1.0, debug       trust-all: example.test is served, same key as crp.to
+ *   3.1.0, ENFORCING   example.test is REFUSED; there is no key to compare
  *
  * Only the third describes a device a user will ever hold, and until
  * OKEMU_ENFORCE_ORIGINS existed this file could not reach it: an ordinary
@@ -64,7 +64,7 @@
  * wrong about the answer, and its wrongness will look like a device defect.
  *
  * NO LONGER REQUIRES a device setting. It used to need bits 2 and 3 of
- * derivedChallengeMode, written in config mode by 9-cryptoSign - but 3.0.5
+ * derivedChallengeMode, written in config mode by 9-cryptoSign - but 3.1.0
  * made fields 21/22/30 a 0/1/2 enum with no such bits, and admission is now the
  * compiled-in origin table, which no setting can extend.
  */
@@ -90,8 +90,8 @@ const LABEL = 'origin.probe';
  * `reqPress` is the OTHER half of speaking to an older key, and this file went
  * without it for as long as it has existed.
  *
- * Before 3.0.5 a derive that wants a button press asks for it in the OPCODE -
- * DERIVE_PUBLIC_KEY_REQ_PRESS - and 3.0.5 REMOVED those opcodes, leaving the
+ * Before 3.1.0 a derive that wants a button press asks for it in the OPCODE -
+ * DERIVE_PUBLIC_KEY_REQ_PRESS - and 3.1.0 REMOVED those opcodes, leaving the
  * numbers burned so an old client fails loudly. plugins/okcrypto handles this
  * for its own callers (REQ_PRESS_TO_PLAIN, opcodeFor), but this file builds its
  * own tunnel and sends its own request, so none of that reaches it.
@@ -194,7 +194,7 @@ const {needsCtaphid, needsWebDerive} = require('./helpers/needsCtaphid');
 
 module.exports = function thirdParty({describe, it}) {
   describe(thirdParty.name, () => {
-    it('the same label derives the SAME key under a different origin, from 3.0.5', async ({log, assert, skip}) => {
+    it('the same label derives the SAME key under a different origin, from 3.1.0', async ({log, assert, skip}) => {
       const {transport, device} = await getOnlyKey();
 
       /*
@@ -213,13 +213,13 @@ module.exports = function thirdParty({describe, it}) {
       /*
        * WHICH FRAMING to decode with. This used to be a note about third-party
        * mode being a device setting that 9-cryptoSign turned on in config
-       * mode; there is no such setting on 3.0.5 - fields 21/22/30 are a 0/1/2
+       * mode; there is no such setting on 3.1.0 - fields 21/22/30 are a 0/1/2
        * enum with no third-party bit, and admission is the compiled-in origin
        * table, which nothing on the device can extend.
        */
       /*
        * BOTH halves come from the device's capabilities, not from constants
-       * written when 3.0.5 was the only firmware in view: how the answer is
+       * written when 3.1.0 was the only firmware in view: how the answer is
        * framed, and which opcode asks for a press.
        */
       const framing = {
@@ -266,11 +266,11 @@ module.exports = function thirdParty({describe, it}) {
        * PRODUCTION build of every release. It says "the origin check runs"; it
        * does NOT say which origin check.
        *
-       * The two-entry trusted[] table is a 3.0.5 thing. Before it, the origin
+       * The two-entry trusted[] table is a 3.1.0 thing. Before it, the origin
        * was not an admission gate at all - it was mixed INTO the derivation,
        * so a third-party origin got a different key rather than no key. So a
        * production v3.0.4 enforces an origin model that admits example.test
-       * and simply derives something else for it, and asserting 3.0.5's
+       * and simply derives something else for it, and asserting 3.1.0's
        * refusal there failed on firmware behaving exactly as designed:
        * "an ENFORCING build derived a key for example.test".
        *
@@ -293,9 +293,9 @@ module.exports = function thirdParty({describe, it}) {
       }
 
       /*
-       * BEFORE 3.0.5, A THIRD-PARTY ORIGIN NEEDS A DEVICE SETTING - and this
+       * BEFORE 3.1.0, A THIRD-PARTY ORIGIN NEEDS A DEVICE SETTING - and this
        * file used to say so, until I deleted the note as stale. It is stale
-       * for 3.0.5 ONLY, and I checked it against the newest firmware and
+       * for 3.1.0 ONLY, and I checked it against the newest firmware and
        * removed it for every version.
        *
        * v3.0.4's webcryptcheck (fido2/device.cpp:126-132) is:
@@ -310,7 +310,7 @@ module.exports = function thirdParty({describe, it}) {
        * bytes on one run, 14 on another. That is a refusal being read as a
        * payload, not an unstable device.
        *
-       * 3.0.5 removed the bit along with the rest of the bitfield, which is
+       * 3.1.0 removed the bit along with the rest of the bitfield, which is
        * why the setting is absent from `capabilities` - there is nothing to
        * ask. So the honest split is: ask for the derive, and if it does not
        * come back, say WHICH setting would have allowed it rather than
@@ -336,7 +336,7 @@ module.exports = function thirdParty({describe, it}) {
       if (framing.transitV2) {
         assert.equal(first, other,
           'two origins derived DIFFERENT keys - the origin is back in the '
-          + 'derivation, which 3.0.5 removed');
+          + 'derivation, which 3.1.0 removed');
         log('no per-origin separation, by design: one label, one key, every origin');
         log('(this build trusts every origin - stage with OKEMU_ENFORCE_ORIGINS=1 '
           + 'to test the table that a shipped key actually applies)');

@@ -13,7 +13,7 @@ Run again, `--only pqcSlots` onwards, and it passes.
 ## Seen twice
 | Date | Run | First run | Rerun |
 |---|---|---|---|
-| 2026-09-28 | the version matrix, fresh storage slots (v3.1.0, v3.0.5) | failed at this step on both | passed |
+| 2026-09-28 | the version matrix, fresh storage slots (v3.1.0, v3.1.0) | failed at this step on both | passed |
 | 2026-10-02 | full Pixel e2e, `edge` build (an existing slot, not fresh) | failed at this step after 97 passes | `--only pqcSlots,keyChainWrite,hardKey,…` 16 passed |
 
 So it is not only a fresh slot. The common factor is that **pqcSlots runs after many other suites in the same app session**, and its first hold lands while the firmware is still busy.

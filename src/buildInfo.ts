@@ -22,7 +22,7 @@ type Staged = {
   libraries?: string | null;
   /** A released version name when OKEMU_VERSION was set; null for the tree. */
   version?: string | null;
-  /** What onlykey.h's version macros say, e.g. 'v3.0.5'. */
+  /** What onlykey.h's version macros say, e.g. 'v3.1.0'. */
   declaredVersion?: string | null;
   production?: boolean;
   /** False only on a TEST build made with OKRN_DEBUG_LOCK=off - see stage.js. */
@@ -103,14 +103,14 @@ export type BuildInfo = {
    */
   unreleased: boolean;
   /**
-   * The version the SOURCES declare, e.g. 'v3.0.5' - read by stage.js from
+   * The version the SOURCES declare, e.g. 'v3.1.0' - read by stage.js from
    * onlykey.h's OKversionmaj/min/pat, which are what the device's own
-   * `UNLOCKEDv3.0.5-testc` banner is built from.
+   * `UNLOCKEDv3.1.0-testc` banner is built from.
    *
    * Not the same question as `version`. That one is which RELEASE this is a
    * copy of and is null for a working tree; this one is the number the
    * firmware answers with either way, and for a tree it is the release being
-   * worked towards. A tree can declare v3.0.5 months before a v3.0.5 exists,
+   * worked towards. A tree can declare v3.1.0 months before a v3.1.0 exists,
    * which is exactly when knowing the difference matters.
    *
    * null when the staging could not read it, or when there is no staging
@@ -198,7 +198,7 @@ function describeBuild(): string {
    * A working tree says WHICH working tree. 'working tree' alone was true and
    * useless: it is the ordinary case, so the slot carried no information on
    * almost every build, while the number the device answers with was sitting
-   * in the staging metadata unread. 'working tree v3.0.5' says which line of
+   * in the staging metadata unread. 'working tree v3.1.0' says which line of
    * firmware this is ahead of, which is the thing that actually changes.
    *
    * A pinned release keeps its own name and does not repeat the declared

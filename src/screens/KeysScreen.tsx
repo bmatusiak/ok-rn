@@ -202,7 +202,7 @@ export function KeysScreen({
    * thing to set a passphrase.
    */
   /*
-   * Post-quantum generation, and whether this firmware has it at all - 3.0.5
+   * Post-quantum generation, and whether this firmware has it at all - 3.1.0
    * and later do; on a key from an older release this section is faded. See
    * src/firmwareFeatures.ts.
    */
@@ -511,7 +511,7 @@ export function KeysScreen({
       const {device, okcrypto} = await getKey();
 
       /*
-       * No challenge: since firmware 97f0149 (in 3.0.5 and 3.1.0) generating a
+       * No challenge: since firmware 97f0149 (in 3.1.0) generating a
        * post-quantum key on the device asks for no button presses, and the
        * library stopped raising one (node-onlykey-lib 59d11c7).
        */

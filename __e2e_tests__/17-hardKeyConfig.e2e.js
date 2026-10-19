@@ -123,8 +123,8 @@ module.exports = function hardKeyConfig({describe, it}) {
       const {device} = await getOnlyKey('usb');
       /*
        * Through the shared helper rather than a local constant, because WHICH
-       * field and WHICH encoding depend on the firmware: pre-3.0.5 it is bit 3
-       * of field 21, from 3.0.5 it is the 0/1/2 enum in field 30 and an 8 is
+       * field and WHICH encoding depend on the firmware: pre-3.1.0 it is bit 3
+       * of field 21, from 3.1.0 it is the 0/1/2 enum in field 30 and an 8 is
        * refused outright. This file had its own copy of the old value and would
        * have gone on sending it to a hard key running new firmware.
        */
