@@ -29,6 +29,7 @@ import {
   type DeriveWait, type FidoAsk, type FirmwarePress,
 } from '../pressAsk';
 import {consentRefusal} from '../debugGuard';
+import {buildInfo} from '../buildInfo';
 import {currentNet} from '../net';
 import {Btn} from './components';
 import {Sheet} from './Sheet';
@@ -196,16 +197,21 @@ export function PressSheet({waiting, fido}: {waiting: KeyWaiting | null; fido: F
 }
 
 /*
- * WHERE THE BUTTON IS, said by the phone (debug builds only; Brad, 2026-10-10: "this is why i
- * want the sheet, to keep us from being blind"). A script driving the phone over adb waits for
- * this line - the sheet is up, these are its words, the button is HERE in screen pixels - and
- * taps there, instead of tapping where a button used to be on whatever screen is showing.
+ * WHERE THE BUTTON IS, said by the phone (Brad, 2026-10-10: "this is why i want the sheet, to
+ * keep us from being blind"). A script driving the phone over adb waits for this line - the
+ * sheet is up, these are its words, the button is HERE in screen pixels - and taps there,
+ * instead of tapping where a button used to be on whatever screen is showing.
+ *
+ * Debug builds AND TEST builds (debugging lock off). The TEST build is the one the A13 gets
+ * when Claude is to drive it, and with this line off there Brad had to press for the script
+ * (2026-10-20: "if you controlling the a13, you press the buttons"). A real release keeps its
+ * lock and logs nothing.
  */
 export function Locate({what, children}: {what: string; children: React.ReactNode}) {
   const ref = useRef<any>(null);
   return (
     <View ref={ref} collapsable={false} onLayout={() => {
-      if (!__DEV__) return;
+      if (!__DEV__ && buildInfo.debugLock) return;
       /* measured once the sheet has slid in and settled: at its first layout the Edge sheet's Approve read ~195 px high */
       setTimeout(() => ref.current?.measureInWindow((x: number, y: number, w: number, h: number) => {
         const r = PixelRatio.get();
