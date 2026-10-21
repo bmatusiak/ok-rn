@@ -462,13 +462,11 @@ if (NOLOCK) {
     built: builtFrom,
   });
   /*
-   * THE TREE AS IT WAS BEFORE THE BUILD (`dirty`, read at the top), not now:
-   * the build itself rewrites android/okemu/.stage-identity, so asking git
-   * here would always answer "changed". Tracked files only - an untracked
-   * note beside the tree is not in the build.
+   * THE TREE AS IT WAS BEFORE THE BUILD (`dirty`, read at the top), not now.
+   * Tracked files only - an untracked note beside the tree is not in the build.
    */
   const changed = dirty.split(/\r?\n/)
-    .filter(l => l && !l.startsWith('??') && !l.endsWith('android/okemu/.stage-identity'));
+    .filter(l => l && !l.startsWith('??'));
   if (changed.length) say('release: WARNING - built with uncommitted changes: the commit in the names is not all of it');
 }
 say('');

@@ -62,6 +62,9 @@ tools/*.log
 # ---- okemu (firmware-on-Android) ----
 # Regenerated from the sibling checkouts by scripts/stage.js on every build.
 android/okemu/.stage/
+# How this machine's compiled objects were built (debug/production, plugins);
+# stage.js compares it to force a recompile on a switch. Local state only.
+android/okemu/.stage-identity
 
 # A pinned release's sources, unpacked from git's object database by
 # OKEMU_VERSION and cached by commit. Reproducible from ok-versions.json.
