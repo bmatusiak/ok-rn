@@ -29,6 +29,7 @@ import {MergeSheet} from '../ui/MergeSheet';
 import {useYourDevices, type DeviceLink, type YourDevice} from '../hooks/useYourDevices';
 import {bannerLine, onDevicesChanged, waitingCount} from '../edgeDevices';
 import {EdgeAgentsCard} from '../ui/EdgeAgentsCard';
+import {AgentIdentityCard} from '../ui/AgentIdentityCard';
 import type {EdgeRow, EdgeView, Verdict} from '../edgeStore';
 import type {EdgeBudget, EdgeCopyCheck, EdgeRequest} from '../edgeFake';
 
@@ -1103,6 +1104,8 @@ export function EdgeScreen({testingMode = false, focusSeq = null, onFocused, ope
       {/* Brad, 2026-10-05: the drawer holds more than agents now */}
       <BottomDrawer title="Edge Management">
         {!edge.available ? null : <EdgeAgentsCard onChanged={edge.sync} changed={edge.budgets} inDrawer testingMode={testingMode} />}
+        {/* SPEC H7 (Brad, 2026-10-20): the agent identity the phone keeps, shown here */}
+        {!edge.available ? null : <AgentIdentityCard />}
         {!edge.available ? null : <YourDevicesCard headSeq={edge.view?.headSeq} />}
         {!edge.available ? null : <BlocksCard edge={edge} />}
         {!testingMode || !edge.available ? null : (

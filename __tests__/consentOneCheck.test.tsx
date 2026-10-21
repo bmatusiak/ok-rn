@@ -54,6 +54,14 @@ const KINDS: Record<string, {ask: any; button: string}> = {
       scopes: [{op: 'sign', slot: 221, cap: 1, identity: 'ssh://test@nitro16'}],
     }},
   },
+  /* SPEC H7 (2026-10-20): a computer sets the agent identity - the same one check on its Approve */
+  identity: {
+    button: 'Approve',
+    ask: {kind: 'identity', computer: 'NITRO16', blocked: null, was: null, at: Date.now(), record: {
+      ssh: 'ssh://claude@test', gpgUid: 'Claude (test) <claude@test>', committer: null, expires: 0,
+      cert: {armored: '-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nx\n-----END PGP PUBLIC KEY BLOCK-----\n', fingerprint: '7FBF276C85DD192794B46CC4F75A92949D5603CA', created: 1791085347, expires: 0, signPublic: 'ab'.repeat(32)},
+    }},
+  },
 };
 
 test('the kinds list names every SheetAsk kind (a new kind - a sibling - must be added here)', () => {

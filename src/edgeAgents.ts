@@ -16,7 +16,8 @@
  * the Requests switch.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {approve as approveLib, chain, note as noteLib, request as requestLib, sync as syncLib} from 'node-onlykey-lib/edge';
+import {approve as approveLib, chain, identity as identityLib, note as noteLib, request as requestLib, sync as syncLib} from 'node-onlykey-lib/edge';
+import {keepIdentity, loadIdentity} from './edgeIdentity';
 import {SoftKeyEdge} from './edgeSoftKey';
 import {addNote, keepOffered, loadMirror, mergeOffered, sync as syncCopy} from './edgeStore';
 import {ensureNametag, holdLog, loadHeld} from './edgeDevices';
@@ -61,7 +62,9 @@ async function saveSeen(seen: Set<string>) {
 export type SheetAsk =
   /* no peer, sync, sibling or anchor sheet since 2026-10-08: the phone's own links merge at once; another device's log is HELD and approved from the Edge tab's banner (MergeSheet) */
   /* blocked: why Approve is off - this phone's copy does not verify (R27); Decline still answers */
-  | {kind: 'request'; computer: string | null; view: any; blocked: string | null; at: number};
+  | {kind: 'request'; computer: string | null; view: any; blocked: string | null; at: number}
+  /* SPEC H7 (2026-10-20): a computer sets the agent identity this phone keeps - a tap, no press; `was` = the record it replaces */
+  | {kind: 'identity'; computer: string | null; record: any; was: any | null; blocked: null; at: number};
 /* until: when this phase runs out (ms since epoch) - the sheet counts down to it */
 export type SheetState =
   | {phase: 'ask'; ask: SheetAsk; until: number}
@@ -115,7 +118,7 @@ function show(s: SheetState | null) {
 function attention(s: SheetState | null) {
   try {
     if (s && s.phase === 'ask') {
-      NativeOkEmu.setAttention('An agent asks for a budget', s.until);
+      NativeOkEmu.setAttention(s.ask.kind === 'identity' ? 'A computer sets the agent identity' : 'An agent asks for a budget', s.until);
     } else {
       NativeOkEmu.setAttention('', 0);
     }
@@ -194,8 +197,8 @@ function stepsDone(what: string) {
 export function handleEdgeMessage(msg: any, from: string): Promise<unknown | null> {
   /* B7 stage 2: a note changes nothing, so it never waits behind a sheet */
   if (msg?.type === noteLib.TYPE) return handleNote(msg, from).catch(() => null);
-  /* a sheet the person answers: a budget (a sync is held, never asked - 2026-10-08) */
-  const asks = msg?.type === requestLib.TYPE;
+  /* a sheet the person answers: a budget, or the agent identity (a sync is held, never asked - 2026-10-08) */
+  const asks = msg?.type === requestLib.TYPE || msg?.type === identityLib.SET_TYPE;
   if (asks && inFlight) {
     return Promise.resolve({ok: false, refusal: 'busy', detail: 'another request is on the phone - ask again when it is answered'});
   }
@@ -396,6 +399,40 @@ async function handleSync(msg: any, seen: Set<string>, computer: {id: string; na
   }
   return {ok: true, count: m.added.length, seq: null};
 }
+/*
+ * THE AGENT IDENTITY (SPEC H7; Brad, 2026-10-20: "computer sets, phone keeps"). From a PAIRED
+ * computer only, well formed and new (the nonce, as a request's). GET is a read: the record
+ * this phone keeps, or none - every agent's start asks it. SET goes on the Edge sheet: the
+ * labels and the certificate's fingerprint, Approve or Decline, a tap and no press (the key
+ * signed the certificate on the computer, with its own presses). Kept only on Approve.
+ * The Requests switch off refuses a SET unread, as it refuses a budget; a GET still answers.
+ */
+async function handleIdentity(msg: any, seen: Set<string>, from: string): Promise<unknown | null> {
+  const computer = await btTransit.computer(from).catch(() => null);
+  if (!computer) return null;
+  const checked = identityLib.verify(msg, {seen});
+  if (!checked.ok) {
+    return checked.reason === 'malformed' || checked.reason === 'replayed'
+      ? null
+      : {ok: false, refusal: 'invalid', detail: `not a usable identity: ${checked.reason}`};
+  }
+  seen.add(String(msg.nonce).toLowerCase());
+  if (msg.type === identityLib.GET_TYPE) return {ok: true, record: await loadIdentity()};
+  if (!(await agentRequestsOn())) return null;
+  if (unattended()) return {ok: false, refusal: 'timeout', detail: UNATTENDED_DETAIL};
+  const was = await loadIdentity();
+  const asked: SheetAsk = {kind: 'identity', computer: computer.name, record: identityLib.clean(msg.record), was, blocked: null, at: Date.now()};
+  const a = await askPerson(asked);
+  if (a !== 'approve') {
+    const result = {ok: false as const, refusal: a === 'timeout' ? 'timeout' : 'declined'};
+    show({phase: 'done', ask: asked, result});
+    return result;
+  }
+  await keepIdentity(msg.record, computer.name);
+  show({phase: 'done', ask: asked, result: {ok: true, text: 'Kept: every computer paired with this phone uses this agent identity.'}});
+  return {ok: true};
+}
+
 const toHexId = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
 const fromHexId = (h: string) => Uint8Array.from((String(h).match(/../g) ?? []).map(x => parseInt(x, 16)));
 const seqOfLink = (r: any) => chain.decodeLink(r.link).seq;
@@ -409,6 +446,7 @@ async function handle(msg: any, from: string): Promise<unknown | null> {
       const pc = await btTransit.computer(from).catch(() => null);
       return pc ? await handleSync(msg, seen, {id: pc.id, name: pc.name}) : null;
     }
+    if (identityLib.TYPES.includes(msg?.type)) return await handleIdentity(msg, seen, from);
     if (msg?.type !== requestLib.TYPE) return null;
     /* the Requests switch is off: refused unread */
     if (!(await agentRequestsOn())) return null;

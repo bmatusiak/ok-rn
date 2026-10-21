@@ -23,6 +23,7 @@ import type {EdgeBudget} from '../edgeFake';
 import {budgetStatus} from '../budgetStatus';
 import {openBudget} from '../edgeNav';
 import {currentNet} from '../net';
+import {identity as identityLib} from 'node-onlykey-lib/edge';
 
 /* what each typed refusal means, in the person's words (the agent gets the code) */
 const REFUSAL_TEXT: Record<string, string> = {
@@ -34,7 +35,25 @@ const REFUSAL_TEXT: Record<string, string> = {
   busy: 'Another request was on the phone. The agent was told "busy" and may ask again.',
 };
 
-const refusalText = (refusal: string, _kind: string) => REFUSAL_TEXT[refusal] ?? `Refused: ${refusal}`;
+/* the agent identity (SPEC H7): a computer sets it, nothing reaches the key */
+const IDENTITY_REFUSAL_TEXT: Record<string, string> = {
+  declined: 'You declined. The computer was told "declined"; nothing was kept.',
+  timeout: 'Nobody answered in time; nothing was kept. Until you close this, new requests are refused without asking - nobody is here to answer them.',
+};
+
+const refusalText = (refusal: string, kind: string) =>
+  (kind === 'identity' ? IDENTITY_REFUSAL_TEXT[refusal] : undefined) ?? REFUSAL_TEXT[refusal] ?? `Refused: ${refusal}`;
+
+/* the same rows the CLI prints and Edge Management shows (node-onlykey-lib/edge identity.rows) */
+function IdentityRows({record}: {record: any}) {
+  return (
+    <View style={styles.reason}>
+      {identityLib.rows(record).map(([k, v]: [string, string]) => (
+        <Text key={k} style={styles.op}>{`${k}  ${v}`}</Text>
+      ))}
+    </View>
+  );
+}
 
 const opName = (op: string) => (op === 'sign' ? 'Sign' : op === 'decrypt' ? 'Decrypt' : op);
 
@@ -152,7 +171,21 @@ export function EdgeRequestSheet() {
     <Sheet tone="edge" onClose={s.phase === 'done' ? closeSheet : undefined} extraBottom={48}>
             {/* the testnet (src/net.ts): a throwaway key - said before anything is approved */}
             {currentNet() === 'test' ? <Text style={[styles.title, {color: theme.io}]}>TESTNET</Text> : null}
-            {(
+            {a.kind === 'identity' ? (
+              <>
+                <Text style={[styles.title, {color: theme.warn}]}>Agent identity</Text>
+                <Text style={styles.dim}>{`From ${a.computer ?? 'a paired computer'}: keep this as the agent's identity`}</Text>
+                <IdentityRows record={a.record} />
+                {a.was && !identityLib.same(a.was, a.record) ? (
+                  <Text style={[styles.dim, {color: theme.warn}]}>
+                    {`It replaces the one kept now (certificate ${identityLib.spacedFingerprint(a.was.cert.fingerprint)}).`}
+                  </Text>
+                ) : null}
+                <Text style={styles.dim}>
+                  Every computer paired with this phone uses it: the same ssh and gpg keys. Approving is a tap - the key already signed the certificate on the computer.
+                </Text>
+              </>
+            ) : (
               <>
                 <Text style={[styles.title, {color: theme.warn}]}>
                   {a.view.continues !== null ? `Continues budget ${a.view.continues}` : 'An agent asks for a budget'}
@@ -199,7 +232,7 @@ export function EdgeRequestSheet() {
             {s.phase === 'ask' && refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
             {s.phase === 'ask' && !acting ? (
               <View style={styles.row}>
-                <Locate what={`budget ask "${a.view.reason}" - approve`}>
+                <Locate what={a.kind === 'identity' ? 'agent identity - approve' : `budget ask "${a.view.reason}" - approve`}>
                 <Btn
                   large
                   title="Approve"
@@ -222,7 +255,7 @@ export function EdgeRequestSheet() {
                 </Text>
                 {refusal ? <Text style={[styles.op, {color: theme.error}]}>{refusal}</Text> : null}
                 <View style={styles.row}>
-                  <Locate what={`budget press "${a.view.reason}"`}>
+                  <Locate what={a.kind === 'identity' ? 'agent identity press' : `budget press "${a.view.reason}"`}>
                     <Btn large title="Press the soft key" tone="primary" disabled={off || refusal !== null} onPress={consent(() => void pressFromSheet())} />
                   </Locate>
                 </View>
