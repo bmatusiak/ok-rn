@@ -6,9 +6,12 @@
  * have been copied - and two copies of "where is adb" drift the first time
  * one of them learns something. So: one module, both require it.
  *
- * `ADB` in the environment wins; otherwise the SDK's platform-tools under
- * LOCALAPPDATA, which is where Android Studio puts it on Windows and the one
- * machine this has been measured on. `ANDROID_SERIAL` selects the device the
+ * `ADB` in the environment wins; then the SDK named by ANDROID_HOME (or the
+ * older ANDROID_SDK_ROOT); otherwise where Android Studio puts the SDK on
+ * each platform: LOCALAPPDATA on Windows, ~/Android/Sdk on Linux (the ZBOX,
+ * since 2026-10-19 - this module had only the Windows path, and on the box
+ * every tool failed with "adb ENOENT"), ~/Library/Android/sdk on a Mac.
+ * `ANDROID_SERIAL` selects the device the
  * way adb itself does, so a shell with it exported behaves the same as one
  * passing it per call.
  */
@@ -18,15 +21,19 @@ const {execFileSync} = require('child_process');
 const path = require('path');
 const os = require('os');
 
+const sdkDir = () => {
+  const named = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+  if (named) return named;
+  if (process.platform === 'win32') {
+    return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Android', 'Sdk');
+  }
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Android', 'sdk');
+  return path.join(os.homedir(), 'Android', 'Sdk');
+};
+
 const ADB =
   process.env.ADB ||
-  path.join(
-    process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
-    'Android',
-    'Sdk',
-    'platform-tools',
-    process.platform === 'win32' ? 'adb.exe' : 'adb',
-  );
+  path.join(sdkDir(), 'platform-tools', process.platform === 'win32' ? 'adb.exe' : 'adb');
 
 const serial = process.env.ANDROID_SERIAL || null;
 

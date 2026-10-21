@@ -449,7 +449,16 @@ if (NOLOCK) {
     version: require(path.join(ROOT, 'package.json')).version,
     commit: head,
     versionCode: Number(execSync('git rev-list --count HEAD', {cwd: ROOT, encoding: 'utf8'}).trim()),
-    signedBy: `a physical OnlyKey (apk-signer, ${SIGNER_BACKEND})`,
+    /*
+     * Named after the backend that actually signed. This line used to say
+     * "a physical OnlyKey" for every backend, so 0.0.7's notes read "a
+     * physical OnlyKey (apk-signer, emulated)" - the default backend is the
+     * emulated key, which apk-signer's `provision` loads with debug.keystore.
+     */
+    signedBy: {
+      emulated: 'an emulated OnlyKey (apk-signer) holding the repository\'s debug key',
+      usb: 'a physical OnlyKey over USB (apk-signer)',
+    }[SIGNER_BACKEND] || `apk-signer, ${SIGNER_BACKEND} backend`,
     built: builtFrom,
   });
   /*
