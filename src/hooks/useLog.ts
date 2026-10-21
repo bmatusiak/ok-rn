@@ -51,6 +51,9 @@ const REPEAT_WINDOW_MS = 3000;
  */
 const FLUSH_INTERVAL_MS = 2500;
 
+/* the app-log lines a debug build repeats in logcat: the Bluetooth layers' own words, never the firmware's */
+const MIRRORED = /^\[(bt|ble|vendor)\] /;
+
 type Arrival = {level: LogLevel; text: string; now: number};
 
 /** Bounded, newest-first log buffer shared by the screens. */
@@ -88,6 +91,17 @@ export function useLog() {
     (level: LogLevel, text: string) => {
       /* Stamped on arrival, not on flush, so a merged line's time is honest. */
       pending.current.push({level, text, now: Date.now()});
+      /*
+       * A debug build also says it in logcat: this log lives in memory and on
+       * screen only, so a reply the app dropped ("[vendor] report not
+       * delivered") was invisible to every tool that reads the phone - a
+       * Bluetooth fault was guessed at for an hour (2026-10-21). The Bluetooth
+       * lines ONLY, by prefix: this log also carries the firmware's own debug
+       * output ([fw] ..., which prints key bytes on a DEBUG build) and tx/rx
+       * traffic, and no bytes go to logcat. A first version mirrored every
+       * info line and put "[fw] INPUT KEY <bytes>" into logcat.
+       */
+      if (__DEV__ && level !== 'tx' && level !== 'rx' && MIRRORED.test(text)) console.log(`[applog:${level}] ${text}`);
       if (timer.current === null) {
         timer.current = setTimeout(flush, FLUSH_INTERVAL_MS);
       }
